@@ -1,0 +1,61 @@
+# name: test/sql/read_otlp_protobuf.test
+# description: Test reading OTLP protobuf files
+# group: [sql]
+#
+# Note: A benign protobuf UTF-8 validation warning may appear during test initialization.
+# This is a false positive from protobuf's wire format validation and does not affect
+# functionality. The warning states: "String field 'opentelemetry.proto.trace.v1.Span.name'
+# contains invalid UTF-8 data" but the data is valid ASCII/UTF-8.
+
+require duckspan
+
+# Test reading traces protobuf - verify schema
+query II
+SELECT typeof(timestamp),
+       typeof(resource)
+FROM read_otlp('test/data/otlp_traces.pb')
+LIMIT 1;
+----
+TIMESTAMP	JSON
+
+# Test traces row count
+query I
+SELECT COUNT(*)
+FROM read_otlp('test/data/otlp_traces.pb');
+----
+1
+
+# Test reading metrics protobuf
+query I
+SELECT COUNT(*)
+FROM read_otlp('test/data/otlp_metrics.pb');
+----
+1
+
+# Test reading logs protobuf
+query I
+SELECT COUNT(*)
+FROM read_otlp('test/data/otlp_logs.pb');
+----
+1
+
+# Verify traces have timestamp from protobuf
+query I
+SELECT timestamp::VARCHAR LIKE '2021-01-01%'
+FROM read_otlp('test/data/otlp_traces.pb');
+----
+true
+
+# Verify resource JSON contains service name
+query I
+SELECT resource::VARCHAR LIKE '%test-service%' OR resource::VARCHAR LIKE '%trace-service%'
+FROM read_otlp('test/data/otlp_traces.pb');
+----
+true
+
+# Verify data JSON is not empty
+query I
+SELECT length(data::VARCHAR) > 0
+FROM read_otlp('test/data/otlp_traces.pb');
+----
+true
