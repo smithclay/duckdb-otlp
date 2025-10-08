@@ -1,0 +1,1 @@
+- always run make with GEN=ninja to take advantage of caching and perf

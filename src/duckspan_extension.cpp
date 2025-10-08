@@ -6,6 +6,9 @@
 #include "duckdb/function/scalar_function.hpp"
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 
+// OTLP functionality
+#include "read_otlp.hpp"
+
 // OpenSSL linked through vcpkg
 #include <openssl/opensslv.h>
 
@@ -27,11 +30,15 @@ inline void DuckspanOpenSSLVersionScalarFun(DataChunk &args, ExpressionState &st
 }
 
 static void LoadInternal(ExtensionLoader &loader) {
-	// Register a scalar function
+	// Register OTLP table function
+	auto read_otlp_function = ReadOTLPTableFunction::GetFunction();
+	loader.RegisterFunction(read_otlp_function);
+
+	// Register a scalar function (from template, keeping for now)
 	auto duckspan_scalar_function = ScalarFunction("duckspan", {LogicalType::VARCHAR}, LogicalType::VARCHAR, DuckspanScalarFun);
 	loader.RegisterFunction(duckspan_scalar_function);
 
-	// Register another scalar function
+	// Register another scalar function (from template, keeping for now)
 	auto duckspan_openssl_version_scalar_function = ScalarFunction("duckspan_openssl_version", {LogicalType::VARCHAR},
 	                                                            LogicalType::VARCHAR, DuckspanOpenSSLVersionScalarFun);
 	loader.RegisterFunction(duckspan_openssl_version_scalar_function);
