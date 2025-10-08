@@ -18,7 +18,7 @@ jobs:
     with:
       duckdb_version: v1.4.0
       ci_tools_version: v1.4.0
-      extension_name: quack
+      extension_name: duckspan
 
   code-quality-check:
     name: Code Quality Check
@@ -26,5 +26,5 @@ jobs:
     with:
       duckdb_version: v1.4.0
       ci_tools_version: v1.4.0
-      extension_name: quack
+      extension_name: duckspan
       format_checks: 'format;tidy'
