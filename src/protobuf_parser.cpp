@@ -24,7 +24,7 @@ string OTLPProtobufParser::MessageToJSON(const google::protobuf::Message &msg) {
 	google::protobuf::util::JsonPrintOptions options;
 	options.add_whitespace = false;
 	options.preserve_proto_field_names = true;
-	options.always_print_fields_with_no_presence = false;  // Don't print default values
+	options.always_print_fields_with_no_presence = false; // Don't print default values
 
 	auto status = google::protobuf::util::MessageToJsonString(msg, &json_output, options);
 	if (!status.ok()) {
@@ -36,7 +36,7 @@ string OTLPProtobufParser::MessageToJSON(const google::protobuf::Message &msg) {
 }
 
 idx_t OTLPProtobufParser::ParseTracesData(const char *data, size_t length, vector<timestamp_t> &timestamps,
-                                           vector<string> &resources, vector<string> &datas) {
+                                          vector<string> &resources, vector<string> &datas) {
 	last_error = "";
 
 	opentelemetry::proto::trace::v1::TracesData traces_data;
@@ -85,7 +85,7 @@ idx_t OTLPProtobufParser::ParseTracesData(const char *data, size_t length, vecto
 }
 
 idx_t OTLPProtobufParser::ParseMetricsData(const char *data, size_t length, vector<timestamp_t> &timestamps,
-                                            vector<string> &resources, vector<string> &datas) {
+                                           vector<string> &resources, vector<string> &datas) {
 	last_error = "";
 
 	opentelemetry::proto::metrics::v1::MetricsData metrics_data;
@@ -130,7 +130,7 @@ idx_t OTLPProtobufParser::ParseMetricsData(const char *data, size_t length, vect
 }
 
 idx_t OTLPProtobufParser::ParseLogsData(const char *data, size_t length, vector<timestamp_t> &timestamps,
-                                         vector<string> &resources, vector<string> &datas) {
+                                        vector<string> &resources, vector<string> &datas) {
 	last_error = "";
 
 	opentelemetry::proto::logs::v1::LogsData logs_data;

@@ -4,9 +4,9 @@ namespace duckdb {
 
 vector<LogicalType> OTLPSchema::GetTypes() {
 	return {
-	    LogicalType::TIMESTAMP,  // timestamp - event occurrence time (microsecond precision)
-	    LogicalType::JSON(),     // resource - service/host metadata
-	    LogicalType::JSON()      // data - signal-specific payload
+	    LogicalType::TIMESTAMP, // timestamp - event occurrence time (microsecond precision)
+	    LogicalType::JSON(),    // resource - service/host metadata
+	    LogicalType::JSON()     // data - signal-specific payload
 	};
 }
 

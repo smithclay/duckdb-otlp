@@ -22,7 +22,7 @@ TableFunction ReadOTLPTableFunction::GetFunction() {
 }
 
 unique_ptr<FunctionData> ReadOTLPTableFunction::Bind(ClientContext &context, TableFunctionBindInput &input,
-                                                       vector<LogicalType> &return_types, vector<string> &names) {
+                                                     vector<LogicalType> &return_types, vector<string> &names) {
 	// Get file path from first argument
 	if (input.inputs.size() != 1) {
 		throw BinderException("read_otlp requires exactly one argument (file path)");
@@ -38,7 +38,7 @@ unique_ptr<FunctionData> ReadOTLPTableFunction::Bind(ClientContext &context, Tab
 }
 
 unique_ptr<GlobalTableFunctionState> ReadOTLPTableFunction::Init(ClientContext &context,
-                                                                   TableFunctionInitInput &input) {
+                                                                 TableFunctionInitInput &input) {
 	auto &bind_data = input.bind_data->Cast<ReadOTLPBindData>();
 	auto state = make_uniq<ReadOTLPGlobalState>();
 
@@ -56,7 +56,7 @@ unique_ptr<GlobalTableFunctionState> ReadOTLPTableFunction::Init(ClientContext &
 	// Read first chunk to detect format
 	string detect_buffer;
 	detect_buffer.resize(1024);
-	idx_t bytes_read = state->file_handle->Read((void*)detect_buffer.data(), 1024);
+	idx_t bytes_read = state->file_handle->Read((void *)detect_buffer.data(), 1024);
 	detect_buffer.resize(bytes_read);
 
 	// Detect format
@@ -76,7 +76,7 @@ unique_ptr<GlobalTableFunctionState> ReadOTLPTableFunction::Init(ClientContext &
 		auto file_size = fs.GetFileSize(*state->file_handle);
 		string file_contents;
 		file_contents.resize(file_size);
-		idx_t total_read = state->file_handle->Read((void*)file_contents.data(), file_size);
+		idx_t total_read = state->file_handle->Read((void *)file_contents.data(), file_size);
 
 		// Detect signal type
 		auto signal_type = FormatDetector::DetectProtobufSignalType(file_contents.data(), total_read);
@@ -84,14 +84,14 @@ unique_ptr<GlobalTableFunctionState> ReadOTLPTableFunction::Init(ClientContext &
 		// Parse based on signal type
 		idx_t row_count = 0;
 		if (signal_type == FormatDetector::SignalType::TRACES) {
-			row_count = state->protobuf_parser->ParseTracesData(file_contents.data(), total_read,
-			                                                      state->timestamps, state->resources, state->datas);
+			row_count = state->protobuf_parser->ParseTracesData(file_contents.data(), total_read, state->timestamps,
+			                                                    state->resources, state->datas);
 		} else if (signal_type == FormatDetector::SignalType::METRICS) {
-			row_count = state->protobuf_parser->ParseMetricsData(file_contents.data(), total_read,
-			                                                       state->timestamps, state->resources, state->datas);
+			row_count = state->protobuf_parser->ParseMetricsData(file_contents.data(), total_read, state->timestamps,
+			                                                     state->resources, state->datas);
 		} else if (signal_type == FormatDetector::SignalType::LOGS) {
-			row_count = state->protobuf_parser->ParseLogsData(file_contents.data(), total_read,
-			                                                    state->timestamps, state->resources, state->datas);
+			row_count = state->protobuf_parser->ParseLogsData(file_contents.data(), total_read, state->timestamps,
+			                                                  state->resources, state->datas);
 		} else {
 			throw IOException("Unable to detect OTLP signal type from protobuf data");
 		}
@@ -120,7 +120,7 @@ static bool ReadLine(FileHandle &file_handle, string &buffer, idx_t &buffer_offs
 		// If buffer is empty or exhausted, read more data
 		if (buffer_offset >= buffer.size()) {
 			buffer.resize(8192); // 8KB buffer
-			idx_t bytes_read = file_handle.Read((void*)buffer.data(), 8192);
+			idx_t bytes_read = file_handle.Read((void *)buffer.data(), 8192);
 			if (bytes_read == 0) {
 				// EOF
 				return !line.empty(); // Return true if we have a partial line
@@ -164,12 +164,12 @@ void ReadOTLPTableFunction::Scan(ClientContext &context, TableFunctionInput &dat
 			// Set resource JSON
 			auto &resource_vector = output.data[OTLPSchema::RESOURCE_COL];
 			FlatVector::GetData<string_t>(resource_vector)[output_idx] =
-				StringVector::AddString(resource_vector, gstate.resources[gstate.current_row]);
+			    StringVector::AddString(resource_vector, gstate.resources[gstate.current_row]);
 
 			// Set data JSON
 			auto &data_vector = output.data[OTLPSchema::DATA_COL];
 			FlatVector::GetData<string_t>(data_vector)[output_idx] =
-				StringVector::AddString(data_vector, gstate.datas[gstate.current_row]);
+			    StringVector::AddString(data_vector, gstate.datas[gstate.current_row]);
 
 			output_idx++;
 			gstate.current_row++;
@@ -214,7 +214,8 @@ void ReadOTLPTableFunction::Scan(ClientContext &context, TableFunctionInput &dat
 
 			// Set resource JSON
 			auto &resource_vector = output.data[OTLPSchema::RESOURCE_COL];
-			FlatVector::GetData<string_t>(resource_vector)[output_idx] = StringVector::AddString(resource_vector, resource_json);
+			FlatVector::GetData<string_t>(resource_vector)[output_idx] =
+			    StringVector::AddString(resource_vector, resource_json);
 
 			// Set data JSON
 			auto &data_vector = output.data[OTLPSchema::DATA_COL];
@@ -226,8 +227,7 @@ void ReadOTLPTableFunction::Scan(ClientContext &context, TableFunctionInput &dat
 		// Emit warning about skipped lines once at end of scan
 		if (gstate.finished && gstate.skipped_lines > 0 && !gstate.warning_emitted) {
 			string warning_msg = StringUtil::Format("Skipped %llu malformed or invalid OTLP JSON line%s",
-			                                         gstate.skipped_lines,
-			                                         gstate.skipped_lines == 1 ? "" : "s");
+			                                        gstate.skipped_lines, gstate.skipped_lines == 1 ? "" : "s");
 			// Note: In DuckDB, warnings are typically handled via ErrorData
 			// For now, we silently skip - full warning support can be added later
 			gstate.warning_emitted = true;

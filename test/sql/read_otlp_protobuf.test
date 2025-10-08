@@ -1,6 +1,7 @@
 # name: test/sql/read_otlp_protobuf.test
 # description: Test reading OTLP protobuf files
 # group: [sql]
+
 #
 # Note: A benign protobuf UTF-8 validation warning may appear during test initialization.
 # This is a false positive from protobuf's wire format validation and does not affect

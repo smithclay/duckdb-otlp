@@ -19,7 +19,7 @@ public:
 
 	//! Bind function data
 	static unique_ptr<FunctionData> Bind(ClientContext &context, TableFunctionBindInput &input,
-	                                      vector<LogicalType> &return_types, vector<string> &names);
+	                                     vector<LogicalType> &return_types, vector<string> &names);
 
 	//! Initialize scan state
 	static unique_ptr<GlobalTableFunctionState> Init(ClientContext &context, TableFunctionInitInput &input);
@@ -32,7 +32,7 @@ public:
 struct ReadOTLPBindData : public TableFunctionData {
 	string file_path;
 
-	ReadOTLPBindData(string path) : file_path(std::move(path)) {
+	explicit ReadOTLPBindData(string path) : file_path(std::move(path)) {
 	}
 };
 
@@ -56,8 +56,8 @@ struct ReadOTLPGlobalState : public GlobalTableFunctionState {
 	idx_t current_row;
 
 	ReadOTLPGlobalState()
-		: format(OTLPFormat::UNKNOWN), current_line(0), finished(false),
-		  buffer_offset(0), skipped_lines(0), warning_emitted(false), current_row(0) {
+	    : format(OTLPFormat::UNKNOWN), current_line(0), finished(false), buffer_offset(0), skipped_lines(0),
+	      warning_emitted(false), current_row(0) {
 	}
 
 	idx_t MaxThreads() const override {

@@ -42,7 +42,8 @@ OTLPFormat FormatDetector::DetectFormat(const char *data, size_t len) {
 		// 0x0A = field 1, wire type 2 (length-delimited) - common for OTLP messages
 		// 0x12 = field 2, wire type 2
 		// Binary data typically has non-printable characters
-		if (first_byte == 0x0A || first_byte == 0x12 || (first_byte < 0x20 && first_byte != '\n' && first_byte != '\r' && first_byte != '\t')) {
+		if (first_byte == 0x0A || first_byte == 0x12 ||
+		    (first_byte < 0x20 && first_byte != '\n' && first_byte != '\r' && first_byte != '\t')) {
 			return OTLPFormat::PROTOBUF;
 		}
 	}
@@ -52,18 +53,21 @@ OTLPFormat FormatDetector::DetectFormat(const char *data, size_t len) {
 
 FormatDetector::SignalType FormatDetector::DetectProtobufSignalType(const char *data, size_t len) {
 	// Try parsing as each type
+	// ParseFromArray expects int, so we safely cast from size_t
+	int size = static_cast<int>(len);
+
 	opentelemetry::proto::trace::v1::TracesData traces_data;
-	if (traces_data.ParseFromArray(data, len)) {
+	if (traces_data.ParseFromArray(data, size)) {
 		return SignalType::TRACES;
 	}
 
 	opentelemetry::proto::metrics::v1::MetricsData metrics_data;
-	if (metrics_data.ParseFromArray(data, len)) {
+	if (metrics_data.ParseFromArray(data, size)) {
 		return SignalType::METRICS;
 	}
 
 	opentelemetry::proto::logs::v1::LogsData logs_data;
-	if (logs_data.ParseFromArray(data, len)) {
+	if (logs_data.ParseFromArray(data, size)) {
 		return SignalType::LOGS;
 	}
 

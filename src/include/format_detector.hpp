@@ -4,11 +4,7 @@
 
 namespace duckdb {
 
-enum class OTLPFormat {
-	JSON,
-	PROTOBUF,
-	UNKNOWN
-};
+enum class OTLPFormat { JSON, PROTOBUF, UNKNOWN };
 
 //! FormatDetector detects whether data is OTLP JSON or Protobuf format
 class FormatDetector {

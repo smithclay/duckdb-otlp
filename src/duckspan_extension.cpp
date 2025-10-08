@@ -35,12 +35,13 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(read_otlp_function);
 
 	// Register a scalar function (from template, keeping for now)
-	auto duckspan_scalar_function = ScalarFunction("duckspan", {LogicalType::VARCHAR}, LogicalType::VARCHAR, DuckspanScalarFun);
+	auto duckspan_scalar_function =
+	    ScalarFunction("duckspan", {LogicalType::VARCHAR}, LogicalType::VARCHAR, DuckspanScalarFun);
 	loader.RegisterFunction(duckspan_scalar_function);
 
 	// Register another scalar function (from template, keeping for now)
-	auto duckspan_openssl_version_scalar_function = ScalarFunction("duckspan_openssl_version", {LogicalType::VARCHAR},
-	                                                            LogicalType::VARCHAR, DuckspanOpenSSLVersionScalarFun);
+	auto duckspan_openssl_version_scalar_function = ScalarFunction(
+	    "duckspan_openssl_version", {LogicalType::VARCHAR}, LogicalType::VARCHAR, DuckspanOpenSSLVersionScalarFun);
 	loader.RegisterFunction(duckspan_openssl_version_scalar_function);
 }
 
