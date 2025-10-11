@@ -49,15 +49,16 @@ struct ReadOTLPGlobalState : public GlobalTableFunctionState {
 	idx_t skipped_lines;
 	bool warning_emitted;
 
-	// For protobuf parsing
+	// For protobuf parsing and single JSON object parsing
 	vector<timestamp_t> timestamps;
 	vector<string> resources;
 	vector<string> datas;
 	idx_t current_row;
+	bool is_single_json_object;
 
 	ReadOTLPGlobalState()
 	    : format(OTLPFormat::UNKNOWN), current_line(0), finished(false), buffer_offset(0), skipped_lines(0),
-	      warning_emitted(false), current_row(0) {
+	      warning_emitted(false), current_row(0), is_single_json_object(false) {
 	}
 
 	idx_t MaxThreads() const override {

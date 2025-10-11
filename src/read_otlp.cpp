@@ -45,12 +45,16 @@ unique_ptr<GlobalTableFunctionState> ReadOTLPTableFunction::Init(ClientContext &
 	// Open file using DuckDB's file system (supports S3, HTTP, etc.)
 	auto &fs = FileSystem::GetFileSystem(context);
 
-	// Check if file exists
-	if (!fs.FileExists(bind_data.file_path)) {
+	// Check if file exists (skip for remote URLs as FileExists doesn't support them)
+	bool is_remote = StringUtil::StartsWith(bind_data.file_path, "http://") ||
+	                 StringUtil::StartsWith(bind_data.file_path, "https://") ||
+	                 StringUtil::StartsWith(bind_data.file_path, "s3://");
+
+	if (!is_remote && !fs.FileExists(bind_data.file_path)) {
 		throw IOException("File not found: " + bind_data.file_path);
 	}
 
-	// Open file for reading
+	// Open file for reading (will throw if remote file doesn't exist)
 	state->file_handle = fs.OpenFile(bind_data.file_path, FileFlags::FILE_FLAGS_READ);
 
 	// Read first chunk to detect format
@@ -66,8 +70,37 @@ unique_ptr<GlobalTableFunctionState> ReadOTLPTableFunction::Init(ClientContext &
 	state->file_handle->Seek(0);
 
 	if (state->format == OTLPFormat::JSON) {
-		// JSON Lines format - stream line by line
+		// JSON format - read entire file and try to parse as single OTLP object first
 		state->json_parser = make_uniq<OTLPJSONParser>();
+
+		// Read entire file into memory to check if it's a single JSON object
+		auto file_size = fs.GetFileSize(*state->file_handle);
+		if (file_size > 0 && file_size < 100 * 1024 * 1024) { // Limit to 100MB for single object parsing
+			string file_contents;
+			file_contents.resize(file_size);
+			idx_t total_read = state->file_handle->Read((void *)file_contents.data(), file_size);
+			file_contents.resize(total_read);
+
+			// Try parsing as single OTLP JSON object
+			timestamp_t timestamp;
+			string resource_json;
+			string data_json;
+
+			if (state->json_parser->ParseLine(file_contents, timestamp, resource_json, data_json)) {
+				// Successfully parsed as single object - store it
+				state->timestamps.push_back(timestamp);
+				state->resources.push_back(resource_json);
+				state->datas.push_back(data_json);
+				state->is_single_json_object = true;
+			} else {
+				// Not a single object, fall back to line-by-line parsing
+				state->file_handle->Seek(0);
+				state->is_single_json_object = false;
+			}
+		} else {
+			// File too large or empty, use line-by-line parsing
+			state->is_single_json_object = false;
+		}
 	} else if (state->format == OTLPFormat::PROTOBUF) {
 		// Protobuf format - read entire file and parse
 		state->protobuf_parser = make_uniq<OTLPProtobufParser>();
@@ -154,7 +187,7 @@ void ReadOTLPTableFunction::Scan(ClientContext &context, TableFunctionInput &dat
 	idx_t output_idx = 0;
 	constexpr idx_t BATCH_SIZE = STANDARD_VECTOR_SIZE;
 
-	if (gstate.format == OTLPFormat::PROTOBUF) {
+	if (gstate.format == OTLPFormat::PROTOBUF || gstate.is_single_json_object) {
 		// Protobuf: return pre-parsed data
 		while (output_idx < BATCH_SIZE && gstate.current_row < gstate.timestamps.size()) {
 			// Add parsed data to output chunk
