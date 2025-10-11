@@ -10,7 +10,7 @@ namespace duckdb {
 //! Simple read-only transaction manager for OTLP storage
 class OTLPTransactionManager : public TransactionManager {
 public:
-	OTLPTransactionManager(AttachedDatabase &db);
+	explicit OTLPTransactionManager(AttachedDatabase &db);
 
 	Transaction &StartTransaction(ClientContext &context) override;
 	ErrorData CommitTransaction(ClientContext &context, Transaction &transaction) override;

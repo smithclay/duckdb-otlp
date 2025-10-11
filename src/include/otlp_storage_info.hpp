@@ -31,7 +31,7 @@ struct OTLPStorageInfo : public StorageExtensionInfo {
 		logs_buffer = make_shared_ptr<RingBuffer>(buffer_capacity);
 	}
 
-	~OTLPStorageInfo(); // Defined in otlp_storage_extension.cpp
+	~OTLPStorageInfo() override; // Defined in otlp_storage_extension.cpp
 
 	//! Get ring buffer by signal type enum
 	shared_ptr<RingBuffer> GetBuffer(OTLPSignalType type) {

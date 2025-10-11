@@ -27,12 +27,15 @@ inline optional_ptr<OTLPSignalType> StringToSignalType(const string &name) {
 	static OTLPSignalType metrics_type = OTLPSignalType::METRICS;
 	static OTLPSignalType logs_type = OTLPSignalType::LOGS;
 
-	if (name == "traces")
+	if (name == "traces") {
 		return &traces_type;
-	if (name == "metrics")
+	}
+	if (name == "metrics") {
 		return &metrics_type;
-	if (name == "logs")
+	}
+	if (name == "logs") {
 		return &logs_type;
+	}
 	return nullptr;
 }
 
