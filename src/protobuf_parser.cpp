@@ -1,4 +1,5 @@
 #include "protobuf_parser.hpp"
+#include "otlp_types.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 
@@ -62,13 +63,8 @@ idx_t OTLPProtobufParser::ParseTracesData(const char *data, size_t length, vecto
 		for (const auto &scope_span : resource_span.scope_spans()) {
 			// Iterate through spans
 			for (const auto &span : scope_span.spans()) {
-				// Extract timestamp from startTimeUnixNano
-				// Convert from nanoseconds to microseconds
-				int64_t start_time_nanos = span.start_time_unix_nano();
-				int64_t start_time_micros = start_time_nanos / 1000;
-
-				timestamp_t ts;
-				ts.value = start_time_micros;
+				// Extract timestamp from startTimeUnixNano (with rounding)
+				timestamp_t ts = NanosToTimestamp(span.start_time_unix_nano());
 
 				timestamps.push_back(ts);
 				resources.push_back(resource_json);
@@ -156,12 +152,8 @@ idx_t OTLPProtobufParser::ParseLogsData(const char *data, size_t length, vector<
 		for (const auto &scope_log : resource_log.scope_logs()) {
 			// Iterate through log records
 			for (const auto &log_record : scope_log.log_records()) {
-				// Extract timestamp from time_unix_nano
-				int64_t time_nanos = log_record.time_unix_nano();
-				int64_t time_micros = time_nanos / 1000;
-
-				timestamp_t ts;
-				ts.value = time_micros;
+				// Extract timestamp from time_unix_nano (with rounding)
+				timestamp_t ts = NanosToTimestamp(log_record.time_unix_nano());
 
 				timestamps.push_back(ts);
 				resources.push_back(resource_json);

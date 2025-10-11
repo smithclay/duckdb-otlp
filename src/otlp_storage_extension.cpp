@@ -18,22 +18,15 @@ OTLPStorageInfo::~OTLPStorageInfo() {
 }
 
 unique_ptr<StorageExtension> OTLPStorageExtension::Create() {
-	printf("DEBUG OTLPStorageExtension::Create() called\n");
-	fflush(stdout);
 	auto storage = make_uniq<StorageExtension>();
 	storage->attach = Attach;
 	storage->create_transaction_manager = CreateTransactionManager;
-	printf("DEBUG OTLPStorageExtension::Create() returning storage extension\n");
-	fflush(stdout);
 	return storage;
 }
 
 unique_ptr<Catalog> OTLPStorageExtension::Attach(optional_ptr<StorageExtensionInfo> storage_info,
                                                  ClientContext &context, AttachedDatabase &db, const string &name,
                                                  AttachInfo &info, AttachOptions &options) {
-
-	printf("DEBUG OTLPStorageExtension::Attach() called with name='%s', path='%s'\n", name.c_str(), info.path.c_str());
-	fflush(stdout);
 
 	// Parse the connection string: otlp:host:port or host:port
 	// If TYPE is specified, DuckDB doesn't strip the prefix, so we need to handle both
@@ -61,22 +54,28 @@ unique_ptr<Catalog> OTLPStorageExtension::Attach(optional_ptr<StorageExtensionIn
 		host = connection_str;
 	}
 
-	// Create OTLP storage info with ring buffers
-	auto otlp_info = make_shared_ptr<OTLPStorageInfo>(host, port);
-	otlp_info->schema_name = name;
+	// Parse buffer capacity from attach options (default: 10000)
+	idx_t buffer_capacity = 10000;
+	auto buffer_size_iter = options.options.find("buffer_size");
+	if (buffer_size_iter != options.options.end()) {
+		try {
+			buffer_capacity = (idx_t)std::stoull(buffer_size_iter->second.ToString());
+			if (buffer_capacity == 0) {
+				throw BinderException("buffer_size must be greater than 0");
+			}
+		} catch (const std::exception &e) {
+			throw BinderException("Invalid buffer_size value: " + buffer_size_iter->second.ToString());
+		}
+	}
 
-	printf("DEBUG OTLPStorageExtension::Attach() creating OTLPCatalog\n");
-	fflush(stdout);
+	// Create OTLP storage info with ring buffers
+	auto otlp_info = make_shared_ptr<OTLPStorageInfo>(host, port, buffer_capacity);
+	otlp_info->schema_name = name;
 
 	// Create custom OTLP catalog with virtual tables backed by ring buffers
 	auto catalog = make_uniq<OTLPCatalog>(db, otlp_info);
 
-	printf("DEBUG OTLPStorageExtension::Attach() calling Initialize()\n");
-	fflush(stdout);
 	catalog->Initialize(false); // Don't load builtins
-
-	printf("DEBUG OTLPStorageExtension::Attach() catalog created and initialized\n");
-	fflush(stdout);
 
 	// Create and start gRPC receiver (inserts into ring buffers)
 	otlp_info->receiver = make_uniq<OTLPReceiver>(host, port, otlp_info);

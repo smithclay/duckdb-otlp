@@ -18,8 +18,8 @@ namespace {
 template <typename TService, typename TRequest, typename TResponse>
 class GenericOTLPService final : public TService::Service {
 public:
-	GenericOTLPService(shared_ptr<OTLPStorageInfo> storage_info, const string &table_name)
-	    : storage_info_(storage_info), table_name_(table_name) {
+	GenericOTLPService(shared_ptr<OTLPStorageInfo> storage_info, OTLPSignalType signal_type)
+	    : storage_info_(storage_info), signal_type_(signal_type) {
 	}
 
 	grpc::Status Export(grpc::ServerContext *context, const TRequest *request, TResponse *response) override {
@@ -36,14 +36,19 @@ public:
 			}
 
 			// Insert into ring buffer (thread-safe)
-			auto buffer = storage_info_->GetBuffer(table_name_);
+			auto buffer = storage_info_->GetBuffer(signal_type_);
 			if (!buffer) {
-				return grpc::Status(grpc::StatusCode::INTERNAL, "Ring buffer not found for " + table_name_);
+				return grpc::Status(grpc::StatusCode::INTERNAL,
+				                    "Ring buffer not found for " + SignalTypeToString(signal_type_));
 			}
 
-			auto timestamp = timestamp_t(std::chrono::duration_cast<std::chrono::microseconds>(
-			                                 std::chrono::system_clock::now().time_since_epoch())
-			                                 .count());
+			// Convert current time to microseconds with rounding (not truncation)
+			// This avoids systematic negative bias of up to 999ns per conversion
+			auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+			                  std::chrono::system_clock::now().time_since_epoch())
+			                  .count();
+			// Round to nearest microsecond: add 500ns before dividing
+			auto timestamp = timestamp_t((now_ns + 500) / 1000);
 
 			// Insert into ring buffer (FIFO eviction when full)
 			buffer->Insert(timestamp, "{}", json_data); // Empty resource for now
@@ -56,7 +61,7 @@ public:
 
 private:
 	shared_ptr<OTLPStorageInfo> storage_info_;
-	string table_name_;
+	OTLPSignalType signal_type_;
 };
 
 } // anonymous namespace
@@ -75,11 +80,23 @@ void OTLPReceiver::Start() {
 	}
 
 	shutdown_requested_.store(false);
+	startup_error_.clear();
 	server_thread_ = std::thread(&OTLPReceiver::ServerThread, this);
 
-	// Wait for server to start
+	// Wait for server to start or fail
 	while (!running_.load() && !shutdown_requested_.load()) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+
+	// Check if startup failed
+	if (shutdown_requested_.load() && !running_.load()) {
+		// Server failed to start
+		std::lock_guard<std::mutex> lock(error_mutex_);
+		if (!startup_error_.empty()) {
+			throw IOException("Failed to start OTLP gRPC server: " + startup_error_);
+		} else {
+			throw IOException("Failed to start OTLP gRPC server on " + host_ + ":" + std::to_string(port_));
+		}
 	}
 }
 
@@ -107,19 +124,19 @@ void OTLPReceiver::ServerThread() {
 	    std::make_unique<GenericOTLPService<opentelemetry::proto::collector::trace::v1::TraceService,
 	                                        opentelemetry::proto::collector::trace::v1::ExportTraceServiceRequest,
 	                                        opentelemetry::proto::collector::trace::v1::ExportTraceServiceResponse>>(
-	        storage_info_, "traces");
+	        storage_info_, OTLPSignalType::TRACES);
 
 	auto metrics_service = std::make_unique<
 	    GenericOTLPService<opentelemetry::proto::collector::metrics::v1::MetricsService,
 	                       opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest,
-	                       opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>>(storage_info_,
-	                                                                                                    "metrics");
+	                       opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>>(
+	    storage_info_, OTLPSignalType::METRICS);
 
 	auto logs_service =
 	    std::make_unique<GenericOTLPService<opentelemetry::proto::collector::logs::v1::LogsService,
 	                                        opentelemetry::proto::collector::logs::v1::ExportLogsServiceRequest,
 	                                        opentelemetry::proto::collector::logs::v1::ExportLogsServiceResponse>>(
-	        storage_info_, "logs");
+	        storage_info_, OTLPSignalType::LOGS);
 
 	// Build server
 	grpc::ServerBuilder builder;
@@ -130,8 +147,17 @@ void OTLPReceiver::ServerThread() {
 	builder.RegisterService(logs_service.get());
 
 	// Start server
-	server_ = builder.BuildAndStart();
-	if (!server_) {
+	try {
+		server_ = builder.BuildAndStart();
+		if (!server_) {
+			std::lock_guard<std::mutex> lock(error_mutex_);
+			startup_error_ = "Failed to bind to " + server_address + " (port may be in use)";
+			shutdown_requested_.store(true);
+			return;
+		}
+	} catch (std::exception &e) {
+		std::lock_guard<std::mutex> lock(error_mutex_);
+		startup_error_ = string("gRPC server exception: ") + e.what();
 		shutdown_requested_.store(true);
 		return;
 	}

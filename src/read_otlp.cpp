@@ -145,6 +145,22 @@ unique_ptr<GlobalTableFunctionState> ReadOTLPTableFunction::Init(ClientContext &
 	return std::move(state);
 }
 
+// Helper to add a row to the output chunk
+static void AddRowToOutput(DataChunk &output, idx_t output_idx, timestamp_t timestamp, const string &resource,
+                           const string &data) {
+	// Set timestamp
+	auto timestamp_data = FlatVector::GetData<timestamp_t>(output.data[OTLPSchema::TIMESTAMP_COL]);
+	timestamp_data[output_idx] = timestamp;
+
+	// Set resource JSON
+	auto &resource_vector = output.data[OTLPSchema::RESOURCE_COL];
+	FlatVector::GetData<string_t>(resource_vector)[output_idx] = StringVector::AddString(resource_vector, resource);
+
+	// Set data JSON
+	auto &data_vector = output.data[OTLPSchema::DATA_COL];
+	FlatVector::GetData<string_t>(data_vector)[output_idx] = StringVector::AddString(data_vector, data);
+}
+
 // Helper to read next line from file handle
 static bool ReadLine(FileHandle &file_handle, string &buffer, idx_t &buffer_offset, string &line) {
 	line.clear();
@@ -190,20 +206,8 @@ void ReadOTLPTableFunction::Scan(ClientContext &context, TableFunctionInput &dat
 	if (gstate.format == OTLPFormat::PROTOBUF || gstate.is_single_json_object) {
 		// Protobuf: return pre-parsed data
 		while (output_idx < BATCH_SIZE && gstate.current_row < gstate.timestamps.size()) {
-			// Add parsed data to output chunk
-			auto timestamp_data = FlatVector::GetData<timestamp_t>(output.data[OTLPSchema::TIMESTAMP_COL]);
-			timestamp_data[output_idx] = gstate.timestamps[gstate.current_row];
-
-			// Set resource JSON
-			auto &resource_vector = output.data[OTLPSchema::RESOURCE_COL];
-			FlatVector::GetData<string_t>(resource_vector)[output_idx] =
-			    StringVector::AddString(resource_vector, gstate.resources[gstate.current_row]);
-
-			// Set data JSON
-			auto &data_vector = output.data[OTLPSchema::DATA_COL];
-			FlatVector::GetData<string_t>(data_vector)[output_idx] =
-			    StringVector::AddString(data_vector, gstate.datas[gstate.current_row]);
-
+			AddRowToOutput(output, output_idx, gstate.timestamps[gstate.current_row],
+			               gstate.resources[gstate.current_row], gstate.datas[gstate.current_row]);
 			output_idx++;
 			gstate.current_row++;
 		}
@@ -242,19 +246,7 @@ void ReadOTLPTableFunction::Scan(ClientContext &context, TableFunctionInput &dat
 			}
 
 			// Add parsed data to output chunk
-			auto timestamp_data = FlatVector::GetData<timestamp_t>(output.data[OTLPSchema::TIMESTAMP_COL]);
-			timestamp_data[output_idx] = timestamp;
-
-			// Set resource JSON
-			auto &resource_vector = output.data[OTLPSchema::RESOURCE_COL];
-			FlatVector::GetData<string_t>(resource_vector)[output_idx] =
-			    StringVector::AddString(resource_vector, resource_json);
-
-			// Set data JSON
-			auto &data_vector = output.data[OTLPSchema::DATA_COL];
-			FlatVector::GetData<string_t>(data_vector)[output_idx] = StringVector::AddString(data_vector, data_json);
-
-			output_idx++;
+			AddRowToOutput(output, output_idx++, timestamp, resource_json, data_json);
 		}
 
 		// Emit warning about skipped lines once at end of scan

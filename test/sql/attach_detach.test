@@ -41,3 +41,10 @@ DETACH live1;
 
 statement ok
 DETACH live2;
+
+# Test custom buffer_size option
+statement ok
+ATTACH 'otlp:localhost:4319' AS custom_buffer (TYPE otlp, BUFFER_SIZE 50000);
+
+statement ok
+DETACH custom_buffer;

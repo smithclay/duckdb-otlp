@@ -1,0 +1,77 @@
+# name: test/sql/concurrency.test
+# description: Test concurrent access patterns for OTLP storage extension
+# group: [sql]
+
+require duckspan
+
+# Test concurrent reads from ring buffer-backed tables
+# The gRPC receiver runs on a background thread, so querying while attached
+# exercises the thread-safe ring buffer implementation
+
+statement ok
+ATTACH 'otlp:localhost:4320' AS concurrent_test (TYPE otlp);
+
+# Query all three tables to ensure ring buffers are accessible
+query I
+SELECT COUNT(*) FROM concurrent_test.traces;
+----
+0
+
+query I
+SELECT COUNT(*) FROM concurrent_test.metrics;
+----
+0
+
+query I
+SELECT COUNT(*) FROM concurrent_test.logs;
+----
+0
+
+# Test schema enumeration (exercises catalog scanning)
+query I
+SELECT COUNT(*) FROM information_schema.tables
+WHERE table_schema = 'concurrent_test';
+----
+3
+
+# Test multiple queries in sequence (simulates concurrent access pattern)
+query I
+SELECT COUNT(*) FROM concurrent_test.traces;
+----
+0
+
+query I
+SELECT COUNT(*) FROM concurrent_test.metrics;
+----
+0
+
+query I
+SELECT COUNT(*) FROM concurrent_test.logs;
+----
+0
+
+# Test querying while another attachment exists (multiple ring buffers active)
+statement ok
+ATTACH 'otlp:localhost:4321' AS concurrent_test2 (TYPE otlp);
+
+query I
+SELECT COUNT(*) FROM concurrent_test.traces;
+----
+0
+
+query I
+SELECT COUNT(*) FROM concurrent_test2.traces;
+----
+0
+
+# Detach in different order than attach
+statement ok
+DETACH concurrent_test;
+
+query I
+SELECT COUNT(*) FROM concurrent_test2.traces;
+----
+0
+
+statement ok
+DETACH concurrent_test2;

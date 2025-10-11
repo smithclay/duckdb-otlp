@@ -22,6 +22,10 @@ public:
 	//! Get the last parsing error message
 	string GetLastError() const;
 
+	//! Detect signal type (traces, metrics, logs)
+	enum class SignalType { TRACES, METRICS, LOGS, UNKNOWN };
+	SignalType DetectSignalType(const string &json);
+
 private:
 	//! Extract timestamp from OTLP data (nanoseconds -> microseconds)
 	bool ExtractTimestamp(const string &json, timestamp_t &ts);
@@ -31,10 +35,6 @@ private:
 
 	//! Extract signal data as JSON string
 	bool ExtractData(const string &json, string &data);
-
-	//! Detect signal type (traces, metrics, logs)
-	enum class SignalType { TRACES, METRICS, LOGS, UNKNOWN };
-	SignalType DetectSignalType(const string &json);
 
 	string last_error;
 };

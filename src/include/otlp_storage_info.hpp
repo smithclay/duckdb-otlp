@@ -3,6 +3,7 @@
 #include "duckdb.hpp"
 #include "duckdb/storage/storage_extension.hpp"
 #include "ring_buffer.hpp"
+#include "otlp_types.hpp"
 
 namespace duckdb {
 
@@ -32,15 +33,27 @@ struct OTLPStorageInfo : public StorageExtensionInfo {
 
 	~OTLPStorageInfo(); // Defined in otlp_storage_extension.cpp
 
-	//! Get ring buffer by table name
-	shared_ptr<RingBuffer> GetBuffer(const string &table_name) {
-		if (table_name == "traces")
+	//! Get ring buffer by signal type enum
+	shared_ptr<RingBuffer> GetBuffer(OTLPSignalType type) {
+		switch (type) {
+		case OTLPSignalType::TRACES:
 			return traces_buffer;
-		if (table_name == "metrics")
+		case OTLPSignalType::METRICS:
 			return metrics_buffer;
-		if (table_name == "logs")
+		case OTLPSignalType::LOGS:
 			return logs_buffer;
-		return nullptr;
+		default:
+			return nullptr;
+		}
+	}
+
+	//! Get ring buffer by table name (convenience wrapper for string-based lookup)
+	shared_ptr<RingBuffer> GetBuffer(const string &table_name) {
+		auto type = StringToSignalType(table_name);
+		if (!type) {
+			return nullptr;
+		}
+		return GetBuffer(*type);
 	}
 };
 

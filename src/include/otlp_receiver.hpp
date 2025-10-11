@@ -42,6 +42,8 @@ private:
 	std::thread server_thread_;
 	std::atomic<bool> running_;
 	std::atomic<bool> shutdown_requested_;
+	string startup_error_;   // Stores error message if server fails to start
+	std::mutex error_mutex_; // Protects startup_error_
 };
 
 } // namespace duckdb

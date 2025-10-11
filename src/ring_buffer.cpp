@@ -13,13 +13,13 @@ void RingBuffer::Insert(timestamp_t timestamp, const string &resource_json, cons
 		// Buffer not full yet - just append
 		buffer_.emplace_back(timestamp, resource_json, data_json);
 		size_++;
+		// write_pos_ stays at 0 until buffer is full
 	} else {
 		// Buffer full - overwrite oldest (FIFO eviction)
 		buffer_[write_pos_] = Row(timestamp, resource_json, data_json);
+		// Move write position (circular)
+		write_pos_ = (write_pos_ + 1) % capacity_;
 	}
-
-	// Move write position (circular)
-	write_pos_ = (write_pos_ + 1) % capacity_;
 }
 
 vector<RingBuffer::Row> RingBuffer::ReadAll() const {

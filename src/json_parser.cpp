@@ -71,6 +71,20 @@ bool OTLPJSONParser::ExtractTimestamp(const string &json, timestamp_t &ts) {
 	return found;
 }
 
+// Helper: Get resource field name for signal type
+static const char *GetResourceFieldName(OTLPJSONParser::SignalType type) {
+	switch (type) {
+	case OTLPJSONParser::SignalType::TRACES:
+		return "resourceSpans";
+	case OTLPJSONParser::SignalType::METRICS:
+		return "resourceMetrics";
+	case OTLPJSONParser::SignalType::LOGS:
+		return "resourceLogs";
+	default:
+		return nullptr;
+	}
+}
+
 bool OTLPJSONParser::ExtractResource(const string &json, string &resource) {
 	auto doc = duckdb_yyjson::yyjson_read(json.c_str(), json.size(), 0);
 	if (!doc) {
@@ -80,30 +94,16 @@ bool OTLPJSONParser::ExtractResource(const string &json, string &resource) {
 	auto root = duckdb_yyjson::yyjson_doc_get_root(doc);
 	duckdb_yyjson::yyjson_val *resource_val = nullptr;
 
-	// Try to extract resource based on signal type
+	// Try to extract resource based on signal type (unified logic)
 	auto signal_type = DetectSignalType(json);
-	if (signal_type == SignalType::TRACES) {
-		auto resource_spans = duckdb_yyjson::yyjson_obj_get(root, "resourceSpans");
-		if (resource_spans && duckdb_yyjson::yyjson_is_arr(resource_spans)) {
-			auto first_resource_span = duckdb_yyjson::yyjson_arr_get_first(resource_spans);
-			if (first_resource_span) {
-				resource_val = duckdb_yyjson::yyjson_obj_get(first_resource_span, "resource");
-			}
-		}
-	} else if (signal_type == SignalType::METRICS) {
-		auto resource_metrics = duckdb_yyjson::yyjson_obj_get(root, "resourceMetrics");
-		if (resource_metrics && duckdb_yyjson::yyjson_is_arr(resource_metrics)) {
-			auto first_resource_metric = duckdb_yyjson::yyjson_arr_get_first(resource_metrics);
-			if (first_resource_metric) {
-				resource_val = duckdb_yyjson::yyjson_obj_get(first_resource_metric, "resource");
-			}
-		}
-	} else if (signal_type == SignalType::LOGS) {
-		auto resource_logs = duckdb_yyjson::yyjson_obj_get(root, "resourceLogs");
-		if (resource_logs && duckdb_yyjson::yyjson_is_arr(resource_logs)) {
-			auto first_resource_log = duckdb_yyjson::yyjson_arr_get_first(resource_logs);
-			if (first_resource_log) {
-				resource_val = duckdb_yyjson::yyjson_obj_get(first_resource_log, "resource");
+	const char *field_name = GetResourceFieldName(signal_type);
+
+	if (field_name) {
+		auto resource_array = duckdb_yyjson::yyjson_obj_get(root, field_name);
+		if (resource_array && duckdb_yyjson::yyjson_is_arr(resource_array)) {
+			auto first_elem = duckdb_yyjson::yyjson_arr_get_first(resource_array);
+			if (first_elem) {
+				resource_val = duckdb_yyjson::yyjson_obj_get(first_elem, "resource");
 			}
 		}
 	}
