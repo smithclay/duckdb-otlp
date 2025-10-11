@@ -1,0 +1,43 @@
+# name: test/sql/attach_detach.test
+# description: test ATTACH/DETACH lifecycle for OTLP storage extension
+# group: [sql]
+
+require duckspan
+
+# Test that ATTACH with TYPE otlp is recognized
+# This starts a gRPC receiver with ring buffers for virtual tables
+statement ok
+ATTACH 'otlp:localhost:4317' AS live (TYPE otlp);
+
+# Note: Tables are backed by ring buffers and accessible via the catalog
+# For now, we verify the attachment succeeded by attempting DETACH
+
+# Test DETACH - this stops the gRPC receiver
+statement ok
+DETACH live;
+
+# Test connection string parsing variations
+statement ok
+ATTACH 'otlp:localhost:4318' AS live2 (TYPE otlp);
+
+statement ok
+DETACH live2;
+
+statement ok
+ATTACH 'otlp:0.0.0.0:4317' AS live3 (TYPE otlp);
+
+statement ok
+DETACH live3;
+
+# Test multiple simultaneous attachments
+statement ok
+ATTACH 'otlp:localhost:4317' AS live1 (TYPE otlp);
+
+statement ok
+ATTACH 'otlp:localhost:4318' AS live2 (TYPE otlp);
+
+statement ok
+DETACH live1;
+
+statement ok
+DETACH live2;

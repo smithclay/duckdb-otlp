@@ -1,1 +1,2 @@
 - always run make with GEN=ninja to take advantage of caching and perf
+- use VCPKG for dependency management, remember you need to set this env var: export VCPKG_TOOLCHAIN_PATH=`pwd`/vcpkg/scripts/buildsystems/vcpkg.cmake

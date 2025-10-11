@@ -4,10 +4,12 @@
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/scalar_function.hpp"
+#include "duckdb/main/config.hpp"
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 
 // OTLP functionality
 #include "read_otlp.hpp"
+#include "otlp_storage_extension.hpp"
 
 // OpenSSL linked through vcpkg
 #include <openssl/opensslv.h>
@@ -30,6 +32,11 @@ inline void DuckspanOpenSSLVersionScalarFun(DataChunk &args, ExpressionState &st
 }
 
 static void LoadInternal(ExtensionLoader &loader) {
+	// Register OTLP storage extension for ATTACH support
+	auto &db_instance = loader.GetDatabaseInstance();
+	auto &db_config = DBConfig::GetConfig(db_instance);
+	db_config.storage_extensions["otlp"] = OTLPStorageExtension::Create();
+
 	// Register OTLP table function
 	auto read_otlp_function = ReadOTLPTableFunction::GetFunction();
 	loader.RegisterFunction(read_otlp_function);
