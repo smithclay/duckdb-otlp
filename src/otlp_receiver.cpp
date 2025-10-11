@@ -102,20 +102,24 @@ void OTLPReceiver::Stop() {
 }
 
 void OTLPReceiver::ServerThread() {
-	using namespace opentelemetry::proto::collector;
-
 	// Create service instances that insert directly into DuckDB tables
 	auto trace_service =
-	    std::make_unique<GenericOTLPService<trace::v1::TraceService, trace::v1::ExportTraceServiceRequest,
-	                                        trace::v1::ExportTraceServiceResponse>>(storage_info_, "traces");
+	    std::make_unique<GenericOTLPService<opentelemetry::proto::collector::trace::v1::TraceService,
+	                                        opentelemetry::proto::collector::trace::v1::ExportTraceServiceRequest,
+	                                        opentelemetry::proto::collector::trace::v1::ExportTraceServiceResponse>>(
+	        storage_info_, "traces");
 
-	auto metrics_service =
-	    std::make_unique<GenericOTLPService<metrics::v1::MetricsService, metrics::v1::ExportMetricsServiceRequest,
-	                                        metrics::v1::ExportMetricsServiceResponse>>(storage_info_, "metrics");
+	auto metrics_service = std::make_unique<
+	    GenericOTLPService<opentelemetry::proto::collector::metrics::v1::MetricsService,
+	                       opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest,
+	                       opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>>(storage_info_,
+	                                                                                                    "metrics");
 
 	auto logs_service =
-	    std::make_unique<GenericOTLPService<logs::v1::LogsService, logs::v1::ExportLogsServiceRequest,
-	                                        logs::v1::ExportLogsServiceResponse>>(storage_info_, "logs");
+	    std::make_unique<GenericOTLPService<opentelemetry::proto::collector::logs::v1::LogsService,
+	                                        opentelemetry::proto::collector::logs::v1::ExportLogsServiceRequest,
+	                                        opentelemetry::proto::collector::logs::v1::ExportLogsServiceResponse>>(
+	        storage_info_, "logs");
 
 	// Build server
 	grpc::ServerBuilder builder;

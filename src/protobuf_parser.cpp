@@ -40,7 +40,7 @@ idx_t OTLPProtobufParser::ParseTracesData(const char *data, size_t length, vecto
 	last_error = "";
 
 	opentelemetry::proto::trace::v1::TracesData traces_data;
-	if (!traces_data.ParseFromArray(data, length)) {
+	if (!traces_data.ParseFromArray(data, static_cast<int>(length))) {
 		last_error = "Failed to parse TracesData protobuf";
 		return 0;
 	}
@@ -89,7 +89,7 @@ idx_t OTLPProtobufParser::ParseMetricsData(const char *data, size_t length, vect
 	last_error = "";
 
 	opentelemetry::proto::metrics::v1::MetricsData metrics_data;
-	if (!metrics_data.ParseFromArray(data, length)) {
+	if (!metrics_data.ParseFromArray(data, static_cast<int>(length))) {
 		last_error = "Failed to parse MetricsData protobuf";
 		return 0;
 	}
@@ -134,7 +134,7 @@ idx_t OTLPProtobufParser::ParseLogsData(const char *data, size_t length, vector<
 	last_error = "";
 
 	opentelemetry::proto::logs::v1::LogsData logs_data;
-	if (!logs_data.ParseFromArray(data, length)) {
+	if (!logs_data.ParseFromArray(data, static_cast<int>(length))) {
 		last_error = "Failed to parse LogsData protobuf";
 		return 0;
 	}
