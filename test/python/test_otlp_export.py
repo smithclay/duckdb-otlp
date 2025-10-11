@@ -1,4 +1,13 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run
+# /// script
+# dependencies = [
+#   "duckdb==1.4.0",
+#   "grpcio",
+#   "opentelemetry-api",
+#   "opentelemetry-sdk",
+#   "opentelemetry-exporter-otlp-proto-grpc",
+# ]
+# ///
 """
 Integration test for OTLP gRPC export functionality.
 
@@ -7,6 +16,9 @@ Tests that:
 2. OTLP traces/metrics/logs can be sent via gRPC using OpenTelemetry SDK
 3. Data appears in ring buffer tables
 4. DETACH properly shuts down receiver
+
+Usage:
+    uv run test/python/test_otlp_export.py
 """
 
 import sys
