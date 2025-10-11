@@ -28,7 +28,7 @@ vector<RingBuffer::Row> RingBuffer::ReadAll() const {
 	// Return copy of all current rows
 	// If buffer isn't full, only return valid entries
 	if (size_ < capacity_) {
-		return vector<Row>(buffer_.begin(), buffer_.begin() + size_);
+		return vector<Row>(buffer_.begin(), buffer_.begin() + static_cast<std::ptrdiff_t>(size_));
 	}
 
 	// Buffer is full - return in chronological order (oldest first)

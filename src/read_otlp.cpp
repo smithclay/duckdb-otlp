@@ -75,7 +75,8 @@ unique_ptr<GlobalTableFunctionState> ReadOTLPTableFunction::Init(ClientContext &
 
 		// Read entire file into memory to check if it's a single JSON object
 		auto file_size = fs.GetFileSize(*state->file_handle);
-		if (file_size > 0 && file_size < 100 * 1024 * 1024) { // Limit to 100MB for single object parsing
+		if (file_size > 0 &&
+		    file_size < static_cast<int64_t>(100) * 1024 * 1024) { // Limit to 100MB for single object parsing
 			string file_contents;
 			file_contents.resize(file_size);
 			idx_t total_read = state->file_handle->Read((void *)file_contents.data(), file_size);

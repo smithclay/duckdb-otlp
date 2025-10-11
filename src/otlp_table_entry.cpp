@@ -11,7 +11,7 @@ namespace duckdb {
 
 OTLPTableEntry::OTLPTableEntry(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info,
                                shared_ptr<RingBuffer> buffer)
-    : TableCatalogEntry(catalog, schema, info), ring_buffer_(buffer) {
+    : TableCatalogEntry(catalog, schema, info), ring_buffer_(std::move(buffer)) {
 }
 
 TableFunction OTLPTableEntry::GetScanFunction(ClientContext &context, unique_ptr<FunctionData> &bind_data) {
