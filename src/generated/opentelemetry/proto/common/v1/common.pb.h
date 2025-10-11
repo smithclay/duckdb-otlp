@@ -26,7 +26,7 @@
 #include "google/protobuf/generated_message_reflection.h"
 #include "google/protobuf/message.h"
 #include "google/protobuf/message_lite.h"
-#include "google/protobuf/repeated_field.h"  // IWYU pragma: export
+#include "google/protobuf/repeated_field.h" // IWYU pragma: export
 #include "google/protobuf/extension_set.h"  // IWYU pragma: export
 #include "google/protobuf/unknown_field_set.h"
 // @@protoc_insertion_point(includes)
@@ -41,13 +41,13 @@ namespace protobuf {
 namespace internal {
 template <typename T>
 ::absl::string_view GetAnyMessageName();
-}  // namespace internal
-}  // namespace protobuf
-}  // namespace google
+} // namespace internal
+} // namespace protobuf
+} // namespace google
 
 // Internal implementation detail -- do not use these members.
 struct TableStruct_opentelemetry_2fproto_2fcommon_2fv1_2fcommon_2eproto {
-  static const ::uint32_t offsets[];
+	static const ::uint32_t offsets[];
 };
 extern const ::google::protobuf::internal::DescriptorTable
     descriptor_table_opentelemetry_2fproto_2fcommon_2fv1_2fcommon_2eproto;
@@ -70,14 +70,13 @@ extern KeyValueDefaultTypeInternal _KeyValue_default_instance_;
 class KeyValueList;
 struct KeyValueListDefaultTypeInternal;
 extern KeyValueListDefaultTypeInternal _KeyValueList_default_instance_;
-}  // namespace v1
-}  // namespace common
-}  // namespace proto
-}  // namespace opentelemetry
+} // namespace v1
+} // namespace common
+} // namespace proto
+} // namespace opentelemetry
 namespace google {
-namespace protobuf {
-}  // namespace protobuf
-}  // namespace google
+namespace protobuf {} // namespace protobuf
+} // namespace google
 
 namespace opentelemetry {
 namespace proto {
@@ -86,1635 +85,1640 @@ namespace v1 {
 
 // ===================================================================
 
-
 // -------------------------------------------------------------------
 
 class AnyValue final : public ::google::protobuf::Message
 /* @@protoc_insertion_point(class_definition:opentelemetry.proto.common.v1.AnyValue) */ {
- public:
-  inline AnyValue() : AnyValue(nullptr) {}
-  ~AnyValue() PROTOBUF_FINAL;
+public:
+	inline AnyValue() : AnyValue(nullptr) {
+	}
+	~AnyValue() PROTOBUF_FINAL;
 
 #if defined(PROTOBUF_CUSTOM_VTABLE)
-  void operator delete(AnyValue* msg, std::destroying_delete_t) {
-    SharedDtor(*msg);
-    ::google::protobuf::internal::SizedDelete(msg, sizeof(AnyValue));
-  }
+	void operator delete(AnyValue *msg, std::destroying_delete_t) {
+		SharedDtor(*msg);
+		::google::protobuf::internal::SizedDelete(msg, sizeof(AnyValue));
+	}
 #endif
 
-  template <typename = void>
-  explicit PROTOBUF_CONSTEXPR AnyValue(
-      ::google::protobuf::internal::ConstantInitialized);
+	template <typename = void>
+	explicit PROTOBUF_CONSTEXPR AnyValue(::google::protobuf::internal::ConstantInitialized);
 
-  inline AnyValue(const AnyValue& from) : AnyValue(nullptr, from) {}
-  inline AnyValue(AnyValue&& from) noexcept
-      : AnyValue(nullptr, std::move(from)) {}
-  inline AnyValue& operator=(const AnyValue& from) {
-    CopyFrom(from);
-    return *this;
-  }
-  inline AnyValue& operator=(AnyValue&& from) noexcept {
-    if (this == &from) return *this;
-    if (::google::protobuf::internal::CanMoveWithInternalSwap(GetArena(), from.GetArena())) {
-      InternalSwap(&from);
-    } else {
-      CopyFrom(from);
-    }
-    return *this;
-  }
+	inline AnyValue(const AnyValue &from) : AnyValue(nullptr, from) {
+	}
+	inline AnyValue(AnyValue &&from) noexcept : AnyValue(nullptr, std::move(from)) {
+	}
+	inline AnyValue &operator=(const AnyValue &from) {
+		CopyFrom(from);
+		return *this;
+	}
+	inline AnyValue &operator=(AnyValue &&from) noexcept {
+		if (this == &from)
+			return *this;
+		if (::google::protobuf::internal::CanMoveWithInternalSwap(GetArena(), from.GetArena())) {
+			InternalSwap(&from);
+		} else {
+			CopyFrom(from);
+		}
+		return *this;
+	}
 
-  inline const ::google::protobuf::UnknownFieldSet& unknown_fields() const
-      ABSL_ATTRIBUTE_LIFETIME_BOUND {
-    return _internal_metadata_.unknown_fields<::google::protobuf::UnknownFieldSet>(::google::protobuf::UnknownFieldSet::default_instance);
-  }
-  inline ::google::protobuf::UnknownFieldSet* mutable_unknown_fields()
-      ABSL_ATTRIBUTE_LIFETIME_BOUND {
-    return _internal_metadata_.mutable_unknown_fields<::google::protobuf::UnknownFieldSet>();
-  }
+	inline const ::google::protobuf::UnknownFieldSet &unknown_fields() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+		return _internal_metadata_.unknown_fields<::google::protobuf::UnknownFieldSet>(
+		    ::google::protobuf::UnknownFieldSet::default_instance);
+	}
+	inline ::google::protobuf::UnknownFieldSet *mutable_unknown_fields() ABSL_ATTRIBUTE_LIFETIME_BOUND {
+		return _internal_metadata_.mutable_unknown_fields<::google::protobuf::UnknownFieldSet>();
+	}
 
-  static const ::google::protobuf::Descriptor* descriptor() {
-    return GetDescriptor();
-  }
-  static const ::google::protobuf::Descriptor* GetDescriptor() {
-    return default_instance().GetMetadata().descriptor;
-  }
-  static const ::google::protobuf::Reflection* GetReflection() {
-    return default_instance().GetMetadata().reflection;
-  }
-  static const AnyValue& default_instance() {
-    return *internal_default_instance();
-  }
-  enum ValueCase {
-    kStringValue = 1,
-    kBoolValue = 2,
-    kIntValue = 3,
-    kDoubleValue = 4,
-    kArrayValue = 5,
-    kKvlistValue = 6,
-    kBytesValue = 7,
-    VALUE_NOT_SET = 0,
-  };
-  static inline const AnyValue* internal_default_instance() {
-    return reinterpret_cast<const AnyValue*>(
-        &_AnyValue_default_instance_);
-  }
-  static constexpr int kIndexInFileMessages = 0;
-  friend void swap(AnyValue& a, AnyValue& b) { a.Swap(&b); }
-  inline void Swap(AnyValue* other) {
-    if (other == this) return;
-    if (::google::protobuf::internal::CanUseInternalSwap(GetArena(), other->GetArena())) {
-      InternalSwap(other);
-    } else {
-      ::google::protobuf::internal::GenericSwap(this, other);
-    }
-  }
-  void UnsafeArenaSwap(AnyValue* other) {
-    if (other == this) return;
-    ABSL_DCHECK(GetArena() == other->GetArena());
-    InternalSwap(other);
-  }
+	static const ::google::protobuf::Descriptor *descriptor() {
+		return GetDescriptor();
+	}
+	static const ::google::protobuf::Descriptor *GetDescriptor() {
+		return default_instance().GetMetadata().descriptor;
+	}
+	static const ::google::protobuf::Reflection *GetReflection() {
+		return default_instance().GetMetadata().reflection;
+	}
+	static const AnyValue &default_instance() {
+		return *internal_default_instance();
+	}
+	enum ValueCase {
+		kStringValue = 1,
+		kBoolValue = 2,
+		kIntValue = 3,
+		kDoubleValue = 4,
+		kArrayValue = 5,
+		kKvlistValue = 6,
+		kBytesValue = 7,
+		VALUE_NOT_SET = 0,
+	};
+	static inline const AnyValue *internal_default_instance() {
+		return reinterpret_cast<const AnyValue *>(&_AnyValue_default_instance_);
+	}
+	static constexpr int kIndexInFileMessages = 0;
+	friend void swap(AnyValue &a, AnyValue &b) {
+		a.Swap(&b);
+	}
+	inline void Swap(AnyValue *other) {
+		if (other == this)
+			return;
+		if (::google::protobuf::internal::CanUseInternalSwap(GetArena(), other->GetArena())) {
+			InternalSwap(other);
+		} else {
+			::google::protobuf::internal::GenericSwap(this, other);
+		}
+	}
+	void UnsafeArenaSwap(AnyValue *other) {
+		if (other == this)
+			return;
+		ABSL_DCHECK(GetArena() == other->GetArena());
+		InternalSwap(other);
+	}
 
-  // implements Message ----------------------------------------------
+	// implements Message ----------------------------------------------
 
-  AnyValue* New(::google::protobuf::Arena* arena = nullptr) const {
-    return ::google::protobuf::Message::DefaultConstruct<AnyValue>(arena);
-  }
-  using ::google::protobuf::Message::CopyFrom;
-  void CopyFrom(const AnyValue& from);
-  using ::google::protobuf::Message::MergeFrom;
-  void MergeFrom(const AnyValue& from) { AnyValue::MergeImpl(*this, from); }
+	AnyValue *New(::google::protobuf::Arena *arena = nullptr) const {
+		return ::google::protobuf::Message::DefaultConstruct<AnyValue>(arena);
+	}
+	using ::google::protobuf::Message::CopyFrom;
+	void CopyFrom(const AnyValue &from);
+	using ::google::protobuf::Message::MergeFrom;
+	void MergeFrom(const AnyValue &from) {
+		AnyValue::MergeImpl(*this, from);
+	}
 
-  private:
-  static void MergeImpl(
-      ::google::protobuf::MessageLite& to_msg,
-      const ::google::protobuf::MessageLite& from_msg);
+private:
+	static void MergeImpl(::google::protobuf::MessageLite &to_msg, const ::google::protobuf::MessageLite &from_msg);
 
-  public:
-  bool IsInitialized() const {
-    return true;
-  }
-  ABSL_ATTRIBUTE_REINITIALIZES void Clear() PROTOBUF_FINAL;
-  #if defined(PROTOBUF_CUSTOM_VTABLE)
-  private:
-  static ::size_t ByteSizeLong(const ::google::protobuf::MessageLite& msg);
-  static ::uint8_t* _InternalSerialize(
-      const MessageLite& msg, ::uint8_t* target,
-      ::google::protobuf::io::EpsCopyOutputStream* stream);
+public:
+	bool IsInitialized() const {
+		return true;
+	}
+	ABSL_ATTRIBUTE_REINITIALIZES void Clear() PROTOBUF_FINAL;
+#if defined(PROTOBUF_CUSTOM_VTABLE)
+private:
+	static ::size_t ByteSizeLong(const ::google::protobuf::MessageLite &msg);
+	static ::uint8_t *_InternalSerialize(const MessageLite &msg, ::uint8_t *target,
+	                                     ::google::protobuf::io::EpsCopyOutputStream *stream);
 
-  public:
-  ::size_t ByteSizeLong() const { return ByteSizeLong(*this); }
-  ::uint8_t* _InternalSerialize(
-      ::uint8_t* target,
-      ::google::protobuf::io::EpsCopyOutputStream* stream) const {
-    return _InternalSerialize(*this, target, stream);
-  }
-  #else   // PROTOBUF_CUSTOM_VTABLE
-  ::size_t ByteSizeLong() const final;
-  ::uint8_t* _InternalSerialize(
-      ::uint8_t* target,
-      ::google::protobuf::io::EpsCopyOutputStream* stream) const final;
-  #endif  // PROTOBUF_CUSTOM_VTABLE
-  int GetCachedSize() const { return _impl_._cached_size_.Get(); }
+public:
+	::size_t ByteSizeLong() const {
+		return ByteSizeLong(*this);
+	}
+	::uint8_t *_InternalSerialize(::uint8_t *target, ::google::protobuf::io::EpsCopyOutputStream *stream) const {
+		return _InternalSerialize(*this, target, stream);
+	}
+#else  // PROTOBUF_CUSTOM_VTABLE
+	::size_t ByteSizeLong() const final;
+	::uint8_t *_InternalSerialize(::uint8_t *target, ::google::protobuf::io::EpsCopyOutputStream *stream) const final;
+#endif // PROTOBUF_CUSTOM_VTABLE
+	int GetCachedSize() const {
+		return _impl_._cached_size_.Get();
+	}
 
-  private:
-  void SharedCtor(::google::protobuf::Arena* arena);
-  static void SharedDtor(MessageLite& self);
-  void InternalSwap(AnyValue* other);
- private:
-  template <typename T>
-  friend ::absl::string_view(
-      ::google::protobuf::internal::GetAnyMessageName)();
-  static ::absl::string_view FullMessageName() { return "opentelemetry.proto.common.v1.AnyValue"; }
+private:
+	void SharedCtor(::google::protobuf::Arena *arena);
+	static void SharedDtor(MessageLite &self);
+	void InternalSwap(AnyValue *other);
 
- protected:
-  explicit AnyValue(::google::protobuf::Arena* arena);
-  AnyValue(::google::protobuf::Arena* arena, const AnyValue& from);
-  AnyValue(::google::protobuf::Arena* arena, AnyValue&& from) noexcept
-      : AnyValue(arena) {
-    *this = ::std::move(from);
-  }
-  const ::google::protobuf::internal::ClassData* GetClassData() const PROTOBUF_FINAL;
-  static void* PlacementNew_(const void*, void* mem,
-                             ::google::protobuf::Arena* arena);
-  static constexpr auto InternalNewImpl_();
-  static const ::google::protobuf::internal::ClassDataFull _class_data_;
+private:
+	template <typename T>
+	friend ::absl::string_view(::google::protobuf::internal::GetAnyMessageName)();
+	static ::absl::string_view FullMessageName() {
+		return "opentelemetry.proto.common.v1.AnyValue";
+	}
 
- public:
-  ::google::protobuf::Metadata GetMetadata() const;
-  // nested types ----------------------------------------------------
+protected:
+	explicit AnyValue(::google::protobuf::Arena *arena);
+	AnyValue(::google::protobuf::Arena *arena, const AnyValue &from);
+	AnyValue(::google::protobuf::Arena *arena, AnyValue &&from) noexcept : AnyValue(arena) {
+		*this = ::std::move(from);
+	}
+	const ::google::protobuf::internal::ClassData *GetClassData() const PROTOBUF_FINAL;
+	static void *PlacementNew_(const void *, void *mem, ::google::protobuf::Arena *arena);
+	static constexpr auto InternalNewImpl_();
+	static const ::google::protobuf::internal::ClassDataFull _class_data_;
 
-  // accessors -------------------------------------------------------
-  enum : int {
-    kStringValueFieldNumber = 1,
-    kBoolValueFieldNumber = 2,
-    kIntValueFieldNumber = 3,
-    kDoubleValueFieldNumber = 4,
-    kArrayValueFieldNumber = 5,
-    kKvlistValueFieldNumber = 6,
-    kBytesValueFieldNumber = 7,
-  };
-  // string string_value = 1;
-  bool has_string_value() const;
-  void clear_string_value() ;
-  const std::string& string_value() const;
-  template <typename Arg_ = const std::string&, typename... Args_>
-  void set_string_value(Arg_&& arg, Args_... args);
-  std::string* mutable_string_value();
-  PROTOBUF_NODISCARD std::string* release_string_value();
-  void set_allocated_string_value(std::string* value);
+public:
+	::google::protobuf::Metadata GetMetadata() const;
+	// nested types ----------------------------------------------------
 
-  private:
-  const std::string& _internal_string_value() const;
-  inline PROTOBUF_ALWAYS_INLINE void _internal_set_string_value(
-      const std::string& value);
-  std::string* _internal_mutable_string_value();
+	// accessors -------------------------------------------------------
+	enum : int {
+		kStringValueFieldNumber = 1,
+		kBoolValueFieldNumber = 2,
+		kIntValueFieldNumber = 3,
+		kDoubleValueFieldNumber = 4,
+		kArrayValueFieldNumber = 5,
+		kKvlistValueFieldNumber = 6,
+		kBytesValueFieldNumber = 7,
+	};
+	// string string_value = 1;
+	bool has_string_value() const;
+	void clear_string_value();
+	const std::string &string_value() const;
+	template <typename Arg_ = const std::string &, typename... Args_>
+	void set_string_value(Arg_ &&arg, Args_... args);
+	std::string *mutable_string_value();
+	PROTOBUF_NODISCARD std::string *release_string_value();
+	void set_allocated_string_value(std::string *value);
 
-  public:
-  // bool bool_value = 2;
-  bool has_bool_value() const;
-  void clear_bool_value() ;
-  bool bool_value() const;
-  void set_bool_value(bool value);
+private:
+	const std::string &_internal_string_value() const;
+	inline PROTOBUF_ALWAYS_INLINE void _internal_set_string_value(const std::string &value);
+	std::string *_internal_mutable_string_value();
 
-  private:
-  bool _internal_bool_value() const;
-  void _internal_set_bool_value(bool value);
+public:
+	// bool bool_value = 2;
+	bool has_bool_value() const;
+	void clear_bool_value();
+	bool bool_value() const;
+	void set_bool_value(bool value);
 
-  public:
-  // int64 int_value = 3;
-  bool has_int_value() const;
-  void clear_int_value() ;
-  ::int64_t int_value() const;
-  void set_int_value(::int64_t value);
+private:
+	bool _internal_bool_value() const;
+	void _internal_set_bool_value(bool value);
 
-  private:
-  ::int64_t _internal_int_value() const;
-  void _internal_set_int_value(::int64_t value);
+public:
+	// int64 int_value = 3;
+	bool has_int_value() const;
+	void clear_int_value();
+	::int64_t int_value() const;
+	void set_int_value(::int64_t value);
 
-  public:
-  // double double_value = 4;
-  bool has_double_value() const;
-  void clear_double_value() ;
-  double double_value() const;
-  void set_double_value(double value);
+private:
+	::int64_t _internal_int_value() const;
+	void _internal_set_int_value(::int64_t value);
 
-  private:
-  double _internal_double_value() const;
-  void _internal_set_double_value(double value);
+public:
+	// double double_value = 4;
+	bool has_double_value() const;
+	void clear_double_value();
+	double double_value() const;
+	void set_double_value(double value);
 
-  public:
-  // .opentelemetry.proto.common.v1.ArrayValue array_value = 5;
-  bool has_array_value() const;
-  private:
-  bool _internal_has_array_value() const;
+private:
+	double _internal_double_value() const;
+	void _internal_set_double_value(double value);
 
-  public:
-  void clear_array_value() ;
-  const ::opentelemetry::proto::common::v1::ArrayValue& array_value() const;
-  PROTOBUF_NODISCARD ::opentelemetry::proto::common::v1::ArrayValue* release_array_value();
-  ::opentelemetry::proto::common::v1::ArrayValue* mutable_array_value();
-  void set_allocated_array_value(::opentelemetry::proto::common::v1::ArrayValue* value);
-  void unsafe_arena_set_allocated_array_value(::opentelemetry::proto::common::v1::ArrayValue* value);
-  ::opentelemetry::proto::common::v1::ArrayValue* unsafe_arena_release_array_value();
+public:
+	// .opentelemetry.proto.common.v1.ArrayValue array_value = 5;
+	bool has_array_value() const;
 
-  private:
-  const ::opentelemetry::proto::common::v1::ArrayValue& _internal_array_value() const;
-  ::opentelemetry::proto::common::v1::ArrayValue* _internal_mutable_array_value();
+private:
+	bool _internal_has_array_value() const;
 
-  public:
-  // .opentelemetry.proto.common.v1.KeyValueList kvlist_value = 6;
-  bool has_kvlist_value() const;
-  private:
-  bool _internal_has_kvlist_value() const;
+public:
+	void clear_array_value();
+	const ::opentelemetry::proto::common::v1::ArrayValue &array_value() const;
+	PROTOBUF_NODISCARD ::opentelemetry::proto::common::v1::ArrayValue *release_array_value();
+	::opentelemetry::proto::common::v1::ArrayValue *mutable_array_value();
+	void set_allocated_array_value(::opentelemetry::proto::common::v1::ArrayValue *value);
+	void unsafe_arena_set_allocated_array_value(::opentelemetry::proto::common::v1::ArrayValue *value);
+	::opentelemetry::proto::common::v1::ArrayValue *unsafe_arena_release_array_value();
 
-  public:
-  void clear_kvlist_value() ;
-  const ::opentelemetry::proto::common::v1::KeyValueList& kvlist_value() const;
-  PROTOBUF_NODISCARD ::opentelemetry::proto::common::v1::KeyValueList* release_kvlist_value();
-  ::opentelemetry::proto::common::v1::KeyValueList* mutable_kvlist_value();
-  void set_allocated_kvlist_value(::opentelemetry::proto::common::v1::KeyValueList* value);
-  void unsafe_arena_set_allocated_kvlist_value(::opentelemetry::proto::common::v1::KeyValueList* value);
-  ::opentelemetry::proto::common::v1::KeyValueList* unsafe_arena_release_kvlist_value();
+private:
+	const ::opentelemetry::proto::common::v1::ArrayValue &_internal_array_value() const;
+	::opentelemetry::proto::common::v1::ArrayValue *_internal_mutable_array_value();
 
-  private:
-  const ::opentelemetry::proto::common::v1::KeyValueList& _internal_kvlist_value() const;
-  ::opentelemetry::proto::common::v1::KeyValueList* _internal_mutable_kvlist_value();
+public:
+	// .opentelemetry.proto.common.v1.KeyValueList kvlist_value = 6;
+	bool has_kvlist_value() const;
 
-  public:
-  // bytes bytes_value = 7;
-  bool has_bytes_value() const;
-  void clear_bytes_value() ;
-  const std::string& bytes_value() const;
-  template <typename Arg_ = const std::string&, typename... Args_>
-  void set_bytes_value(Arg_&& arg, Args_... args);
-  std::string* mutable_bytes_value();
-  PROTOBUF_NODISCARD std::string* release_bytes_value();
-  void set_allocated_bytes_value(std::string* value);
+private:
+	bool _internal_has_kvlist_value() const;
 
-  private:
-  const std::string& _internal_bytes_value() const;
-  inline PROTOBUF_ALWAYS_INLINE void _internal_set_bytes_value(
-      const std::string& value);
-  std::string* _internal_mutable_bytes_value();
+public:
+	void clear_kvlist_value();
+	const ::opentelemetry::proto::common::v1::KeyValueList &kvlist_value() const;
+	PROTOBUF_NODISCARD ::opentelemetry::proto::common::v1::KeyValueList *release_kvlist_value();
+	::opentelemetry::proto::common::v1::KeyValueList *mutable_kvlist_value();
+	void set_allocated_kvlist_value(::opentelemetry::proto::common::v1::KeyValueList *value);
+	void unsafe_arena_set_allocated_kvlist_value(::opentelemetry::proto::common::v1::KeyValueList *value);
+	::opentelemetry::proto::common::v1::KeyValueList *unsafe_arena_release_kvlist_value();
 
-  public:
-  void clear_value();
-  ValueCase value_case() const;
-  // @@protoc_insertion_point(class_scope:opentelemetry.proto.common.v1.AnyValue)
- private:
-  class _Internal;
-  void set_has_string_value();
-  void set_has_bool_value();
-  void set_has_int_value();
-  void set_has_double_value();
-  void set_has_array_value();
-  void set_has_kvlist_value();
-  void set_has_bytes_value();
-  inline bool has_value() const;
-  inline void clear_has_value();
-  friend class ::google::protobuf::internal::TcParser;
-  static const ::google::protobuf::internal::TcParseTable<
-      0, 7, 2,
-      59, 2>
-      _table_;
+private:
+	const ::opentelemetry::proto::common::v1::KeyValueList &_internal_kvlist_value() const;
+	::opentelemetry::proto::common::v1::KeyValueList *_internal_mutable_kvlist_value();
 
-  friend class ::google::protobuf::MessageLite;
-  friend class ::google::protobuf::Arena;
-  template <typename T>
-  friend class ::google::protobuf::Arena::InternalHelper;
-  using InternalArenaConstructable_ = void;
-  using DestructorSkippable_ = void;
-  struct Impl_ {
-    inline explicit constexpr Impl_(
-        ::google::protobuf::internal::ConstantInitialized) noexcept;
-    inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
-                          ::google::protobuf::Arena* arena);
-    inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
-                          ::google::protobuf::Arena* arena, const Impl_& from,
-                          const AnyValue& from_msg);
-    union ValueUnion {
-      constexpr ValueUnion() : _constinit_{} {}
-      ::google::protobuf::internal::ConstantInitialized _constinit_;
-      ::google::protobuf::internal::ArenaStringPtr string_value_;
-      bool bool_value_;
-      ::int64_t int_value_;
-      double double_value_;
-      ::opentelemetry::proto::common::v1::ArrayValue* array_value_;
-      ::opentelemetry::proto::common::v1::KeyValueList* kvlist_value_;
-      ::google::protobuf::internal::ArenaStringPtr bytes_value_;
-    } value_;
-    ::google::protobuf::internal::CachedSize _cached_size_;
-    ::uint32_t _oneof_case_[1];
-    PROTOBUF_TSAN_DECLARE_MEMBER
-  };
-  union { Impl_ _impl_; };
-  friend struct ::TableStruct_opentelemetry_2fproto_2fcommon_2fv1_2fcommon_2eproto;
+public:
+	// bytes bytes_value = 7;
+	bool has_bytes_value() const;
+	void clear_bytes_value();
+	const std::string &bytes_value() const;
+	template <typename Arg_ = const std::string &, typename... Args_>
+	void set_bytes_value(Arg_ &&arg, Args_... args);
+	std::string *mutable_bytes_value();
+	PROTOBUF_NODISCARD std::string *release_bytes_value();
+	void set_allocated_bytes_value(std::string *value);
+
+private:
+	const std::string &_internal_bytes_value() const;
+	inline PROTOBUF_ALWAYS_INLINE void _internal_set_bytes_value(const std::string &value);
+	std::string *_internal_mutable_bytes_value();
+
+public:
+	void clear_value();
+	ValueCase value_case() const;
+	// @@protoc_insertion_point(class_scope:opentelemetry.proto.common.v1.AnyValue)
+private:
+	class _Internal;
+	void set_has_string_value();
+	void set_has_bool_value();
+	void set_has_int_value();
+	void set_has_double_value();
+	void set_has_array_value();
+	void set_has_kvlist_value();
+	void set_has_bytes_value();
+	inline bool has_value() const;
+	inline void clear_has_value();
+	friend class ::google::protobuf::internal::TcParser;
+	static const ::google::protobuf::internal::TcParseTable<0, 7, 2, 59, 2> _table_;
+
+	friend class ::google::protobuf::MessageLite;
+	friend class ::google::protobuf::Arena;
+	template <typename T>
+	friend class ::google::protobuf::Arena::InternalHelper;
+	using InternalArenaConstructable_ = void;
+	using DestructorSkippable_ = void;
+	struct Impl_ {
+		inline explicit constexpr Impl_(::google::protobuf::internal::ConstantInitialized) noexcept;
+		inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
+		                      ::google::protobuf::Arena *arena);
+		inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
+		                      ::google::protobuf::Arena *arena, const Impl_ &from, const AnyValue &from_msg);
+		union ValueUnion {
+			constexpr ValueUnion() : _constinit_ {} {
+			}
+			::google::protobuf::internal::ConstantInitialized _constinit_;
+			::google::protobuf::internal::ArenaStringPtr string_value_;
+			bool bool_value_;
+			::int64_t int_value_;
+			double double_value_;
+			::opentelemetry::proto::common::v1::ArrayValue *array_value_;
+			::opentelemetry::proto::common::v1::KeyValueList *kvlist_value_;
+			::google::protobuf::internal::ArenaStringPtr bytes_value_;
+		} value_;
+		::google::protobuf::internal::CachedSize _cached_size_;
+		::uint32_t _oneof_case_[1];
+		PROTOBUF_TSAN_DECLARE_MEMBER
+	};
+	union {
+		Impl_ _impl_;
+	};
+	friend struct ::TableStruct_opentelemetry_2fproto_2fcommon_2fv1_2fcommon_2eproto;
 };
 // -------------------------------------------------------------------
 
 class ArrayValue final : public ::google::protobuf::Message
 /* @@protoc_insertion_point(class_definition:opentelemetry.proto.common.v1.ArrayValue) */ {
- public:
-  inline ArrayValue() : ArrayValue(nullptr) {}
-  ~ArrayValue() PROTOBUF_FINAL;
+public:
+	inline ArrayValue() : ArrayValue(nullptr) {
+	}
+	~ArrayValue() PROTOBUF_FINAL;
 
 #if defined(PROTOBUF_CUSTOM_VTABLE)
-  void operator delete(ArrayValue* msg, std::destroying_delete_t) {
-    SharedDtor(*msg);
-    ::google::protobuf::internal::SizedDelete(msg, sizeof(ArrayValue));
-  }
+	void operator delete(ArrayValue *msg, std::destroying_delete_t) {
+		SharedDtor(*msg);
+		::google::protobuf::internal::SizedDelete(msg, sizeof(ArrayValue));
+	}
 #endif
 
-  template <typename = void>
-  explicit PROTOBUF_CONSTEXPR ArrayValue(
-      ::google::protobuf::internal::ConstantInitialized);
+	template <typename = void>
+	explicit PROTOBUF_CONSTEXPR ArrayValue(::google::protobuf::internal::ConstantInitialized);
 
-  inline ArrayValue(const ArrayValue& from) : ArrayValue(nullptr, from) {}
-  inline ArrayValue(ArrayValue&& from) noexcept
-      : ArrayValue(nullptr, std::move(from)) {}
-  inline ArrayValue& operator=(const ArrayValue& from) {
-    CopyFrom(from);
-    return *this;
-  }
-  inline ArrayValue& operator=(ArrayValue&& from) noexcept {
-    if (this == &from) return *this;
-    if (::google::protobuf::internal::CanMoveWithInternalSwap(GetArena(), from.GetArena())) {
-      InternalSwap(&from);
-    } else {
-      CopyFrom(from);
-    }
-    return *this;
-  }
+	inline ArrayValue(const ArrayValue &from) : ArrayValue(nullptr, from) {
+	}
+	inline ArrayValue(ArrayValue &&from) noexcept : ArrayValue(nullptr, std::move(from)) {
+	}
+	inline ArrayValue &operator=(const ArrayValue &from) {
+		CopyFrom(from);
+		return *this;
+	}
+	inline ArrayValue &operator=(ArrayValue &&from) noexcept {
+		if (this == &from)
+			return *this;
+		if (::google::protobuf::internal::CanMoveWithInternalSwap(GetArena(), from.GetArena())) {
+			InternalSwap(&from);
+		} else {
+			CopyFrom(from);
+		}
+		return *this;
+	}
 
-  inline const ::google::protobuf::UnknownFieldSet& unknown_fields() const
-      ABSL_ATTRIBUTE_LIFETIME_BOUND {
-    return _internal_metadata_.unknown_fields<::google::protobuf::UnknownFieldSet>(::google::protobuf::UnknownFieldSet::default_instance);
-  }
-  inline ::google::protobuf::UnknownFieldSet* mutable_unknown_fields()
-      ABSL_ATTRIBUTE_LIFETIME_BOUND {
-    return _internal_metadata_.mutable_unknown_fields<::google::protobuf::UnknownFieldSet>();
-  }
+	inline const ::google::protobuf::UnknownFieldSet &unknown_fields() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+		return _internal_metadata_.unknown_fields<::google::protobuf::UnknownFieldSet>(
+		    ::google::protobuf::UnknownFieldSet::default_instance);
+	}
+	inline ::google::protobuf::UnknownFieldSet *mutable_unknown_fields() ABSL_ATTRIBUTE_LIFETIME_BOUND {
+		return _internal_metadata_.mutable_unknown_fields<::google::protobuf::UnknownFieldSet>();
+	}
 
-  static const ::google::protobuf::Descriptor* descriptor() {
-    return GetDescriptor();
-  }
-  static const ::google::protobuf::Descriptor* GetDescriptor() {
-    return default_instance().GetMetadata().descriptor;
-  }
-  static const ::google::protobuf::Reflection* GetReflection() {
-    return default_instance().GetMetadata().reflection;
-  }
-  static const ArrayValue& default_instance() {
-    return *internal_default_instance();
-  }
-  static inline const ArrayValue* internal_default_instance() {
-    return reinterpret_cast<const ArrayValue*>(
-        &_ArrayValue_default_instance_);
-  }
-  static constexpr int kIndexInFileMessages = 1;
-  friend void swap(ArrayValue& a, ArrayValue& b) { a.Swap(&b); }
-  inline void Swap(ArrayValue* other) {
-    if (other == this) return;
-    if (::google::protobuf::internal::CanUseInternalSwap(GetArena(), other->GetArena())) {
-      InternalSwap(other);
-    } else {
-      ::google::protobuf::internal::GenericSwap(this, other);
-    }
-  }
-  void UnsafeArenaSwap(ArrayValue* other) {
-    if (other == this) return;
-    ABSL_DCHECK(GetArena() == other->GetArena());
-    InternalSwap(other);
-  }
+	static const ::google::protobuf::Descriptor *descriptor() {
+		return GetDescriptor();
+	}
+	static const ::google::protobuf::Descriptor *GetDescriptor() {
+		return default_instance().GetMetadata().descriptor;
+	}
+	static const ::google::protobuf::Reflection *GetReflection() {
+		return default_instance().GetMetadata().reflection;
+	}
+	static const ArrayValue &default_instance() {
+		return *internal_default_instance();
+	}
+	static inline const ArrayValue *internal_default_instance() {
+		return reinterpret_cast<const ArrayValue *>(&_ArrayValue_default_instance_);
+	}
+	static constexpr int kIndexInFileMessages = 1;
+	friend void swap(ArrayValue &a, ArrayValue &b) {
+		a.Swap(&b);
+	}
+	inline void Swap(ArrayValue *other) {
+		if (other == this)
+			return;
+		if (::google::protobuf::internal::CanUseInternalSwap(GetArena(), other->GetArena())) {
+			InternalSwap(other);
+		} else {
+			::google::protobuf::internal::GenericSwap(this, other);
+		}
+	}
+	void UnsafeArenaSwap(ArrayValue *other) {
+		if (other == this)
+			return;
+		ABSL_DCHECK(GetArena() == other->GetArena());
+		InternalSwap(other);
+	}
 
-  // implements Message ----------------------------------------------
+	// implements Message ----------------------------------------------
 
-  ArrayValue* New(::google::protobuf::Arena* arena = nullptr) const {
-    return ::google::protobuf::Message::DefaultConstruct<ArrayValue>(arena);
-  }
-  using ::google::protobuf::Message::CopyFrom;
-  void CopyFrom(const ArrayValue& from);
-  using ::google::protobuf::Message::MergeFrom;
-  void MergeFrom(const ArrayValue& from) { ArrayValue::MergeImpl(*this, from); }
+	ArrayValue *New(::google::protobuf::Arena *arena = nullptr) const {
+		return ::google::protobuf::Message::DefaultConstruct<ArrayValue>(arena);
+	}
+	using ::google::protobuf::Message::CopyFrom;
+	void CopyFrom(const ArrayValue &from);
+	using ::google::protobuf::Message::MergeFrom;
+	void MergeFrom(const ArrayValue &from) {
+		ArrayValue::MergeImpl(*this, from);
+	}
 
-  private:
-  static void MergeImpl(
-      ::google::protobuf::MessageLite& to_msg,
-      const ::google::protobuf::MessageLite& from_msg);
+private:
+	static void MergeImpl(::google::protobuf::MessageLite &to_msg, const ::google::protobuf::MessageLite &from_msg);
 
-  public:
-  bool IsInitialized() const {
-    return true;
-  }
-  ABSL_ATTRIBUTE_REINITIALIZES void Clear() PROTOBUF_FINAL;
-  #if defined(PROTOBUF_CUSTOM_VTABLE)
-  private:
-  static ::size_t ByteSizeLong(const ::google::protobuf::MessageLite& msg);
-  static ::uint8_t* _InternalSerialize(
-      const MessageLite& msg, ::uint8_t* target,
-      ::google::protobuf::io::EpsCopyOutputStream* stream);
+public:
+	bool IsInitialized() const {
+		return true;
+	}
+	ABSL_ATTRIBUTE_REINITIALIZES void Clear() PROTOBUF_FINAL;
+#if defined(PROTOBUF_CUSTOM_VTABLE)
+private:
+	static ::size_t ByteSizeLong(const ::google::protobuf::MessageLite &msg);
+	static ::uint8_t *_InternalSerialize(const MessageLite &msg, ::uint8_t *target,
+	                                     ::google::protobuf::io::EpsCopyOutputStream *stream);
 
-  public:
-  ::size_t ByteSizeLong() const { return ByteSizeLong(*this); }
-  ::uint8_t* _InternalSerialize(
-      ::uint8_t* target,
-      ::google::protobuf::io::EpsCopyOutputStream* stream) const {
-    return _InternalSerialize(*this, target, stream);
-  }
-  #else   // PROTOBUF_CUSTOM_VTABLE
-  ::size_t ByteSizeLong() const final;
-  ::uint8_t* _InternalSerialize(
-      ::uint8_t* target,
-      ::google::protobuf::io::EpsCopyOutputStream* stream) const final;
-  #endif  // PROTOBUF_CUSTOM_VTABLE
-  int GetCachedSize() const { return _impl_._cached_size_.Get(); }
+public:
+	::size_t ByteSizeLong() const {
+		return ByteSizeLong(*this);
+	}
+	::uint8_t *_InternalSerialize(::uint8_t *target, ::google::protobuf::io::EpsCopyOutputStream *stream) const {
+		return _InternalSerialize(*this, target, stream);
+	}
+#else  // PROTOBUF_CUSTOM_VTABLE
+	::size_t ByteSizeLong() const final;
+	::uint8_t *_InternalSerialize(::uint8_t *target, ::google::protobuf::io::EpsCopyOutputStream *stream) const final;
+#endif // PROTOBUF_CUSTOM_VTABLE
+	int GetCachedSize() const {
+		return _impl_._cached_size_.Get();
+	}
 
-  private:
-  void SharedCtor(::google::protobuf::Arena* arena);
-  static void SharedDtor(MessageLite& self);
-  void InternalSwap(ArrayValue* other);
- private:
-  template <typename T>
-  friend ::absl::string_view(
-      ::google::protobuf::internal::GetAnyMessageName)();
-  static ::absl::string_view FullMessageName() { return "opentelemetry.proto.common.v1.ArrayValue"; }
+private:
+	void SharedCtor(::google::protobuf::Arena *arena);
+	static void SharedDtor(MessageLite &self);
+	void InternalSwap(ArrayValue *other);
 
- protected:
-  explicit ArrayValue(::google::protobuf::Arena* arena);
-  ArrayValue(::google::protobuf::Arena* arena, const ArrayValue& from);
-  ArrayValue(::google::protobuf::Arena* arena, ArrayValue&& from) noexcept
-      : ArrayValue(arena) {
-    *this = ::std::move(from);
-  }
-  const ::google::protobuf::internal::ClassData* GetClassData() const PROTOBUF_FINAL;
-  static void* PlacementNew_(const void*, void* mem,
-                             ::google::protobuf::Arena* arena);
-  static constexpr auto InternalNewImpl_();
-  static const ::google::protobuf::internal::ClassDataFull _class_data_;
+private:
+	template <typename T>
+	friend ::absl::string_view(::google::protobuf::internal::GetAnyMessageName)();
+	static ::absl::string_view FullMessageName() {
+		return "opentelemetry.proto.common.v1.ArrayValue";
+	}
 
- public:
-  ::google::protobuf::Metadata GetMetadata() const;
-  // nested types ----------------------------------------------------
+protected:
+	explicit ArrayValue(::google::protobuf::Arena *arena);
+	ArrayValue(::google::protobuf::Arena *arena, const ArrayValue &from);
+	ArrayValue(::google::protobuf::Arena *arena, ArrayValue &&from) noexcept : ArrayValue(arena) {
+		*this = ::std::move(from);
+	}
+	const ::google::protobuf::internal::ClassData *GetClassData() const PROTOBUF_FINAL;
+	static void *PlacementNew_(const void *, void *mem, ::google::protobuf::Arena *arena);
+	static constexpr auto InternalNewImpl_();
+	static const ::google::protobuf::internal::ClassDataFull _class_data_;
 
-  // accessors -------------------------------------------------------
-  enum : int {
-    kValuesFieldNumber = 1,
-  };
-  // repeated .opentelemetry.proto.common.v1.AnyValue values = 1;
-  int values_size() const;
-  private:
-  int _internal_values_size() const;
+public:
+	::google::protobuf::Metadata GetMetadata() const;
+	// nested types ----------------------------------------------------
 
-  public:
-  void clear_values() ;
-  ::opentelemetry::proto::common::v1::AnyValue* mutable_values(int index);
-  ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::AnyValue>* mutable_values();
+	// accessors -------------------------------------------------------
+	enum : int {
+		kValuesFieldNumber = 1,
+	};
+	// repeated .opentelemetry.proto.common.v1.AnyValue values = 1;
+	int values_size() const;
 
-  private:
-  const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::AnyValue>& _internal_values() const;
-  ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::AnyValue>* _internal_mutable_values();
-  public:
-  const ::opentelemetry::proto::common::v1::AnyValue& values(int index) const;
-  ::opentelemetry::proto::common::v1::AnyValue* add_values();
-  const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::AnyValue>& values() const;
-  // @@protoc_insertion_point(class_scope:opentelemetry.proto.common.v1.ArrayValue)
- private:
-  class _Internal;
-  friend class ::google::protobuf::internal::TcParser;
-  static const ::google::protobuf::internal::TcParseTable<
-      0, 1, 1,
-      0, 2>
-      _table_;
+private:
+	int _internal_values_size() const;
 
-  friend class ::google::protobuf::MessageLite;
-  friend class ::google::protobuf::Arena;
-  template <typename T>
-  friend class ::google::protobuf::Arena::InternalHelper;
-  using InternalArenaConstructable_ = void;
-  using DestructorSkippable_ = void;
-  struct Impl_ {
-    inline explicit constexpr Impl_(
-        ::google::protobuf::internal::ConstantInitialized) noexcept;
-    inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
-                          ::google::protobuf::Arena* arena);
-    inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
-                          ::google::protobuf::Arena* arena, const Impl_& from,
-                          const ArrayValue& from_msg);
-    ::google::protobuf::RepeatedPtrField< ::opentelemetry::proto::common::v1::AnyValue > values_;
-    ::google::protobuf::internal::CachedSize _cached_size_;
-    PROTOBUF_TSAN_DECLARE_MEMBER
-  };
-  union { Impl_ _impl_; };
-  friend struct ::TableStruct_opentelemetry_2fproto_2fcommon_2fv1_2fcommon_2eproto;
+public:
+	void clear_values();
+	::opentelemetry::proto::common::v1::AnyValue *mutable_values(int index);
+	::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::AnyValue> *mutable_values();
+
+private:
+	const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::AnyValue> &_internal_values() const;
+	::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::AnyValue> *_internal_mutable_values();
+
+public:
+	const ::opentelemetry::proto::common::v1::AnyValue &values(int index) const;
+	::opentelemetry::proto::common::v1::AnyValue *add_values();
+	const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::AnyValue> &values() const;
+	// @@protoc_insertion_point(class_scope:opentelemetry.proto.common.v1.ArrayValue)
+private:
+	class _Internal;
+	friend class ::google::protobuf::internal::TcParser;
+	static const ::google::protobuf::internal::TcParseTable<0, 1, 1, 0, 2> _table_;
+
+	friend class ::google::protobuf::MessageLite;
+	friend class ::google::protobuf::Arena;
+	template <typename T>
+	friend class ::google::protobuf::Arena::InternalHelper;
+	using InternalArenaConstructable_ = void;
+	using DestructorSkippable_ = void;
+	struct Impl_ {
+		inline explicit constexpr Impl_(::google::protobuf::internal::ConstantInitialized) noexcept;
+		inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
+		                      ::google::protobuf::Arena *arena);
+		inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
+		                      ::google::protobuf::Arena *arena, const Impl_ &from, const ArrayValue &from_msg);
+		::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::AnyValue> values_;
+		::google::protobuf::internal::CachedSize _cached_size_;
+		PROTOBUF_TSAN_DECLARE_MEMBER
+	};
+	union {
+		Impl_ _impl_;
+	};
+	friend struct ::TableStruct_opentelemetry_2fproto_2fcommon_2fv1_2fcommon_2eproto;
 };
 // -------------------------------------------------------------------
 
 class KeyValue final : public ::google::protobuf::Message
 /* @@protoc_insertion_point(class_definition:opentelemetry.proto.common.v1.KeyValue) */ {
- public:
-  inline KeyValue() : KeyValue(nullptr) {}
-  ~KeyValue() PROTOBUF_FINAL;
+public:
+	inline KeyValue() : KeyValue(nullptr) {
+	}
+	~KeyValue() PROTOBUF_FINAL;
 
 #if defined(PROTOBUF_CUSTOM_VTABLE)
-  void operator delete(KeyValue* msg, std::destroying_delete_t) {
-    SharedDtor(*msg);
-    ::google::protobuf::internal::SizedDelete(msg, sizeof(KeyValue));
-  }
+	void operator delete(KeyValue *msg, std::destroying_delete_t) {
+		SharedDtor(*msg);
+		::google::protobuf::internal::SizedDelete(msg, sizeof(KeyValue));
+	}
 #endif
 
-  template <typename = void>
-  explicit PROTOBUF_CONSTEXPR KeyValue(
-      ::google::protobuf::internal::ConstantInitialized);
+	template <typename = void>
+	explicit PROTOBUF_CONSTEXPR KeyValue(::google::protobuf::internal::ConstantInitialized);
 
-  inline KeyValue(const KeyValue& from) : KeyValue(nullptr, from) {}
-  inline KeyValue(KeyValue&& from) noexcept
-      : KeyValue(nullptr, std::move(from)) {}
-  inline KeyValue& operator=(const KeyValue& from) {
-    CopyFrom(from);
-    return *this;
-  }
-  inline KeyValue& operator=(KeyValue&& from) noexcept {
-    if (this == &from) return *this;
-    if (::google::protobuf::internal::CanMoveWithInternalSwap(GetArena(), from.GetArena())) {
-      InternalSwap(&from);
-    } else {
-      CopyFrom(from);
-    }
-    return *this;
-  }
+	inline KeyValue(const KeyValue &from) : KeyValue(nullptr, from) {
+	}
+	inline KeyValue(KeyValue &&from) noexcept : KeyValue(nullptr, std::move(from)) {
+	}
+	inline KeyValue &operator=(const KeyValue &from) {
+		CopyFrom(from);
+		return *this;
+	}
+	inline KeyValue &operator=(KeyValue &&from) noexcept {
+		if (this == &from)
+			return *this;
+		if (::google::protobuf::internal::CanMoveWithInternalSwap(GetArena(), from.GetArena())) {
+			InternalSwap(&from);
+		} else {
+			CopyFrom(from);
+		}
+		return *this;
+	}
 
-  inline const ::google::protobuf::UnknownFieldSet& unknown_fields() const
-      ABSL_ATTRIBUTE_LIFETIME_BOUND {
-    return _internal_metadata_.unknown_fields<::google::protobuf::UnknownFieldSet>(::google::protobuf::UnknownFieldSet::default_instance);
-  }
-  inline ::google::protobuf::UnknownFieldSet* mutable_unknown_fields()
-      ABSL_ATTRIBUTE_LIFETIME_BOUND {
-    return _internal_metadata_.mutable_unknown_fields<::google::protobuf::UnknownFieldSet>();
-  }
+	inline const ::google::protobuf::UnknownFieldSet &unknown_fields() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+		return _internal_metadata_.unknown_fields<::google::protobuf::UnknownFieldSet>(
+		    ::google::protobuf::UnknownFieldSet::default_instance);
+	}
+	inline ::google::protobuf::UnknownFieldSet *mutable_unknown_fields() ABSL_ATTRIBUTE_LIFETIME_BOUND {
+		return _internal_metadata_.mutable_unknown_fields<::google::protobuf::UnknownFieldSet>();
+	}
 
-  static const ::google::protobuf::Descriptor* descriptor() {
-    return GetDescriptor();
-  }
-  static const ::google::protobuf::Descriptor* GetDescriptor() {
-    return default_instance().GetMetadata().descriptor;
-  }
-  static const ::google::protobuf::Reflection* GetReflection() {
-    return default_instance().GetMetadata().reflection;
-  }
-  static const KeyValue& default_instance() {
-    return *internal_default_instance();
-  }
-  static inline const KeyValue* internal_default_instance() {
-    return reinterpret_cast<const KeyValue*>(
-        &_KeyValue_default_instance_);
-  }
-  static constexpr int kIndexInFileMessages = 3;
-  friend void swap(KeyValue& a, KeyValue& b) { a.Swap(&b); }
-  inline void Swap(KeyValue* other) {
-    if (other == this) return;
-    if (::google::protobuf::internal::CanUseInternalSwap(GetArena(), other->GetArena())) {
-      InternalSwap(other);
-    } else {
-      ::google::protobuf::internal::GenericSwap(this, other);
-    }
-  }
-  void UnsafeArenaSwap(KeyValue* other) {
-    if (other == this) return;
-    ABSL_DCHECK(GetArena() == other->GetArena());
-    InternalSwap(other);
-  }
+	static const ::google::protobuf::Descriptor *descriptor() {
+		return GetDescriptor();
+	}
+	static const ::google::protobuf::Descriptor *GetDescriptor() {
+		return default_instance().GetMetadata().descriptor;
+	}
+	static const ::google::protobuf::Reflection *GetReflection() {
+		return default_instance().GetMetadata().reflection;
+	}
+	static const KeyValue &default_instance() {
+		return *internal_default_instance();
+	}
+	static inline const KeyValue *internal_default_instance() {
+		return reinterpret_cast<const KeyValue *>(&_KeyValue_default_instance_);
+	}
+	static constexpr int kIndexInFileMessages = 3;
+	friend void swap(KeyValue &a, KeyValue &b) {
+		a.Swap(&b);
+	}
+	inline void Swap(KeyValue *other) {
+		if (other == this)
+			return;
+		if (::google::protobuf::internal::CanUseInternalSwap(GetArena(), other->GetArena())) {
+			InternalSwap(other);
+		} else {
+			::google::protobuf::internal::GenericSwap(this, other);
+		}
+	}
+	void UnsafeArenaSwap(KeyValue *other) {
+		if (other == this)
+			return;
+		ABSL_DCHECK(GetArena() == other->GetArena());
+		InternalSwap(other);
+	}
 
-  // implements Message ----------------------------------------------
+	// implements Message ----------------------------------------------
 
-  KeyValue* New(::google::protobuf::Arena* arena = nullptr) const {
-    return ::google::protobuf::Message::DefaultConstruct<KeyValue>(arena);
-  }
-  using ::google::protobuf::Message::CopyFrom;
-  void CopyFrom(const KeyValue& from);
-  using ::google::protobuf::Message::MergeFrom;
-  void MergeFrom(const KeyValue& from) { KeyValue::MergeImpl(*this, from); }
+	KeyValue *New(::google::protobuf::Arena *arena = nullptr) const {
+		return ::google::protobuf::Message::DefaultConstruct<KeyValue>(arena);
+	}
+	using ::google::protobuf::Message::CopyFrom;
+	void CopyFrom(const KeyValue &from);
+	using ::google::protobuf::Message::MergeFrom;
+	void MergeFrom(const KeyValue &from) {
+		KeyValue::MergeImpl(*this, from);
+	}
 
-  private:
-  static void MergeImpl(
-      ::google::protobuf::MessageLite& to_msg,
-      const ::google::protobuf::MessageLite& from_msg);
+private:
+	static void MergeImpl(::google::protobuf::MessageLite &to_msg, const ::google::protobuf::MessageLite &from_msg);
 
-  public:
-  bool IsInitialized() const {
-    return true;
-  }
-  ABSL_ATTRIBUTE_REINITIALIZES void Clear() PROTOBUF_FINAL;
-  #if defined(PROTOBUF_CUSTOM_VTABLE)
-  private:
-  static ::size_t ByteSizeLong(const ::google::protobuf::MessageLite& msg);
-  static ::uint8_t* _InternalSerialize(
-      const MessageLite& msg, ::uint8_t* target,
-      ::google::protobuf::io::EpsCopyOutputStream* stream);
+public:
+	bool IsInitialized() const {
+		return true;
+	}
+	ABSL_ATTRIBUTE_REINITIALIZES void Clear() PROTOBUF_FINAL;
+#if defined(PROTOBUF_CUSTOM_VTABLE)
+private:
+	static ::size_t ByteSizeLong(const ::google::protobuf::MessageLite &msg);
+	static ::uint8_t *_InternalSerialize(const MessageLite &msg, ::uint8_t *target,
+	                                     ::google::protobuf::io::EpsCopyOutputStream *stream);
 
-  public:
-  ::size_t ByteSizeLong() const { return ByteSizeLong(*this); }
-  ::uint8_t* _InternalSerialize(
-      ::uint8_t* target,
-      ::google::protobuf::io::EpsCopyOutputStream* stream) const {
-    return _InternalSerialize(*this, target, stream);
-  }
-  #else   // PROTOBUF_CUSTOM_VTABLE
-  ::size_t ByteSizeLong() const final;
-  ::uint8_t* _InternalSerialize(
-      ::uint8_t* target,
-      ::google::protobuf::io::EpsCopyOutputStream* stream) const final;
-  #endif  // PROTOBUF_CUSTOM_VTABLE
-  int GetCachedSize() const { return _impl_._cached_size_.Get(); }
+public:
+	::size_t ByteSizeLong() const {
+		return ByteSizeLong(*this);
+	}
+	::uint8_t *_InternalSerialize(::uint8_t *target, ::google::protobuf::io::EpsCopyOutputStream *stream) const {
+		return _InternalSerialize(*this, target, stream);
+	}
+#else  // PROTOBUF_CUSTOM_VTABLE
+	::size_t ByteSizeLong() const final;
+	::uint8_t *_InternalSerialize(::uint8_t *target, ::google::protobuf::io::EpsCopyOutputStream *stream) const final;
+#endif // PROTOBUF_CUSTOM_VTABLE
+	int GetCachedSize() const {
+		return _impl_._cached_size_.Get();
+	}
 
-  private:
-  void SharedCtor(::google::protobuf::Arena* arena);
-  static void SharedDtor(MessageLite& self);
-  void InternalSwap(KeyValue* other);
- private:
-  template <typename T>
-  friend ::absl::string_view(
-      ::google::protobuf::internal::GetAnyMessageName)();
-  static ::absl::string_view FullMessageName() { return "opentelemetry.proto.common.v1.KeyValue"; }
+private:
+	void SharedCtor(::google::protobuf::Arena *arena);
+	static void SharedDtor(MessageLite &self);
+	void InternalSwap(KeyValue *other);
 
- protected:
-  explicit KeyValue(::google::protobuf::Arena* arena);
-  KeyValue(::google::protobuf::Arena* arena, const KeyValue& from);
-  KeyValue(::google::protobuf::Arena* arena, KeyValue&& from) noexcept
-      : KeyValue(arena) {
-    *this = ::std::move(from);
-  }
-  const ::google::protobuf::internal::ClassData* GetClassData() const PROTOBUF_FINAL;
-  static void* PlacementNew_(const void*, void* mem,
-                             ::google::protobuf::Arena* arena);
-  static constexpr auto InternalNewImpl_();
-  static const ::google::protobuf::internal::ClassDataFull _class_data_;
+private:
+	template <typename T>
+	friend ::absl::string_view(::google::protobuf::internal::GetAnyMessageName)();
+	static ::absl::string_view FullMessageName() {
+		return "opentelemetry.proto.common.v1.KeyValue";
+	}
 
- public:
-  ::google::protobuf::Metadata GetMetadata() const;
-  // nested types ----------------------------------------------------
+protected:
+	explicit KeyValue(::google::protobuf::Arena *arena);
+	KeyValue(::google::protobuf::Arena *arena, const KeyValue &from);
+	KeyValue(::google::protobuf::Arena *arena, KeyValue &&from) noexcept : KeyValue(arena) {
+		*this = ::std::move(from);
+	}
+	const ::google::protobuf::internal::ClassData *GetClassData() const PROTOBUF_FINAL;
+	static void *PlacementNew_(const void *, void *mem, ::google::protobuf::Arena *arena);
+	static constexpr auto InternalNewImpl_();
+	static const ::google::protobuf::internal::ClassDataFull _class_data_;
 
-  // accessors -------------------------------------------------------
-  enum : int {
-    kKeyFieldNumber = 1,
-    kValueFieldNumber = 2,
-  };
-  // string key = 1;
-  void clear_key() ;
-  const std::string& key() const;
-  template <typename Arg_ = const std::string&, typename... Args_>
-  void set_key(Arg_&& arg, Args_... args);
-  std::string* mutable_key();
-  PROTOBUF_NODISCARD std::string* release_key();
-  void set_allocated_key(std::string* value);
+public:
+	::google::protobuf::Metadata GetMetadata() const;
+	// nested types ----------------------------------------------------
 
-  private:
-  const std::string& _internal_key() const;
-  inline PROTOBUF_ALWAYS_INLINE void _internal_set_key(
-      const std::string& value);
-  std::string* _internal_mutable_key();
+	// accessors -------------------------------------------------------
+	enum : int {
+		kKeyFieldNumber = 1,
+		kValueFieldNumber = 2,
+	};
+	// string key = 1;
+	void clear_key();
+	const std::string &key() const;
+	template <typename Arg_ = const std::string &, typename... Args_>
+	void set_key(Arg_ &&arg, Args_... args);
+	std::string *mutable_key();
+	PROTOBUF_NODISCARD std::string *release_key();
+	void set_allocated_key(std::string *value);
 
-  public:
-  // .opentelemetry.proto.common.v1.AnyValue value = 2;
-  bool has_value() const;
-  void clear_value() ;
-  const ::opentelemetry::proto::common::v1::AnyValue& value() const;
-  PROTOBUF_NODISCARD ::opentelemetry::proto::common::v1::AnyValue* release_value();
-  ::opentelemetry::proto::common::v1::AnyValue* mutable_value();
-  void set_allocated_value(::opentelemetry::proto::common::v1::AnyValue* value);
-  void unsafe_arena_set_allocated_value(::opentelemetry::proto::common::v1::AnyValue* value);
-  ::opentelemetry::proto::common::v1::AnyValue* unsafe_arena_release_value();
+private:
+	const std::string &_internal_key() const;
+	inline PROTOBUF_ALWAYS_INLINE void _internal_set_key(const std::string &value);
+	std::string *_internal_mutable_key();
 
-  private:
-  const ::opentelemetry::proto::common::v1::AnyValue& _internal_value() const;
-  ::opentelemetry::proto::common::v1::AnyValue* _internal_mutable_value();
+public:
+	// .opentelemetry.proto.common.v1.AnyValue value = 2;
+	bool has_value() const;
+	void clear_value();
+	const ::opentelemetry::proto::common::v1::AnyValue &value() const;
+	PROTOBUF_NODISCARD ::opentelemetry::proto::common::v1::AnyValue *release_value();
+	::opentelemetry::proto::common::v1::AnyValue *mutable_value();
+	void set_allocated_value(::opentelemetry::proto::common::v1::AnyValue *value);
+	void unsafe_arena_set_allocated_value(::opentelemetry::proto::common::v1::AnyValue *value);
+	::opentelemetry::proto::common::v1::AnyValue *unsafe_arena_release_value();
 
-  public:
-  // @@protoc_insertion_point(class_scope:opentelemetry.proto.common.v1.KeyValue)
- private:
-  class _Internal;
-  friend class ::google::protobuf::internal::TcParser;
-  static const ::google::protobuf::internal::TcParseTable<
-      1, 2, 1,
-      50, 2>
-      _table_;
+private:
+	const ::opentelemetry::proto::common::v1::AnyValue &_internal_value() const;
+	::opentelemetry::proto::common::v1::AnyValue *_internal_mutable_value();
 
-  friend class ::google::protobuf::MessageLite;
-  friend class ::google::protobuf::Arena;
-  template <typename T>
-  friend class ::google::protobuf::Arena::InternalHelper;
-  using InternalArenaConstructable_ = void;
-  using DestructorSkippable_ = void;
-  struct Impl_ {
-    inline explicit constexpr Impl_(
-        ::google::protobuf::internal::ConstantInitialized) noexcept;
-    inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
-                          ::google::protobuf::Arena* arena);
-    inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
-                          ::google::protobuf::Arena* arena, const Impl_& from,
-                          const KeyValue& from_msg);
-    ::google::protobuf::internal::HasBits<1> _has_bits_;
-    ::google::protobuf::internal::CachedSize _cached_size_;
-    ::google::protobuf::internal::ArenaStringPtr key_;
-    ::opentelemetry::proto::common::v1::AnyValue* value_;
-    PROTOBUF_TSAN_DECLARE_MEMBER
-  };
-  union { Impl_ _impl_; };
-  friend struct ::TableStruct_opentelemetry_2fproto_2fcommon_2fv1_2fcommon_2eproto;
+public:
+	// @@protoc_insertion_point(class_scope:opentelemetry.proto.common.v1.KeyValue)
+private:
+	class _Internal;
+	friend class ::google::protobuf::internal::TcParser;
+	static const ::google::protobuf::internal::TcParseTable<1, 2, 1, 50, 2> _table_;
+
+	friend class ::google::protobuf::MessageLite;
+	friend class ::google::protobuf::Arena;
+	template <typename T>
+	friend class ::google::protobuf::Arena::InternalHelper;
+	using InternalArenaConstructable_ = void;
+	using DestructorSkippable_ = void;
+	struct Impl_ {
+		inline explicit constexpr Impl_(::google::protobuf::internal::ConstantInitialized) noexcept;
+		inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
+		                      ::google::protobuf::Arena *arena);
+		inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
+		                      ::google::protobuf::Arena *arena, const Impl_ &from, const KeyValue &from_msg);
+		::google::protobuf::internal::HasBits<1> _has_bits_;
+		::google::protobuf::internal::CachedSize _cached_size_;
+		::google::protobuf::internal::ArenaStringPtr key_;
+		::opentelemetry::proto::common::v1::AnyValue *value_;
+		PROTOBUF_TSAN_DECLARE_MEMBER
+	};
+	union {
+		Impl_ _impl_;
+	};
+	friend struct ::TableStruct_opentelemetry_2fproto_2fcommon_2fv1_2fcommon_2eproto;
 };
 // -------------------------------------------------------------------
 
 class KeyValueList final : public ::google::protobuf::Message
 /* @@protoc_insertion_point(class_definition:opentelemetry.proto.common.v1.KeyValueList) */ {
- public:
-  inline KeyValueList() : KeyValueList(nullptr) {}
-  ~KeyValueList() PROTOBUF_FINAL;
+public:
+	inline KeyValueList() : KeyValueList(nullptr) {
+	}
+	~KeyValueList() PROTOBUF_FINAL;
 
 #if defined(PROTOBUF_CUSTOM_VTABLE)
-  void operator delete(KeyValueList* msg, std::destroying_delete_t) {
-    SharedDtor(*msg);
-    ::google::protobuf::internal::SizedDelete(msg, sizeof(KeyValueList));
-  }
+	void operator delete(KeyValueList *msg, std::destroying_delete_t) {
+		SharedDtor(*msg);
+		::google::protobuf::internal::SizedDelete(msg, sizeof(KeyValueList));
+	}
 #endif
 
-  template <typename = void>
-  explicit PROTOBUF_CONSTEXPR KeyValueList(
-      ::google::protobuf::internal::ConstantInitialized);
+	template <typename = void>
+	explicit PROTOBUF_CONSTEXPR KeyValueList(::google::protobuf::internal::ConstantInitialized);
 
-  inline KeyValueList(const KeyValueList& from) : KeyValueList(nullptr, from) {}
-  inline KeyValueList(KeyValueList&& from) noexcept
-      : KeyValueList(nullptr, std::move(from)) {}
-  inline KeyValueList& operator=(const KeyValueList& from) {
-    CopyFrom(from);
-    return *this;
-  }
-  inline KeyValueList& operator=(KeyValueList&& from) noexcept {
-    if (this == &from) return *this;
-    if (::google::protobuf::internal::CanMoveWithInternalSwap(GetArena(), from.GetArena())) {
-      InternalSwap(&from);
-    } else {
-      CopyFrom(from);
-    }
-    return *this;
-  }
+	inline KeyValueList(const KeyValueList &from) : KeyValueList(nullptr, from) {
+	}
+	inline KeyValueList(KeyValueList &&from) noexcept : KeyValueList(nullptr, std::move(from)) {
+	}
+	inline KeyValueList &operator=(const KeyValueList &from) {
+		CopyFrom(from);
+		return *this;
+	}
+	inline KeyValueList &operator=(KeyValueList &&from) noexcept {
+		if (this == &from)
+			return *this;
+		if (::google::protobuf::internal::CanMoveWithInternalSwap(GetArena(), from.GetArena())) {
+			InternalSwap(&from);
+		} else {
+			CopyFrom(from);
+		}
+		return *this;
+	}
 
-  inline const ::google::protobuf::UnknownFieldSet& unknown_fields() const
-      ABSL_ATTRIBUTE_LIFETIME_BOUND {
-    return _internal_metadata_.unknown_fields<::google::protobuf::UnknownFieldSet>(::google::protobuf::UnknownFieldSet::default_instance);
-  }
-  inline ::google::protobuf::UnknownFieldSet* mutable_unknown_fields()
-      ABSL_ATTRIBUTE_LIFETIME_BOUND {
-    return _internal_metadata_.mutable_unknown_fields<::google::protobuf::UnknownFieldSet>();
-  }
+	inline const ::google::protobuf::UnknownFieldSet &unknown_fields() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+		return _internal_metadata_.unknown_fields<::google::protobuf::UnknownFieldSet>(
+		    ::google::protobuf::UnknownFieldSet::default_instance);
+	}
+	inline ::google::protobuf::UnknownFieldSet *mutable_unknown_fields() ABSL_ATTRIBUTE_LIFETIME_BOUND {
+		return _internal_metadata_.mutable_unknown_fields<::google::protobuf::UnknownFieldSet>();
+	}
 
-  static const ::google::protobuf::Descriptor* descriptor() {
-    return GetDescriptor();
-  }
-  static const ::google::protobuf::Descriptor* GetDescriptor() {
-    return default_instance().GetMetadata().descriptor;
-  }
-  static const ::google::protobuf::Reflection* GetReflection() {
-    return default_instance().GetMetadata().reflection;
-  }
-  static const KeyValueList& default_instance() {
-    return *internal_default_instance();
-  }
-  static inline const KeyValueList* internal_default_instance() {
-    return reinterpret_cast<const KeyValueList*>(
-        &_KeyValueList_default_instance_);
-  }
-  static constexpr int kIndexInFileMessages = 2;
-  friend void swap(KeyValueList& a, KeyValueList& b) { a.Swap(&b); }
-  inline void Swap(KeyValueList* other) {
-    if (other == this) return;
-    if (::google::protobuf::internal::CanUseInternalSwap(GetArena(), other->GetArena())) {
-      InternalSwap(other);
-    } else {
-      ::google::protobuf::internal::GenericSwap(this, other);
-    }
-  }
-  void UnsafeArenaSwap(KeyValueList* other) {
-    if (other == this) return;
-    ABSL_DCHECK(GetArena() == other->GetArena());
-    InternalSwap(other);
-  }
+	static const ::google::protobuf::Descriptor *descriptor() {
+		return GetDescriptor();
+	}
+	static const ::google::protobuf::Descriptor *GetDescriptor() {
+		return default_instance().GetMetadata().descriptor;
+	}
+	static const ::google::protobuf::Reflection *GetReflection() {
+		return default_instance().GetMetadata().reflection;
+	}
+	static const KeyValueList &default_instance() {
+		return *internal_default_instance();
+	}
+	static inline const KeyValueList *internal_default_instance() {
+		return reinterpret_cast<const KeyValueList *>(&_KeyValueList_default_instance_);
+	}
+	static constexpr int kIndexInFileMessages = 2;
+	friend void swap(KeyValueList &a, KeyValueList &b) {
+		a.Swap(&b);
+	}
+	inline void Swap(KeyValueList *other) {
+		if (other == this)
+			return;
+		if (::google::protobuf::internal::CanUseInternalSwap(GetArena(), other->GetArena())) {
+			InternalSwap(other);
+		} else {
+			::google::protobuf::internal::GenericSwap(this, other);
+		}
+	}
+	void UnsafeArenaSwap(KeyValueList *other) {
+		if (other == this)
+			return;
+		ABSL_DCHECK(GetArena() == other->GetArena());
+		InternalSwap(other);
+	}
 
-  // implements Message ----------------------------------------------
+	// implements Message ----------------------------------------------
 
-  KeyValueList* New(::google::protobuf::Arena* arena = nullptr) const {
-    return ::google::protobuf::Message::DefaultConstruct<KeyValueList>(arena);
-  }
-  using ::google::protobuf::Message::CopyFrom;
-  void CopyFrom(const KeyValueList& from);
-  using ::google::protobuf::Message::MergeFrom;
-  void MergeFrom(const KeyValueList& from) { KeyValueList::MergeImpl(*this, from); }
+	KeyValueList *New(::google::protobuf::Arena *arena = nullptr) const {
+		return ::google::protobuf::Message::DefaultConstruct<KeyValueList>(arena);
+	}
+	using ::google::protobuf::Message::CopyFrom;
+	void CopyFrom(const KeyValueList &from);
+	using ::google::protobuf::Message::MergeFrom;
+	void MergeFrom(const KeyValueList &from) {
+		KeyValueList::MergeImpl(*this, from);
+	}
 
-  private:
-  static void MergeImpl(
-      ::google::protobuf::MessageLite& to_msg,
-      const ::google::protobuf::MessageLite& from_msg);
+private:
+	static void MergeImpl(::google::protobuf::MessageLite &to_msg, const ::google::protobuf::MessageLite &from_msg);
 
-  public:
-  bool IsInitialized() const {
-    return true;
-  }
-  ABSL_ATTRIBUTE_REINITIALIZES void Clear() PROTOBUF_FINAL;
-  #if defined(PROTOBUF_CUSTOM_VTABLE)
-  private:
-  static ::size_t ByteSizeLong(const ::google::protobuf::MessageLite& msg);
-  static ::uint8_t* _InternalSerialize(
-      const MessageLite& msg, ::uint8_t* target,
-      ::google::protobuf::io::EpsCopyOutputStream* stream);
+public:
+	bool IsInitialized() const {
+		return true;
+	}
+	ABSL_ATTRIBUTE_REINITIALIZES void Clear() PROTOBUF_FINAL;
+#if defined(PROTOBUF_CUSTOM_VTABLE)
+private:
+	static ::size_t ByteSizeLong(const ::google::protobuf::MessageLite &msg);
+	static ::uint8_t *_InternalSerialize(const MessageLite &msg, ::uint8_t *target,
+	                                     ::google::protobuf::io::EpsCopyOutputStream *stream);
 
-  public:
-  ::size_t ByteSizeLong() const { return ByteSizeLong(*this); }
-  ::uint8_t* _InternalSerialize(
-      ::uint8_t* target,
-      ::google::protobuf::io::EpsCopyOutputStream* stream) const {
-    return _InternalSerialize(*this, target, stream);
-  }
-  #else   // PROTOBUF_CUSTOM_VTABLE
-  ::size_t ByteSizeLong() const final;
-  ::uint8_t* _InternalSerialize(
-      ::uint8_t* target,
-      ::google::protobuf::io::EpsCopyOutputStream* stream) const final;
-  #endif  // PROTOBUF_CUSTOM_VTABLE
-  int GetCachedSize() const { return _impl_._cached_size_.Get(); }
+public:
+	::size_t ByteSizeLong() const {
+		return ByteSizeLong(*this);
+	}
+	::uint8_t *_InternalSerialize(::uint8_t *target, ::google::protobuf::io::EpsCopyOutputStream *stream) const {
+		return _InternalSerialize(*this, target, stream);
+	}
+#else  // PROTOBUF_CUSTOM_VTABLE
+	::size_t ByteSizeLong() const final;
+	::uint8_t *_InternalSerialize(::uint8_t *target, ::google::protobuf::io::EpsCopyOutputStream *stream) const final;
+#endif // PROTOBUF_CUSTOM_VTABLE
+	int GetCachedSize() const {
+		return _impl_._cached_size_.Get();
+	}
 
-  private:
-  void SharedCtor(::google::protobuf::Arena* arena);
-  static void SharedDtor(MessageLite& self);
-  void InternalSwap(KeyValueList* other);
- private:
-  template <typename T>
-  friend ::absl::string_view(
-      ::google::protobuf::internal::GetAnyMessageName)();
-  static ::absl::string_view FullMessageName() { return "opentelemetry.proto.common.v1.KeyValueList"; }
+private:
+	void SharedCtor(::google::protobuf::Arena *arena);
+	static void SharedDtor(MessageLite &self);
+	void InternalSwap(KeyValueList *other);
 
- protected:
-  explicit KeyValueList(::google::protobuf::Arena* arena);
-  KeyValueList(::google::protobuf::Arena* arena, const KeyValueList& from);
-  KeyValueList(::google::protobuf::Arena* arena, KeyValueList&& from) noexcept
-      : KeyValueList(arena) {
-    *this = ::std::move(from);
-  }
-  const ::google::protobuf::internal::ClassData* GetClassData() const PROTOBUF_FINAL;
-  static void* PlacementNew_(const void*, void* mem,
-                             ::google::protobuf::Arena* arena);
-  static constexpr auto InternalNewImpl_();
-  static const ::google::protobuf::internal::ClassDataFull _class_data_;
+private:
+	template <typename T>
+	friend ::absl::string_view(::google::protobuf::internal::GetAnyMessageName)();
+	static ::absl::string_view FullMessageName() {
+		return "opentelemetry.proto.common.v1.KeyValueList";
+	}
 
- public:
-  ::google::protobuf::Metadata GetMetadata() const;
-  // nested types ----------------------------------------------------
+protected:
+	explicit KeyValueList(::google::protobuf::Arena *arena);
+	KeyValueList(::google::protobuf::Arena *arena, const KeyValueList &from);
+	KeyValueList(::google::protobuf::Arena *arena, KeyValueList &&from) noexcept : KeyValueList(arena) {
+		*this = ::std::move(from);
+	}
+	const ::google::protobuf::internal::ClassData *GetClassData() const PROTOBUF_FINAL;
+	static void *PlacementNew_(const void *, void *mem, ::google::protobuf::Arena *arena);
+	static constexpr auto InternalNewImpl_();
+	static const ::google::protobuf::internal::ClassDataFull _class_data_;
 
-  // accessors -------------------------------------------------------
-  enum : int {
-    kValuesFieldNumber = 1,
-  };
-  // repeated .opentelemetry.proto.common.v1.KeyValue values = 1;
-  int values_size() const;
-  private:
-  int _internal_values_size() const;
+public:
+	::google::protobuf::Metadata GetMetadata() const;
+	// nested types ----------------------------------------------------
 
-  public:
-  void clear_values() ;
-  ::opentelemetry::proto::common::v1::KeyValue* mutable_values(int index);
-  ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue>* mutable_values();
+	// accessors -------------------------------------------------------
+	enum : int {
+		kValuesFieldNumber = 1,
+	};
+	// repeated .opentelemetry.proto.common.v1.KeyValue values = 1;
+	int values_size() const;
 
-  private:
-  const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue>& _internal_values() const;
-  ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue>* _internal_mutable_values();
-  public:
-  const ::opentelemetry::proto::common::v1::KeyValue& values(int index) const;
-  ::opentelemetry::proto::common::v1::KeyValue* add_values();
-  const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue>& values() const;
-  // @@protoc_insertion_point(class_scope:opentelemetry.proto.common.v1.KeyValueList)
- private:
-  class _Internal;
-  friend class ::google::protobuf::internal::TcParser;
-  static const ::google::protobuf::internal::TcParseTable<
-      0, 1, 1,
-      0, 2>
-      _table_;
+private:
+	int _internal_values_size() const;
 
-  friend class ::google::protobuf::MessageLite;
-  friend class ::google::protobuf::Arena;
-  template <typename T>
-  friend class ::google::protobuf::Arena::InternalHelper;
-  using InternalArenaConstructable_ = void;
-  using DestructorSkippable_ = void;
-  struct Impl_ {
-    inline explicit constexpr Impl_(
-        ::google::protobuf::internal::ConstantInitialized) noexcept;
-    inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
-                          ::google::protobuf::Arena* arena);
-    inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
-                          ::google::protobuf::Arena* arena, const Impl_& from,
-                          const KeyValueList& from_msg);
-    ::google::protobuf::RepeatedPtrField< ::opentelemetry::proto::common::v1::KeyValue > values_;
-    ::google::protobuf::internal::CachedSize _cached_size_;
-    PROTOBUF_TSAN_DECLARE_MEMBER
-  };
-  union { Impl_ _impl_; };
-  friend struct ::TableStruct_opentelemetry_2fproto_2fcommon_2fv1_2fcommon_2eproto;
+public:
+	void clear_values();
+	::opentelemetry::proto::common::v1::KeyValue *mutable_values(int index);
+	::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue> *mutable_values();
+
+private:
+	const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue> &_internal_values() const;
+	::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue> *_internal_mutable_values();
+
+public:
+	const ::opentelemetry::proto::common::v1::KeyValue &values(int index) const;
+	::opentelemetry::proto::common::v1::KeyValue *add_values();
+	const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue> &values() const;
+	// @@protoc_insertion_point(class_scope:opentelemetry.proto.common.v1.KeyValueList)
+private:
+	class _Internal;
+	friend class ::google::protobuf::internal::TcParser;
+	static const ::google::protobuf::internal::TcParseTable<0, 1, 1, 0, 2> _table_;
+
+	friend class ::google::protobuf::MessageLite;
+	friend class ::google::protobuf::Arena;
+	template <typename T>
+	friend class ::google::protobuf::Arena::InternalHelper;
+	using InternalArenaConstructable_ = void;
+	using DestructorSkippable_ = void;
+	struct Impl_ {
+		inline explicit constexpr Impl_(::google::protobuf::internal::ConstantInitialized) noexcept;
+		inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
+		                      ::google::protobuf::Arena *arena);
+		inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
+		                      ::google::protobuf::Arena *arena, const Impl_ &from, const KeyValueList &from_msg);
+		::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue> values_;
+		::google::protobuf::internal::CachedSize _cached_size_;
+		PROTOBUF_TSAN_DECLARE_MEMBER
+	};
+	union {
+		Impl_ _impl_;
+	};
+	friend struct ::TableStruct_opentelemetry_2fproto_2fcommon_2fv1_2fcommon_2eproto;
 };
 // -------------------------------------------------------------------
 
 class InstrumentationScope final : public ::google::protobuf::Message
 /* @@protoc_insertion_point(class_definition:opentelemetry.proto.common.v1.InstrumentationScope) */ {
- public:
-  inline InstrumentationScope() : InstrumentationScope(nullptr) {}
-  ~InstrumentationScope() PROTOBUF_FINAL;
+public:
+	inline InstrumentationScope() : InstrumentationScope(nullptr) {
+	}
+	~InstrumentationScope() PROTOBUF_FINAL;
 
 #if defined(PROTOBUF_CUSTOM_VTABLE)
-  void operator delete(InstrumentationScope* msg, std::destroying_delete_t) {
-    SharedDtor(*msg);
-    ::google::protobuf::internal::SizedDelete(msg, sizeof(InstrumentationScope));
-  }
+	void operator delete(InstrumentationScope *msg, std::destroying_delete_t) {
+		SharedDtor(*msg);
+		::google::protobuf::internal::SizedDelete(msg, sizeof(InstrumentationScope));
+	}
 #endif
 
-  template <typename = void>
-  explicit PROTOBUF_CONSTEXPR InstrumentationScope(
-      ::google::protobuf::internal::ConstantInitialized);
+	template <typename = void>
+	explicit PROTOBUF_CONSTEXPR InstrumentationScope(::google::protobuf::internal::ConstantInitialized);
 
-  inline InstrumentationScope(const InstrumentationScope& from) : InstrumentationScope(nullptr, from) {}
-  inline InstrumentationScope(InstrumentationScope&& from) noexcept
-      : InstrumentationScope(nullptr, std::move(from)) {}
-  inline InstrumentationScope& operator=(const InstrumentationScope& from) {
-    CopyFrom(from);
-    return *this;
-  }
-  inline InstrumentationScope& operator=(InstrumentationScope&& from) noexcept {
-    if (this == &from) return *this;
-    if (::google::protobuf::internal::CanMoveWithInternalSwap(GetArena(), from.GetArena())) {
-      InternalSwap(&from);
-    } else {
-      CopyFrom(from);
-    }
-    return *this;
-  }
+	inline InstrumentationScope(const InstrumentationScope &from) : InstrumentationScope(nullptr, from) {
+	}
+	inline InstrumentationScope(InstrumentationScope &&from) noexcept : InstrumentationScope(nullptr, std::move(from)) {
+	}
+	inline InstrumentationScope &operator=(const InstrumentationScope &from) {
+		CopyFrom(from);
+		return *this;
+	}
+	inline InstrumentationScope &operator=(InstrumentationScope &&from) noexcept {
+		if (this == &from)
+			return *this;
+		if (::google::protobuf::internal::CanMoveWithInternalSwap(GetArena(), from.GetArena())) {
+			InternalSwap(&from);
+		} else {
+			CopyFrom(from);
+		}
+		return *this;
+	}
 
-  inline const ::google::protobuf::UnknownFieldSet& unknown_fields() const
-      ABSL_ATTRIBUTE_LIFETIME_BOUND {
-    return _internal_metadata_.unknown_fields<::google::protobuf::UnknownFieldSet>(::google::protobuf::UnknownFieldSet::default_instance);
-  }
-  inline ::google::protobuf::UnknownFieldSet* mutable_unknown_fields()
-      ABSL_ATTRIBUTE_LIFETIME_BOUND {
-    return _internal_metadata_.mutable_unknown_fields<::google::protobuf::UnknownFieldSet>();
-  }
+	inline const ::google::protobuf::UnknownFieldSet &unknown_fields() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+		return _internal_metadata_.unknown_fields<::google::protobuf::UnknownFieldSet>(
+		    ::google::protobuf::UnknownFieldSet::default_instance);
+	}
+	inline ::google::protobuf::UnknownFieldSet *mutable_unknown_fields() ABSL_ATTRIBUTE_LIFETIME_BOUND {
+		return _internal_metadata_.mutable_unknown_fields<::google::protobuf::UnknownFieldSet>();
+	}
 
-  static const ::google::protobuf::Descriptor* descriptor() {
-    return GetDescriptor();
-  }
-  static const ::google::protobuf::Descriptor* GetDescriptor() {
-    return default_instance().GetMetadata().descriptor;
-  }
-  static const ::google::protobuf::Reflection* GetReflection() {
-    return default_instance().GetMetadata().reflection;
-  }
-  static const InstrumentationScope& default_instance() {
-    return *internal_default_instance();
-  }
-  static inline const InstrumentationScope* internal_default_instance() {
-    return reinterpret_cast<const InstrumentationScope*>(
-        &_InstrumentationScope_default_instance_);
-  }
-  static constexpr int kIndexInFileMessages = 4;
-  friend void swap(InstrumentationScope& a, InstrumentationScope& b) { a.Swap(&b); }
-  inline void Swap(InstrumentationScope* other) {
-    if (other == this) return;
-    if (::google::protobuf::internal::CanUseInternalSwap(GetArena(), other->GetArena())) {
-      InternalSwap(other);
-    } else {
-      ::google::protobuf::internal::GenericSwap(this, other);
-    }
-  }
-  void UnsafeArenaSwap(InstrumentationScope* other) {
-    if (other == this) return;
-    ABSL_DCHECK(GetArena() == other->GetArena());
-    InternalSwap(other);
-  }
+	static const ::google::protobuf::Descriptor *descriptor() {
+		return GetDescriptor();
+	}
+	static const ::google::protobuf::Descriptor *GetDescriptor() {
+		return default_instance().GetMetadata().descriptor;
+	}
+	static const ::google::protobuf::Reflection *GetReflection() {
+		return default_instance().GetMetadata().reflection;
+	}
+	static const InstrumentationScope &default_instance() {
+		return *internal_default_instance();
+	}
+	static inline const InstrumentationScope *internal_default_instance() {
+		return reinterpret_cast<const InstrumentationScope *>(&_InstrumentationScope_default_instance_);
+	}
+	static constexpr int kIndexInFileMessages = 4;
+	friend void swap(InstrumentationScope &a, InstrumentationScope &b) {
+		a.Swap(&b);
+	}
+	inline void Swap(InstrumentationScope *other) {
+		if (other == this)
+			return;
+		if (::google::protobuf::internal::CanUseInternalSwap(GetArena(), other->GetArena())) {
+			InternalSwap(other);
+		} else {
+			::google::protobuf::internal::GenericSwap(this, other);
+		}
+	}
+	void UnsafeArenaSwap(InstrumentationScope *other) {
+		if (other == this)
+			return;
+		ABSL_DCHECK(GetArena() == other->GetArena());
+		InternalSwap(other);
+	}
 
-  // implements Message ----------------------------------------------
+	// implements Message ----------------------------------------------
 
-  InstrumentationScope* New(::google::protobuf::Arena* arena = nullptr) const {
-    return ::google::protobuf::Message::DefaultConstruct<InstrumentationScope>(arena);
-  }
-  using ::google::protobuf::Message::CopyFrom;
-  void CopyFrom(const InstrumentationScope& from);
-  using ::google::protobuf::Message::MergeFrom;
-  void MergeFrom(const InstrumentationScope& from) { InstrumentationScope::MergeImpl(*this, from); }
+	InstrumentationScope *New(::google::protobuf::Arena *arena = nullptr) const {
+		return ::google::protobuf::Message::DefaultConstruct<InstrumentationScope>(arena);
+	}
+	using ::google::protobuf::Message::CopyFrom;
+	void CopyFrom(const InstrumentationScope &from);
+	using ::google::protobuf::Message::MergeFrom;
+	void MergeFrom(const InstrumentationScope &from) {
+		InstrumentationScope::MergeImpl(*this, from);
+	}
 
-  private:
-  static void MergeImpl(
-      ::google::protobuf::MessageLite& to_msg,
-      const ::google::protobuf::MessageLite& from_msg);
+private:
+	static void MergeImpl(::google::protobuf::MessageLite &to_msg, const ::google::protobuf::MessageLite &from_msg);
 
-  public:
-  bool IsInitialized() const {
-    return true;
-  }
-  ABSL_ATTRIBUTE_REINITIALIZES void Clear() PROTOBUF_FINAL;
-  #if defined(PROTOBUF_CUSTOM_VTABLE)
-  private:
-  static ::size_t ByteSizeLong(const ::google::protobuf::MessageLite& msg);
-  static ::uint8_t* _InternalSerialize(
-      const MessageLite& msg, ::uint8_t* target,
-      ::google::protobuf::io::EpsCopyOutputStream* stream);
+public:
+	bool IsInitialized() const {
+		return true;
+	}
+	ABSL_ATTRIBUTE_REINITIALIZES void Clear() PROTOBUF_FINAL;
+#if defined(PROTOBUF_CUSTOM_VTABLE)
+private:
+	static ::size_t ByteSizeLong(const ::google::protobuf::MessageLite &msg);
+	static ::uint8_t *_InternalSerialize(const MessageLite &msg, ::uint8_t *target,
+	                                     ::google::protobuf::io::EpsCopyOutputStream *stream);
 
-  public:
-  ::size_t ByteSizeLong() const { return ByteSizeLong(*this); }
-  ::uint8_t* _InternalSerialize(
-      ::uint8_t* target,
-      ::google::protobuf::io::EpsCopyOutputStream* stream) const {
-    return _InternalSerialize(*this, target, stream);
-  }
-  #else   // PROTOBUF_CUSTOM_VTABLE
-  ::size_t ByteSizeLong() const final;
-  ::uint8_t* _InternalSerialize(
-      ::uint8_t* target,
-      ::google::protobuf::io::EpsCopyOutputStream* stream) const final;
-  #endif  // PROTOBUF_CUSTOM_VTABLE
-  int GetCachedSize() const { return _impl_._cached_size_.Get(); }
+public:
+	::size_t ByteSizeLong() const {
+		return ByteSizeLong(*this);
+	}
+	::uint8_t *_InternalSerialize(::uint8_t *target, ::google::protobuf::io::EpsCopyOutputStream *stream) const {
+		return _InternalSerialize(*this, target, stream);
+	}
+#else  // PROTOBUF_CUSTOM_VTABLE
+	::size_t ByteSizeLong() const final;
+	::uint8_t *_InternalSerialize(::uint8_t *target, ::google::protobuf::io::EpsCopyOutputStream *stream) const final;
+#endif // PROTOBUF_CUSTOM_VTABLE
+	int GetCachedSize() const {
+		return _impl_._cached_size_.Get();
+	}
 
-  private:
-  void SharedCtor(::google::protobuf::Arena* arena);
-  static void SharedDtor(MessageLite& self);
-  void InternalSwap(InstrumentationScope* other);
- private:
-  template <typename T>
-  friend ::absl::string_view(
-      ::google::protobuf::internal::GetAnyMessageName)();
-  static ::absl::string_view FullMessageName() { return "opentelemetry.proto.common.v1.InstrumentationScope"; }
+private:
+	void SharedCtor(::google::protobuf::Arena *arena);
+	static void SharedDtor(MessageLite &self);
+	void InternalSwap(InstrumentationScope *other);
 
- protected:
-  explicit InstrumentationScope(::google::protobuf::Arena* arena);
-  InstrumentationScope(::google::protobuf::Arena* arena, const InstrumentationScope& from);
-  InstrumentationScope(::google::protobuf::Arena* arena, InstrumentationScope&& from) noexcept
-      : InstrumentationScope(arena) {
-    *this = ::std::move(from);
-  }
-  const ::google::protobuf::internal::ClassData* GetClassData() const PROTOBUF_FINAL;
-  static void* PlacementNew_(const void*, void* mem,
-                             ::google::protobuf::Arena* arena);
-  static constexpr auto InternalNewImpl_();
-  static const ::google::protobuf::internal::ClassDataFull _class_data_;
+private:
+	template <typename T>
+	friend ::absl::string_view(::google::protobuf::internal::GetAnyMessageName)();
+	static ::absl::string_view FullMessageName() {
+		return "opentelemetry.proto.common.v1.InstrumentationScope";
+	}
 
- public:
-  ::google::protobuf::Metadata GetMetadata() const;
-  // nested types ----------------------------------------------------
+protected:
+	explicit InstrumentationScope(::google::protobuf::Arena *arena);
+	InstrumentationScope(::google::protobuf::Arena *arena, const InstrumentationScope &from);
+	InstrumentationScope(::google::protobuf::Arena *arena, InstrumentationScope &&from) noexcept
+	    : InstrumentationScope(arena) {
+		*this = ::std::move(from);
+	}
+	const ::google::protobuf::internal::ClassData *GetClassData() const PROTOBUF_FINAL;
+	static void *PlacementNew_(const void *, void *mem, ::google::protobuf::Arena *arena);
+	static constexpr auto InternalNewImpl_();
+	static const ::google::protobuf::internal::ClassDataFull _class_data_;
 
-  // accessors -------------------------------------------------------
-  enum : int {
-    kAttributesFieldNumber = 3,
-    kNameFieldNumber = 1,
-    kVersionFieldNumber = 2,
-    kDroppedAttributesCountFieldNumber = 4,
-  };
-  // repeated .opentelemetry.proto.common.v1.KeyValue attributes = 3;
-  int attributes_size() const;
-  private:
-  int _internal_attributes_size() const;
+public:
+	::google::protobuf::Metadata GetMetadata() const;
+	// nested types ----------------------------------------------------
 
-  public:
-  void clear_attributes() ;
-  ::opentelemetry::proto::common::v1::KeyValue* mutable_attributes(int index);
-  ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue>* mutable_attributes();
+	// accessors -------------------------------------------------------
+	enum : int {
+		kAttributesFieldNumber = 3,
+		kNameFieldNumber = 1,
+		kVersionFieldNumber = 2,
+		kDroppedAttributesCountFieldNumber = 4,
+	};
+	// repeated .opentelemetry.proto.common.v1.KeyValue attributes = 3;
+	int attributes_size() const;
 
-  private:
-  const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue>& _internal_attributes() const;
-  ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue>* _internal_mutable_attributes();
-  public:
-  const ::opentelemetry::proto::common::v1::KeyValue& attributes(int index) const;
-  ::opentelemetry::proto::common::v1::KeyValue* add_attributes();
-  const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue>& attributes() const;
-  // string name = 1;
-  void clear_name() ;
-  const std::string& name() const;
-  template <typename Arg_ = const std::string&, typename... Args_>
-  void set_name(Arg_&& arg, Args_... args);
-  std::string* mutable_name();
-  PROTOBUF_NODISCARD std::string* release_name();
-  void set_allocated_name(std::string* value);
+private:
+	int _internal_attributes_size() const;
 
-  private:
-  const std::string& _internal_name() const;
-  inline PROTOBUF_ALWAYS_INLINE void _internal_set_name(
-      const std::string& value);
-  std::string* _internal_mutable_name();
+public:
+	void clear_attributes();
+	::opentelemetry::proto::common::v1::KeyValue *mutable_attributes(int index);
+	::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue> *mutable_attributes();
 
-  public:
-  // string version = 2;
-  void clear_version() ;
-  const std::string& version() const;
-  template <typename Arg_ = const std::string&, typename... Args_>
-  void set_version(Arg_&& arg, Args_... args);
-  std::string* mutable_version();
-  PROTOBUF_NODISCARD std::string* release_version();
-  void set_allocated_version(std::string* value);
+private:
+	const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue> &
+	_internal_attributes() const;
+	::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue> *_internal_mutable_attributes();
 
-  private:
-  const std::string& _internal_version() const;
-  inline PROTOBUF_ALWAYS_INLINE void _internal_set_version(
-      const std::string& value);
-  std::string* _internal_mutable_version();
+public:
+	const ::opentelemetry::proto::common::v1::KeyValue &attributes(int index) const;
+	::opentelemetry::proto::common::v1::KeyValue *add_attributes();
+	const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue> &attributes() const;
+	// string name = 1;
+	void clear_name();
+	const std::string &name() const;
+	template <typename Arg_ = const std::string &, typename... Args_>
+	void set_name(Arg_ &&arg, Args_... args);
+	std::string *mutable_name();
+	PROTOBUF_NODISCARD std::string *release_name();
+	void set_allocated_name(std::string *value);
 
-  public:
-  // uint32 dropped_attributes_count = 4;
-  void clear_dropped_attributes_count() ;
-  ::uint32_t dropped_attributes_count() const;
-  void set_dropped_attributes_count(::uint32_t value);
+private:
+	const std::string &_internal_name() const;
+	inline PROTOBUF_ALWAYS_INLINE void _internal_set_name(const std::string &value);
+	std::string *_internal_mutable_name();
 
-  private:
-  ::uint32_t _internal_dropped_attributes_count() const;
-  void _internal_set_dropped_attributes_count(::uint32_t value);
+public:
+	// string version = 2;
+	void clear_version();
+	const std::string &version() const;
+	template <typename Arg_ = const std::string &, typename... Args_>
+	void set_version(Arg_ &&arg, Args_... args);
+	std::string *mutable_version();
+	PROTOBUF_NODISCARD std::string *release_version();
+	void set_allocated_version(std::string *value);
 
-  public:
-  // @@protoc_insertion_point(class_scope:opentelemetry.proto.common.v1.InstrumentationScope)
- private:
-  class _Internal;
-  friend class ::google::protobuf::internal::TcParser;
-  static const ::google::protobuf::internal::TcParseTable<
-      2, 4, 1,
-      70, 2>
-      _table_;
+private:
+	const std::string &_internal_version() const;
+	inline PROTOBUF_ALWAYS_INLINE void _internal_set_version(const std::string &value);
+	std::string *_internal_mutable_version();
 
-  friend class ::google::protobuf::MessageLite;
-  friend class ::google::protobuf::Arena;
-  template <typename T>
-  friend class ::google::protobuf::Arena::InternalHelper;
-  using InternalArenaConstructable_ = void;
-  using DestructorSkippable_ = void;
-  struct Impl_ {
-    inline explicit constexpr Impl_(
-        ::google::protobuf::internal::ConstantInitialized) noexcept;
-    inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
-                          ::google::protobuf::Arena* arena);
-    inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
-                          ::google::protobuf::Arena* arena, const Impl_& from,
-                          const InstrumentationScope& from_msg);
-    ::google::protobuf::RepeatedPtrField< ::opentelemetry::proto::common::v1::KeyValue > attributes_;
-    ::google::protobuf::internal::ArenaStringPtr name_;
-    ::google::protobuf::internal::ArenaStringPtr version_;
-    ::uint32_t dropped_attributes_count_;
-    ::google::protobuf::internal::CachedSize _cached_size_;
-    PROTOBUF_TSAN_DECLARE_MEMBER
-  };
-  union { Impl_ _impl_; };
-  friend struct ::TableStruct_opentelemetry_2fproto_2fcommon_2fv1_2fcommon_2eproto;
+public:
+	// uint32 dropped_attributes_count = 4;
+	void clear_dropped_attributes_count();
+	::uint32_t dropped_attributes_count() const;
+	void set_dropped_attributes_count(::uint32_t value);
+
+private:
+	::uint32_t _internal_dropped_attributes_count() const;
+	void _internal_set_dropped_attributes_count(::uint32_t value);
+
+public:
+	// @@protoc_insertion_point(class_scope:opentelemetry.proto.common.v1.InstrumentationScope)
+private:
+	class _Internal;
+	friend class ::google::protobuf::internal::TcParser;
+	static const ::google::protobuf::internal::TcParseTable<2, 4, 1, 70, 2> _table_;
+
+	friend class ::google::protobuf::MessageLite;
+	friend class ::google::protobuf::Arena;
+	template <typename T>
+	friend class ::google::protobuf::Arena::InternalHelper;
+	using InternalArenaConstructable_ = void;
+	using DestructorSkippable_ = void;
+	struct Impl_ {
+		inline explicit constexpr Impl_(::google::protobuf::internal::ConstantInitialized) noexcept;
+		inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
+		                      ::google::protobuf::Arena *arena);
+		inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
+		                      ::google::protobuf::Arena *arena, const Impl_ &from,
+		                      const InstrumentationScope &from_msg);
+		::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue> attributes_;
+		::google::protobuf::internal::ArenaStringPtr name_;
+		::google::protobuf::internal::ArenaStringPtr version_;
+		::uint32_t dropped_attributes_count_;
+		::google::protobuf::internal::CachedSize _cached_size_;
+		PROTOBUF_TSAN_DECLARE_MEMBER
+	};
+	union {
+		Impl_ _impl_;
+	};
+	friend struct ::TableStruct_opentelemetry_2fproto_2fcommon_2fv1_2fcommon_2eproto;
 };
 
 // ===================================================================
 
-
-
-
 // ===================================================================
-
 
 #ifdef __GNUC__
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wstrict-aliasing"
-#endif  // __GNUC__
+#endif // __GNUC__
 // -------------------------------------------------------------------
 
 // AnyValue
 
 // string string_value = 1;
 inline bool AnyValue::has_string_value() const {
-  return value_case() == kStringValue;
+	return value_case() == kStringValue;
 }
 inline void AnyValue::set_has_string_value() {
-  _impl_._oneof_case_[0] = kStringValue;
+	_impl_._oneof_case_[0] = kStringValue;
 }
 inline void AnyValue::clear_string_value() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  if (value_case() == kStringValue) {
-    _impl_.value_.string_value_.Destroy();
-    clear_has_value();
-  }
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	if (value_case() == kStringValue) {
+		_impl_.value_.string_value_.Destroy();
+		clear_has_value();
+	}
 }
-inline const std::string& AnyValue::string_value() const
-    ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  // @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.AnyValue.string_value)
-  return _internal_string_value();
+inline const std::string &AnyValue::string_value() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	// @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.AnyValue.string_value)
+	return _internal_string_value();
 }
 template <typename Arg_, typename... Args_>
-inline PROTOBUF_ALWAYS_INLINE void AnyValue::set_string_value(Arg_&& arg,
-                                                     Args_... args) {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  if (value_case() != kStringValue) {
-    clear_value();
+inline PROTOBUF_ALWAYS_INLINE void AnyValue::set_string_value(Arg_ &&arg, Args_... args) {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	if (value_case() != kStringValue) {
+		clear_value();
 
-    set_has_string_value();
-    _impl_.value_.string_value_.InitDefault();
-  }
-  _impl_.value_.string_value_.Set(static_cast<Arg_&&>(arg), args..., GetArena());
-  // @@protoc_insertion_point(field_set:opentelemetry.proto.common.v1.AnyValue.string_value)
+		set_has_string_value();
+		_impl_.value_.string_value_.InitDefault();
+	}
+	_impl_.value_.string_value_.Set(static_cast<Arg_ &&>(arg), args..., GetArena());
+	// @@protoc_insertion_point(field_set:opentelemetry.proto.common.v1.AnyValue.string_value)
 }
-inline std::string* AnyValue::mutable_string_value() ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  std::string* _s = _internal_mutable_string_value();
-  // @@protoc_insertion_point(field_mutable:opentelemetry.proto.common.v1.AnyValue.string_value)
-  return _s;
+inline std::string *AnyValue::mutable_string_value() ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	std::string *_s = _internal_mutable_string_value();
+	// @@protoc_insertion_point(field_mutable:opentelemetry.proto.common.v1.AnyValue.string_value)
+	return _s;
 }
-inline const std::string& AnyValue::_internal_string_value() const {
-  ::google::protobuf::internal::TSanRead(&_impl_);
-  if (value_case() != kStringValue) {
-    return ::google::protobuf::internal::GetEmptyStringAlreadyInited();
-  }
-  return _impl_.value_.string_value_.Get();
+inline const std::string &AnyValue::_internal_string_value() const {
+	::google::protobuf::internal::TSanRead(&_impl_);
+	if (value_case() != kStringValue) {
+		return ::google::protobuf::internal::GetEmptyStringAlreadyInited();
+	}
+	return _impl_.value_.string_value_.Get();
 }
-inline void AnyValue::_internal_set_string_value(const std::string& value) {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  if (value_case() != kStringValue) {
-    clear_value();
+inline void AnyValue::_internal_set_string_value(const std::string &value) {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	if (value_case() != kStringValue) {
+		clear_value();
 
-    set_has_string_value();
-    _impl_.value_.string_value_.InitDefault();
-  }
-  _impl_.value_.string_value_.Set(value, GetArena());
+		set_has_string_value();
+		_impl_.value_.string_value_.InitDefault();
+	}
+	_impl_.value_.string_value_.Set(value, GetArena());
 }
-inline std::string* AnyValue::_internal_mutable_string_value() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  if (value_case() != kStringValue) {
-    clear_value();
+inline std::string *AnyValue::_internal_mutable_string_value() {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	if (value_case() != kStringValue) {
+		clear_value();
 
-    set_has_string_value();
-    _impl_.value_.string_value_.InitDefault();
-  }
-  return _impl_.value_.string_value_.Mutable( GetArena());
+		set_has_string_value();
+		_impl_.value_.string_value_.InitDefault();
+	}
+	return _impl_.value_.string_value_.Mutable(GetArena());
 }
-inline std::string* AnyValue::release_string_value() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  // @@protoc_insertion_point(field_release:opentelemetry.proto.common.v1.AnyValue.string_value)
-  if (value_case() != kStringValue) {
-    return nullptr;
-  }
-  clear_has_value();
-  return _impl_.value_.string_value_.Release();
+inline std::string *AnyValue::release_string_value() {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	// @@protoc_insertion_point(field_release:opentelemetry.proto.common.v1.AnyValue.string_value)
+	if (value_case() != kStringValue) {
+		return nullptr;
+	}
+	clear_has_value();
+	return _impl_.value_.string_value_.Release();
 }
-inline void AnyValue::set_allocated_string_value(std::string* value) {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  if (has_value()) {
-    clear_value();
-  }
-  if (value != nullptr) {
-    set_has_string_value();
-    _impl_.value_.string_value_.InitAllocated(value, GetArena());
-  }
-  // @@protoc_insertion_point(field_set_allocated:opentelemetry.proto.common.v1.AnyValue.string_value)
+inline void AnyValue::set_allocated_string_value(std::string *value) {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	if (has_value()) {
+		clear_value();
+	}
+	if (value != nullptr) {
+		set_has_string_value();
+		_impl_.value_.string_value_.InitAllocated(value, GetArena());
+	}
+	// @@protoc_insertion_point(field_set_allocated:opentelemetry.proto.common.v1.AnyValue.string_value)
 }
 
 // bool bool_value = 2;
 inline bool AnyValue::has_bool_value() const {
-  return value_case() == kBoolValue;
+	return value_case() == kBoolValue;
 }
 inline void AnyValue::set_has_bool_value() {
-  _impl_._oneof_case_[0] = kBoolValue;
+	_impl_._oneof_case_[0] = kBoolValue;
 }
 inline void AnyValue::clear_bool_value() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  if (value_case() == kBoolValue) {
-    _impl_.value_.bool_value_ = false;
-    clear_has_value();
-  }
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	if (value_case() == kBoolValue) {
+		_impl_.value_.bool_value_ = false;
+		clear_has_value();
+	}
 }
 inline bool AnyValue::bool_value() const {
-  // @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.AnyValue.bool_value)
-  return _internal_bool_value();
+	// @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.AnyValue.bool_value)
+	return _internal_bool_value();
 }
 inline void AnyValue::set_bool_value(bool value) {
-  if (value_case() != kBoolValue) {
-    clear_value();
-    set_has_bool_value();
-  }
-  _impl_.value_.bool_value_ = value;
-  // @@protoc_insertion_point(field_set:opentelemetry.proto.common.v1.AnyValue.bool_value)
+	if (value_case() != kBoolValue) {
+		clear_value();
+		set_has_bool_value();
+	}
+	_impl_.value_.bool_value_ = value;
+	// @@protoc_insertion_point(field_set:opentelemetry.proto.common.v1.AnyValue.bool_value)
 }
 inline bool AnyValue::_internal_bool_value() const {
-  if (value_case() == kBoolValue) {
-    return _impl_.value_.bool_value_;
-  }
-  return false;
+	if (value_case() == kBoolValue) {
+		return _impl_.value_.bool_value_;
+	}
+	return false;
 }
 
 // int64 int_value = 3;
 inline bool AnyValue::has_int_value() const {
-  return value_case() == kIntValue;
+	return value_case() == kIntValue;
 }
 inline void AnyValue::set_has_int_value() {
-  _impl_._oneof_case_[0] = kIntValue;
+	_impl_._oneof_case_[0] = kIntValue;
 }
 inline void AnyValue::clear_int_value() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  if (value_case() == kIntValue) {
-    _impl_.value_.int_value_ = ::int64_t{0};
-    clear_has_value();
-  }
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	if (value_case() == kIntValue) {
+		_impl_.value_.int_value_ = ::int64_t {0};
+		clear_has_value();
+	}
 }
 inline ::int64_t AnyValue::int_value() const {
-  // @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.AnyValue.int_value)
-  return _internal_int_value();
+	// @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.AnyValue.int_value)
+	return _internal_int_value();
 }
 inline void AnyValue::set_int_value(::int64_t value) {
-  if (value_case() != kIntValue) {
-    clear_value();
-    set_has_int_value();
-  }
-  _impl_.value_.int_value_ = value;
-  // @@protoc_insertion_point(field_set:opentelemetry.proto.common.v1.AnyValue.int_value)
+	if (value_case() != kIntValue) {
+		clear_value();
+		set_has_int_value();
+	}
+	_impl_.value_.int_value_ = value;
+	// @@protoc_insertion_point(field_set:opentelemetry.proto.common.v1.AnyValue.int_value)
 }
 inline ::int64_t AnyValue::_internal_int_value() const {
-  if (value_case() == kIntValue) {
-    return _impl_.value_.int_value_;
-  }
-  return ::int64_t{0};
+	if (value_case() == kIntValue) {
+		return _impl_.value_.int_value_;
+	}
+	return ::int64_t {0};
 }
 
 // double double_value = 4;
 inline bool AnyValue::has_double_value() const {
-  return value_case() == kDoubleValue;
+	return value_case() == kDoubleValue;
 }
 inline void AnyValue::set_has_double_value() {
-  _impl_._oneof_case_[0] = kDoubleValue;
+	_impl_._oneof_case_[0] = kDoubleValue;
 }
 inline void AnyValue::clear_double_value() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  if (value_case() == kDoubleValue) {
-    _impl_.value_.double_value_ = 0;
-    clear_has_value();
-  }
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	if (value_case() == kDoubleValue) {
+		_impl_.value_.double_value_ = 0;
+		clear_has_value();
+	}
 }
 inline double AnyValue::double_value() const {
-  // @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.AnyValue.double_value)
-  return _internal_double_value();
+	// @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.AnyValue.double_value)
+	return _internal_double_value();
 }
 inline void AnyValue::set_double_value(double value) {
-  if (value_case() != kDoubleValue) {
-    clear_value();
-    set_has_double_value();
-  }
-  _impl_.value_.double_value_ = value;
-  // @@protoc_insertion_point(field_set:opentelemetry.proto.common.v1.AnyValue.double_value)
+	if (value_case() != kDoubleValue) {
+		clear_value();
+		set_has_double_value();
+	}
+	_impl_.value_.double_value_ = value;
+	// @@protoc_insertion_point(field_set:opentelemetry.proto.common.v1.AnyValue.double_value)
 }
 inline double AnyValue::_internal_double_value() const {
-  if (value_case() == kDoubleValue) {
-    return _impl_.value_.double_value_;
-  }
-  return 0;
+	if (value_case() == kDoubleValue) {
+		return _impl_.value_.double_value_;
+	}
+	return 0;
 }
 
 // .opentelemetry.proto.common.v1.ArrayValue array_value = 5;
 inline bool AnyValue::has_array_value() const {
-  return value_case() == kArrayValue;
+	return value_case() == kArrayValue;
 }
 inline bool AnyValue::_internal_has_array_value() const {
-  return value_case() == kArrayValue;
+	return value_case() == kArrayValue;
 }
 inline void AnyValue::set_has_array_value() {
-  _impl_._oneof_case_[0] = kArrayValue;
+	_impl_._oneof_case_[0] = kArrayValue;
 }
 inline void AnyValue::clear_array_value() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  if (value_case() == kArrayValue) {
-    if (GetArena() == nullptr) {
-      delete _impl_.value_.array_value_;
-    } else if (::google::protobuf::internal::DebugHardenClearOneofMessageOnArena()) {
-      ::google::protobuf::internal::MaybePoisonAfterClear(_impl_.value_.array_value_);
-    }
-    clear_has_value();
-  }
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	if (value_case() == kArrayValue) {
+		if (GetArena() == nullptr) {
+			delete _impl_.value_.array_value_;
+		} else if (::google::protobuf::internal::DebugHardenClearOneofMessageOnArena()) {
+			::google::protobuf::internal::MaybePoisonAfterClear(_impl_.value_.array_value_);
+		}
+		clear_has_value();
+	}
 }
-inline ::opentelemetry::proto::common::v1::ArrayValue* AnyValue::release_array_value() {
-  // @@protoc_insertion_point(field_release:opentelemetry.proto.common.v1.AnyValue.array_value)
-  if (value_case() == kArrayValue) {
-    clear_has_value();
-    auto* temp = _impl_.value_.array_value_;
-    if (GetArena() != nullptr) {
-      temp = ::google::protobuf::internal::DuplicateIfNonNull(temp);
-    }
-    _impl_.value_.array_value_ = nullptr;
-    return temp;
-  } else {
-    return nullptr;
-  }
+inline ::opentelemetry::proto::common::v1::ArrayValue *AnyValue::release_array_value() {
+	// @@protoc_insertion_point(field_release:opentelemetry.proto.common.v1.AnyValue.array_value)
+	if (value_case() == kArrayValue) {
+		clear_has_value();
+		auto *temp = _impl_.value_.array_value_;
+		if (GetArena() != nullptr) {
+			temp = ::google::protobuf::internal::DuplicateIfNonNull(temp);
+		}
+		_impl_.value_.array_value_ = nullptr;
+		return temp;
+	} else {
+		return nullptr;
+	}
 }
-inline const ::opentelemetry::proto::common::v1::ArrayValue& AnyValue::_internal_array_value() const {
-  return value_case() == kArrayValue ? *_impl_.value_.array_value_ : reinterpret_cast<::opentelemetry::proto::common::v1::ArrayValue&>(::opentelemetry::proto::common::v1::_ArrayValue_default_instance_);
+inline const ::opentelemetry::proto::common::v1::ArrayValue &AnyValue::_internal_array_value() const {
+	return value_case() == kArrayValue ? *_impl_.value_.array_value_
+	                                   : reinterpret_cast<::opentelemetry::proto::common::v1::ArrayValue &>(
+	                                         ::opentelemetry::proto::common::v1::_ArrayValue_default_instance_);
 }
-inline const ::opentelemetry::proto::common::v1::ArrayValue& AnyValue::array_value() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  // @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.AnyValue.array_value)
-  return _internal_array_value();
+inline const ::opentelemetry::proto::common::v1::ArrayValue &
+AnyValue::array_value() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	// @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.AnyValue.array_value)
+	return _internal_array_value();
 }
-inline ::opentelemetry::proto::common::v1::ArrayValue* AnyValue::unsafe_arena_release_array_value() {
-  // @@protoc_insertion_point(field_unsafe_arena_release:opentelemetry.proto.common.v1.AnyValue.array_value)
-  if (value_case() == kArrayValue) {
-    clear_has_value();
-    auto* temp = _impl_.value_.array_value_;
-    _impl_.value_.array_value_ = nullptr;
-    return temp;
-  } else {
-    return nullptr;
-  }
+inline ::opentelemetry::proto::common::v1::ArrayValue *AnyValue::unsafe_arena_release_array_value() {
+	// @@protoc_insertion_point(field_unsafe_arena_release:opentelemetry.proto.common.v1.AnyValue.array_value)
+	if (value_case() == kArrayValue) {
+		clear_has_value();
+		auto *temp = _impl_.value_.array_value_;
+		_impl_.value_.array_value_ = nullptr;
+		return temp;
+	} else {
+		return nullptr;
+	}
 }
-inline void AnyValue::unsafe_arena_set_allocated_array_value(::opentelemetry::proto::common::v1::ArrayValue* value) {
-  // We rely on the oneof clear method to free the earlier contents
-  // of this oneof. We can directly use the pointer we're given to
-  // set the new value.
-  clear_value();
-  if (value) {
-    set_has_array_value();
-    _impl_.value_.array_value_ = value;
-  }
-  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:opentelemetry.proto.common.v1.AnyValue.array_value)
+inline void AnyValue::unsafe_arena_set_allocated_array_value(::opentelemetry::proto::common::v1::ArrayValue *value) {
+	// We rely on the oneof clear method to free the earlier contents
+	// of this oneof. We can directly use the pointer we're given to
+	// set the new value.
+	clear_value();
+	if (value) {
+		set_has_array_value();
+		_impl_.value_.array_value_ = value;
+	}
+	// @@protoc_insertion_point(field_unsafe_arena_set_allocated:opentelemetry.proto.common.v1.AnyValue.array_value)
 }
-inline ::opentelemetry::proto::common::v1::ArrayValue* AnyValue::_internal_mutable_array_value() {
-  if (value_case() != kArrayValue) {
-    clear_value();
-    set_has_array_value();
-    _impl_.value_.array_value_ =
-        ::google::protobuf::Message::DefaultConstruct<::opentelemetry::proto::common::v1::ArrayValue>(GetArena());
-  }
-  return _impl_.value_.array_value_;
+inline ::opentelemetry::proto::common::v1::ArrayValue *AnyValue::_internal_mutable_array_value() {
+	if (value_case() != kArrayValue) {
+		clear_value();
+		set_has_array_value();
+		_impl_.value_.array_value_ =
+		    ::google::protobuf::Message::DefaultConstruct<::opentelemetry::proto::common::v1::ArrayValue>(GetArena());
+	}
+	return _impl_.value_.array_value_;
 }
-inline ::opentelemetry::proto::common::v1::ArrayValue* AnyValue::mutable_array_value() ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  ::opentelemetry::proto::common::v1::ArrayValue* _msg = _internal_mutable_array_value();
-  // @@protoc_insertion_point(field_mutable:opentelemetry.proto.common.v1.AnyValue.array_value)
-  return _msg;
+inline ::opentelemetry::proto::common::v1::ArrayValue *AnyValue::mutable_array_value() ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	::opentelemetry::proto::common::v1::ArrayValue *_msg = _internal_mutable_array_value();
+	// @@protoc_insertion_point(field_mutable:opentelemetry.proto.common.v1.AnyValue.array_value)
+	return _msg;
 }
 
 // .opentelemetry.proto.common.v1.KeyValueList kvlist_value = 6;
 inline bool AnyValue::has_kvlist_value() const {
-  return value_case() == kKvlistValue;
+	return value_case() == kKvlistValue;
 }
 inline bool AnyValue::_internal_has_kvlist_value() const {
-  return value_case() == kKvlistValue;
+	return value_case() == kKvlistValue;
 }
 inline void AnyValue::set_has_kvlist_value() {
-  _impl_._oneof_case_[0] = kKvlistValue;
+	_impl_._oneof_case_[0] = kKvlistValue;
 }
 inline void AnyValue::clear_kvlist_value() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  if (value_case() == kKvlistValue) {
-    if (GetArena() == nullptr) {
-      delete _impl_.value_.kvlist_value_;
-    } else if (::google::protobuf::internal::DebugHardenClearOneofMessageOnArena()) {
-      ::google::protobuf::internal::MaybePoisonAfterClear(_impl_.value_.kvlist_value_);
-    }
-    clear_has_value();
-  }
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	if (value_case() == kKvlistValue) {
+		if (GetArena() == nullptr) {
+			delete _impl_.value_.kvlist_value_;
+		} else if (::google::protobuf::internal::DebugHardenClearOneofMessageOnArena()) {
+			::google::protobuf::internal::MaybePoisonAfterClear(_impl_.value_.kvlist_value_);
+		}
+		clear_has_value();
+	}
 }
-inline ::opentelemetry::proto::common::v1::KeyValueList* AnyValue::release_kvlist_value() {
-  // @@protoc_insertion_point(field_release:opentelemetry.proto.common.v1.AnyValue.kvlist_value)
-  if (value_case() == kKvlistValue) {
-    clear_has_value();
-    auto* temp = _impl_.value_.kvlist_value_;
-    if (GetArena() != nullptr) {
-      temp = ::google::protobuf::internal::DuplicateIfNonNull(temp);
-    }
-    _impl_.value_.kvlist_value_ = nullptr;
-    return temp;
-  } else {
-    return nullptr;
-  }
+inline ::opentelemetry::proto::common::v1::KeyValueList *AnyValue::release_kvlist_value() {
+	// @@protoc_insertion_point(field_release:opentelemetry.proto.common.v1.AnyValue.kvlist_value)
+	if (value_case() == kKvlistValue) {
+		clear_has_value();
+		auto *temp = _impl_.value_.kvlist_value_;
+		if (GetArena() != nullptr) {
+			temp = ::google::protobuf::internal::DuplicateIfNonNull(temp);
+		}
+		_impl_.value_.kvlist_value_ = nullptr;
+		return temp;
+	} else {
+		return nullptr;
+	}
 }
-inline const ::opentelemetry::proto::common::v1::KeyValueList& AnyValue::_internal_kvlist_value() const {
-  return value_case() == kKvlistValue ? *_impl_.value_.kvlist_value_ : reinterpret_cast<::opentelemetry::proto::common::v1::KeyValueList&>(::opentelemetry::proto::common::v1::_KeyValueList_default_instance_);
+inline const ::opentelemetry::proto::common::v1::KeyValueList &AnyValue::_internal_kvlist_value() const {
+	return value_case() == kKvlistValue ? *_impl_.value_.kvlist_value_
+	                                    : reinterpret_cast<::opentelemetry::proto::common::v1::KeyValueList &>(
+	                                          ::opentelemetry::proto::common::v1::_KeyValueList_default_instance_);
 }
-inline const ::opentelemetry::proto::common::v1::KeyValueList& AnyValue::kvlist_value() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  // @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.AnyValue.kvlist_value)
-  return _internal_kvlist_value();
+inline const ::opentelemetry::proto::common::v1::KeyValueList &
+AnyValue::kvlist_value() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	// @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.AnyValue.kvlist_value)
+	return _internal_kvlist_value();
 }
-inline ::opentelemetry::proto::common::v1::KeyValueList* AnyValue::unsafe_arena_release_kvlist_value() {
-  // @@protoc_insertion_point(field_unsafe_arena_release:opentelemetry.proto.common.v1.AnyValue.kvlist_value)
-  if (value_case() == kKvlistValue) {
-    clear_has_value();
-    auto* temp = _impl_.value_.kvlist_value_;
-    _impl_.value_.kvlist_value_ = nullptr;
-    return temp;
-  } else {
-    return nullptr;
-  }
+inline ::opentelemetry::proto::common::v1::KeyValueList *AnyValue::unsafe_arena_release_kvlist_value() {
+	// @@protoc_insertion_point(field_unsafe_arena_release:opentelemetry.proto.common.v1.AnyValue.kvlist_value)
+	if (value_case() == kKvlistValue) {
+		clear_has_value();
+		auto *temp = _impl_.value_.kvlist_value_;
+		_impl_.value_.kvlist_value_ = nullptr;
+		return temp;
+	} else {
+		return nullptr;
+	}
 }
-inline void AnyValue::unsafe_arena_set_allocated_kvlist_value(::opentelemetry::proto::common::v1::KeyValueList* value) {
-  // We rely on the oneof clear method to free the earlier contents
-  // of this oneof. We can directly use the pointer we're given to
-  // set the new value.
-  clear_value();
-  if (value) {
-    set_has_kvlist_value();
-    _impl_.value_.kvlist_value_ = value;
-  }
-  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:opentelemetry.proto.common.v1.AnyValue.kvlist_value)
+inline void AnyValue::unsafe_arena_set_allocated_kvlist_value(::opentelemetry::proto::common::v1::KeyValueList *value) {
+	// We rely on the oneof clear method to free the earlier contents
+	// of this oneof. We can directly use the pointer we're given to
+	// set the new value.
+	clear_value();
+	if (value) {
+		set_has_kvlist_value();
+		_impl_.value_.kvlist_value_ = value;
+	}
+	// @@protoc_insertion_point(field_unsafe_arena_set_allocated:opentelemetry.proto.common.v1.AnyValue.kvlist_value)
 }
-inline ::opentelemetry::proto::common::v1::KeyValueList* AnyValue::_internal_mutable_kvlist_value() {
-  if (value_case() != kKvlistValue) {
-    clear_value();
-    set_has_kvlist_value();
-    _impl_.value_.kvlist_value_ =
-        ::google::protobuf::Message::DefaultConstruct<::opentelemetry::proto::common::v1::KeyValueList>(GetArena());
-  }
-  return _impl_.value_.kvlist_value_;
+inline ::opentelemetry::proto::common::v1::KeyValueList *AnyValue::_internal_mutable_kvlist_value() {
+	if (value_case() != kKvlistValue) {
+		clear_value();
+		set_has_kvlist_value();
+		_impl_.value_.kvlist_value_ =
+		    ::google::protobuf::Message::DefaultConstruct<::opentelemetry::proto::common::v1::KeyValueList>(GetArena());
+	}
+	return _impl_.value_.kvlist_value_;
 }
-inline ::opentelemetry::proto::common::v1::KeyValueList* AnyValue::mutable_kvlist_value() ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  ::opentelemetry::proto::common::v1::KeyValueList* _msg = _internal_mutable_kvlist_value();
-  // @@protoc_insertion_point(field_mutable:opentelemetry.proto.common.v1.AnyValue.kvlist_value)
-  return _msg;
+inline ::opentelemetry::proto::common::v1::KeyValueList *
+AnyValue::mutable_kvlist_value() ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	::opentelemetry::proto::common::v1::KeyValueList *_msg = _internal_mutable_kvlist_value();
+	// @@protoc_insertion_point(field_mutable:opentelemetry.proto.common.v1.AnyValue.kvlist_value)
+	return _msg;
 }
 
 // bytes bytes_value = 7;
 inline bool AnyValue::has_bytes_value() const {
-  return value_case() == kBytesValue;
+	return value_case() == kBytesValue;
 }
 inline void AnyValue::set_has_bytes_value() {
-  _impl_._oneof_case_[0] = kBytesValue;
+	_impl_._oneof_case_[0] = kBytesValue;
 }
 inline void AnyValue::clear_bytes_value() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  if (value_case() == kBytesValue) {
-    _impl_.value_.bytes_value_.Destroy();
-    clear_has_value();
-  }
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	if (value_case() == kBytesValue) {
+		_impl_.value_.bytes_value_.Destroy();
+		clear_has_value();
+	}
 }
-inline const std::string& AnyValue::bytes_value() const
-    ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  // @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.AnyValue.bytes_value)
-  return _internal_bytes_value();
+inline const std::string &AnyValue::bytes_value() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	// @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.AnyValue.bytes_value)
+	return _internal_bytes_value();
 }
 template <typename Arg_, typename... Args_>
-inline PROTOBUF_ALWAYS_INLINE void AnyValue::set_bytes_value(Arg_&& arg,
-                                                     Args_... args) {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  if (value_case() != kBytesValue) {
-    clear_value();
+inline PROTOBUF_ALWAYS_INLINE void AnyValue::set_bytes_value(Arg_ &&arg, Args_... args) {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	if (value_case() != kBytesValue) {
+		clear_value();
 
-    set_has_bytes_value();
-    _impl_.value_.bytes_value_.InitDefault();
-  }
-  _impl_.value_.bytes_value_.SetBytes(static_cast<Arg_&&>(arg), args..., GetArena());
-  // @@protoc_insertion_point(field_set:opentelemetry.proto.common.v1.AnyValue.bytes_value)
+		set_has_bytes_value();
+		_impl_.value_.bytes_value_.InitDefault();
+	}
+	_impl_.value_.bytes_value_.SetBytes(static_cast<Arg_ &&>(arg), args..., GetArena());
+	// @@protoc_insertion_point(field_set:opentelemetry.proto.common.v1.AnyValue.bytes_value)
 }
-inline std::string* AnyValue::mutable_bytes_value() ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  std::string* _s = _internal_mutable_bytes_value();
-  // @@protoc_insertion_point(field_mutable:opentelemetry.proto.common.v1.AnyValue.bytes_value)
-  return _s;
+inline std::string *AnyValue::mutable_bytes_value() ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	std::string *_s = _internal_mutable_bytes_value();
+	// @@protoc_insertion_point(field_mutable:opentelemetry.proto.common.v1.AnyValue.bytes_value)
+	return _s;
 }
-inline const std::string& AnyValue::_internal_bytes_value() const {
-  ::google::protobuf::internal::TSanRead(&_impl_);
-  if (value_case() != kBytesValue) {
-    return ::google::protobuf::internal::GetEmptyStringAlreadyInited();
-  }
-  return _impl_.value_.bytes_value_.Get();
+inline const std::string &AnyValue::_internal_bytes_value() const {
+	::google::protobuf::internal::TSanRead(&_impl_);
+	if (value_case() != kBytesValue) {
+		return ::google::protobuf::internal::GetEmptyStringAlreadyInited();
+	}
+	return _impl_.value_.bytes_value_.Get();
 }
-inline void AnyValue::_internal_set_bytes_value(const std::string& value) {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  if (value_case() != kBytesValue) {
-    clear_value();
+inline void AnyValue::_internal_set_bytes_value(const std::string &value) {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	if (value_case() != kBytesValue) {
+		clear_value();
 
-    set_has_bytes_value();
-    _impl_.value_.bytes_value_.InitDefault();
-  }
-  _impl_.value_.bytes_value_.Set(value, GetArena());
+		set_has_bytes_value();
+		_impl_.value_.bytes_value_.InitDefault();
+	}
+	_impl_.value_.bytes_value_.Set(value, GetArena());
 }
-inline std::string* AnyValue::_internal_mutable_bytes_value() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  if (value_case() != kBytesValue) {
-    clear_value();
+inline std::string *AnyValue::_internal_mutable_bytes_value() {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	if (value_case() != kBytesValue) {
+		clear_value();
 
-    set_has_bytes_value();
-    _impl_.value_.bytes_value_.InitDefault();
-  }
-  return _impl_.value_.bytes_value_.Mutable( GetArena());
+		set_has_bytes_value();
+		_impl_.value_.bytes_value_.InitDefault();
+	}
+	return _impl_.value_.bytes_value_.Mutable(GetArena());
 }
-inline std::string* AnyValue::release_bytes_value() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  // @@protoc_insertion_point(field_release:opentelemetry.proto.common.v1.AnyValue.bytes_value)
-  if (value_case() != kBytesValue) {
-    return nullptr;
-  }
-  clear_has_value();
-  return _impl_.value_.bytes_value_.Release();
+inline std::string *AnyValue::release_bytes_value() {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	// @@protoc_insertion_point(field_release:opentelemetry.proto.common.v1.AnyValue.bytes_value)
+	if (value_case() != kBytesValue) {
+		return nullptr;
+	}
+	clear_has_value();
+	return _impl_.value_.bytes_value_.Release();
 }
-inline void AnyValue::set_allocated_bytes_value(std::string* value) {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  if (has_value()) {
-    clear_value();
-  }
-  if (value != nullptr) {
-    set_has_bytes_value();
-    _impl_.value_.bytes_value_.InitAllocated(value, GetArena());
-  }
-  // @@protoc_insertion_point(field_set_allocated:opentelemetry.proto.common.v1.AnyValue.bytes_value)
+inline void AnyValue::set_allocated_bytes_value(std::string *value) {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	if (has_value()) {
+		clear_value();
+	}
+	if (value != nullptr) {
+		set_has_bytes_value();
+		_impl_.value_.bytes_value_.InitAllocated(value, GetArena());
+	}
+	// @@protoc_insertion_point(field_set_allocated:opentelemetry.proto.common.v1.AnyValue.bytes_value)
 }
 
 inline bool AnyValue::has_value() const {
-  return value_case() != VALUE_NOT_SET;
+	return value_case() != VALUE_NOT_SET;
 }
 inline void AnyValue::clear_has_value() {
-  _impl_._oneof_case_[0] = VALUE_NOT_SET;
+	_impl_._oneof_case_[0] = VALUE_NOT_SET;
 }
 inline AnyValue::ValueCase AnyValue::value_case() const {
-  return AnyValue::ValueCase(_impl_._oneof_case_[0]);
+	return AnyValue::ValueCase(_impl_._oneof_case_[0]);
 }
 // -------------------------------------------------------------------
 
@@ -1722,51 +1726,51 @@ inline AnyValue::ValueCase AnyValue::value_case() const {
 
 // repeated .opentelemetry.proto.common.v1.AnyValue values = 1;
 inline int ArrayValue::_internal_values_size() const {
-  return _internal_values().size();
+	return _internal_values().size();
 }
 inline int ArrayValue::values_size() const {
-  return _internal_values_size();
+	return _internal_values_size();
 }
 inline void ArrayValue::clear_values() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  _impl_.values_.Clear();
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	_impl_.values_.Clear();
 }
-inline ::opentelemetry::proto::common::v1::AnyValue* ArrayValue::mutable_values(int index)
-    ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  // @@protoc_insertion_point(field_mutable:opentelemetry.proto.common.v1.ArrayValue.values)
-  return _internal_mutable_values()->Mutable(index);
+inline ::opentelemetry::proto::common::v1::AnyValue *
+ArrayValue::mutable_values(int index) ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	// @@protoc_insertion_point(field_mutable:opentelemetry.proto.common.v1.ArrayValue.values)
+	return _internal_mutable_values()->Mutable(index);
 }
-inline ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::AnyValue>* ArrayValue::mutable_values()
-    ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  // @@protoc_insertion_point(field_mutable_list:opentelemetry.proto.common.v1.ArrayValue.values)
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  return _internal_mutable_values();
+inline ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::AnyValue> *
+ArrayValue::mutable_values() ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	// @@protoc_insertion_point(field_mutable_list:opentelemetry.proto.common.v1.ArrayValue.values)
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	return _internal_mutable_values();
 }
-inline const ::opentelemetry::proto::common::v1::AnyValue& ArrayValue::values(int index) const
-    ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  // @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.ArrayValue.values)
-  return _internal_values().Get(index);
+inline const ::opentelemetry::proto::common::v1::AnyValue &
+ArrayValue::values(int index) const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	// @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.ArrayValue.values)
+	return _internal_values().Get(index);
 }
-inline ::opentelemetry::proto::common::v1::AnyValue* ArrayValue::add_values() ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  ::opentelemetry::proto::common::v1::AnyValue* _add = _internal_mutable_values()->Add();
-  // @@protoc_insertion_point(field_add:opentelemetry.proto.common.v1.ArrayValue.values)
-  return _add;
+inline ::opentelemetry::proto::common::v1::AnyValue *ArrayValue::add_values() ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	::opentelemetry::proto::common::v1::AnyValue *_add = _internal_mutable_values()->Add();
+	// @@protoc_insertion_point(field_add:opentelemetry.proto.common.v1.ArrayValue.values)
+	return _add;
 }
-inline const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::AnyValue>& ArrayValue::values() const
-    ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  // @@protoc_insertion_point(field_list:opentelemetry.proto.common.v1.ArrayValue.values)
-  return _internal_values();
+inline const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::AnyValue> &
+ArrayValue::values() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	// @@protoc_insertion_point(field_list:opentelemetry.proto.common.v1.ArrayValue.values)
+	return _internal_values();
 }
-inline const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::AnyValue>&
+inline const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::AnyValue> &
 ArrayValue::_internal_values() const {
-  ::google::protobuf::internal::TSanRead(&_impl_);
-  return _impl_.values_;
+	::google::protobuf::internal::TSanRead(&_impl_);
+	return _impl_.values_;
 }
-inline ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::AnyValue>*
+inline ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::AnyValue> *
 ArrayValue::_internal_mutable_values() {
-  ::google::protobuf::internal::TSanRead(&_impl_);
-  return &_impl_.values_;
+	::google::protobuf::internal::TSanRead(&_impl_);
+	return &_impl_.values_;
 }
 
 // -------------------------------------------------------------------
@@ -1775,51 +1779,51 @@ ArrayValue::_internal_mutable_values() {
 
 // repeated .opentelemetry.proto.common.v1.KeyValue values = 1;
 inline int KeyValueList::_internal_values_size() const {
-  return _internal_values().size();
+	return _internal_values().size();
 }
 inline int KeyValueList::values_size() const {
-  return _internal_values_size();
+	return _internal_values_size();
 }
 inline void KeyValueList::clear_values() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  _impl_.values_.Clear();
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	_impl_.values_.Clear();
 }
-inline ::opentelemetry::proto::common::v1::KeyValue* KeyValueList::mutable_values(int index)
-    ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  // @@protoc_insertion_point(field_mutable:opentelemetry.proto.common.v1.KeyValueList.values)
-  return _internal_mutable_values()->Mutable(index);
+inline ::opentelemetry::proto::common::v1::KeyValue *
+KeyValueList::mutable_values(int index) ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	// @@protoc_insertion_point(field_mutable:opentelemetry.proto.common.v1.KeyValueList.values)
+	return _internal_mutable_values()->Mutable(index);
 }
-inline ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue>* KeyValueList::mutable_values()
-    ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  // @@protoc_insertion_point(field_mutable_list:opentelemetry.proto.common.v1.KeyValueList.values)
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  return _internal_mutable_values();
+inline ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue> *
+KeyValueList::mutable_values() ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	// @@protoc_insertion_point(field_mutable_list:opentelemetry.proto.common.v1.KeyValueList.values)
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	return _internal_mutable_values();
 }
-inline const ::opentelemetry::proto::common::v1::KeyValue& KeyValueList::values(int index) const
-    ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  // @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.KeyValueList.values)
-  return _internal_values().Get(index);
+inline const ::opentelemetry::proto::common::v1::KeyValue &
+KeyValueList::values(int index) const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	// @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.KeyValueList.values)
+	return _internal_values().Get(index);
 }
-inline ::opentelemetry::proto::common::v1::KeyValue* KeyValueList::add_values() ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  ::opentelemetry::proto::common::v1::KeyValue* _add = _internal_mutable_values()->Add();
-  // @@protoc_insertion_point(field_add:opentelemetry.proto.common.v1.KeyValueList.values)
-  return _add;
+inline ::opentelemetry::proto::common::v1::KeyValue *KeyValueList::add_values() ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	::opentelemetry::proto::common::v1::KeyValue *_add = _internal_mutable_values()->Add();
+	// @@protoc_insertion_point(field_add:opentelemetry.proto.common.v1.KeyValueList.values)
+	return _add;
 }
-inline const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue>& KeyValueList::values() const
-    ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  // @@protoc_insertion_point(field_list:opentelemetry.proto.common.v1.KeyValueList.values)
-  return _internal_values();
+inline const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue> &
+KeyValueList::values() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	// @@protoc_insertion_point(field_list:opentelemetry.proto.common.v1.KeyValueList.values)
+	return _internal_values();
 }
-inline const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue>&
+inline const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue> &
 KeyValueList::_internal_values() const {
-  ::google::protobuf::internal::TSanRead(&_impl_);
-  return _impl_.values_;
+	::google::protobuf::internal::TSanRead(&_impl_);
+	return _impl_.values_;
 }
-inline ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue>*
+inline ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue> *
 KeyValueList::_internal_mutable_values() {
-  ::google::protobuf::internal::TSanRead(&_impl_);
-  return &_impl_.values_;
+	::google::protobuf::internal::TSanRead(&_impl_);
+	return &_impl_.values_;
 }
 
 // -------------------------------------------------------------------
@@ -1828,146 +1832,148 @@ KeyValueList::_internal_mutable_values() {
 
 // string key = 1;
 inline void KeyValue::clear_key() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  _impl_.key_.ClearToEmpty();
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	_impl_.key_.ClearToEmpty();
 }
-inline const std::string& KeyValue::key() const
-    ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  // @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.KeyValue.key)
-  return _internal_key();
+inline const std::string &KeyValue::key() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	// @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.KeyValue.key)
+	return _internal_key();
 }
 template <typename Arg_, typename... Args_>
-inline PROTOBUF_ALWAYS_INLINE void KeyValue::set_key(Arg_&& arg,
-                                                     Args_... args) {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  _impl_.key_.Set(static_cast<Arg_&&>(arg), args..., GetArena());
-  // @@protoc_insertion_point(field_set:opentelemetry.proto.common.v1.KeyValue.key)
+inline PROTOBUF_ALWAYS_INLINE void KeyValue::set_key(Arg_ &&arg, Args_... args) {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	_impl_.key_.Set(static_cast<Arg_ &&>(arg), args..., GetArena());
+	// @@protoc_insertion_point(field_set:opentelemetry.proto.common.v1.KeyValue.key)
 }
-inline std::string* KeyValue::mutable_key() ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  std::string* _s = _internal_mutable_key();
-  // @@protoc_insertion_point(field_mutable:opentelemetry.proto.common.v1.KeyValue.key)
-  return _s;
+inline std::string *KeyValue::mutable_key() ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	std::string *_s = _internal_mutable_key();
+	// @@protoc_insertion_point(field_mutable:opentelemetry.proto.common.v1.KeyValue.key)
+	return _s;
 }
-inline const std::string& KeyValue::_internal_key() const {
-  ::google::protobuf::internal::TSanRead(&_impl_);
-  return _impl_.key_.Get();
+inline const std::string &KeyValue::_internal_key() const {
+	::google::protobuf::internal::TSanRead(&_impl_);
+	return _impl_.key_.Get();
 }
-inline void KeyValue::_internal_set_key(const std::string& value) {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  _impl_.key_.Set(value, GetArena());
+inline void KeyValue::_internal_set_key(const std::string &value) {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	_impl_.key_.Set(value, GetArena());
 }
-inline std::string* KeyValue::_internal_mutable_key() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  return _impl_.key_.Mutable( GetArena());
+inline std::string *KeyValue::_internal_mutable_key() {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	return _impl_.key_.Mutable(GetArena());
 }
-inline std::string* KeyValue::release_key() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  // @@protoc_insertion_point(field_release:opentelemetry.proto.common.v1.KeyValue.key)
-  return _impl_.key_.Release();
+inline std::string *KeyValue::release_key() {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	// @@protoc_insertion_point(field_release:opentelemetry.proto.common.v1.KeyValue.key)
+	return _impl_.key_.Release();
 }
-inline void KeyValue::set_allocated_key(std::string* value) {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  _impl_.key_.SetAllocated(value, GetArena());
-  if (::google::protobuf::internal::DebugHardenForceCopyDefaultString() && _impl_.key_.IsDefault()) {
-    _impl_.key_.Set("", GetArena());
-  }
-  // @@protoc_insertion_point(field_set_allocated:opentelemetry.proto.common.v1.KeyValue.key)
+inline void KeyValue::set_allocated_key(std::string *value) {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	_impl_.key_.SetAllocated(value, GetArena());
+	if (::google::protobuf::internal::DebugHardenForceCopyDefaultString() && _impl_.key_.IsDefault()) {
+		_impl_.key_.Set("", GetArena());
+	}
+	// @@protoc_insertion_point(field_set_allocated:opentelemetry.proto.common.v1.KeyValue.key)
 }
 
 // .opentelemetry.proto.common.v1.AnyValue value = 2;
 inline bool KeyValue::has_value() const {
-  bool value = (_impl_._has_bits_[0] & 0x00000001u) != 0;
-  PROTOBUF_ASSUME(!value || _impl_.value_ != nullptr);
-  return value;
+	bool value = (_impl_._has_bits_[0] & 0x00000001u) != 0;
+	PROTOBUF_ASSUME(!value || _impl_.value_ != nullptr);
+	return value;
 }
 inline void KeyValue::clear_value() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  if (_impl_.value_ != nullptr) _impl_.value_->Clear();
-  _impl_._has_bits_[0] &= ~0x00000001u;
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	if (_impl_.value_ != nullptr)
+		_impl_.value_->Clear();
+	_impl_._has_bits_[0] &= ~0x00000001u;
 }
-inline const ::opentelemetry::proto::common::v1::AnyValue& KeyValue::_internal_value() const {
-  ::google::protobuf::internal::TSanRead(&_impl_);
-  const ::opentelemetry::proto::common::v1::AnyValue* p = _impl_.value_;
-  return p != nullptr ? *p : reinterpret_cast<const ::opentelemetry::proto::common::v1::AnyValue&>(::opentelemetry::proto::common::v1::_AnyValue_default_instance_);
+inline const ::opentelemetry::proto::common::v1::AnyValue &KeyValue::_internal_value() const {
+	::google::protobuf::internal::TSanRead(&_impl_);
+	const ::opentelemetry::proto::common::v1::AnyValue *p = _impl_.value_;
+	return p != nullptr ? *p
+	                    : reinterpret_cast<const ::opentelemetry::proto::common::v1::AnyValue &>(
+	                          ::opentelemetry::proto::common::v1::_AnyValue_default_instance_);
 }
-inline const ::opentelemetry::proto::common::v1::AnyValue& KeyValue::value() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  // @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.KeyValue.value)
-  return _internal_value();
+inline const ::opentelemetry::proto::common::v1::AnyValue &KeyValue::value() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	// @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.KeyValue.value)
+	return _internal_value();
 }
-inline void KeyValue::unsafe_arena_set_allocated_value(::opentelemetry::proto::common::v1::AnyValue* value) {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  if (GetArena() == nullptr) {
-    delete reinterpret_cast<::google::protobuf::MessageLite*>(_impl_.value_);
-  }
-  _impl_.value_ = reinterpret_cast<::opentelemetry::proto::common::v1::AnyValue*>(value);
-  if (value != nullptr) {
-    _impl_._has_bits_[0] |= 0x00000001u;
-  } else {
-    _impl_._has_bits_[0] &= ~0x00000001u;
-  }
-  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:opentelemetry.proto.common.v1.KeyValue.value)
+inline void KeyValue::unsafe_arena_set_allocated_value(::opentelemetry::proto::common::v1::AnyValue *value) {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	if (GetArena() == nullptr) {
+		delete reinterpret_cast<::google::protobuf::MessageLite *>(_impl_.value_);
+	}
+	_impl_.value_ = reinterpret_cast<::opentelemetry::proto::common::v1::AnyValue *>(value);
+	if (value != nullptr) {
+		_impl_._has_bits_[0] |= 0x00000001u;
+	} else {
+		_impl_._has_bits_[0] &= ~0x00000001u;
+	}
+	// @@protoc_insertion_point(field_unsafe_arena_set_allocated:opentelemetry.proto.common.v1.KeyValue.value)
 }
-inline ::opentelemetry::proto::common::v1::AnyValue* KeyValue::release_value() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
+inline ::opentelemetry::proto::common::v1::AnyValue *KeyValue::release_value() {
+	::google::protobuf::internal::TSanWrite(&_impl_);
 
-  _impl_._has_bits_[0] &= ~0x00000001u;
-  ::opentelemetry::proto::common::v1::AnyValue* released = _impl_.value_;
-  _impl_.value_ = nullptr;
-  if (::google::protobuf::internal::DebugHardenForceCopyInRelease()) {
-    auto* old = reinterpret_cast<::google::protobuf::MessageLite*>(released);
-    released = ::google::protobuf::internal::DuplicateIfNonNull(released);
-    if (GetArena() == nullptr) {
-      delete old;
-    }
-  } else {
-    if (GetArena() != nullptr) {
-      released = ::google::protobuf::internal::DuplicateIfNonNull(released);
-    }
-  }
-  return released;
+	_impl_._has_bits_[0] &= ~0x00000001u;
+	::opentelemetry::proto::common::v1::AnyValue *released = _impl_.value_;
+	_impl_.value_ = nullptr;
+	if (::google::protobuf::internal::DebugHardenForceCopyInRelease()) {
+		auto *old = reinterpret_cast<::google::protobuf::MessageLite *>(released);
+		released = ::google::protobuf::internal::DuplicateIfNonNull(released);
+		if (GetArena() == nullptr) {
+			delete old;
+		}
+	} else {
+		if (GetArena() != nullptr) {
+			released = ::google::protobuf::internal::DuplicateIfNonNull(released);
+		}
+	}
+	return released;
 }
-inline ::opentelemetry::proto::common::v1::AnyValue* KeyValue::unsafe_arena_release_value() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  // @@protoc_insertion_point(field_release:opentelemetry.proto.common.v1.KeyValue.value)
+inline ::opentelemetry::proto::common::v1::AnyValue *KeyValue::unsafe_arena_release_value() {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	// @@protoc_insertion_point(field_release:opentelemetry.proto.common.v1.KeyValue.value)
 
-  _impl_._has_bits_[0] &= ~0x00000001u;
-  ::opentelemetry::proto::common::v1::AnyValue* temp = _impl_.value_;
-  _impl_.value_ = nullptr;
-  return temp;
+	_impl_._has_bits_[0] &= ~0x00000001u;
+	::opentelemetry::proto::common::v1::AnyValue *temp = _impl_.value_;
+	_impl_.value_ = nullptr;
+	return temp;
 }
-inline ::opentelemetry::proto::common::v1::AnyValue* KeyValue::_internal_mutable_value() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  if (_impl_.value_ == nullptr) {
-    auto* p = ::google::protobuf::Message::DefaultConstruct<::opentelemetry::proto::common::v1::AnyValue>(GetArena());
-    _impl_.value_ = reinterpret_cast<::opentelemetry::proto::common::v1::AnyValue*>(p);
-  }
-  return _impl_.value_;
+inline ::opentelemetry::proto::common::v1::AnyValue *KeyValue::_internal_mutable_value() {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	if (_impl_.value_ == nullptr) {
+		auto *p =
+		    ::google::protobuf::Message::DefaultConstruct<::opentelemetry::proto::common::v1::AnyValue>(GetArena());
+		_impl_.value_ = reinterpret_cast<::opentelemetry::proto::common::v1::AnyValue *>(p);
+	}
+	return _impl_.value_;
 }
-inline ::opentelemetry::proto::common::v1::AnyValue* KeyValue::mutable_value() ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  _impl_._has_bits_[0] |= 0x00000001u;
-  ::opentelemetry::proto::common::v1::AnyValue* _msg = _internal_mutable_value();
-  // @@protoc_insertion_point(field_mutable:opentelemetry.proto.common.v1.KeyValue.value)
-  return _msg;
+inline ::opentelemetry::proto::common::v1::AnyValue *KeyValue::mutable_value() ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	_impl_._has_bits_[0] |= 0x00000001u;
+	::opentelemetry::proto::common::v1::AnyValue *_msg = _internal_mutable_value();
+	// @@protoc_insertion_point(field_mutable:opentelemetry.proto.common.v1.KeyValue.value)
+	return _msg;
 }
-inline void KeyValue::set_allocated_value(::opentelemetry::proto::common::v1::AnyValue* value) {
-  ::google::protobuf::Arena* message_arena = GetArena();
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  if (message_arena == nullptr) {
-    delete (_impl_.value_);
-  }
+inline void KeyValue::set_allocated_value(::opentelemetry::proto::common::v1::AnyValue *value) {
+	::google::protobuf::Arena *message_arena = GetArena();
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	if (message_arena == nullptr) {
+		delete (_impl_.value_);
+	}
 
-  if (value != nullptr) {
-    ::google::protobuf::Arena* submessage_arena = (value)->GetArena();
-    if (message_arena != submessage_arena) {
-      value = ::google::protobuf::internal::GetOwnedMessage(message_arena, value, submessage_arena);
-    }
-    _impl_._has_bits_[0] |= 0x00000001u;
-  } else {
-    _impl_._has_bits_[0] &= ~0x00000001u;
-  }
+	if (value != nullptr) {
+		::google::protobuf::Arena *submessage_arena = (value)->GetArena();
+		if (message_arena != submessage_arena) {
+			value = ::google::protobuf::internal::GetOwnedMessage(message_arena, value, submessage_arena);
+		}
+		_impl_._has_bits_[0] |= 0x00000001u;
+	} else {
+		_impl_._has_bits_[0] &= ~0x00000001u;
+	}
 
-  _impl_.value_ = reinterpret_cast<::opentelemetry::proto::common::v1::AnyValue*>(value);
-  // @@protoc_insertion_point(field_set_allocated:opentelemetry.proto.common.v1.KeyValue.value)
+	_impl_.value_ = reinterpret_cast<::opentelemetry::proto::common::v1::AnyValue *>(value);
+	// @@protoc_insertion_point(field_set_allocated:opentelemetry.proto.common.v1.KeyValue.value)
 }
 
 // -------------------------------------------------------------------
@@ -1976,184 +1982,180 @@ inline void KeyValue::set_allocated_value(::opentelemetry::proto::common::v1::An
 
 // string name = 1;
 inline void InstrumentationScope::clear_name() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  _impl_.name_.ClearToEmpty();
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	_impl_.name_.ClearToEmpty();
 }
-inline const std::string& InstrumentationScope::name() const
-    ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  // @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.InstrumentationScope.name)
-  return _internal_name();
+inline const std::string &InstrumentationScope::name() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	// @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.InstrumentationScope.name)
+	return _internal_name();
 }
 template <typename Arg_, typename... Args_>
-inline PROTOBUF_ALWAYS_INLINE void InstrumentationScope::set_name(Arg_&& arg,
-                                                     Args_... args) {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  _impl_.name_.Set(static_cast<Arg_&&>(arg), args..., GetArena());
-  // @@protoc_insertion_point(field_set:opentelemetry.proto.common.v1.InstrumentationScope.name)
+inline PROTOBUF_ALWAYS_INLINE void InstrumentationScope::set_name(Arg_ &&arg, Args_... args) {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	_impl_.name_.Set(static_cast<Arg_ &&>(arg), args..., GetArena());
+	// @@protoc_insertion_point(field_set:opentelemetry.proto.common.v1.InstrumentationScope.name)
 }
-inline std::string* InstrumentationScope::mutable_name() ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  std::string* _s = _internal_mutable_name();
-  // @@protoc_insertion_point(field_mutable:opentelemetry.proto.common.v1.InstrumentationScope.name)
-  return _s;
+inline std::string *InstrumentationScope::mutable_name() ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	std::string *_s = _internal_mutable_name();
+	// @@protoc_insertion_point(field_mutable:opentelemetry.proto.common.v1.InstrumentationScope.name)
+	return _s;
 }
-inline const std::string& InstrumentationScope::_internal_name() const {
-  ::google::protobuf::internal::TSanRead(&_impl_);
-  return _impl_.name_.Get();
+inline const std::string &InstrumentationScope::_internal_name() const {
+	::google::protobuf::internal::TSanRead(&_impl_);
+	return _impl_.name_.Get();
 }
-inline void InstrumentationScope::_internal_set_name(const std::string& value) {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  _impl_.name_.Set(value, GetArena());
+inline void InstrumentationScope::_internal_set_name(const std::string &value) {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	_impl_.name_.Set(value, GetArena());
 }
-inline std::string* InstrumentationScope::_internal_mutable_name() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  return _impl_.name_.Mutable( GetArena());
+inline std::string *InstrumentationScope::_internal_mutable_name() {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	return _impl_.name_.Mutable(GetArena());
 }
-inline std::string* InstrumentationScope::release_name() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  // @@protoc_insertion_point(field_release:opentelemetry.proto.common.v1.InstrumentationScope.name)
-  return _impl_.name_.Release();
+inline std::string *InstrumentationScope::release_name() {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	// @@protoc_insertion_point(field_release:opentelemetry.proto.common.v1.InstrumentationScope.name)
+	return _impl_.name_.Release();
 }
-inline void InstrumentationScope::set_allocated_name(std::string* value) {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  _impl_.name_.SetAllocated(value, GetArena());
-  if (::google::protobuf::internal::DebugHardenForceCopyDefaultString() && _impl_.name_.IsDefault()) {
-    _impl_.name_.Set("", GetArena());
-  }
-  // @@protoc_insertion_point(field_set_allocated:opentelemetry.proto.common.v1.InstrumentationScope.name)
+inline void InstrumentationScope::set_allocated_name(std::string *value) {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	_impl_.name_.SetAllocated(value, GetArena());
+	if (::google::protobuf::internal::DebugHardenForceCopyDefaultString() && _impl_.name_.IsDefault()) {
+		_impl_.name_.Set("", GetArena());
+	}
+	// @@protoc_insertion_point(field_set_allocated:opentelemetry.proto.common.v1.InstrumentationScope.name)
 }
 
 // string version = 2;
 inline void InstrumentationScope::clear_version() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  _impl_.version_.ClearToEmpty();
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	_impl_.version_.ClearToEmpty();
 }
-inline const std::string& InstrumentationScope::version() const
-    ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  // @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.InstrumentationScope.version)
-  return _internal_version();
+inline const std::string &InstrumentationScope::version() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	// @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.InstrumentationScope.version)
+	return _internal_version();
 }
 template <typename Arg_, typename... Args_>
-inline PROTOBUF_ALWAYS_INLINE void InstrumentationScope::set_version(Arg_&& arg,
-                                                     Args_... args) {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  _impl_.version_.Set(static_cast<Arg_&&>(arg), args..., GetArena());
-  // @@protoc_insertion_point(field_set:opentelemetry.proto.common.v1.InstrumentationScope.version)
+inline PROTOBUF_ALWAYS_INLINE void InstrumentationScope::set_version(Arg_ &&arg, Args_... args) {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	_impl_.version_.Set(static_cast<Arg_ &&>(arg), args..., GetArena());
+	// @@protoc_insertion_point(field_set:opentelemetry.proto.common.v1.InstrumentationScope.version)
 }
-inline std::string* InstrumentationScope::mutable_version() ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  std::string* _s = _internal_mutable_version();
-  // @@protoc_insertion_point(field_mutable:opentelemetry.proto.common.v1.InstrumentationScope.version)
-  return _s;
+inline std::string *InstrumentationScope::mutable_version() ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	std::string *_s = _internal_mutable_version();
+	// @@protoc_insertion_point(field_mutable:opentelemetry.proto.common.v1.InstrumentationScope.version)
+	return _s;
 }
-inline const std::string& InstrumentationScope::_internal_version() const {
-  ::google::protobuf::internal::TSanRead(&_impl_);
-  return _impl_.version_.Get();
+inline const std::string &InstrumentationScope::_internal_version() const {
+	::google::protobuf::internal::TSanRead(&_impl_);
+	return _impl_.version_.Get();
 }
-inline void InstrumentationScope::_internal_set_version(const std::string& value) {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  _impl_.version_.Set(value, GetArena());
+inline void InstrumentationScope::_internal_set_version(const std::string &value) {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	_impl_.version_.Set(value, GetArena());
 }
-inline std::string* InstrumentationScope::_internal_mutable_version() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  return _impl_.version_.Mutable( GetArena());
+inline std::string *InstrumentationScope::_internal_mutable_version() {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	return _impl_.version_.Mutable(GetArena());
 }
-inline std::string* InstrumentationScope::release_version() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  // @@protoc_insertion_point(field_release:opentelemetry.proto.common.v1.InstrumentationScope.version)
-  return _impl_.version_.Release();
+inline std::string *InstrumentationScope::release_version() {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	// @@protoc_insertion_point(field_release:opentelemetry.proto.common.v1.InstrumentationScope.version)
+	return _impl_.version_.Release();
 }
-inline void InstrumentationScope::set_allocated_version(std::string* value) {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  _impl_.version_.SetAllocated(value, GetArena());
-  if (::google::protobuf::internal::DebugHardenForceCopyDefaultString() && _impl_.version_.IsDefault()) {
-    _impl_.version_.Set("", GetArena());
-  }
-  // @@protoc_insertion_point(field_set_allocated:opentelemetry.proto.common.v1.InstrumentationScope.version)
+inline void InstrumentationScope::set_allocated_version(std::string *value) {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	_impl_.version_.SetAllocated(value, GetArena());
+	if (::google::protobuf::internal::DebugHardenForceCopyDefaultString() && _impl_.version_.IsDefault()) {
+		_impl_.version_.Set("", GetArena());
+	}
+	// @@protoc_insertion_point(field_set_allocated:opentelemetry.proto.common.v1.InstrumentationScope.version)
 }
 
 // repeated .opentelemetry.proto.common.v1.KeyValue attributes = 3;
 inline int InstrumentationScope::_internal_attributes_size() const {
-  return _internal_attributes().size();
+	return _internal_attributes().size();
 }
 inline int InstrumentationScope::attributes_size() const {
-  return _internal_attributes_size();
+	return _internal_attributes_size();
 }
 inline void InstrumentationScope::clear_attributes() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  _impl_.attributes_.Clear();
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	_impl_.attributes_.Clear();
 }
-inline ::opentelemetry::proto::common::v1::KeyValue* InstrumentationScope::mutable_attributes(int index)
-    ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  // @@protoc_insertion_point(field_mutable:opentelemetry.proto.common.v1.InstrumentationScope.attributes)
-  return _internal_mutable_attributes()->Mutable(index);
+inline ::opentelemetry::proto::common::v1::KeyValue *
+InstrumentationScope::mutable_attributes(int index) ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	// @@protoc_insertion_point(field_mutable:opentelemetry.proto.common.v1.InstrumentationScope.attributes)
+	return _internal_mutable_attributes()->Mutable(index);
 }
-inline ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue>* InstrumentationScope::mutable_attributes()
-    ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  // @@protoc_insertion_point(field_mutable_list:opentelemetry.proto.common.v1.InstrumentationScope.attributes)
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  return _internal_mutable_attributes();
+inline ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue> *
+InstrumentationScope::mutable_attributes() ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	// @@protoc_insertion_point(field_mutable_list:opentelemetry.proto.common.v1.InstrumentationScope.attributes)
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	return _internal_mutable_attributes();
 }
-inline const ::opentelemetry::proto::common::v1::KeyValue& InstrumentationScope::attributes(int index) const
-    ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  // @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.InstrumentationScope.attributes)
-  return _internal_attributes().Get(index);
+inline const ::opentelemetry::proto::common::v1::KeyValue &
+InstrumentationScope::attributes(int index) const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	// @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.InstrumentationScope.attributes)
+	return _internal_attributes().Get(index);
 }
-inline ::opentelemetry::proto::common::v1::KeyValue* InstrumentationScope::add_attributes() ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  ::opentelemetry::proto::common::v1::KeyValue* _add = _internal_mutable_attributes()->Add();
-  // @@protoc_insertion_point(field_add:opentelemetry.proto.common.v1.InstrumentationScope.attributes)
-  return _add;
+inline ::opentelemetry::proto::common::v1::KeyValue *
+InstrumentationScope::add_attributes() ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	::opentelemetry::proto::common::v1::KeyValue *_add = _internal_mutable_attributes()->Add();
+	// @@protoc_insertion_point(field_add:opentelemetry.proto.common.v1.InstrumentationScope.attributes)
+	return _add;
 }
-inline const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue>& InstrumentationScope::attributes() const
-    ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  // @@protoc_insertion_point(field_list:opentelemetry.proto.common.v1.InstrumentationScope.attributes)
-  return _internal_attributes();
+inline const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue> &
+InstrumentationScope::attributes() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	// @@protoc_insertion_point(field_list:opentelemetry.proto.common.v1.InstrumentationScope.attributes)
+	return _internal_attributes();
 }
-inline const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue>&
+inline const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue> &
 InstrumentationScope::_internal_attributes() const {
-  ::google::protobuf::internal::TSanRead(&_impl_);
-  return _impl_.attributes_;
+	::google::protobuf::internal::TSanRead(&_impl_);
+	return _impl_.attributes_;
 }
-inline ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue>*
+inline ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::common::v1::KeyValue> *
 InstrumentationScope::_internal_mutable_attributes() {
-  ::google::protobuf::internal::TSanRead(&_impl_);
-  return &_impl_.attributes_;
+	::google::protobuf::internal::TSanRead(&_impl_);
+	return &_impl_.attributes_;
 }
 
 // uint32 dropped_attributes_count = 4;
 inline void InstrumentationScope::clear_dropped_attributes_count() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  _impl_.dropped_attributes_count_ = 0u;
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	_impl_.dropped_attributes_count_ = 0u;
 }
 inline ::uint32_t InstrumentationScope::dropped_attributes_count() const {
-  // @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.InstrumentationScope.dropped_attributes_count)
-  return _internal_dropped_attributes_count();
+	// @@protoc_insertion_point(field_get:opentelemetry.proto.common.v1.InstrumentationScope.dropped_attributes_count)
+	return _internal_dropped_attributes_count();
 }
 inline void InstrumentationScope::set_dropped_attributes_count(::uint32_t value) {
-  _internal_set_dropped_attributes_count(value);
-  // @@protoc_insertion_point(field_set:opentelemetry.proto.common.v1.InstrumentationScope.dropped_attributes_count)
+	_internal_set_dropped_attributes_count(value);
+	// @@protoc_insertion_point(field_set:opentelemetry.proto.common.v1.InstrumentationScope.dropped_attributes_count)
 }
 inline ::uint32_t InstrumentationScope::_internal_dropped_attributes_count() const {
-  ::google::protobuf::internal::TSanRead(&_impl_);
-  return _impl_.dropped_attributes_count_;
+	::google::protobuf::internal::TSanRead(&_impl_);
+	return _impl_.dropped_attributes_count_;
 }
 inline void InstrumentationScope::_internal_set_dropped_attributes_count(::uint32_t value) {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  _impl_.dropped_attributes_count_ = value;
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	_impl_.dropped_attributes_count_ = value;
 }
 
 #ifdef __GNUC__
 #pragma GCC diagnostic pop
-#endif  // __GNUC__
+#endif // __GNUC__
 
 // @@protoc_insertion_point(namespace_scope)
-}  // namespace v1
-}  // namespace common
-}  // namespace proto
-}  // namespace opentelemetry
-
+} // namespace v1
+} // namespace common
+} // namespace proto
+} // namespace opentelemetry
 
 // @@protoc_insertion_point(global_scope)
 
 #include "google/protobuf/port_undef.inc"
 
-#endif  // opentelemetry_2fproto_2fcommon_2fv1_2fcommon_2eproto_2epb_2eh
+#endif // opentelemetry_2fproto_2fcommon_2fv1_2fcommon_2eproto_2epb_2eh

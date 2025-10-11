@@ -28,13 +28,9 @@ unique_ptr<StorageExtension> OTLPStorageExtension::Create() {
 	return storage;
 }
 
-unique_ptr<Catalog> OTLPStorageExtension::Attach(
-	optional_ptr<StorageExtensionInfo> storage_info,
-	ClientContext &context,
-	AttachedDatabase &db,
-	const string &name,
-	AttachInfo &info,
-	AttachOptions &options) {
+unique_ptr<Catalog> OTLPStorageExtension::Attach(optional_ptr<StorageExtensionInfo> storage_info,
+                                                 ClientContext &context, AttachedDatabase &db, const string &name,
+                                                 AttachInfo &info, AttachOptions &options) {
 
 	printf("DEBUG OTLPStorageExtension::Attach() called with name='%s', path='%s'\n", name.c_str(), info.path.c_str());
 	fflush(stdout);
@@ -94,10 +90,9 @@ unique_ptr<Catalog> OTLPStorageExtension::Attach(
 	return catalog;
 }
 
-unique_ptr<TransactionManager> OTLPStorageExtension::CreateTransactionManager(
-	optional_ptr<StorageExtensionInfo> storage_info,
-	AttachedDatabase &db,
-	Catalog &catalog) {
+unique_ptr<TransactionManager>
+OTLPStorageExtension::CreateTransactionManager(optional_ptr<StorageExtensionInfo> storage_info, AttachedDatabase &db,
+                                               Catalog &catalog) {
 
 	// Use our custom OTLP transaction manager for read-only access
 	return make_uniq<OTLPTransactionManager>(db);

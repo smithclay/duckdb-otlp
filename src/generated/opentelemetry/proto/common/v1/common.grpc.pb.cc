@@ -22,10 +22,7 @@
 namespace opentelemetry {
 namespace proto {
 namespace common {
-namespace v1 {
-
-}  // namespace opentelemetry
-}  // namespace proto
-}  // namespace common
-}  // namespace v1
-
+namespace v1 {} // namespace v1
+} // namespace common
+} // namespace proto
+} // namespace opentelemetry

@@ -4,8 +4,14 @@ cmake-build-debug
 duckdb_unittest_tempdir/
 .DS_Store
 testext
-test/python/__pycache__/
 .Rhistory
 vcpkg
 vcpkg_installed
 otlp:*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python

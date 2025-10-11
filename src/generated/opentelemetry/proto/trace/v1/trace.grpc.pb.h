@@ -44,13 +44,10 @@
 namespace opentelemetry {
 namespace proto {
 namespace trace {
-namespace v1 {
-
-}  // namespace v1
-}  // namespace trace
-}  // namespace proto
-}  // namespace opentelemetry
-
+namespace v1 {} // namespace v1
+} // namespace trace
+} // namespace proto
+} // namespace opentelemetry
 
 #include <grpcpp/ports_undef.inc>
-#endif  // GRPC_opentelemetry_2fproto_2ftrace_2fv1_2ftrace_2eproto__INCLUDED
+#endif // GRPC_opentelemetry_2fproto_2ftrace_2fv1_2ftrace_2eproto__INCLUDED

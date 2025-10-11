@@ -7,8 +7,7 @@ namespace duckdb {
 
 class OTLPTableEntry : public TableCatalogEntry {
 public:
-	OTLPTableEntry(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info,
-	               shared_ptr<RingBuffer> buffer);
+	OTLPTableEntry(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info, shared_ptr<RingBuffer> buffer);
 
 	//! Get the table function used for scanning this table
 	TableFunction GetScanFunction(ClientContext &context, unique_ptr<FunctionData> &bind_data) override;

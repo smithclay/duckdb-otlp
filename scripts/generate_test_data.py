@@ -54,12 +54,12 @@ def generate_traces_data():
     # Create a span
     span = scope_span.spans.add()
     # Use valid random-looking IDs (bytes type, not strings)
-    span.trace_id = bytes.fromhex('a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6')
-    span.span_id = bytes.fromhex('1122334455667788')
+    span.trace_id = bytes.fromhex("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6")
+    span.span_id = bytes.fromhex("1122334455667788")
     span.name = "test_span"  # Use underscore instead of dash, pure ASCII
     span.kind = trace_pb2.Span.SPAN_KIND_SERVER
     span.start_time_unix_nano = 1609459200000000000  # 2021-01-01 00:00:00 UTC
-    span.end_time_unix_nano = 1609459200100000000    # 100ms later
+    span.end_time_unix_nano = 1609459200100000000  # 100ms later
 
     # Add span attribute (no status to keep it minimal)
     attr = span.attributes.add()

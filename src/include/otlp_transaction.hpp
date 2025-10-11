@@ -19,7 +19,7 @@ public:
 
 private:
 	mutex transaction_lock;
-	std::unordered_map<Transaction*, unique_ptr<Transaction>> transactions;
+	std::unordered_map<Transaction *, unique_ptr<Transaction>> transactions;
 };
 
 } // namespace duckdb

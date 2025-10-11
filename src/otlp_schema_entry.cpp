@@ -6,13 +6,13 @@
 
 namespace duckdb {
 
-OTLPSchemaEntry::OTLPSchemaEntry(Catalog &catalog, CreateSchemaInfo &info)
-    : SchemaCatalogEntry(catalog, info) {
+OTLPSchemaEntry::OTLPSchemaEntry(Catalog &catalog, CreateSchemaInfo &info) : SchemaCatalogEntry(catalog, info) {
 }
 
 void OTLPSchemaEntry::Scan(ClientContext &context, CatalogType type,
-                            const std::function<void(CatalogEntry &)> &callback) {
-	printf("DEBUG OTLPSchemaEntry::Scan() called: type=%d (TABLE_ENTRY=%d)\n", (int)type, (int)CatalogType::TABLE_ENTRY);
+                           const std::function<void(CatalogEntry &)> &callback) {
+	printf("DEBUG OTLPSchemaEntry::Scan() called: type=%d (TABLE_ENTRY=%d)\n", (int)type,
+	       (int)CatalogType::TABLE_ENTRY);
 
 	// Only enumerate tables
 	if (type != CatalogType::TABLE_ENTRY) {
@@ -64,9 +64,10 @@ optional_ptr<CatalogEntry> OTLPSchemaEntry::GetEntry(CatalogType type, const str
 	return nullptr;
 }
 
-optional_ptr<CatalogEntry> OTLPSchemaEntry::LookupEntry(CatalogTransaction transaction, const EntryLookupInfo &lookup_info) {
+optional_ptr<CatalogEntry> OTLPSchemaEntry::LookupEntry(CatalogTransaction transaction,
+                                                        const EntryLookupInfo &lookup_info) {
 	if (lookup_info.GetCatalogType() != CatalogType::TABLE_ENTRY) {
-		return nullptr;  // Only support tables
+		return nullptr; // Only support tables
 	}
 
 	// Delegate to catalog's GetEntry to get the table
@@ -80,7 +81,7 @@ optional_ptr<CatalogEntry> OTLPSchemaEntry::CreateTable(CatalogTransaction trans
 }
 
 optional_ptr<CatalogEntry> OTLPSchemaEntry::CreateIndex(CatalogTransaction transaction, CreateIndexInfo &info,
-                                                         TableCatalogEntry &table) {
+                                                        TableCatalogEntry &table) {
 	throw BinderException("OTLP schemas are read-only");
 }
 
@@ -97,17 +98,17 @@ optional_ptr<CatalogEntry> OTLPSchemaEntry::CreateSequence(CatalogTransaction tr
 }
 
 optional_ptr<CatalogEntry> OTLPSchemaEntry::CreateTableFunction(CatalogTransaction transaction,
-                                                                 CreateTableFunctionInfo &info) {
+                                                                CreateTableFunctionInfo &info) {
 	throw BinderException("OTLP schemas are read-only");
 }
 
 optional_ptr<CatalogEntry> OTLPSchemaEntry::CreateCopyFunction(CatalogTransaction transaction,
-                                                                CreateCopyFunctionInfo &info) {
+                                                               CreateCopyFunctionInfo &info) {
 	throw BinderException("OTLP schemas are read-only");
 }
 
 optional_ptr<CatalogEntry> OTLPSchemaEntry::CreatePragmaFunction(CatalogTransaction transaction,
-                                                                  CreatePragmaFunctionInfo &info) {
+                                                                 CreatePragmaFunctionInfo &info) {
 	throw BinderException("OTLP schemas are read-only");
 }
 

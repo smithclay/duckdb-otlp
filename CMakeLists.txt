@@ -25,8 +25,7 @@ set(PROTO_SOURCES
     src/generated/opentelemetry/proto/collector/metrics/v1/metrics_service.pb.cc
     src/generated/opentelemetry/proto/collector/metrics/v1/metrics_service.grpc.pb.cc
     src/generated/opentelemetry/proto/collector/logs/v1/logs_service.pb.cc
-    src/generated/opentelemetry/proto/collector/logs/v1/logs_service.grpc.pb.cc
-)
+    src/generated/opentelemetry/proto/collector/logs/v1/logs_service.grpc.pb.cc)
 
 set(EXTENSION_SOURCES
     src/duckspan_extension.cpp
@@ -43,30 +42,26 @@ set(EXTENSION_SOURCES
     src/otlp_storage_extension.cpp
     src/otlp_receiver.cpp
     src/otlp_transaction.cpp
-    ${PROTO_SOURCES}
-)
+    ${PROTO_SOURCES})
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 
 # Add protobuf/gRPC include directories
-target_include_directories(${EXTENSION_NAME} PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/proto
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/generated)
-target_include_directories(${LOADABLE_EXTENSION_NAME} PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/proto
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/generated)
+target_include_directories(${EXTENSION_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/generated)
+target_include_directories(${LOADABLE_EXTENSION_NAME}
+                           PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/generated)
 
 # Link Protobuf (found from Homebrew)
 if(Protobuf_FOUND)
-    target_link_libraries(${EXTENSION_NAME} protobuf::libprotobuf)
-    target_link_libraries(${LOADABLE_EXTENSION_NAME} protobuf::libprotobuf)
+  target_link_libraries(${EXTENSION_NAME} protobuf::libprotobuf)
+  target_link_libraries(${LOADABLE_EXTENSION_NAME} protobuf::libprotobuf)
 endif()
 
 # Link gRPC if available (for Phase 5 - gRPC receiver)
 if(gRPC_FOUND)
-    target_link_libraries(${EXTENSION_NAME} gRPC::grpc++)
-    target_link_libraries(${LOADABLE_EXTENSION_NAME} gRPC::grpc++)
+  target_link_libraries(${EXTENSION_NAME} gRPC::grpc++)
+  target_link_libraries(${LOADABLE_EXTENSION_NAME} gRPC::grpc++)
 endif()
 
 install(

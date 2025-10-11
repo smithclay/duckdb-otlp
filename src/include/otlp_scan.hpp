@@ -25,8 +25,7 @@ struct OTLPScanState : public GlobalTableFunctionState {
 };
 
 //! Init global state - read all rows from ring buffer once
-unique_ptr<GlobalTableFunctionState> OTLPScanInitGlobal(ClientContext &context,
-                                                          TableFunctionInitInput &input);
+unique_ptr<GlobalTableFunctionState> OTLPScanInitGlobal(ClientContext &context, TableFunctionInitInput &input);
 
 //! Scan function - outputs rows to data chunk
 void OTLPScanFunction(ClientContext &context, TableFunctionInput &data, DataChunk &output);

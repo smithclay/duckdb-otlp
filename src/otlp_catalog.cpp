@@ -49,7 +49,7 @@ optional_ptr<CatalogEntry> OTLPCatalog::GetEntry(ClientContext &context, const s
 	auto buffer = storage_info_->GetBuffer(name);
 	if (!buffer) {
 		printf("DEBUG: No buffer found for table '%s', returning nullptr\n", name.c_str());
-		return nullptr;  // Not one of our virtual tables
+		return nullptr; // Not one of our virtual tables
 	}
 
 	// Check if we already created this entry (cache lookup)
@@ -57,7 +57,7 @@ optional_ptr<CatalogEntry> OTLPCatalog::GetEntry(ClientContext &context, const s
 	auto it = table_entries_.find(entry_key);
 	if (it != table_entries_.end()) {
 		printf("DEBUG: Returning cached entry for '%s'\n", entry_key.c_str());
-		return it->second.get();  // Return cached entry
+		return it->second.get(); // Return cached entry
 	}
 
 	printf("DEBUG: Creating new table entry for '%s'\n", entry_key.c_str());
@@ -90,14 +90,15 @@ void OTLPCatalog::ScanSchemas(ClientContext &context, std::function<void(SchemaC
 	}
 }
 
-optional_ptr<SchemaCatalogEntry> OTLPCatalog::LookupSchema(CatalogTransaction transaction, const EntryLookupInfo &schema_lookup,
-                                                            OnEntryNotFound if_not_found) {
+optional_ptr<SchemaCatalogEntry> OTLPCatalog::LookupSchema(CatalogTransaction transaction,
+                                                           const EntryLookupInfo &schema_lookup,
+                                                           OnEntryNotFound if_not_found) {
 	printf("DEBUG OTLPCatalog::LookupSchema() called: schema='%s'\n", schema_lookup.GetEntryName().c_str());
 	fflush(stdout);
 
 	// Only support the default schema (main)
 	if (schema_lookup.GetEntryName() == DEFAULT_SCHEMA) {
-		printf("DEBUG: Returning main_schema_ (ptr=%p)\n", (void*)main_schema_.get());
+		printf("DEBUG: Returning main_schema_ (ptr=%p)\n", (void *)main_schema_.get());
 		fflush(stdout);
 		return main_schema_.get();
 	}
@@ -138,31 +139,31 @@ DatabaseSize OTLPCatalog::GetDatabaseSize(ClientContext &context) {
 }
 
 PhysicalOperator &OTLPCatalog::PlanCreateTableAs(ClientContext &context, PhysicalPlanGenerator &planner,
-                                                  LogicalCreateTable &op, PhysicalOperator &plan) {
+                                                 LogicalCreateTable &op, PhysicalOperator &plan) {
 	throw BinderException("OTLP catalogs are read-only");
 }
 
 PhysicalOperator &OTLPCatalog::PlanInsert(ClientContext &context, PhysicalPlanGenerator &planner, LogicalInsert &op,
-                                           optional_ptr<PhysicalOperator> plan) {
+                                          optional_ptr<PhysicalOperator> plan) {
 	throw BinderException("OTLP catalogs are read-only");
 }
 
 PhysicalOperator &OTLPCatalog::PlanDelete(ClientContext &context, PhysicalPlanGenerator &planner, LogicalDelete &op,
-                                           PhysicalOperator &plan) {
+                                          PhysicalOperator &plan) {
 	throw BinderException("OTLP catalogs are read-only");
 }
 
 PhysicalOperator &OTLPCatalog::PlanUpdate(ClientContext &context, PhysicalPlanGenerator &planner, LogicalUpdate &op,
-                                           PhysicalOperator &plan) {
+                                          PhysicalOperator &plan) {
 	throw BinderException("OTLP catalogs are read-only");
 }
 
 bool OTLPCatalog::InMemory() {
-	return true;  // OTLP catalogs store data in-memory ring buffers
+	return true; // OTLP catalogs store data in-memory ring buffers
 }
 
 string OTLPCatalog::GetDBPath() {
-	return "";  // In-memory, no database path
+	return ""; // In-memory, no database path
 }
 
 } // namespace duckdb

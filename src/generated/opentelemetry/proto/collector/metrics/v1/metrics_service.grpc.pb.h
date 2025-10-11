@@ -51,224 +51,365 @@ namespace v1 {
 // instrumented with OpenTelemetry and a collector, or between a collector and a
 // central collector.
 class MetricsService final {
- public:
-  static constexpr char const* service_full_name() {
-    return "opentelemetry.proto.collector.metrics.v1.MetricsService";
-  }
-  class StubInterface {
-   public:
-    virtual ~StubInterface() {}
-    // For performance reasons, it is recommended to keep this RPC
-    // alive for the entire life of the application.
-    virtual ::grpc::Status Export(::grpc::ClientContext* context, const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest& request, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse* response) = 0;
-    std::unique_ptr< ::grpc::ClientAsyncResponseReaderInterface< ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>> AsyncExport(::grpc::ClientContext* context, const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest& request, ::grpc::CompletionQueue* cq) {
-      return std::unique_ptr< ::grpc::ClientAsyncResponseReaderInterface< ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>>(AsyncExportRaw(context, request, cq));
-    }
-    std::unique_ptr< ::grpc::ClientAsyncResponseReaderInterface< ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>> PrepareAsyncExport(::grpc::ClientContext* context, const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest& request, ::grpc::CompletionQueue* cq) {
-      return std::unique_ptr< ::grpc::ClientAsyncResponseReaderInterface< ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>>(PrepareAsyncExportRaw(context, request, cq));
-    }
-    class async_interface {
-     public:
-      virtual ~async_interface() {}
-      // For performance reasons, it is recommended to keep this RPC
-      // alive for the entire life of the application.
-      virtual void Export(::grpc::ClientContext* context, const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest* request, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse* response, std::function<void(::grpc::Status)>) = 0;
-      virtual void Export(::grpc::ClientContext* context, const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest* request, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse* response, ::grpc::ClientUnaryReactor* reactor) = 0;
-    };
-    typedef class async_interface experimental_async_interface;
-    virtual class async_interface* async() { return nullptr; }
-    class async_interface* experimental_async() { return async(); }
-   private:
-    virtual ::grpc::ClientAsyncResponseReaderInterface< ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>* AsyncExportRaw(::grpc::ClientContext* context, const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest& request, ::grpc::CompletionQueue* cq) = 0;
-    virtual ::grpc::ClientAsyncResponseReaderInterface< ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>* PrepareAsyncExportRaw(::grpc::ClientContext* context, const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest& request, ::grpc::CompletionQueue* cq) = 0;
-  };
-  class Stub final : public StubInterface {
-   public:
-    Stub(const std::shared_ptr< ::grpc::ChannelInterface>& channel, const ::grpc::StubOptions& options = ::grpc::StubOptions());
-    ::grpc::Status Export(::grpc::ClientContext* context, const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest& request, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse* response) override;
-    std::unique_ptr< ::grpc::ClientAsyncResponseReader< ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>> AsyncExport(::grpc::ClientContext* context, const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest& request, ::grpc::CompletionQueue* cq) {
-      return std::unique_ptr< ::grpc::ClientAsyncResponseReader< ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>>(AsyncExportRaw(context, request, cq));
-    }
-    std::unique_ptr< ::grpc::ClientAsyncResponseReader< ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>> PrepareAsyncExport(::grpc::ClientContext* context, const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest& request, ::grpc::CompletionQueue* cq) {
-      return std::unique_ptr< ::grpc::ClientAsyncResponseReader< ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>>(PrepareAsyncExportRaw(context, request, cq));
-    }
-    class async final :
-      public StubInterface::async_interface {
-     public:
-      void Export(::grpc::ClientContext* context, const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest* request, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse* response, std::function<void(::grpc::Status)>) override;
-      void Export(::grpc::ClientContext* context, const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest* request, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse* response, ::grpc::ClientUnaryReactor* reactor) override;
-     private:
-      friend class Stub;
-      explicit async(Stub* stub): stub_(stub) { }
-      Stub* stub() { return stub_; }
-      Stub* stub_;
-    };
-    class async* async() override { return &async_stub_; }
+public:
+	static constexpr char const *service_full_name() {
+		return "opentelemetry.proto.collector.metrics.v1.MetricsService";
+	}
+	class StubInterface {
+	public:
+		virtual ~StubInterface() {
+		}
+		// For performance reasons, it is recommended to keep this RPC
+		// alive for the entire life of the application.
+		virtual ::grpc::Status
+		Export(::grpc::ClientContext *context,
+		       const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest &request,
+		       ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse *response) = 0;
+		std::unique_ptr<::grpc::ClientAsyncResponseReaderInterface<
+		    ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>>
+		AsyncExport(::grpc::ClientContext *context,
+		            const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest &request,
+		            ::grpc::CompletionQueue *cq) {
+			return std::unique_ptr<::grpc::ClientAsyncResponseReaderInterface<
+			    ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>>(
+			    AsyncExportRaw(context, request, cq));
+		}
+		std::unique_ptr<::grpc::ClientAsyncResponseReaderInterface<
+		    ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>>
+		PrepareAsyncExport(::grpc::ClientContext *context,
+		                   const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest &request,
+		                   ::grpc::CompletionQueue *cq) {
+			return std::unique_ptr<::grpc::ClientAsyncResponseReaderInterface<
+			    ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>>(
+			    PrepareAsyncExportRaw(context, request, cq));
+		}
+		class async_interface {
+		public:
+			virtual ~async_interface() {
+			}
+			// For performance reasons, it is recommended to keep this RPC
+			// alive for the entire life of the application.
+			virtual void
+			Export(::grpc::ClientContext *context,
+			       const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest *request,
+			       ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse *response,
+			       std::function<void(::grpc::Status)>) = 0;
+			virtual void
+			Export(::grpc::ClientContext *context,
+			       const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest *request,
+			       ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse *response,
+			       ::grpc::ClientUnaryReactor *reactor) = 0;
+		};
+		typedef class async_interface experimental_async_interface;
+		virtual class async_interface *async() {
+			return nullptr;
+		}
+		class async_interface *experimental_async() {
+			return async();
+		}
 
-   private:
-    std::shared_ptr< ::grpc::ChannelInterface> channel_;
-    class async async_stub_{this};
-    ::grpc::ClientAsyncResponseReader< ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>* AsyncExportRaw(::grpc::ClientContext* context, const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest& request, ::grpc::CompletionQueue* cq) override;
-    ::grpc::ClientAsyncResponseReader< ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>* PrepareAsyncExportRaw(::grpc::ClientContext* context, const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest& request, ::grpc::CompletionQueue* cq) override;
-    const ::grpc::internal::RpcMethod rpcmethod_Export_;
-  };
-  static std::unique_ptr<Stub> NewStub(const std::shared_ptr< ::grpc::ChannelInterface>& channel, const ::grpc::StubOptions& options = ::grpc::StubOptions());
+	private:
+		virtual ::grpc::ClientAsyncResponseReaderInterface<
+		    ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse> *
+		AsyncExportRaw(::grpc::ClientContext *context,
+		               const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest &request,
+		               ::grpc::CompletionQueue *cq) = 0;
+		virtual ::grpc::ClientAsyncResponseReaderInterface<
+		    ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse> *
+		PrepareAsyncExportRaw(
+		    ::grpc::ClientContext *context,
+		    const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest &request,
+		    ::grpc::CompletionQueue *cq) = 0;
+	};
+	class Stub final : public StubInterface {
+	public:
+		Stub(const std::shared_ptr<::grpc::ChannelInterface> &channel,
+		     const ::grpc::StubOptions &options = ::grpc::StubOptions());
+		::grpc::Status
+		Export(::grpc::ClientContext *context,
+		       const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest &request,
+		       ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse *response) override;
+		std::unique_ptr<::grpc::ClientAsyncResponseReader<
+		    ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>>
+		AsyncExport(::grpc::ClientContext *context,
+		            const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest &request,
+		            ::grpc::CompletionQueue *cq) {
+			return std::unique_ptr<::grpc::ClientAsyncResponseReader<
+			    ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>>(
+			    AsyncExportRaw(context, request, cq));
+		}
+		std::unique_ptr<::grpc::ClientAsyncResponseReader<
+		    ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>>
+		PrepareAsyncExport(::grpc::ClientContext *context,
+		                   const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest &request,
+		                   ::grpc::CompletionQueue *cq) {
+			return std::unique_ptr<::grpc::ClientAsyncResponseReader<
+			    ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>>(
+			    PrepareAsyncExportRaw(context, request, cq));
+		}
+		class async final : public StubInterface::async_interface {
+		public:
+			void Export(::grpc::ClientContext *context,
+			            const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest *request,
+			            ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse *response,
+			            std::function<void(::grpc::Status)>) override;
+			void Export(::grpc::ClientContext *context,
+			            const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest *request,
+			            ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse *response,
+			            ::grpc::ClientUnaryReactor *reactor) override;
 
-  class Service : public ::grpc::Service {
-   public:
-    Service();
-    virtual ~Service();
-    // For performance reasons, it is recommended to keep this RPC
-    // alive for the entire life of the application.
-    virtual ::grpc::Status Export(::grpc::ServerContext* context, const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest* request, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse* response);
-  };
-  template <class BaseClass>
-  class WithAsyncMethod_Export : public BaseClass {
-   private:
-    void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
-   public:
-    WithAsyncMethod_Export() {
-      ::grpc::Service::MarkMethodAsync(0);
-    }
-    ~WithAsyncMethod_Export() override {
-      BaseClassMustBeDerivedFromService(this);
-    }
-    // disable synchronous version of this method
-    ::grpc::Status Export(::grpc::ServerContext* /*context*/, const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest* /*request*/, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse* /*response*/) override {
-      abort();
-      return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
-    }
-    void RequestExport(::grpc::ServerContext* context, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest* request, ::grpc::ServerAsyncResponseWriter< ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>* response, ::grpc::CompletionQueue* new_call_cq, ::grpc::ServerCompletionQueue* notification_cq, void *tag) {
-      ::grpc::Service::RequestAsyncUnary(0, context, request, response, new_call_cq, notification_cq, tag);
-    }
-  };
-  typedef WithAsyncMethod_Export<Service > AsyncService;
-  template <class BaseClass>
-  class WithCallbackMethod_Export : public BaseClass {
-   private:
-    void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
-   public:
-    WithCallbackMethod_Export() {
-      ::grpc::Service::MarkMethodCallback(0,
-          new ::grpc::internal::CallbackUnaryHandler< ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>(
-            [this](
-                   ::grpc::CallbackServerContext* context, const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest* request, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse* response) { return this->Export(context, request, response); }));}
-    void SetMessageAllocatorFor_Export(
-        ::grpc::MessageAllocator< ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>* allocator) {
-      ::grpc::internal::MethodHandler* const handler = ::grpc::Service::GetHandler(0);
-      static_cast<::grpc::internal::CallbackUnaryHandler< ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>*>(handler)
-              ->SetMessageAllocator(allocator);
-    }
-    ~WithCallbackMethod_Export() override {
-      BaseClassMustBeDerivedFromService(this);
-    }
-    // disable synchronous version of this method
-    ::grpc::Status Export(::grpc::ServerContext* /*context*/, const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest* /*request*/, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse* /*response*/) override {
-      abort();
-      return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
-    }
-    virtual ::grpc::ServerUnaryReactor* Export(
-      ::grpc::CallbackServerContext* /*context*/, const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest* /*request*/, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse* /*response*/)  { return nullptr; }
-  };
-  typedef WithCallbackMethod_Export<Service > CallbackService;
-  typedef CallbackService ExperimentalCallbackService;
-  template <class BaseClass>
-  class WithGenericMethod_Export : public BaseClass {
-   private:
-    void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
-   public:
-    WithGenericMethod_Export() {
-      ::grpc::Service::MarkMethodGeneric(0);
-    }
-    ~WithGenericMethod_Export() override {
-      BaseClassMustBeDerivedFromService(this);
-    }
-    // disable synchronous version of this method
-    ::grpc::Status Export(::grpc::ServerContext* /*context*/, const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest* /*request*/, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse* /*response*/) override {
-      abort();
-      return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
-    }
-  };
-  template <class BaseClass>
-  class WithRawMethod_Export : public BaseClass {
-   private:
-    void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
-   public:
-    WithRawMethod_Export() {
-      ::grpc::Service::MarkMethodRaw(0);
-    }
-    ~WithRawMethod_Export() override {
-      BaseClassMustBeDerivedFromService(this);
-    }
-    // disable synchronous version of this method
-    ::grpc::Status Export(::grpc::ServerContext* /*context*/, const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest* /*request*/, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse* /*response*/) override {
-      abort();
-      return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
-    }
-    void RequestExport(::grpc::ServerContext* context, ::grpc::ByteBuffer* request, ::grpc::ServerAsyncResponseWriter< ::grpc::ByteBuffer>* response, ::grpc::CompletionQueue* new_call_cq, ::grpc::ServerCompletionQueue* notification_cq, void *tag) {
-      ::grpc::Service::RequestAsyncUnary(0, context, request, response, new_call_cq, notification_cq, tag);
-    }
-  };
-  template <class BaseClass>
-  class WithRawCallbackMethod_Export : public BaseClass {
-   private:
-    void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
-   public:
-    WithRawCallbackMethod_Export() {
-      ::grpc::Service::MarkMethodRawCallback(0,
-          new ::grpc::internal::CallbackUnaryHandler< ::grpc::ByteBuffer, ::grpc::ByteBuffer>(
-            [this](
-                   ::grpc::CallbackServerContext* context, const ::grpc::ByteBuffer* request, ::grpc::ByteBuffer* response) { return this->Export(context, request, response); }));
-    }
-    ~WithRawCallbackMethod_Export() override {
-      BaseClassMustBeDerivedFromService(this);
-    }
-    // disable synchronous version of this method
-    ::grpc::Status Export(::grpc::ServerContext* /*context*/, const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest* /*request*/, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse* /*response*/) override {
-      abort();
-      return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
-    }
-    virtual ::grpc::ServerUnaryReactor* Export(
-      ::grpc::CallbackServerContext* /*context*/, const ::grpc::ByteBuffer* /*request*/, ::grpc::ByteBuffer* /*response*/)  { return nullptr; }
-  };
-  template <class BaseClass>
-  class WithStreamedUnaryMethod_Export : public BaseClass {
-   private:
-    void BaseClassMustBeDerivedFromService(const Service* /*service*/) {}
-   public:
-    WithStreamedUnaryMethod_Export() {
-      ::grpc::Service::MarkMethodStreamed(0,
-        new ::grpc::internal::StreamedUnaryHandler<
-          ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>(
-            [this](::grpc::ServerContext* context,
-                   ::grpc::ServerUnaryStreamer<
-                     ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>* streamer) {
-                       return this->StreamedExport(context,
-                         streamer);
-                  }));
-    }
-    ~WithStreamedUnaryMethod_Export() override {
-      BaseClassMustBeDerivedFromService(this);
-    }
-    // disable regular version of this method
-    ::grpc::Status Export(::grpc::ServerContext* /*context*/, const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest* /*request*/, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse* /*response*/) override {
-      abort();
-      return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
-    }
-    // replace default version of method with streamed unary
-    virtual ::grpc::Status StreamedExport(::grpc::ServerContext* context, ::grpc::ServerUnaryStreamer< ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest,::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>* server_unary_streamer) = 0;
-  };
-  typedef WithStreamedUnaryMethod_Export<Service > StreamedUnaryService;
-  typedef Service SplitStreamedService;
-  typedef WithStreamedUnaryMethod_Export<Service > StreamedService;
+		private:
+			friend class Stub;
+			explicit async(Stub *stub) : stub_(stub) {
+			}
+			Stub *stub() {
+				return stub_;
+			}
+			Stub *stub_;
+		};
+		class async *async() override {
+			return &async_stub_;
+		}
+
+	private:
+		std::shared_ptr<::grpc::ChannelInterface> channel_;
+		class async async_stub_ {
+			this
+		};
+		::grpc::ClientAsyncResponseReader<::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>
+		    *AsyncExportRaw(::grpc::ClientContext *context,
+		                    const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest &request,
+		                    ::grpc::CompletionQueue *cq) override;
+		::grpc::ClientAsyncResponseReader<::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>
+		    *PrepareAsyncExportRaw(
+		        ::grpc::ClientContext *context,
+		        const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest &request,
+		        ::grpc::CompletionQueue *cq) override;
+		const ::grpc::internal::RpcMethod rpcmethod_Export_;
+	};
+	static std::unique_ptr<Stub> NewStub(const std::shared_ptr<::grpc::ChannelInterface> &channel,
+	                                     const ::grpc::StubOptions &options = ::grpc::StubOptions());
+
+	class Service : public ::grpc::Service {
+	public:
+		Service();
+		virtual ~Service();
+		// For performance reasons, it is recommended to keep this RPC
+		// alive for the entire life of the application.
+		virtual ::grpc::Status
+		Export(::grpc::ServerContext *context,
+		       const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest *request,
+		       ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse *response);
+	};
+	template <class BaseClass>
+	class WithAsyncMethod_Export : public BaseClass {
+	private:
+		void BaseClassMustBeDerivedFromService(const Service * /*service*/) {
+		}
+
+	public:
+		WithAsyncMethod_Export() {
+			::grpc::Service::MarkMethodAsync(0);
+		}
+		~WithAsyncMethod_Export() override {
+			BaseClassMustBeDerivedFromService(this);
+		}
+		// disable synchronous version of this method
+		::grpc::Status
+		Export(::grpc::ServerContext * /*context*/,
+		       const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest * /*request*/,
+		       ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse * /*response*/) override {
+			abort();
+			return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
+		}
+		void RequestExport(::grpc::ServerContext *context,
+		                   ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest *request,
+		                   ::grpc::ServerAsyncResponseWriter<
+		                       ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse> *response,
+		                   ::grpc::CompletionQueue *new_call_cq, ::grpc::ServerCompletionQueue *notification_cq,
+		                   void *tag) {
+			::grpc::Service::RequestAsyncUnary(0, context, request, response, new_call_cq, notification_cq, tag);
+		}
+	};
+	typedef WithAsyncMethod_Export<Service> AsyncService;
+	template <class BaseClass>
+	class WithCallbackMethod_Export : public BaseClass {
+	private:
+		void BaseClassMustBeDerivedFromService(const Service * /*service*/) {
+		}
+
+	public:
+		WithCallbackMethod_Export() {
+			::grpc::Service::MarkMethodCallback(
+			    0,
+			    new ::grpc::internal::CallbackUnaryHandler<
+			        ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest,
+			        ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>(
+			        [this](::grpc::CallbackServerContext *context,
+			               const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest *request,
+			               ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse *response) {
+				        return this->Export(context, request, response);
+			        }));
+		}
+		void SetMessageAllocatorFor_Export(
+		    ::grpc::MessageAllocator<::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest,
+		                             ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>
+		        *allocator) {
+			::grpc::internal::MethodHandler *const handler = ::grpc::Service::GetHandler(0);
+			static_cast<::grpc::internal::CallbackUnaryHandler<
+			    ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest,
+			    ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse> *>(handler)
+			    ->SetMessageAllocator(allocator);
+		}
+		~WithCallbackMethod_Export() override {
+			BaseClassMustBeDerivedFromService(this);
+		}
+		// disable synchronous version of this method
+		::grpc::Status
+		Export(::grpc::ServerContext * /*context*/,
+		       const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest * /*request*/,
+		       ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse * /*response*/) override {
+			abort();
+			return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
+		}
+		virtual ::grpc::ServerUnaryReactor *
+		Export(::grpc::CallbackServerContext * /*context*/,
+		       const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest * /*request*/,
+		       ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse * /*response*/) {
+			return nullptr;
+		}
+	};
+	typedef WithCallbackMethod_Export<Service> CallbackService;
+	typedef CallbackService ExperimentalCallbackService;
+	template <class BaseClass>
+	class WithGenericMethod_Export : public BaseClass {
+	private:
+		void BaseClassMustBeDerivedFromService(const Service * /*service*/) {
+		}
+
+	public:
+		WithGenericMethod_Export() {
+			::grpc::Service::MarkMethodGeneric(0);
+		}
+		~WithGenericMethod_Export() override {
+			BaseClassMustBeDerivedFromService(this);
+		}
+		// disable synchronous version of this method
+		::grpc::Status
+		Export(::grpc::ServerContext * /*context*/,
+		       const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest * /*request*/,
+		       ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse * /*response*/) override {
+			abort();
+			return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
+		}
+	};
+	template <class BaseClass>
+	class WithRawMethod_Export : public BaseClass {
+	private:
+		void BaseClassMustBeDerivedFromService(const Service * /*service*/) {
+		}
+
+	public:
+		WithRawMethod_Export() {
+			::grpc::Service::MarkMethodRaw(0);
+		}
+		~WithRawMethod_Export() override {
+			BaseClassMustBeDerivedFromService(this);
+		}
+		// disable synchronous version of this method
+		::grpc::Status
+		Export(::grpc::ServerContext * /*context*/,
+		       const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest * /*request*/,
+		       ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse * /*response*/) override {
+			abort();
+			return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
+		}
+		void RequestExport(::grpc::ServerContext *context, ::grpc::ByteBuffer *request,
+		                   ::grpc::ServerAsyncResponseWriter<::grpc::ByteBuffer> *response,
+		                   ::grpc::CompletionQueue *new_call_cq, ::grpc::ServerCompletionQueue *notification_cq,
+		                   void *tag) {
+			::grpc::Service::RequestAsyncUnary(0, context, request, response, new_call_cq, notification_cq, tag);
+		}
+	};
+	template <class BaseClass>
+	class WithRawCallbackMethod_Export : public BaseClass {
+	private:
+		void BaseClassMustBeDerivedFromService(const Service * /*service*/) {
+		}
+
+	public:
+		WithRawCallbackMethod_Export() {
+			::grpc::Service::MarkMethodRawCallback(
+			    0, new ::grpc::internal::CallbackUnaryHandler<::grpc::ByteBuffer, ::grpc::ByteBuffer>(
+			           [this](::grpc::CallbackServerContext *context, const ::grpc::ByteBuffer *request,
+			                  ::grpc::ByteBuffer *response) { return this->Export(context, request, response); }));
+		}
+		~WithRawCallbackMethod_Export() override {
+			BaseClassMustBeDerivedFromService(this);
+		}
+		// disable synchronous version of this method
+		::grpc::Status
+		Export(::grpc::ServerContext * /*context*/,
+		       const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest * /*request*/,
+		       ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse * /*response*/) override {
+			abort();
+			return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
+		}
+		virtual ::grpc::ServerUnaryReactor *Export(::grpc::CallbackServerContext * /*context*/,
+		                                           const ::grpc::ByteBuffer * /*request*/,
+		                                           ::grpc::ByteBuffer * /*response*/) {
+			return nullptr;
+		}
+	};
+	template <class BaseClass>
+	class WithStreamedUnaryMethod_Export : public BaseClass {
+	private:
+		void BaseClassMustBeDerivedFromService(const Service * /*service*/) {
+		}
+
+	public:
+		WithStreamedUnaryMethod_Export() {
+			::grpc::Service::MarkMethodStreamed(
+			    0,
+			    new ::grpc::internal::StreamedUnaryHandler<
+			        ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest,
+			        ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>(
+			        [this](
+			            ::grpc::ServerContext *context,
+			            ::grpc::ServerUnaryStreamer<
+			                ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest,
+			                ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse> *streamer) {
+				        return this->StreamedExport(context, streamer);
+			        }));
+		}
+		~WithStreamedUnaryMethod_Export() override {
+			BaseClassMustBeDerivedFromService(this);
+		}
+		// disable regular version of this method
+		::grpc::Status
+		Export(::grpc::ServerContext * /*context*/,
+		       const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest * /*request*/,
+		       ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse * /*response*/) override {
+			abort();
+			return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
+		}
+		// replace default version of method with streamed unary
+		virtual ::grpc::Status StreamedExport(
+		    ::grpc::ServerContext *context,
+		    ::grpc::ServerUnaryStreamer<::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest,
+		                                ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>
+		        *server_unary_streamer) = 0;
+	};
+	typedef WithStreamedUnaryMethod_Export<Service> StreamedUnaryService;
+	typedef Service SplitStreamedService;
+	typedef WithStreamedUnaryMethod_Export<Service> StreamedService;
 };
 
-}  // namespace v1
-}  // namespace metrics
-}  // namespace collector
-}  // namespace proto
-}  // namespace opentelemetry
-
+} // namespace v1
+} // namespace metrics
+} // namespace collector
+} // namespace proto
+} // namespace opentelemetry
 
 #include <grpcpp/ports_undef.inc>
-#endif  // GRPC_opentelemetry_2fproto_2fcollector_2fmetrics_2fv1_2fmetrics_5fservice_2eproto__INCLUDED
+#endif // GRPC_opentelemetry_2fproto_2fcollector_2fmetrics_2fv1_2fmetrics_5fservice_2eproto__INCLUDED

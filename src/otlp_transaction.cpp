@@ -8,7 +8,7 @@ OTLPTransactionManager::OTLPTransactionManager(AttachedDatabase &db) : Transacti
 
 Transaction &OTLPTransactionManager::StartTransaction(ClientContext &context) {
 	// Create a simple read-only transaction
-	auto transaction = make_uniq<Transaction>(static_cast<TransactionManager&>(*this), context);
+	auto transaction = make_uniq<Transaction>(static_cast<TransactionManager &>(*this), context);
 	transaction->active_query = MAXIMUM_QUERY_ID;
 	auto &result = *transaction;
 	lock_guard<mutex> l(transaction_lock);

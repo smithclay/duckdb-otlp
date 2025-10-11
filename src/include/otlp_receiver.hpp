@@ -26,7 +26,9 @@ public:
 	void Stop();
 
 	//! Check if server is running
-	bool IsRunning() const { return running_.load(); }
+	bool IsRunning() const {
+		return running_.load();
+	}
 
 private:
 	//! Server thread entry point

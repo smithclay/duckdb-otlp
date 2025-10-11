@@ -26,8 +26,7 @@ struct OTLPScanState : public GlobalTableFunctionState {
 // The bind data is created directly by OTLPTableEntry::GetScanFunction()
 
 //! Init global state - read all rows from ring buffer once
-unique_ptr<GlobalTableFunctionState> OTLPScanInitGlobal(ClientContext &context,
-                                                          TableFunctionInitInput &input) {
+unique_ptr<GlobalTableFunctionState> OTLPScanInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
 	auto &bind_data = input.bind_data->Cast<OTLPScanBindData>();
 	auto state = make_uniq<OTLPScanState>();
 

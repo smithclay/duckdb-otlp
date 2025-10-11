@@ -10,7 +10,7 @@
 namespace duckdb {
 
 OTLPTableEntry::OTLPTableEntry(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info,
-                                 shared_ptr<RingBuffer> buffer)
+                               shared_ptr<RingBuffer> buffer)
     : TableCatalogEntry(catalog, schema, info), ring_buffer_(buffer) {
 }
 

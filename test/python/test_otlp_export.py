@@ -35,10 +35,7 @@ def send_trace_data(port=4317):
         resource = Resource.create({"service.name": "test-service"})
         trace_provider = TracerProvider(resource=resource)
 
-        otlp_exporter = OTLPSpanExporter(
-            endpoint=f"localhost:{port}",
-            insecure=True
-        )
+        otlp_exporter = OTLPSpanExporter(endpoint=f"localhost:{port}", insecure=True)
         trace_provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
         trace.set_tracer_provider(trace_provider)
 
@@ -62,13 +59,12 @@ def send_metrics_data(port=4317):
         resource = Resource.create({"service.name": "test-metrics-service"})
 
         metric_reader = PeriodicExportingMetricReader(
-            OTLPMetricExporter(
-                endpoint=f"localhost:{port}",
-                insecure=True
-            ),
-            export_interval_millis=1000
+            OTLPMetricExporter(endpoint=f"localhost:{port}", insecure=True),
+            export_interval_millis=1000,
         )
-        meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
+        meter_provider = MeterProvider(
+            resource=resource, metric_readers=[metric_reader]
+        )
         metrics.set_meter_provider(meter_provider)
 
         # Create a test counter
@@ -91,10 +87,7 @@ def send_logs_data(port=4317):
         resource = Resource.create({"service.name": "test-logs-service"})
         logger_provider = LoggerProvider(resource=resource)
 
-        otlp_exporter = OTLPLogExporter(
-            endpoint=f"localhost:{port}",
-            insecure=True
-        )
+        otlp_exporter = OTLPLogExporter(endpoint=f"localhost:{port}", insecure=True)
         logger_provider.add_log_record_processor(BatchLogRecordProcessor(otlp_exporter))
 
         # Create a logger and emit a log
@@ -115,7 +108,7 @@ def send_logs_data(port=4317):
 def test_receiver_stopped(port=4317):
     """Verify that the receiver is actually stopped"""
     try:
-        channel = grpc.insecure_channel(f'localhost:{port}')
+        channel = grpc.insecure_channel(f"localhost:{port}")
         # Try to connect with a short timeout
         grpc.channel_ready_future(channel).result(timeout=2.0)
         channel.close()
@@ -142,14 +135,17 @@ def test_otlp_export():
     # Start DuckDB and attach OTLP receiver
     print("\n1. Starting DuckDB and attaching OTLP receiver on port 4317...")
     import os
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
-    extension_dir = os.path.join(project_root, 'build/release/repository')
+
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+    extension_dir = os.path.join(project_root, "build/release/repository")
 
     # Configure DuckDB to use the built extension directory
-    con = duckdb.connect(config={
-        'allow_unsigned_extensions': 'true',
-        'extension_directory': extension_dir
-    })
+    con = duckdb.connect(
+        config={
+            "allow_unsigned_extensions": "true",
+            "extension_directory": extension_dir,
+        }
+    )
     con.execute("LOAD duckspan")
 
     try:
@@ -228,5 +224,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n✗ Test failed with exception: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)

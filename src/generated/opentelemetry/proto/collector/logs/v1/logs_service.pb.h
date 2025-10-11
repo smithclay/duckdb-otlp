@@ -26,7 +26,7 @@
 #include "google/protobuf/generated_message_reflection.h"
 #include "google/protobuf/message.h"
 #include "google/protobuf/message_lite.h"
-#include "google/protobuf/repeated_field.h"  // IWYU pragma: export
+#include "google/protobuf/repeated_field.h" // IWYU pragma: export
 #include "google/protobuf/extension_set.h"  // IWYU pragma: export
 #include "google/protobuf/unknown_field_set.h"
 #include "opentelemetry/proto/logs/v1/logs.pb.h"
@@ -42,13 +42,13 @@ namespace protobuf {
 namespace internal {
 template <typename T>
 ::absl::string_view GetAnyMessageName();
-}  // namespace internal
-}  // namespace protobuf
-}  // namespace google
+} // namespace internal
+} // namespace protobuf
+} // namespace google
 
 // Internal implementation detail -- do not use these members.
 struct TableStruct_opentelemetry_2fproto_2fcollector_2flogs_2fv1_2flogs_5fservice_2eproto {
-  static const ::uint32_t offsets[];
+	static const ::uint32_t offsets[];
 };
 extern const ::google::protobuf::internal::DescriptorTable
     descriptor_table_opentelemetry_2fproto_2fcollector_2flogs_2fv1_2flogs_5fservice_2eproto;
@@ -66,15 +66,14 @@ extern ExportLogsServiceRequestDefaultTypeInternal _ExportLogsServiceRequest_def
 class ExportLogsServiceResponse;
 struct ExportLogsServiceResponseDefaultTypeInternal;
 extern ExportLogsServiceResponseDefaultTypeInternal _ExportLogsServiceResponse_default_instance_;
-}  // namespace v1
-}  // namespace logs
-}  // namespace collector
-}  // namespace proto
-}  // namespace opentelemetry
+} // namespace v1
+} // namespace logs
+} // namespace collector
+} // namespace proto
+} // namespace opentelemetry
 namespace google {
-namespace protobuf {
-}  // namespace protobuf
-}  // namespace google
+namespace protobuf {} // namespace protobuf
+} // namespace google
 
 namespace opentelemetry {
 namespace proto {
@@ -84,668 +83,677 @@ namespace v1 {
 
 // ===================================================================
 
-
 // -------------------------------------------------------------------
 
 class ExportLogsPartialSuccess final : public ::google::protobuf::Message
 /* @@protoc_insertion_point(class_definition:opentelemetry.proto.collector.logs.v1.ExportLogsPartialSuccess) */ {
- public:
-  inline ExportLogsPartialSuccess() : ExportLogsPartialSuccess(nullptr) {}
-  ~ExportLogsPartialSuccess() PROTOBUF_FINAL;
+public:
+	inline ExportLogsPartialSuccess() : ExportLogsPartialSuccess(nullptr) {
+	}
+	~ExportLogsPartialSuccess() PROTOBUF_FINAL;
 
 #if defined(PROTOBUF_CUSTOM_VTABLE)
-  void operator delete(ExportLogsPartialSuccess* msg, std::destroying_delete_t) {
-    SharedDtor(*msg);
-    ::google::protobuf::internal::SizedDelete(msg, sizeof(ExportLogsPartialSuccess));
-  }
+	void operator delete(ExportLogsPartialSuccess *msg, std::destroying_delete_t) {
+		SharedDtor(*msg);
+		::google::protobuf::internal::SizedDelete(msg, sizeof(ExportLogsPartialSuccess));
+	}
 #endif
 
-  template <typename = void>
-  explicit PROTOBUF_CONSTEXPR ExportLogsPartialSuccess(
-      ::google::protobuf::internal::ConstantInitialized);
+	template <typename = void>
+	explicit PROTOBUF_CONSTEXPR ExportLogsPartialSuccess(::google::protobuf::internal::ConstantInitialized);
 
-  inline ExportLogsPartialSuccess(const ExportLogsPartialSuccess& from) : ExportLogsPartialSuccess(nullptr, from) {}
-  inline ExportLogsPartialSuccess(ExportLogsPartialSuccess&& from) noexcept
-      : ExportLogsPartialSuccess(nullptr, std::move(from)) {}
-  inline ExportLogsPartialSuccess& operator=(const ExportLogsPartialSuccess& from) {
-    CopyFrom(from);
-    return *this;
-  }
-  inline ExportLogsPartialSuccess& operator=(ExportLogsPartialSuccess&& from) noexcept {
-    if (this == &from) return *this;
-    if (::google::protobuf::internal::CanMoveWithInternalSwap(GetArena(), from.GetArena())) {
-      InternalSwap(&from);
-    } else {
-      CopyFrom(from);
-    }
-    return *this;
-  }
+	inline ExportLogsPartialSuccess(const ExportLogsPartialSuccess &from) : ExportLogsPartialSuccess(nullptr, from) {
+	}
+	inline ExportLogsPartialSuccess(ExportLogsPartialSuccess &&from) noexcept
+	    : ExportLogsPartialSuccess(nullptr, std::move(from)) {
+	}
+	inline ExportLogsPartialSuccess &operator=(const ExportLogsPartialSuccess &from) {
+		CopyFrom(from);
+		return *this;
+	}
+	inline ExportLogsPartialSuccess &operator=(ExportLogsPartialSuccess &&from) noexcept {
+		if (this == &from)
+			return *this;
+		if (::google::protobuf::internal::CanMoveWithInternalSwap(GetArena(), from.GetArena())) {
+			InternalSwap(&from);
+		} else {
+			CopyFrom(from);
+		}
+		return *this;
+	}
 
-  inline const ::google::protobuf::UnknownFieldSet& unknown_fields() const
-      ABSL_ATTRIBUTE_LIFETIME_BOUND {
-    return _internal_metadata_.unknown_fields<::google::protobuf::UnknownFieldSet>(::google::protobuf::UnknownFieldSet::default_instance);
-  }
-  inline ::google::protobuf::UnknownFieldSet* mutable_unknown_fields()
-      ABSL_ATTRIBUTE_LIFETIME_BOUND {
-    return _internal_metadata_.mutable_unknown_fields<::google::protobuf::UnknownFieldSet>();
-  }
+	inline const ::google::protobuf::UnknownFieldSet &unknown_fields() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+		return _internal_metadata_.unknown_fields<::google::protobuf::UnknownFieldSet>(
+		    ::google::protobuf::UnknownFieldSet::default_instance);
+	}
+	inline ::google::protobuf::UnknownFieldSet *mutable_unknown_fields() ABSL_ATTRIBUTE_LIFETIME_BOUND {
+		return _internal_metadata_.mutable_unknown_fields<::google::protobuf::UnknownFieldSet>();
+	}
 
-  static const ::google::protobuf::Descriptor* descriptor() {
-    return GetDescriptor();
-  }
-  static const ::google::protobuf::Descriptor* GetDescriptor() {
-    return default_instance().GetMetadata().descriptor;
-  }
-  static const ::google::protobuf::Reflection* GetReflection() {
-    return default_instance().GetMetadata().reflection;
-  }
-  static const ExportLogsPartialSuccess& default_instance() {
-    return *internal_default_instance();
-  }
-  static inline const ExportLogsPartialSuccess* internal_default_instance() {
-    return reinterpret_cast<const ExportLogsPartialSuccess*>(
-        &_ExportLogsPartialSuccess_default_instance_);
-  }
-  static constexpr int kIndexInFileMessages = 2;
-  friend void swap(ExportLogsPartialSuccess& a, ExportLogsPartialSuccess& b) { a.Swap(&b); }
-  inline void Swap(ExportLogsPartialSuccess* other) {
-    if (other == this) return;
-    if (::google::protobuf::internal::CanUseInternalSwap(GetArena(), other->GetArena())) {
-      InternalSwap(other);
-    } else {
-      ::google::protobuf::internal::GenericSwap(this, other);
-    }
-  }
-  void UnsafeArenaSwap(ExportLogsPartialSuccess* other) {
-    if (other == this) return;
-    ABSL_DCHECK(GetArena() == other->GetArena());
-    InternalSwap(other);
-  }
+	static const ::google::protobuf::Descriptor *descriptor() {
+		return GetDescriptor();
+	}
+	static const ::google::protobuf::Descriptor *GetDescriptor() {
+		return default_instance().GetMetadata().descriptor;
+	}
+	static const ::google::protobuf::Reflection *GetReflection() {
+		return default_instance().GetMetadata().reflection;
+	}
+	static const ExportLogsPartialSuccess &default_instance() {
+		return *internal_default_instance();
+	}
+	static inline const ExportLogsPartialSuccess *internal_default_instance() {
+		return reinterpret_cast<const ExportLogsPartialSuccess *>(&_ExportLogsPartialSuccess_default_instance_);
+	}
+	static constexpr int kIndexInFileMessages = 2;
+	friend void swap(ExportLogsPartialSuccess &a, ExportLogsPartialSuccess &b) {
+		a.Swap(&b);
+	}
+	inline void Swap(ExportLogsPartialSuccess *other) {
+		if (other == this)
+			return;
+		if (::google::protobuf::internal::CanUseInternalSwap(GetArena(), other->GetArena())) {
+			InternalSwap(other);
+		} else {
+			::google::protobuf::internal::GenericSwap(this, other);
+		}
+	}
+	void UnsafeArenaSwap(ExportLogsPartialSuccess *other) {
+		if (other == this)
+			return;
+		ABSL_DCHECK(GetArena() == other->GetArena());
+		InternalSwap(other);
+	}
 
-  // implements Message ----------------------------------------------
+	// implements Message ----------------------------------------------
 
-  ExportLogsPartialSuccess* New(::google::protobuf::Arena* arena = nullptr) const {
-    return ::google::protobuf::Message::DefaultConstruct<ExportLogsPartialSuccess>(arena);
-  }
-  using ::google::protobuf::Message::CopyFrom;
-  void CopyFrom(const ExportLogsPartialSuccess& from);
-  using ::google::protobuf::Message::MergeFrom;
-  void MergeFrom(const ExportLogsPartialSuccess& from) { ExportLogsPartialSuccess::MergeImpl(*this, from); }
+	ExportLogsPartialSuccess *New(::google::protobuf::Arena *arena = nullptr) const {
+		return ::google::protobuf::Message::DefaultConstruct<ExportLogsPartialSuccess>(arena);
+	}
+	using ::google::protobuf::Message::CopyFrom;
+	void CopyFrom(const ExportLogsPartialSuccess &from);
+	using ::google::protobuf::Message::MergeFrom;
+	void MergeFrom(const ExportLogsPartialSuccess &from) {
+		ExportLogsPartialSuccess::MergeImpl(*this, from);
+	}
 
-  private:
-  static void MergeImpl(
-      ::google::protobuf::MessageLite& to_msg,
-      const ::google::protobuf::MessageLite& from_msg);
+private:
+	static void MergeImpl(::google::protobuf::MessageLite &to_msg, const ::google::protobuf::MessageLite &from_msg);
 
-  public:
-  bool IsInitialized() const {
-    return true;
-  }
-  ABSL_ATTRIBUTE_REINITIALIZES void Clear() PROTOBUF_FINAL;
-  #if defined(PROTOBUF_CUSTOM_VTABLE)
-  private:
-  static ::size_t ByteSizeLong(const ::google::protobuf::MessageLite& msg);
-  static ::uint8_t* _InternalSerialize(
-      const MessageLite& msg, ::uint8_t* target,
-      ::google::protobuf::io::EpsCopyOutputStream* stream);
+public:
+	bool IsInitialized() const {
+		return true;
+	}
+	ABSL_ATTRIBUTE_REINITIALIZES void Clear() PROTOBUF_FINAL;
+#if defined(PROTOBUF_CUSTOM_VTABLE)
+private:
+	static ::size_t ByteSizeLong(const ::google::protobuf::MessageLite &msg);
+	static ::uint8_t *_InternalSerialize(const MessageLite &msg, ::uint8_t *target,
+	                                     ::google::protobuf::io::EpsCopyOutputStream *stream);
 
-  public:
-  ::size_t ByteSizeLong() const { return ByteSizeLong(*this); }
-  ::uint8_t* _InternalSerialize(
-      ::uint8_t* target,
-      ::google::protobuf::io::EpsCopyOutputStream* stream) const {
-    return _InternalSerialize(*this, target, stream);
-  }
-  #else   // PROTOBUF_CUSTOM_VTABLE
-  ::size_t ByteSizeLong() const final;
-  ::uint8_t* _InternalSerialize(
-      ::uint8_t* target,
-      ::google::protobuf::io::EpsCopyOutputStream* stream) const final;
-  #endif  // PROTOBUF_CUSTOM_VTABLE
-  int GetCachedSize() const { return _impl_._cached_size_.Get(); }
+public:
+	::size_t ByteSizeLong() const {
+		return ByteSizeLong(*this);
+	}
+	::uint8_t *_InternalSerialize(::uint8_t *target, ::google::protobuf::io::EpsCopyOutputStream *stream) const {
+		return _InternalSerialize(*this, target, stream);
+	}
+#else  // PROTOBUF_CUSTOM_VTABLE
+	::size_t ByteSizeLong() const final;
+	::uint8_t *_InternalSerialize(::uint8_t *target, ::google::protobuf::io::EpsCopyOutputStream *stream) const final;
+#endif // PROTOBUF_CUSTOM_VTABLE
+	int GetCachedSize() const {
+		return _impl_._cached_size_.Get();
+	}
 
-  private:
-  void SharedCtor(::google::protobuf::Arena* arena);
-  static void SharedDtor(MessageLite& self);
-  void InternalSwap(ExportLogsPartialSuccess* other);
- private:
-  template <typename T>
-  friend ::absl::string_view(
-      ::google::protobuf::internal::GetAnyMessageName)();
-  static ::absl::string_view FullMessageName() { return "opentelemetry.proto.collector.logs.v1.ExportLogsPartialSuccess"; }
+private:
+	void SharedCtor(::google::protobuf::Arena *arena);
+	static void SharedDtor(MessageLite &self);
+	void InternalSwap(ExportLogsPartialSuccess *other);
 
- protected:
-  explicit ExportLogsPartialSuccess(::google::protobuf::Arena* arena);
-  ExportLogsPartialSuccess(::google::protobuf::Arena* arena, const ExportLogsPartialSuccess& from);
-  ExportLogsPartialSuccess(::google::protobuf::Arena* arena, ExportLogsPartialSuccess&& from) noexcept
-      : ExportLogsPartialSuccess(arena) {
-    *this = ::std::move(from);
-  }
-  const ::google::protobuf::internal::ClassData* GetClassData() const PROTOBUF_FINAL;
-  static void* PlacementNew_(const void*, void* mem,
-                             ::google::protobuf::Arena* arena);
-  static constexpr auto InternalNewImpl_();
-  static const ::google::protobuf::internal::ClassDataFull _class_data_;
+private:
+	template <typename T>
+	friend ::absl::string_view(::google::protobuf::internal::GetAnyMessageName)();
+	static ::absl::string_view FullMessageName() {
+		return "opentelemetry.proto.collector.logs.v1.ExportLogsPartialSuccess";
+	}
 
- public:
-  ::google::protobuf::Metadata GetMetadata() const;
-  // nested types ----------------------------------------------------
+protected:
+	explicit ExportLogsPartialSuccess(::google::protobuf::Arena *arena);
+	ExportLogsPartialSuccess(::google::protobuf::Arena *arena, const ExportLogsPartialSuccess &from);
+	ExportLogsPartialSuccess(::google::protobuf::Arena *arena, ExportLogsPartialSuccess &&from) noexcept
+	    : ExportLogsPartialSuccess(arena) {
+		*this = ::std::move(from);
+	}
+	const ::google::protobuf::internal::ClassData *GetClassData() const PROTOBUF_FINAL;
+	static void *PlacementNew_(const void *, void *mem, ::google::protobuf::Arena *arena);
+	static constexpr auto InternalNewImpl_();
+	static const ::google::protobuf::internal::ClassDataFull _class_data_;
 
-  // accessors -------------------------------------------------------
-  enum : int {
-    kErrorMessageFieldNumber = 2,
-    kRejectedLogRecordsFieldNumber = 1,
-  };
-  // string error_message = 2;
-  void clear_error_message() ;
-  const std::string& error_message() const;
-  template <typename Arg_ = const std::string&, typename... Args_>
-  void set_error_message(Arg_&& arg, Args_... args);
-  std::string* mutable_error_message();
-  PROTOBUF_NODISCARD std::string* release_error_message();
-  void set_allocated_error_message(std::string* value);
+public:
+	::google::protobuf::Metadata GetMetadata() const;
+	// nested types ----------------------------------------------------
 
-  private:
-  const std::string& _internal_error_message() const;
-  inline PROTOBUF_ALWAYS_INLINE void _internal_set_error_message(
-      const std::string& value);
-  std::string* _internal_mutable_error_message();
+	// accessors -------------------------------------------------------
+	enum : int {
+		kErrorMessageFieldNumber = 2,
+		kRejectedLogRecordsFieldNumber = 1,
+	};
+	// string error_message = 2;
+	void clear_error_message();
+	const std::string &error_message() const;
+	template <typename Arg_ = const std::string &, typename... Args_>
+	void set_error_message(Arg_ &&arg, Args_... args);
+	std::string *mutable_error_message();
+	PROTOBUF_NODISCARD std::string *release_error_message();
+	void set_allocated_error_message(std::string *value);
 
-  public:
-  // int64 rejected_log_records = 1;
-  void clear_rejected_log_records() ;
-  ::int64_t rejected_log_records() const;
-  void set_rejected_log_records(::int64_t value);
+private:
+	const std::string &_internal_error_message() const;
+	inline PROTOBUF_ALWAYS_INLINE void _internal_set_error_message(const std::string &value);
+	std::string *_internal_mutable_error_message();
 
-  private:
-  ::int64_t _internal_rejected_log_records() const;
-  void _internal_set_rejected_log_records(::int64_t value);
+public:
+	// int64 rejected_log_records = 1;
+	void clear_rejected_log_records();
+	::int64_t rejected_log_records() const;
+	void set_rejected_log_records(::int64_t value);
 
-  public:
-  // @@protoc_insertion_point(class_scope:opentelemetry.proto.collector.logs.v1.ExportLogsPartialSuccess)
- private:
-  class _Internal;
-  friend class ::google::protobuf::internal::TcParser;
-  static const ::google::protobuf::internal::TcParseTable<
-      1, 2, 0,
-      84, 2>
-      _table_;
+private:
+	::int64_t _internal_rejected_log_records() const;
+	void _internal_set_rejected_log_records(::int64_t value);
 
-  friend class ::google::protobuf::MessageLite;
-  friend class ::google::protobuf::Arena;
-  template <typename T>
-  friend class ::google::protobuf::Arena::InternalHelper;
-  using InternalArenaConstructable_ = void;
-  using DestructorSkippable_ = void;
-  struct Impl_ {
-    inline explicit constexpr Impl_(
-        ::google::protobuf::internal::ConstantInitialized) noexcept;
-    inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
-                          ::google::protobuf::Arena* arena);
-    inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
-                          ::google::protobuf::Arena* arena, const Impl_& from,
-                          const ExportLogsPartialSuccess& from_msg);
-    ::google::protobuf::internal::ArenaStringPtr error_message_;
-    ::int64_t rejected_log_records_;
-    ::google::protobuf::internal::CachedSize _cached_size_;
-    PROTOBUF_TSAN_DECLARE_MEMBER
-  };
-  union { Impl_ _impl_; };
-  friend struct ::TableStruct_opentelemetry_2fproto_2fcollector_2flogs_2fv1_2flogs_5fservice_2eproto;
+public:
+	// @@protoc_insertion_point(class_scope:opentelemetry.proto.collector.logs.v1.ExportLogsPartialSuccess)
+private:
+	class _Internal;
+	friend class ::google::protobuf::internal::TcParser;
+	static const ::google::protobuf::internal::TcParseTable<1, 2, 0, 84, 2> _table_;
+
+	friend class ::google::protobuf::MessageLite;
+	friend class ::google::protobuf::Arena;
+	template <typename T>
+	friend class ::google::protobuf::Arena::InternalHelper;
+	using InternalArenaConstructable_ = void;
+	using DestructorSkippable_ = void;
+	struct Impl_ {
+		inline explicit constexpr Impl_(::google::protobuf::internal::ConstantInitialized) noexcept;
+		inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
+		                      ::google::protobuf::Arena *arena);
+		inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
+		                      ::google::protobuf::Arena *arena, const Impl_ &from,
+		                      const ExportLogsPartialSuccess &from_msg);
+		::google::protobuf::internal::ArenaStringPtr error_message_;
+		::int64_t rejected_log_records_;
+		::google::protobuf::internal::CachedSize _cached_size_;
+		PROTOBUF_TSAN_DECLARE_MEMBER
+	};
+	union {
+		Impl_ _impl_;
+	};
+	friend struct ::TableStruct_opentelemetry_2fproto_2fcollector_2flogs_2fv1_2flogs_5fservice_2eproto;
 };
 // -------------------------------------------------------------------
 
 class ExportLogsServiceResponse final : public ::google::protobuf::Message
 /* @@protoc_insertion_point(class_definition:opentelemetry.proto.collector.logs.v1.ExportLogsServiceResponse) */ {
- public:
-  inline ExportLogsServiceResponse() : ExportLogsServiceResponse(nullptr) {}
-  ~ExportLogsServiceResponse() PROTOBUF_FINAL;
+public:
+	inline ExportLogsServiceResponse() : ExportLogsServiceResponse(nullptr) {
+	}
+	~ExportLogsServiceResponse() PROTOBUF_FINAL;
 
 #if defined(PROTOBUF_CUSTOM_VTABLE)
-  void operator delete(ExportLogsServiceResponse* msg, std::destroying_delete_t) {
-    SharedDtor(*msg);
-    ::google::protobuf::internal::SizedDelete(msg, sizeof(ExportLogsServiceResponse));
-  }
+	void operator delete(ExportLogsServiceResponse *msg, std::destroying_delete_t) {
+		SharedDtor(*msg);
+		::google::protobuf::internal::SizedDelete(msg, sizeof(ExportLogsServiceResponse));
+	}
 #endif
 
-  template <typename = void>
-  explicit PROTOBUF_CONSTEXPR ExportLogsServiceResponse(
-      ::google::protobuf::internal::ConstantInitialized);
+	template <typename = void>
+	explicit PROTOBUF_CONSTEXPR ExportLogsServiceResponse(::google::protobuf::internal::ConstantInitialized);
 
-  inline ExportLogsServiceResponse(const ExportLogsServiceResponse& from) : ExportLogsServiceResponse(nullptr, from) {}
-  inline ExportLogsServiceResponse(ExportLogsServiceResponse&& from) noexcept
-      : ExportLogsServiceResponse(nullptr, std::move(from)) {}
-  inline ExportLogsServiceResponse& operator=(const ExportLogsServiceResponse& from) {
-    CopyFrom(from);
-    return *this;
-  }
-  inline ExportLogsServiceResponse& operator=(ExportLogsServiceResponse&& from) noexcept {
-    if (this == &from) return *this;
-    if (::google::protobuf::internal::CanMoveWithInternalSwap(GetArena(), from.GetArena())) {
-      InternalSwap(&from);
-    } else {
-      CopyFrom(from);
-    }
-    return *this;
-  }
+	inline ExportLogsServiceResponse(const ExportLogsServiceResponse &from) : ExportLogsServiceResponse(nullptr, from) {
+	}
+	inline ExportLogsServiceResponse(ExportLogsServiceResponse &&from) noexcept
+	    : ExportLogsServiceResponse(nullptr, std::move(from)) {
+	}
+	inline ExportLogsServiceResponse &operator=(const ExportLogsServiceResponse &from) {
+		CopyFrom(from);
+		return *this;
+	}
+	inline ExportLogsServiceResponse &operator=(ExportLogsServiceResponse &&from) noexcept {
+		if (this == &from)
+			return *this;
+		if (::google::protobuf::internal::CanMoveWithInternalSwap(GetArena(), from.GetArena())) {
+			InternalSwap(&from);
+		} else {
+			CopyFrom(from);
+		}
+		return *this;
+	}
 
-  inline const ::google::protobuf::UnknownFieldSet& unknown_fields() const
-      ABSL_ATTRIBUTE_LIFETIME_BOUND {
-    return _internal_metadata_.unknown_fields<::google::protobuf::UnknownFieldSet>(::google::protobuf::UnknownFieldSet::default_instance);
-  }
-  inline ::google::protobuf::UnknownFieldSet* mutable_unknown_fields()
-      ABSL_ATTRIBUTE_LIFETIME_BOUND {
-    return _internal_metadata_.mutable_unknown_fields<::google::protobuf::UnknownFieldSet>();
-  }
+	inline const ::google::protobuf::UnknownFieldSet &unknown_fields() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+		return _internal_metadata_.unknown_fields<::google::protobuf::UnknownFieldSet>(
+		    ::google::protobuf::UnknownFieldSet::default_instance);
+	}
+	inline ::google::protobuf::UnknownFieldSet *mutable_unknown_fields() ABSL_ATTRIBUTE_LIFETIME_BOUND {
+		return _internal_metadata_.mutable_unknown_fields<::google::protobuf::UnknownFieldSet>();
+	}
 
-  static const ::google::protobuf::Descriptor* descriptor() {
-    return GetDescriptor();
-  }
-  static const ::google::protobuf::Descriptor* GetDescriptor() {
-    return default_instance().GetMetadata().descriptor;
-  }
-  static const ::google::protobuf::Reflection* GetReflection() {
-    return default_instance().GetMetadata().reflection;
-  }
-  static const ExportLogsServiceResponse& default_instance() {
-    return *internal_default_instance();
-  }
-  static inline const ExportLogsServiceResponse* internal_default_instance() {
-    return reinterpret_cast<const ExportLogsServiceResponse*>(
-        &_ExportLogsServiceResponse_default_instance_);
-  }
-  static constexpr int kIndexInFileMessages = 1;
-  friend void swap(ExportLogsServiceResponse& a, ExportLogsServiceResponse& b) { a.Swap(&b); }
-  inline void Swap(ExportLogsServiceResponse* other) {
-    if (other == this) return;
-    if (::google::protobuf::internal::CanUseInternalSwap(GetArena(), other->GetArena())) {
-      InternalSwap(other);
-    } else {
-      ::google::protobuf::internal::GenericSwap(this, other);
-    }
-  }
-  void UnsafeArenaSwap(ExportLogsServiceResponse* other) {
-    if (other == this) return;
-    ABSL_DCHECK(GetArena() == other->GetArena());
-    InternalSwap(other);
-  }
+	static const ::google::protobuf::Descriptor *descriptor() {
+		return GetDescriptor();
+	}
+	static const ::google::protobuf::Descriptor *GetDescriptor() {
+		return default_instance().GetMetadata().descriptor;
+	}
+	static const ::google::protobuf::Reflection *GetReflection() {
+		return default_instance().GetMetadata().reflection;
+	}
+	static const ExportLogsServiceResponse &default_instance() {
+		return *internal_default_instance();
+	}
+	static inline const ExportLogsServiceResponse *internal_default_instance() {
+		return reinterpret_cast<const ExportLogsServiceResponse *>(&_ExportLogsServiceResponse_default_instance_);
+	}
+	static constexpr int kIndexInFileMessages = 1;
+	friend void swap(ExportLogsServiceResponse &a, ExportLogsServiceResponse &b) {
+		a.Swap(&b);
+	}
+	inline void Swap(ExportLogsServiceResponse *other) {
+		if (other == this)
+			return;
+		if (::google::protobuf::internal::CanUseInternalSwap(GetArena(), other->GetArena())) {
+			InternalSwap(other);
+		} else {
+			::google::protobuf::internal::GenericSwap(this, other);
+		}
+	}
+	void UnsafeArenaSwap(ExportLogsServiceResponse *other) {
+		if (other == this)
+			return;
+		ABSL_DCHECK(GetArena() == other->GetArena());
+		InternalSwap(other);
+	}
 
-  // implements Message ----------------------------------------------
+	// implements Message ----------------------------------------------
 
-  ExportLogsServiceResponse* New(::google::protobuf::Arena* arena = nullptr) const {
-    return ::google::protobuf::Message::DefaultConstruct<ExportLogsServiceResponse>(arena);
-  }
-  using ::google::protobuf::Message::CopyFrom;
-  void CopyFrom(const ExportLogsServiceResponse& from);
-  using ::google::protobuf::Message::MergeFrom;
-  void MergeFrom(const ExportLogsServiceResponse& from) { ExportLogsServiceResponse::MergeImpl(*this, from); }
+	ExportLogsServiceResponse *New(::google::protobuf::Arena *arena = nullptr) const {
+		return ::google::protobuf::Message::DefaultConstruct<ExportLogsServiceResponse>(arena);
+	}
+	using ::google::protobuf::Message::CopyFrom;
+	void CopyFrom(const ExportLogsServiceResponse &from);
+	using ::google::protobuf::Message::MergeFrom;
+	void MergeFrom(const ExportLogsServiceResponse &from) {
+		ExportLogsServiceResponse::MergeImpl(*this, from);
+	}
 
-  private:
-  static void MergeImpl(
-      ::google::protobuf::MessageLite& to_msg,
-      const ::google::protobuf::MessageLite& from_msg);
+private:
+	static void MergeImpl(::google::protobuf::MessageLite &to_msg, const ::google::protobuf::MessageLite &from_msg);
 
-  public:
-  bool IsInitialized() const {
-    return true;
-  }
-  ABSL_ATTRIBUTE_REINITIALIZES void Clear() PROTOBUF_FINAL;
-  #if defined(PROTOBUF_CUSTOM_VTABLE)
-  private:
-  static ::size_t ByteSizeLong(const ::google::protobuf::MessageLite& msg);
-  static ::uint8_t* _InternalSerialize(
-      const MessageLite& msg, ::uint8_t* target,
-      ::google::protobuf::io::EpsCopyOutputStream* stream);
+public:
+	bool IsInitialized() const {
+		return true;
+	}
+	ABSL_ATTRIBUTE_REINITIALIZES void Clear() PROTOBUF_FINAL;
+#if defined(PROTOBUF_CUSTOM_VTABLE)
+private:
+	static ::size_t ByteSizeLong(const ::google::protobuf::MessageLite &msg);
+	static ::uint8_t *_InternalSerialize(const MessageLite &msg, ::uint8_t *target,
+	                                     ::google::protobuf::io::EpsCopyOutputStream *stream);
 
-  public:
-  ::size_t ByteSizeLong() const { return ByteSizeLong(*this); }
-  ::uint8_t* _InternalSerialize(
-      ::uint8_t* target,
-      ::google::protobuf::io::EpsCopyOutputStream* stream) const {
-    return _InternalSerialize(*this, target, stream);
-  }
-  #else   // PROTOBUF_CUSTOM_VTABLE
-  ::size_t ByteSizeLong() const final;
-  ::uint8_t* _InternalSerialize(
-      ::uint8_t* target,
-      ::google::protobuf::io::EpsCopyOutputStream* stream) const final;
-  #endif  // PROTOBUF_CUSTOM_VTABLE
-  int GetCachedSize() const { return _impl_._cached_size_.Get(); }
+public:
+	::size_t ByteSizeLong() const {
+		return ByteSizeLong(*this);
+	}
+	::uint8_t *_InternalSerialize(::uint8_t *target, ::google::protobuf::io::EpsCopyOutputStream *stream) const {
+		return _InternalSerialize(*this, target, stream);
+	}
+#else  // PROTOBUF_CUSTOM_VTABLE
+	::size_t ByteSizeLong() const final;
+	::uint8_t *_InternalSerialize(::uint8_t *target, ::google::protobuf::io::EpsCopyOutputStream *stream) const final;
+#endif // PROTOBUF_CUSTOM_VTABLE
+	int GetCachedSize() const {
+		return _impl_._cached_size_.Get();
+	}
 
-  private:
-  void SharedCtor(::google::protobuf::Arena* arena);
-  static void SharedDtor(MessageLite& self);
-  void InternalSwap(ExportLogsServiceResponse* other);
- private:
-  template <typename T>
-  friend ::absl::string_view(
-      ::google::protobuf::internal::GetAnyMessageName)();
-  static ::absl::string_view FullMessageName() { return "opentelemetry.proto.collector.logs.v1.ExportLogsServiceResponse"; }
+private:
+	void SharedCtor(::google::protobuf::Arena *arena);
+	static void SharedDtor(MessageLite &self);
+	void InternalSwap(ExportLogsServiceResponse *other);
 
- protected:
-  explicit ExportLogsServiceResponse(::google::protobuf::Arena* arena);
-  ExportLogsServiceResponse(::google::protobuf::Arena* arena, const ExportLogsServiceResponse& from);
-  ExportLogsServiceResponse(::google::protobuf::Arena* arena, ExportLogsServiceResponse&& from) noexcept
-      : ExportLogsServiceResponse(arena) {
-    *this = ::std::move(from);
-  }
-  const ::google::protobuf::internal::ClassData* GetClassData() const PROTOBUF_FINAL;
-  static void* PlacementNew_(const void*, void* mem,
-                             ::google::protobuf::Arena* arena);
-  static constexpr auto InternalNewImpl_();
-  static const ::google::protobuf::internal::ClassDataFull _class_data_;
+private:
+	template <typename T>
+	friend ::absl::string_view(::google::protobuf::internal::GetAnyMessageName)();
+	static ::absl::string_view FullMessageName() {
+		return "opentelemetry.proto.collector.logs.v1.ExportLogsServiceResponse";
+	}
 
- public:
-  ::google::protobuf::Metadata GetMetadata() const;
-  // nested types ----------------------------------------------------
+protected:
+	explicit ExportLogsServiceResponse(::google::protobuf::Arena *arena);
+	ExportLogsServiceResponse(::google::protobuf::Arena *arena, const ExportLogsServiceResponse &from);
+	ExportLogsServiceResponse(::google::protobuf::Arena *arena, ExportLogsServiceResponse &&from) noexcept
+	    : ExportLogsServiceResponse(arena) {
+		*this = ::std::move(from);
+	}
+	const ::google::protobuf::internal::ClassData *GetClassData() const PROTOBUF_FINAL;
+	static void *PlacementNew_(const void *, void *mem, ::google::protobuf::Arena *arena);
+	static constexpr auto InternalNewImpl_();
+	static const ::google::protobuf::internal::ClassDataFull _class_data_;
 
-  // accessors -------------------------------------------------------
-  enum : int {
-    kPartialSuccessFieldNumber = 1,
-  };
-  // .opentelemetry.proto.collector.logs.v1.ExportLogsPartialSuccess partial_success = 1;
-  bool has_partial_success() const;
-  void clear_partial_success() ;
-  const ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess& partial_success() const;
-  PROTOBUF_NODISCARD ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess* release_partial_success();
-  ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess* mutable_partial_success();
-  void set_allocated_partial_success(::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess* value);
-  void unsafe_arena_set_allocated_partial_success(::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess* value);
-  ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess* unsafe_arena_release_partial_success();
+public:
+	::google::protobuf::Metadata GetMetadata() const;
+	// nested types ----------------------------------------------------
 
-  private:
-  const ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess& _internal_partial_success() const;
-  ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess* _internal_mutable_partial_success();
+	// accessors -------------------------------------------------------
+	enum : int {
+		kPartialSuccessFieldNumber = 1,
+	};
+	// .opentelemetry.proto.collector.logs.v1.ExportLogsPartialSuccess partial_success = 1;
+	bool has_partial_success() const;
+	void clear_partial_success();
+	const ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess &partial_success() const;
+	PROTOBUF_NODISCARD ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess *release_partial_success();
+	::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess *mutable_partial_success();
+	void set_allocated_partial_success(::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess *value);
+	void unsafe_arena_set_allocated_partial_success(
+	    ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess *value);
+	::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess *unsafe_arena_release_partial_success();
 
-  public:
-  // @@protoc_insertion_point(class_scope:opentelemetry.proto.collector.logs.v1.ExportLogsServiceResponse)
- private:
-  class _Internal;
-  friend class ::google::protobuf::internal::TcParser;
-  static const ::google::protobuf::internal::TcParseTable<
-      0, 1, 1,
-      0, 2>
-      _table_;
+private:
+	const ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess &_internal_partial_success() const;
+	::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess *_internal_mutable_partial_success();
 
-  friend class ::google::protobuf::MessageLite;
-  friend class ::google::protobuf::Arena;
-  template <typename T>
-  friend class ::google::protobuf::Arena::InternalHelper;
-  using InternalArenaConstructable_ = void;
-  using DestructorSkippable_ = void;
-  struct Impl_ {
-    inline explicit constexpr Impl_(
-        ::google::protobuf::internal::ConstantInitialized) noexcept;
-    inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
-                          ::google::protobuf::Arena* arena);
-    inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
-                          ::google::protobuf::Arena* arena, const Impl_& from,
-                          const ExportLogsServiceResponse& from_msg);
-    ::google::protobuf::internal::HasBits<1> _has_bits_;
-    ::google::protobuf::internal::CachedSize _cached_size_;
-    ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess* partial_success_;
-    PROTOBUF_TSAN_DECLARE_MEMBER
-  };
-  union { Impl_ _impl_; };
-  friend struct ::TableStruct_opentelemetry_2fproto_2fcollector_2flogs_2fv1_2flogs_5fservice_2eproto;
+public:
+	// @@protoc_insertion_point(class_scope:opentelemetry.proto.collector.logs.v1.ExportLogsServiceResponse)
+private:
+	class _Internal;
+	friend class ::google::protobuf::internal::TcParser;
+	static const ::google::protobuf::internal::TcParseTable<0, 1, 1, 0, 2> _table_;
+
+	friend class ::google::protobuf::MessageLite;
+	friend class ::google::protobuf::Arena;
+	template <typename T>
+	friend class ::google::protobuf::Arena::InternalHelper;
+	using InternalArenaConstructable_ = void;
+	using DestructorSkippable_ = void;
+	struct Impl_ {
+		inline explicit constexpr Impl_(::google::protobuf::internal::ConstantInitialized) noexcept;
+		inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
+		                      ::google::protobuf::Arena *arena);
+		inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
+		                      ::google::protobuf::Arena *arena, const Impl_ &from,
+		                      const ExportLogsServiceResponse &from_msg);
+		::google::protobuf::internal::HasBits<1> _has_bits_;
+		::google::protobuf::internal::CachedSize _cached_size_;
+		::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess *partial_success_;
+		PROTOBUF_TSAN_DECLARE_MEMBER
+	};
+	union {
+		Impl_ _impl_;
+	};
+	friend struct ::TableStruct_opentelemetry_2fproto_2fcollector_2flogs_2fv1_2flogs_5fservice_2eproto;
 };
 // -------------------------------------------------------------------
 
 class ExportLogsServiceRequest final : public ::google::protobuf::Message
 /* @@protoc_insertion_point(class_definition:opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest) */ {
- public:
-  inline ExportLogsServiceRequest() : ExportLogsServiceRequest(nullptr) {}
-  ~ExportLogsServiceRequest() PROTOBUF_FINAL;
+public:
+	inline ExportLogsServiceRequest() : ExportLogsServiceRequest(nullptr) {
+	}
+	~ExportLogsServiceRequest() PROTOBUF_FINAL;
 
 #if defined(PROTOBUF_CUSTOM_VTABLE)
-  void operator delete(ExportLogsServiceRequest* msg, std::destroying_delete_t) {
-    SharedDtor(*msg);
-    ::google::protobuf::internal::SizedDelete(msg, sizeof(ExportLogsServiceRequest));
-  }
+	void operator delete(ExportLogsServiceRequest *msg, std::destroying_delete_t) {
+		SharedDtor(*msg);
+		::google::protobuf::internal::SizedDelete(msg, sizeof(ExportLogsServiceRequest));
+	}
 #endif
 
-  template <typename = void>
-  explicit PROTOBUF_CONSTEXPR ExportLogsServiceRequest(
-      ::google::protobuf::internal::ConstantInitialized);
+	template <typename = void>
+	explicit PROTOBUF_CONSTEXPR ExportLogsServiceRequest(::google::protobuf::internal::ConstantInitialized);
 
-  inline ExportLogsServiceRequest(const ExportLogsServiceRequest& from) : ExportLogsServiceRequest(nullptr, from) {}
-  inline ExportLogsServiceRequest(ExportLogsServiceRequest&& from) noexcept
-      : ExportLogsServiceRequest(nullptr, std::move(from)) {}
-  inline ExportLogsServiceRequest& operator=(const ExportLogsServiceRequest& from) {
-    CopyFrom(from);
-    return *this;
-  }
-  inline ExportLogsServiceRequest& operator=(ExportLogsServiceRequest&& from) noexcept {
-    if (this == &from) return *this;
-    if (::google::protobuf::internal::CanMoveWithInternalSwap(GetArena(), from.GetArena())) {
-      InternalSwap(&from);
-    } else {
-      CopyFrom(from);
-    }
-    return *this;
-  }
+	inline ExportLogsServiceRequest(const ExportLogsServiceRequest &from) : ExportLogsServiceRequest(nullptr, from) {
+	}
+	inline ExportLogsServiceRequest(ExportLogsServiceRequest &&from) noexcept
+	    : ExportLogsServiceRequest(nullptr, std::move(from)) {
+	}
+	inline ExportLogsServiceRequest &operator=(const ExportLogsServiceRequest &from) {
+		CopyFrom(from);
+		return *this;
+	}
+	inline ExportLogsServiceRequest &operator=(ExportLogsServiceRequest &&from) noexcept {
+		if (this == &from)
+			return *this;
+		if (::google::protobuf::internal::CanMoveWithInternalSwap(GetArena(), from.GetArena())) {
+			InternalSwap(&from);
+		} else {
+			CopyFrom(from);
+		}
+		return *this;
+	}
 
-  inline const ::google::protobuf::UnknownFieldSet& unknown_fields() const
-      ABSL_ATTRIBUTE_LIFETIME_BOUND {
-    return _internal_metadata_.unknown_fields<::google::protobuf::UnknownFieldSet>(::google::protobuf::UnknownFieldSet::default_instance);
-  }
-  inline ::google::protobuf::UnknownFieldSet* mutable_unknown_fields()
-      ABSL_ATTRIBUTE_LIFETIME_BOUND {
-    return _internal_metadata_.mutable_unknown_fields<::google::protobuf::UnknownFieldSet>();
-  }
+	inline const ::google::protobuf::UnknownFieldSet &unknown_fields() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+		return _internal_metadata_.unknown_fields<::google::protobuf::UnknownFieldSet>(
+		    ::google::protobuf::UnknownFieldSet::default_instance);
+	}
+	inline ::google::protobuf::UnknownFieldSet *mutable_unknown_fields() ABSL_ATTRIBUTE_LIFETIME_BOUND {
+		return _internal_metadata_.mutable_unknown_fields<::google::protobuf::UnknownFieldSet>();
+	}
 
-  static const ::google::protobuf::Descriptor* descriptor() {
-    return GetDescriptor();
-  }
-  static const ::google::protobuf::Descriptor* GetDescriptor() {
-    return default_instance().GetMetadata().descriptor;
-  }
-  static const ::google::protobuf::Reflection* GetReflection() {
-    return default_instance().GetMetadata().reflection;
-  }
-  static const ExportLogsServiceRequest& default_instance() {
-    return *internal_default_instance();
-  }
-  static inline const ExportLogsServiceRequest* internal_default_instance() {
-    return reinterpret_cast<const ExportLogsServiceRequest*>(
-        &_ExportLogsServiceRequest_default_instance_);
-  }
-  static constexpr int kIndexInFileMessages = 0;
-  friend void swap(ExportLogsServiceRequest& a, ExportLogsServiceRequest& b) { a.Swap(&b); }
-  inline void Swap(ExportLogsServiceRequest* other) {
-    if (other == this) return;
-    if (::google::protobuf::internal::CanUseInternalSwap(GetArena(), other->GetArena())) {
-      InternalSwap(other);
-    } else {
-      ::google::protobuf::internal::GenericSwap(this, other);
-    }
-  }
-  void UnsafeArenaSwap(ExportLogsServiceRequest* other) {
-    if (other == this) return;
-    ABSL_DCHECK(GetArena() == other->GetArena());
-    InternalSwap(other);
-  }
+	static const ::google::protobuf::Descriptor *descriptor() {
+		return GetDescriptor();
+	}
+	static const ::google::protobuf::Descriptor *GetDescriptor() {
+		return default_instance().GetMetadata().descriptor;
+	}
+	static const ::google::protobuf::Reflection *GetReflection() {
+		return default_instance().GetMetadata().reflection;
+	}
+	static const ExportLogsServiceRequest &default_instance() {
+		return *internal_default_instance();
+	}
+	static inline const ExportLogsServiceRequest *internal_default_instance() {
+		return reinterpret_cast<const ExportLogsServiceRequest *>(&_ExportLogsServiceRequest_default_instance_);
+	}
+	static constexpr int kIndexInFileMessages = 0;
+	friend void swap(ExportLogsServiceRequest &a, ExportLogsServiceRequest &b) {
+		a.Swap(&b);
+	}
+	inline void Swap(ExportLogsServiceRequest *other) {
+		if (other == this)
+			return;
+		if (::google::protobuf::internal::CanUseInternalSwap(GetArena(), other->GetArena())) {
+			InternalSwap(other);
+		} else {
+			::google::protobuf::internal::GenericSwap(this, other);
+		}
+	}
+	void UnsafeArenaSwap(ExportLogsServiceRequest *other) {
+		if (other == this)
+			return;
+		ABSL_DCHECK(GetArena() == other->GetArena());
+		InternalSwap(other);
+	}
 
-  // implements Message ----------------------------------------------
+	// implements Message ----------------------------------------------
 
-  ExportLogsServiceRequest* New(::google::protobuf::Arena* arena = nullptr) const {
-    return ::google::protobuf::Message::DefaultConstruct<ExportLogsServiceRequest>(arena);
-  }
-  using ::google::protobuf::Message::CopyFrom;
-  void CopyFrom(const ExportLogsServiceRequest& from);
-  using ::google::protobuf::Message::MergeFrom;
-  void MergeFrom(const ExportLogsServiceRequest& from) { ExportLogsServiceRequest::MergeImpl(*this, from); }
+	ExportLogsServiceRequest *New(::google::protobuf::Arena *arena = nullptr) const {
+		return ::google::protobuf::Message::DefaultConstruct<ExportLogsServiceRequest>(arena);
+	}
+	using ::google::protobuf::Message::CopyFrom;
+	void CopyFrom(const ExportLogsServiceRequest &from);
+	using ::google::protobuf::Message::MergeFrom;
+	void MergeFrom(const ExportLogsServiceRequest &from) {
+		ExportLogsServiceRequest::MergeImpl(*this, from);
+	}
 
-  private:
-  static void MergeImpl(
-      ::google::protobuf::MessageLite& to_msg,
-      const ::google::protobuf::MessageLite& from_msg);
+private:
+	static void MergeImpl(::google::protobuf::MessageLite &to_msg, const ::google::protobuf::MessageLite &from_msg);
 
-  public:
-  bool IsInitialized() const {
-    return true;
-  }
-  ABSL_ATTRIBUTE_REINITIALIZES void Clear() PROTOBUF_FINAL;
-  #if defined(PROTOBUF_CUSTOM_VTABLE)
-  private:
-  static ::size_t ByteSizeLong(const ::google::protobuf::MessageLite& msg);
-  static ::uint8_t* _InternalSerialize(
-      const MessageLite& msg, ::uint8_t* target,
-      ::google::protobuf::io::EpsCopyOutputStream* stream);
+public:
+	bool IsInitialized() const {
+		return true;
+	}
+	ABSL_ATTRIBUTE_REINITIALIZES void Clear() PROTOBUF_FINAL;
+#if defined(PROTOBUF_CUSTOM_VTABLE)
+private:
+	static ::size_t ByteSizeLong(const ::google::protobuf::MessageLite &msg);
+	static ::uint8_t *_InternalSerialize(const MessageLite &msg, ::uint8_t *target,
+	                                     ::google::protobuf::io::EpsCopyOutputStream *stream);
 
-  public:
-  ::size_t ByteSizeLong() const { return ByteSizeLong(*this); }
-  ::uint8_t* _InternalSerialize(
-      ::uint8_t* target,
-      ::google::protobuf::io::EpsCopyOutputStream* stream) const {
-    return _InternalSerialize(*this, target, stream);
-  }
-  #else   // PROTOBUF_CUSTOM_VTABLE
-  ::size_t ByteSizeLong() const final;
-  ::uint8_t* _InternalSerialize(
-      ::uint8_t* target,
-      ::google::protobuf::io::EpsCopyOutputStream* stream) const final;
-  #endif  // PROTOBUF_CUSTOM_VTABLE
-  int GetCachedSize() const { return _impl_._cached_size_.Get(); }
+public:
+	::size_t ByteSizeLong() const {
+		return ByteSizeLong(*this);
+	}
+	::uint8_t *_InternalSerialize(::uint8_t *target, ::google::protobuf::io::EpsCopyOutputStream *stream) const {
+		return _InternalSerialize(*this, target, stream);
+	}
+#else  // PROTOBUF_CUSTOM_VTABLE
+	::size_t ByteSizeLong() const final;
+	::uint8_t *_InternalSerialize(::uint8_t *target, ::google::protobuf::io::EpsCopyOutputStream *stream) const final;
+#endif // PROTOBUF_CUSTOM_VTABLE
+	int GetCachedSize() const {
+		return _impl_._cached_size_.Get();
+	}
 
-  private:
-  void SharedCtor(::google::protobuf::Arena* arena);
-  static void SharedDtor(MessageLite& self);
-  void InternalSwap(ExportLogsServiceRequest* other);
- private:
-  template <typename T>
-  friend ::absl::string_view(
-      ::google::protobuf::internal::GetAnyMessageName)();
-  static ::absl::string_view FullMessageName() { return "opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest"; }
+private:
+	void SharedCtor(::google::protobuf::Arena *arena);
+	static void SharedDtor(MessageLite &self);
+	void InternalSwap(ExportLogsServiceRequest *other);
 
- protected:
-  explicit ExportLogsServiceRequest(::google::protobuf::Arena* arena);
-  ExportLogsServiceRequest(::google::protobuf::Arena* arena, const ExportLogsServiceRequest& from);
-  ExportLogsServiceRequest(::google::protobuf::Arena* arena, ExportLogsServiceRequest&& from) noexcept
-      : ExportLogsServiceRequest(arena) {
-    *this = ::std::move(from);
-  }
-  const ::google::protobuf::internal::ClassData* GetClassData() const PROTOBUF_FINAL;
-  static void* PlacementNew_(const void*, void* mem,
-                             ::google::protobuf::Arena* arena);
-  static constexpr auto InternalNewImpl_();
-  static const ::google::protobuf::internal::ClassDataFull _class_data_;
+private:
+	template <typename T>
+	friend ::absl::string_view(::google::protobuf::internal::GetAnyMessageName)();
+	static ::absl::string_view FullMessageName() {
+		return "opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest";
+	}
 
- public:
-  ::google::protobuf::Metadata GetMetadata() const;
-  // nested types ----------------------------------------------------
+protected:
+	explicit ExportLogsServiceRequest(::google::protobuf::Arena *arena);
+	ExportLogsServiceRequest(::google::protobuf::Arena *arena, const ExportLogsServiceRequest &from);
+	ExportLogsServiceRequest(::google::protobuf::Arena *arena, ExportLogsServiceRequest &&from) noexcept
+	    : ExportLogsServiceRequest(arena) {
+		*this = ::std::move(from);
+	}
+	const ::google::protobuf::internal::ClassData *GetClassData() const PROTOBUF_FINAL;
+	static void *PlacementNew_(const void *, void *mem, ::google::protobuf::Arena *arena);
+	static constexpr auto InternalNewImpl_();
+	static const ::google::protobuf::internal::ClassDataFull _class_data_;
 
-  // accessors -------------------------------------------------------
-  enum : int {
-    kResourceLogsFieldNumber = 1,
-  };
-  // repeated .opentelemetry.proto.logs.v1.ResourceLogs resource_logs = 1;
-  int resource_logs_size() const;
-  private:
-  int _internal_resource_logs_size() const;
+public:
+	::google::protobuf::Metadata GetMetadata() const;
+	// nested types ----------------------------------------------------
 
-  public:
-  void clear_resource_logs() ;
-  ::opentelemetry::proto::logs::v1::ResourceLogs* mutable_resource_logs(int index);
-  ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::logs::v1::ResourceLogs>* mutable_resource_logs();
+	// accessors -------------------------------------------------------
+	enum : int {
+		kResourceLogsFieldNumber = 1,
+	};
+	// repeated .opentelemetry.proto.logs.v1.ResourceLogs resource_logs = 1;
+	int resource_logs_size() const;
 
-  private:
-  const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::logs::v1::ResourceLogs>& _internal_resource_logs() const;
-  ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::logs::v1::ResourceLogs>* _internal_mutable_resource_logs();
-  public:
-  const ::opentelemetry::proto::logs::v1::ResourceLogs& resource_logs(int index) const;
-  ::opentelemetry::proto::logs::v1::ResourceLogs* add_resource_logs();
-  const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::logs::v1::ResourceLogs>& resource_logs() const;
-  // @@protoc_insertion_point(class_scope:opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest)
- private:
-  class _Internal;
-  friend class ::google::protobuf::internal::TcParser;
-  static const ::google::protobuf::internal::TcParseTable<
-      0, 1, 1,
-      0, 2>
-      _table_;
+private:
+	int _internal_resource_logs_size() const;
 
-  friend class ::google::protobuf::MessageLite;
-  friend class ::google::protobuf::Arena;
-  template <typename T>
-  friend class ::google::protobuf::Arena::InternalHelper;
-  using InternalArenaConstructable_ = void;
-  using DestructorSkippable_ = void;
-  struct Impl_ {
-    inline explicit constexpr Impl_(
-        ::google::protobuf::internal::ConstantInitialized) noexcept;
-    inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
-                          ::google::protobuf::Arena* arena);
-    inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
-                          ::google::protobuf::Arena* arena, const Impl_& from,
-                          const ExportLogsServiceRequest& from_msg);
-    ::google::protobuf::RepeatedPtrField< ::opentelemetry::proto::logs::v1::ResourceLogs > resource_logs_;
-    ::google::protobuf::internal::CachedSize _cached_size_;
-    PROTOBUF_TSAN_DECLARE_MEMBER
-  };
-  union { Impl_ _impl_; };
-  friend struct ::TableStruct_opentelemetry_2fproto_2fcollector_2flogs_2fv1_2flogs_5fservice_2eproto;
+public:
+	void clear_resource_logs();
+	::opentelemetry::proto::logs::v1::ResourceLogs *mutable_resource_logs(int index);
+	::google::protobuf::RepeatedPtrField<::opentelemetry::proto::logs::v1::ResourceLogs> *mutable_resource_logs();
+
+private:
+	const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::logs::v1::ResourceLogs> &
+	_internal_resource_logs() const;
+	::google::protobuf::RepeatedPtrField<::opentelemetry::proto::logs::v1::ResourceLogs> *
+	_internal_mutable_resource_logs();
+
+public:
+	const ::opentelemetry::proto::logs::v1::ResourceLogs &resource_logs(int index) const;
+	::opentelemetry::proto::logs::v1::ResourceLogs *add_resource_logs();
+	const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::logs::v1::ResourceLogs> &resource_logs() const;
+	// @@protoc_insertion_point(class_scope:opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest)
+private:
+	class _Internal;
+	friend class ::google::protobuf::internal::TcParser;
+	static const ::google::protobuf::internal::TcParseTable<0, 1, 1, 0, 2> _table_;
+
+	friend class ::google::protobuf::MessageLite;
+	friend class ::google::protobuf::Arena;
+	template <typename T>
+	friend class ::google::protobuf::Arena::InternalHelper;
+	using InternalArenaConstructable_ = void;
+	using DestructorSkippable_ = void;
+	struct Impl_ {
+		inline explicit constexpr Impl_(::google::protobuf::internal::ConstantInitialized) noexcept;
+		inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
+		                      ::google::protobuf::Arena *arena);
+		inline explicit Impl_(::google::protobuf::internal::InternalVisibility visibility,
+		                      ::google::protobuf::Arena *arena, const Impl_ &from,
+		                      const ExportLogsServiceRequest &from_msg);
+		::google::protobuf::RepeatedPtrField<::opentelemetry::proto::logs::v1::ResourceLogs> resource_logs_;
+		::google::protobuf::internal::CachedSize _cached_size_;
+		PROTOBUF_TSAN_DECLARE_MEMBER
+	};
+	union {
+		Impl_ _impl_;
+	};
+	friend struct ::TableStruct_opentelemetry_2fproto_2fcollector_2flogs_2fv1_2flogs_5fservice_2eproto;
 };
 
 // ===================================================================
 
-
-
-
 // ===================================================================
-
 
 #ifdef __GNUC__
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wstrict-aliasing"
-#endif  // __GNUC__
+#endif // __GNUC__
 // -------------------------------------------------------------------
 
 // ExportLogsServiceRequest
 
 // repeated .opentelemetry.proto.logs.v1.ResourceLogs resource_logs = 1;
 inline int ExportLogsServiceRequest::_internal_resource_logs_size() const {
-  return _internal_resource_logs().size();
+	return _internal_resource_logs().size();
 }
 inline int ExportLogsServiceRequest::resource_logs_size() const {
-  return _internal_resource_logs_size();
+	return _internal_resource_logs_size();
 }
-inline ::opentelemetry::proto::logs::v1::ResourceLogs* ExportLogsServiceRequest::mutable_resource_logs(int index)
-    ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  // @@protoc_insertion_point(field_mutable:opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest.resource_logs)
-  return _internal_mutable_resource_logs()->Mutable(index);
+inline ::opentelemetry::proto::logs::v1::ResourceLogs *
+ExportLogsServiceRequest::mutable_resource_logs(int index) ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	// @@protoc_insertion_point(field_mutable:opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest.resource_logs)
+	return _internal_mutable_resource_logs()->Mutable(index);
 }
-inline ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::logs::v1::ResourceLogs>* ExportLogsServiceRequest::mutable_resource_logs()
-    ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  // @@protoc_insertion_point(field_mutable_list:opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest.resource_logs)
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  return _internal_mutable_resource_logs();
+inline ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::logs::v1::ResourceLogs> *
+ExportLogsServiceRequest::mutable_resource_logs() ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	// @@protoc_insertion_point(field_mutable_list:opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest.resource_logs)
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	return _internal_mutable_resource_logs();
 }
-inline const ::opentelemetry::proto::logs::v1::ResourceLogs& ExportLogsServiceRequest::resource_logs(int index) const
-    ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  // @@protoc_insertion_point(field_get:opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest.resource_logs)
-  return _internal_resource_logs().Get(index);
+inline const ::opentelemetry::proto::logs::v1::ResourceLogs &
+ExportLogsServiceRequest::resource_logs(int index) const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	// @@protoc_insertion_point(field_get:opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest.resource_logs)
+	return _internal_resource_logs().Get(index);
 }
-inline ::opentelemetry::proto::logs::v1::ResourceLogs* ExportLogsServiceRequest::add_resource_logs() ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  ::opentelemetry::proto::logs::v1::ResourceLogs* _add = _internal_mutable_resource_logs()->Add();
-  // @@protoc_insertion_point(field_add:opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest.resource_logs)
-  return _add;
+inline ::opentelemetry::proto::logs::v1::ResourceLogs *
+ExportLogsServiceRequest::add_resource_logs() ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	::opentelemetry::proto::logs::v1::ResourceLogs *_add = _internal_mutable_resource_logs()->Add();
+	// @@protoc_insertion_point(field_add:opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest.resource_logs)
+	return _add;
 }
-inline const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::logs::v1::ResourceLogs>& ExportLogsServiceRequest::resource_logs() const
-    ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  // @@protoc_insertion_point(field_list:opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest.resource_logs)
-  return _internal_resource_logs();
+inline const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::logs::v1::ResourceLogs> &
+ExportLogsServiceRequest::resource_logs() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	// @@protoc_insertion_point(field_list:opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest.resource_logs)
+	return _internal_resource_logs();
 }
-inline const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::logs::v1::ResourceLogs>&
+inline const ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::logs::v1::ResourceLogs> &
 ExportLogsServiceRequest::_internal_resource_logs() const {
-  ::google::protobuf::internal::TSanRead(&_impl_);
-  return _impl_.resource_logs_;
+	::google::protobuf::internal::TSanRead(&_impl_);
+	return _impl_.resource_logs_;
 }
-inline ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::logs::v1::ResourceLogs>*
+inline ::google::protobuf::RepeatedPtrField<::opentelemetry::proto::logs::v1::ResourceLogs> *
 ExportLogsServiceRequest::_internal_mutable_resource_logs() {
-  ::google::protobuf::internal::TSanRead(&_impl_);
-  return &_impl_.resource_logs_;
+	::google::protobuf::internal::TSanRead(&_impl_);
+	return &_impl_.resource_logs_;
 }
 
 // -------------------------------------------------------------------
@@ -754,98 +762,114 @@ ExportLogsServiceRequest::_internal_mutable_resource_logs() {
 
 // .opentelemetry.proto.collector.logs.v1.ExportLogsPartialSuccess partial_success = 1;
 inline bool ExportLogsServiceResponse::has_partial_success() const {
-  bool value = (_impl_._has_bits_[0] & 0x00000001u) != 0;
-  PROTOBUF_ASSUME(!value || _impl_.partial_success_ != nullptr);
-  return value;
+	bool value = (_impl_._has_bits_[0] & 0x00000001u) != 0;
+	PROTOBUF_ASSUME(!value || _impl_.partial_success_ != nullptr);
+	return value;
 }
 inline void ExportLogsServiceResponse::clear_partial_success() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  if (_impl_.partial_success_ != nullptr) _impl_.partial_success_->Clear();
-  _impl_._has_bits_[0] &= ~0x00000001u;
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	if (_impl_.partial_success_ != nullptr)
+		_impl_.partial_success_->Clear();
+	_impl_._has_bits_[0] &= ~0x00000001u;
 }
-inline const ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess& ExportLogsServiceResponse::_internal_partial_success() const {
-  ::google::protobuf::internal::TSanRead(&_impl_);
-  const ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess* p = _impl_.partial_success_;
-  return p != nullptr ? *p : reinterpret_cast<const ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess&>(::opentelemetry::proto::collector::logs::v1::_ExportLogsPartialSuccess_default_instance_);
+inline const ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess &
+ExportLogsServiceResponse::_internal_partial_success() const {
+	::google::protobuf::internal::TSanRead(&_impl_);
+	const ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess *p = _impl_.partial_success_;
+	return p != nullptr
+	           ? *p
+	           : reinterpret_cast<const ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess &>(
+	                 ::opentelemetry::proto::collector::logs::v1::_ExportLogsPartialSuccess_default_instance_);
 }
-inline const ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess& ExportLogsServiceResponse::partial_success() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  // @@protoc_insertion_point(field_get:opentelemetry.proto.collector.logs.v1.ExportLogsServiceResponse.partial_success)
-  return _internal_partial_success();
+inline const ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess &
+ExportLogsServiceResponse::partial_success() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	// @@protoc_insertion_point(field_get:opentelemetry.proto.collector.logs.v1.ExportLogsServiceResponse.partial_success)
+	return _internal_partial_success();
 }
-inline void ExportLogsServiceResponse::unsafe_arena_set_allocated_partial_success(::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess* value) {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  if (GetArena() == nullptr) {
-    delete reinterpret_cast<::google::protobuf::MessageLite*>(_impl_.partial_success_);
-  }
-  _impl_.partial_success_ = reinterpret_cast<::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess*>(value);
-  if (value != nullptr) {
-    _impl_._has_bits_[0] |= 0x00000001u;
-  } else {
-    _impl_._has_bits_[0] &= ~0x00000001u;
-  }
-  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:opentelemetry.proto.collector.logs.v1.ExportLogsServiceResponse.partial_success)
+inline void ExportLogsServiceResponse::unsafe_arena_set_allocated_partial_success(
+    ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess *value) {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	if (GetArena() == nullptr) {
+		delete reinterpret_cast<::google::protobuf::MessageLite *>(_impl_.partial_success_);
+	}
+	_impl_.partial_success_ =
+	    reinterpret_cast<::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess *>(value);
+	if (value != nullptr) {
+		_impl_._has_bits_[0] |= 0x00000001u;
+	} else {
+		_impl_._has_bits_[0] &= ~0x00000001u;
+	}
+	// @@protoc_insertion_point(field_unsafe_arena_set_allocated:opentelemetry.proto.collector.logs.v1.ExportLogsServiceResponse.partial_success)
 }
-inline ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess* ExportLogsServiceResponse::release_partial_success() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
+inline ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess *
+ExportLogsServiceResponse::release_partial_success() {
+	::google::protobuf::internal::TSanWrite(&_impl_);
 
-  _impl_._has_bits_[0] &= ~0x00000001u;
-  ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess* released = _impl_.partial_success_;
-  _impl_.partial_success_ = nullptr;
-  if (::google::protobuf::internal::DebugHardenForceCopyInRelease()) {
-    auto* old = reinterpret_cast<::google::protobuf::MessageLite*>(released);
-    released = ::google::protobuf::internal::DuplicateIfNonNull(released);
-    if (GetArena() == nullptr) {
-      delete old;
-    }
-  } else {
-    if (GetArena() != nullptr) {
-      released = ::google::protobuf::internal::DuplicateIfNonNull(released);
-    }
-  }
-  return released;
+	_impl_._has_bits_[0] &= ~0x00000001u;
+	::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess *released = _impl_.partial_success_;
+	_impl_.partial_success_ = nullptr;
+	if (::google::protobuf::internal::DebugHardenForceCopyInRelease()) {
+		auto *old = reinterpret_cast<::google::protobuf::MessageLite *>(released);
+		released = ::google::protobuf::internal::DuplicateIfNonNull(released);
+		if (GetArena() == nullptr) {
+			delete old;
+		}
+	} else {
+		if (GetArena() != nullptr) {
+			released = ::google::protobuf::internal::DuplicateIfNonNull(released);
+		}
+	}
+	return released;
 }
-inline ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess* ExportLogsServiceResponse::unsafe_arena_release_partial_success() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  // @@protoc_insertion_point(field_release:opentelemetry.proto.collector.logs.v1.ExportLogsServiceResponse.partial_success)
+inline ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess *
+ExportLogsServiceResponse::unsafe_arena_release_partial_success() {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	// @@protoc_insertion_point(field_release:opentelemetry.proto.collector.logs.v1.ExportLogsServiceResponse.partial_success)
 
-  _impl_._has_bits_[0] &= ~0x00000001u;
-  ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess* temp = _impl_.partial_success_;
-  _impl_.partial_success_ = nullptr;
-  return temp;
+	_impl_._has_bits_[0] &= ~0x00000001u;
+	::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess *temp = _impl_.partial_success_;
+	_impl_.partial_success_ = nullptr;
+	return temp;
 }
-inline ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess* ExportLogsServiceResponse::_internal_mutable_partial_success() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  if (_impl_.partial_success_ == nullptr) {
-    auto* p = ::google::protobuf::Message::DefaultConstruct<::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess>(GetArena());
-    _impl_.partial_success_ = reinterpret_cast<::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess*>(p);
-  }
-  return _impl_.partial_success_;
+inline ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess *
+ExportLogsServiceResponse::_internal_mutable_partial_success() {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	if (_impl_.partial_success_ == nullptr) {
+		auto *p = ::google::protobuf::Message::DefaultConstruct<
+		    ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess>(GetArena());
+		_impl_.partial_success_ =
+		    reinterpret_cast<::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess *>(p);
+	}
+	return _impl_.partial_success_;
 }
-inline ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess* ExportLogsServiceResponse::mutable_partial_success() ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  _impl_._has_bits_[0] |= 0x00000001u;
-  ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess* _msg = _internal_mutable_partial_success();
-  // @@protoc_insertion_point(field_mutable:opentelemetry.proto.collector.logs.v1.ExportLogsServiceResponse.partial_success)
-  return _msg;
+inline ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess *
+ExportLogsServiceResponse::mutable_partial_success() ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	_impl_._has_bits_[0] |= 0x00000001u;
+	::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess *_msg = _internal_mutable_partial_success();
+	// @@protoc_insertion_point(field_mutable:opentelemetry.proto.collector.logs.v1.ExportLogsServiceResponse.partial_success)
+	return _msg;
 }
-inline void ExportLogsServiceResponse::set_allocated_partial_success(::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess* value) {
-  ::google::protobuf::Arena* message_arena = GetArena();
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  if (message_arena == nullptr) {
-    delete (_impl_.partial_success_);
-  }
+inline void ExportLogsServiceResponse::set_allocated_partial_success(
+    ::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess *value) {
+	::google::protobuf::Arena *message_arena = GetArena();
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	if (message_arena == nullptr) {
+		delete (_impl_.partial_success_);
+	}
 
-  if (value != nullptr) {
-    ::google::protobuf::Arena* submessage_arena = (value)->GetArena();
-    if (message_arena != submessage_arena) {
-      value = ::google::protobuf::internal::GetOwnedMessage(message_arena, value, submessage_arena);
-    }
-    _impl_._has_bits_[0] |= 0x00000001u;
-  } else {
-    _impl_._has_bits_[0] &= ~0x00000001u;
-  }
+	if (value != nullptr) {
+		::google::protobuf::Arena *submessage_arena = (value)->GetArena();
+		if (message_arena != submessage_arena) {
+			value = ::google::protobuf::internal::GetOwnedMessage(message_arena, value, submessage_arena);
+		}
+		_impl_._has_bits_[0] |= 0x00000001u;
+	} else {
+		_impl_._has_bits_[0] &= ~0x00000001u;
+	}
 
-  _impl_.partial_success_ = reinterpret_cast<::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess*>(value);
-  // @@protoc_insertion_point(field_set_allocated:opentelemetry.proto.collector.logs.v1.ExportLogsServiceResponse.partial_success)
+	_impl_.partial_success_ =
+	    reinterpret_cast<::opentelemetry::proto::collector::logs::v1::ExportLogsPartialSuccess *>(value);
+	// @@protoc_insertion_point(field_set_allocated:opentelemetry.proto.collector.logs.v1.ExportLogsServiceResponse.partial_success)
 }
 
 // -------------------------------------------------------------------
@@ -854,88 +878,85 @@ inline void ExportLogsServiceResponse::set_allocated_partial_success(::opentelem
 
 // int64 rejected_log_records = 1;
 inline void ExportLogsPartialSuccess::clear_rejected_log_records() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  _impl_.rejected_log_records_ = ::int64_t{0};
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	_impl_.rejected_log_records_ = ::int64_t {0};
 }
 inline ::int64_t ExportLogsPartialSuccess::rejected_log_records() const {
-  // @@protoc_insertion_point(field_get:opentelemetry.proto.collector.logs.v1.ExportLogsPartialSuccess.rejected_log_records)
-  return _internal_rejected_log_records();
+	// @@protoc_insertion_point(field_get:opentelemetry.proto.collector.logs.v1.ExportLogsPartialSuccess.rejected_log_records)
+	return _internal_rejected_log_records();
 }
 inline void ExportLogsPartialSuccess::set_rejected_log_records(::int64_t value) {
-  _internal_set_rejected_log_records(value);
-  // @@protoc_insertion_point(field_set:opentelemetry.proto.collector.logs.v1.ExportLogsPartialSuccess.rejected_log_records)
+	_internal_set_rejected_log_records(value);
+	// @@protoc_insertion_point(field_set:opentelemetry.proto.collector.logs.v1.ExportLogsPartialSuccess.rejected_log_records)
 }
 inline ::int64_t ExportLogsPartialSuccess::_internal_rejected_log_records() const {
-  ::google::protobuf::internal::TSanRead(&_impl_);
-  return _impl_.rejected_log_records_;
+	::google::protobuf::internal::TSanRead(&_impl_);
+	return _impl_.rejected_log_records_;
 }
 inline void ExportLogsPartialSuccess::_internal_set_rejected_log_records(::int64_t value) {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  _impl_.rejected_log_records_ = value;
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	_impl_.rejected_log_records_ = value;
 }
 
 // string error_message = 2;
 inline void ExportLogsPartialSuccess::clear_error_message() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  _impl_.error_message_.ClearToEmpty();
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	_impl_.error_message_.ClearToEmpty();
 }
-inline const std::string& ExportLogsPartialSuccess::error_message() const
-    ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  // @@protoc_insertion_point(field_get:opentelemetry.proto.collector.logs.v1.ExportLogsPartialSuccess.error_message)
-  return _internal_error_message();
+inline const std::string &ExportLogsPartialSuccess::error_message() const ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	// @@protoc_insertion_point(field_get:opentelemetry.proto.collector.logs.v1.ExportLogsPartialSuccess.error_message)
+	return _internal_error_message();
 }
 template <typename Arg_, typename... Args_>
-inline PROTOBUF_ALWAYS_INLINE void ExportLogsPartialSuccess::set_error_message(Arg_&& arg,
-                                                     Args_... args) {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  _impl_.error_message_.Set(static_cast<Arg_&&>(arg), args..., GetArena());
-  // @@protoc_insertion_point(field_set:opentelemetry.proto.collector.logs.v1.ExportLogsPartialSuccess.error_message)
+inline PROTOBUF_ALWAYS_INLINE void ExportLogsPartialSuccess::set_error_message(Arg_ &&arg, Args_... args) {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	_impl_.error_message_.Set(static_cast<Arg_ &&>(arg), args..., GetArena());
+	// @@protoc_insertion_point(field_set:opentelemetry.proto.collector.logs.v1.ExportLogsPartialSuccess.error_message)
 }
-inline std::string* ExportLogsPartialSuccess::mutable_error_message() ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  std::string* _s = _internal_mutable_error_message();
-  // @@protoc_insertion_point(field_mutable:opentelemetry.proto.collector.logs.v1.ExportLogsPartialSuccess.error_message)
-  return _s;
+inline std::string *ExportLogsPartialSuccess::mutable_error_message() ABSL_ATTRIBUTE_LIFETIME_BOUND {
+	std::string *_s = _internal_mutable_error_message();
+	// @@protoc_insertion_point(field_mutable:opentelemetry.proto.collector.logs.v1.ExportLogsPartialSuccess.error_message)
+	return _s;
 }
-inline const std::string& ExportLogsPartialSuccess::_internal_error_message() const {
-  ::google::protobuf::internal::TSanRead(&_impl_);
-  return _impl_.error_message_.Get();
+inline const std::string &ExportLogsPartialSuccess::_internal_error_message() const {
+	::google::protobuf::internal::TSanRead(&_impl_);
+	return _impl_.error_message_.Get();
 }
-inline void ExportLogsPartialSuccess::_internal_set_error_message(const std::string& value) {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  _impl_.error_message_.Set(value, GetArena());
+inline void ExportLogsPartialSuccess::_internal_set_error_message(const std::string &value) {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	_impl_.error_message_.Set(value, GetArena());
 }
-inline std::string* ExportLogsPartialSuccess::_internal_mutable_error_message() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  return _impl_.error_message_.Mutable( GetArena());
+inline std::string *ExportLogsPartialSuccess::_internal_mutable_error_message() {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	return _impl_.error_message_.Mutable(GetArena());
 }
-inline std::string* ExportLogsPartialSuccess::release_error_message() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  // @@protoc_insertion_point(field_release:opentelemetry.proto.collector.logs.v1.ExportLogsPartialSuccess.error_message)
-  return _impl_.error_message_.Release();
+inline std::string *ExportLogsPartialSuccess::release_error_message() {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	// @@protoc_insertion_point(field_release:opentelemetry.proto.collector.logs.v1.ExportLogsPartialSuccess.error_message)
+	return _impl_.error_message_.Release();
 }
-inline void ExportLogsPartialSuccess::set_allocated_error_message(std::string* value) {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  _impl_.error_message_.SetAllocated(value, GetArena());
-  if (::google::protobuf::internal::DebugHardenForceCopyDefaultString() && _impl_.error_message_.IsDefault()) {
-    _impl_.error_message_.Set("", GetArena());
-  }
-  // @@protoc_insertion_point(field_set_allocated:opentelemetry.proto.collector.logs.v1.ExportLogsPartialSuccess.error_message)
+inline void ExportLogsPartialSuccess::set_allocated_error_message(std::string *value) {
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	_impl_.error_message_.SetAllocated(value, GetArena());
+	if (::google::protobuf::internal::DebugHardenForceCopyDefaultString() && _impl_.error_message_.IsDefault()) {
+		_impl_.error_message_.Set("", GetArena());
+	}
+	// @@protoc_insertion_point(field_set_allocated:opentelemetry.proto.collector.logs.v1.ExportLogsPartialSuccess.error_message)
 }
 
 #ifdef __GNUC__
 #pragma GCC diagnostic pop
-#endif  // __GNUC__
+#endif // __GNUC__
 
 // @@protoc_insertion_point(namespace_scope)
-}  // namespace v1
-}  // namespace logs
-}  // namespace collector
-}  // namespace proto
-}  // namespace opentelemetry
-
+} // namespace v1
+} // namespace logs
+} // namespace collector
+} // namespace proto
+} // namespace opentelemetry
 
 // @@protoc_insertion_point(global_scope)
 
 #include "google/protobuf/port_undef.inc"
 
-#endif  // opentelemetry_2fproto_2fcollector_2flogs_2fv1_2flogs_5fservice_2eproto_2epb_2eh
+#endif // opentelemetry_2fproto_2fcollector_2flogs_2fv1_2flogs_5fservice_2eproto_2epb_2eh

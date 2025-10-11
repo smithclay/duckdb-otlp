@@ -19,7 +19,7 @@ public:
 
 	//! Create transaction manager for the attached database
 	static unique_ptr<TransactionManager> CreateTransactionManager(optional_ptr<StorageExtensionInfo> storage_info,
-	                                                                AttachedDatabase &db, Catalog &catalog);
+	                                                               AttachedDatabase &db, Catalog &catalog);
 };
 
 } // namespace duckdb

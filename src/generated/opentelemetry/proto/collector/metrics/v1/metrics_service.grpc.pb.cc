@@ -25,70 +25,103 @@ namespace collector {
 namespace metrics {
 namespace v1 {
 
-static const char* MetricsService_method_names[] = {
-  "/opentelemetry.proto.collector.metrics.v1.MetricsService/Export",
+static const char *MetricsService_method_names[] = {
+    "/opentelemetry.proto.collector.metrics.v1.MetricsService/Export",
 };
 
-std::unique_ptr< MetricsService::Stub> MetricsService::NewStub(const std::shared_ptr< ::grpc::ChannelInterface>& channel, const ::grpc::StubOptions& options) {
-  (void)options;
-  std::unique_ptr< MetricsService::Stub> stub(new MetricsService::Stub(channel, options));
-  return stub;
+std::unique_ptr<MetricsService::Stub> MetricsService::NewStub(const std::shared_ptr<::grpc::ChannelInterface> &channel,
+                                                              const ::grpc::StubOptions &options) {
+	(void)options;
+	std::unique_ptr<MetricsService::Stub> stub(new MetricsService::Stub(channel, options));
+	return stub;
 }
 
-MetricsService::Stub::Stub(const std::shared_ptr< ::grpc::ChannelInterface>& channel, const ::grpc::StubOptions& options)
-  : channel_(channel), rpcmethod_Export_(MetricsService_method_names[0], options.suffix_for_stats(),::grpc::internal::RpcMethod::NORMAL_RPC, channel)
-  {}
-
-::grpc::Status MetricsService::Stub::Export(::grpc::ClientContext* context, const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest& request, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse* response) {
-  return ::grpc::internal::BlockingUnaryCall< ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), rpcmethod_Export_, context, request, response);
+MetricsService::Stub::Stub(const std::shared_ptr<::grpc::ChannelInterface> &channel, const ::grpc::StubOptions &options)
+    : channel_(channel), rpcmethod_Export_(MetricsService_method_names[0], options.suffix_for_stats(),
+                                           ::grpc::internal::RpcMethod::NORMAL_RPC, channel) {
 }
 
-void MetricsService::Stub::async::Export(::grpc::ClientContext* context, const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest* request, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse* response, std::function<void(::grpc::Status)> f) {
-  ::grpc::internal::CallbackUnaryCall< ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_Export_, context, request, response, std::move(f));
+::grpc::Status
+MetricsService::Stub::Export(::grpc::ClientContext *context,
+                             const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest &request,
+                             ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse *response) {
+	return ::grpc::internal::BlockingUnaryCall<
+	    ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest,
+	    ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse, ::grpc::protobuf::MessageLite,
+	    ::grpc::protobuf::MessageLite>(channel_.get(), rpcmethod_Export_, context, request, response);
 }
 
-void MetricsService::Stub::async::Export(::grpc::ClientContext* context, const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest* request, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse* response, ::grpc::ClientUnaryReactor* reactor) {
-  ::grpc::internal::ClientCallbackUnaryFactory::Create< ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(stub_->channel_.get(), stub_->rpcmethod_Export_, context, request, response, reactor);
+void MetricsService::Stub::async::Export(
+    ::grpc::ClientContext *context,
+    const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest *request,
+    ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse *response,
+    std::function<void(::grpc::Status)> f) {
+	::grpc::internal::CallbackUnaryCall<::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest,
+	                                    ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse,
+	                                    ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(
+	    stub_->channel_.get(), stub_->rpcmethod_Export_, context, request, response, std::move(f));
 }
 
-::grpc::ClientAsyncResponseReader< ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>* MetricsService::Stub::PrepareAsyncExportRaw(::grpc::ClientContext* context, const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest& request, ::grpc::CompletionQueue* cq) {
-  return ::grpc::internal::ClientAsyncResponseReaderHelper::Create< ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(channel_.get(), cq, rpcmethod_Export_, context, request);
+void MetricsService::Stub::async::Export(
+    ::grpc::ClientContext *context,
+    const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest *request,
+    ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse *response,
+    ::grpc::ClientUnaryReactor *reactor) {
+	::grpc::internal::ClientCallbackUnaryFactory::Create<::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(
+	    stub_->channel_.get(), stub_->rpcmethod_Export_, context, request, response, reactor);
 }
 
-::grpc::ClientAsyncResponseReader< ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse>* MetricsService::Stub::AsyncExportRaw(::grpc::ClientContext* context, const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest& request, ::grpc::CompletionQueue* cq) {
-  auto* result =
-    this->PrepareAsyncExportRaw(context, request, cq);
-  result->StartCall();
-  return result;
+::grpc::ClientAsyncResponseReader<::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse> *
+MetricsService::Stub::PrepareAsyncExportRaw(
+    ::grpc::ClientContext *context,
+    const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest &request,
+    ::grpc::CompletionQueue *cq) {
+	return ::grpc::internal::ClientAsyncResponseReaderHelper::Create<
+	    ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse,
+	    ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest, ::grpc::protobuf::MessageLite,
+	    ::grpc::protobuf::MessageLite>(channel_.get(), cq, rpcmethod_Export_, context, request);
+}
+
+::grpc::ClientAsyncResponseReader<::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse> *
+MetricsService::Stub::AsyncExportRaw(
+    ::grpc::ClientContext *context,
+    const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest &request,
+    ::grpc::CompletionQueue *cq) {
+	auto *result = this->PrepareAsyncExportRaw(context, request, cq);
+	result->StartCall();
+	return result;
 }
 
 MetricsService::Service::Service() {
-  AddMethod(new ::grpc::internal::RpcServiceMethod(
-      MetricsService_method_names[0],
-      ::grpc::internal::RpcMethod::NORMAL_RPC,
-      new ::grpc::internal::RpcMethodHandler< MetricsService::Service, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse, ::grpc::protobuf::MessageLite, ::grpc::protobuf::MessageLite>(
-          [](MetricsService::Service* service,
-             ::grpc::ServerContext* ctx,
-             const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest* req,
-             ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse* resp) {
-               return service->Export(ctx, req, resp);
-             }, this)));
+	AddMethod(new ::grpc::internal::RpcServiceMethod(
+	    MetricsService_method_names[0], ::grpc::internal::RpcMethod::NORMAL_RPC,
+	    new ::grpc::internal::RpcMethodHandler<
+	        MetricsService::Service, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest,
+	        ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse, ::grpc::protobuf::MessageLite,
+	        ::grpc::protobuf::MessageLite>(
+	        [](MetricsService::Service *service, ::grpc::ServerContext *ctx,
+	           const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest *req,
+	           ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse *resp) {
+		        return service->Export(ctx, req, resp);
+	        },
+	        this)));
 }
 
 MetricsService::Service::~Service() {
 }
 
-::grpc::Status MetricsService::Service::Export(::grpc::ServerContext* context, const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest* request, ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse* response) {
-  (void) context;
-  (void) request;
-  (void) response;
-  return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
+::grpc::Status MetricsService::Service::Export(
+    ::grpc::ServerContext *context,
+    const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest *request,
+    ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceResponse *response) {
+	(void)context;
+	(void)request;
+	(void)response;
+	return ::grpc::Status(::grpc::StatusCode::UNIMPLEMENTED, "");
 }
 
-
-}  // namespace opentelemetry
-}  // namespace proto
-}  // namespace collector
-}  // namespace metrics
-}  // namespace v1
-
+} // namespace v1
+} // namespace metrics
+} // namespace collector
+} // namespace proto
+} // namespace opentelemetry

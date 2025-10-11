@@ -29,94 +29,93 @@ namespace proto {
 namespace resource {
 namespace v1 {
 
-inline constexpr Resource::Impl_::Impl_(
-    ::_pbi::ConstantInitialized) noexcept
-      : attributes_{},
-        dropped_attributes_count_{0u},
-        _cached_size_{0} {}
+inline constexpr Resource::Impl_::Impl_(::_pbi::ConstantInitialized) noexcept
+    : attributes_ {}, dropped_attributes_count_ {0u}, _cached_size_ {0} {
+}
 
 template <typename>
 PROTOBUF_CONSTEXPR Resource::Resource(::_pbi::ConstantInitialized)
 #if defined(PROTOBUF_CUSTOM_VTABLE)
     : ::google::protobuf::Message(_class_data_.base()),
-#else   // PROTOBUF_CUSTOM_VTABLE
+#else  // PROTOBUF_CUSTOM_VTABLE
     : ::google::protobuf::Message(),
-#endif  // PROTOBUF_CUSTOM_VTABLE
+#endif // PROTOBUF_CUSTOM_VTABLE
       _impl_(::_pbi::ConstantInitialized()) {
 }
 struct ResourceDefaultTypeInternal {
-  PROTOBUF_CONSTEXPR ResourceDefaultTypeInternal() : _instance(::_pbi::ConstantInitialized{}) {}
-  ~ResourceDefaultTypeInternal() {}
-  union {
-    Resource _instance;
-  };
+	PROTOBUF_CONSTEXPR ResourceDefaultTypeInternal() : _instance(::_pbi::ConstantInitialized {}) {
+	}
+	~ResourceDefaultTypeInternal() {
+	}
+	union {
+		Resource _instance;
+	};
 };
 
-PROTOBUF_ATTRIBUTE_NO_DESTROY PROTOBUF_CONSTINIT
-    PROTOBUF_ATTRIBUTE_INIT_PRIORITY1 ResourceDefaultTypeInternal _Resource_default_instance_;
-}  // namespace v1
-}  // namespace resource
-}  // namespace proto
-}  // namespace opentelemetry
-static constexpr const ::_pb::EnumDescriptor**
-    file_level_enum_descriptors_opentelemetry_2fproto_2fresource_2fv1_2fresource_2eproto = nullptr;
-static constexpr const ::_pb::ServiceDescriptor**
-    file_level_service_descriptors_opentelemetry_2fproto_2fresource_2fv1_2fresource_2eproto = nullptr;
+PROTOBUF_ATTRIBUTE_NO_DESTROY PROTOBUF_CONSTINIT PROTOBUF_ATTRIBUTE_INIT_PRIORITY1 ResourceDefaultTypeInternal
+    _Resource_default_instance_;
+} // namespace v1
+} // namespace resource
+} // namespace proto
+} // namespace opentelemetry
+static constexpr const ::_pb::EnumDescriptor *
+    *file_level_enum_descriptors_opentelemetry_2fproto_2fresource_2fv1_2fresource_2eproto = nullptr;
+static constexpr const ::_pb::ServiceDescriptor *
+    *file_level_service_descriptors_opentelemetry_2fproto_2fresource_2fv1_2fresource_2eproto = nullptr;
 const ::uint32_t
     TableStruct_opentelemetry_2fproto_2fresource_2fv1_2fresource_2eproto::offsets[] ABSL_ATTRIBUTE_SECTION_VARIABLE(
         protodesc_cold) = {
-        ~0u,  // no _has_bits_
+        ~0u, // no _has_bits_
         PROTOBUF_FIELD_OFFSET(::opentelemetry::proto::resource::v1::Resource, _internal_metadata_),
-        ~0u,  // no _extensions_
-        ~0u,  // no _oneof_case_
-        ~0u,  // no _weak_field_map_
-        ~0u,  // no _inlined_string_donated_
-        ~0u,  // no _split_
-        ~0u,  // no sizeof(Split)
+        ~0u, // no _extensions_
+        ~0u, // no _oneof_case_
+        ~0u, // no _weak_field_map_
+        ~0u, // no _inlined_string_donated_
+        ~0u, // no _split_
+        ~0u, // no sizeof(Split)
         PROTOBUF_FIELD_OFFSET(::opentelemetry::proto::resource::v1::Resource, _impl_.attributes_),
         PROTOBUF_FIELD_OFFSET(::opentelemetry::proto::resource::v1::Resource, _impl_.dropped_attributes_count_),
 };
 
-static const ::_pbi::MigrationSchema
-    schemas[] ABSL_ATTRIBUTE_SECTION_VARIABLE(protodesc_cold) = {
-        {0, -1, -1, sizeof(::opentelemetry::proto::resource::v1::Resource)},
+static const ::_pbi::MigrationSchema schemas[] ABSL_ATTRIBUTE_SECTION_VARIABLE(protodesc_cold) = {
+    {0, -1, -1, sizeof(::opentelemetry::proto::resource::v1::Resource)},
 };
-static const ::_pb::Message* const file_default_instances[] = {
+static const ::_pb::Message *const file_default_instances[] = {
     &::opentelemetry::proto::resource::v1::_Resource_default_instance_._instance,
 };
-const char descriptor_table_protodef_opentelemetry_2fproto_2fresource_2fv1_2fresource_2eproto[] ABSL_ATTRIBUTE_SECTION_VARIABLE(
-    protodesc_cold) = {
-    "\n.opentelemetry/proto/resource/v1/resour"
-    "ce.proto\022\037opentelemetry.proto.resource.v"
-    "1\032*opentelemetry/proto/common/v1/common."
-    "proto\"i\n\010Resource\022;\n\nattributes\030\001 \003(\0132\'."
-    "opentelemetry.proto.common.v1.KeyValue\022 "
-    "\n\030dropped_attributes_count\030\002 \001(\rB\203\001\n\"io."
-    "opentelemetry.proto.resource.v1B\rResourc"
-    "eProtoP\001Z*go.opentelemetry.io/proto/otlp"
-    "/resource/v1\252\002\037OpenTelemetry.Proto.Resou"
-    "rce.V1b\006proto3"
-};
-static const ::_pbi::DescriptorTable* const descriptor_table_opentelemetry_2fproto_2fresource_2fv1_2fresource_2eproto_deps[1] =
-    {
+const char descriptor_table_protodef_opentelemetry_2fproto_2fresource_2fv1_2fresource_2eproto
+    [] ABSL_ATTRIBUTE_SECTION_VARIABLE(protodesc_cold) = {
+        "\n.opentelemetry/proto/resource/v1/resour"
+        "ce.proto\022\037opentelemetry.proto.resource.v"
+        "1\032*opentelemetry/proto/common/v1/common."
+        "proto\"i\n\010Resource\022;\n\nattributes\030\001 \003(\0132\'."
+        "opentelemetry.proto.common.v1.KeyValue\022 "
+        "\n\030dropped_attributes_count\030\002 \001(\rB\203\001\n\"io."
+        "opentelemetry.proto.resource.v1B\rResourc"
+        "eProtoP\001Z*go.opentelemetry.io/proto/otlp"
+        "/resource/v1\252\002\037OpenTelemetry.Proto.Resou"
+        "rce.V1b\006proto3"};
+static const ::_pbi::DescriptorTable
+    *const descriptor_table_opentelemetry_2fproto_2fresource_2fv1_2fresource_2eproto_deps[1] = {
         &::descriptor_table_opentelemetry_2fproto_2fcommon_2fv1_2fcommon_2eproto,
 };
 static ::absl::once_flag descriptor_table_opentelemetry_2fproto_2fresource_2fv1_2fresource_2eproto_once;
-PROTOBUF_CONSTINIT const ::_pbi::DescriptorTable descriptor_table_opentelemetry_2fproto_2fresource_2fv1_2fresource_2eproto = {
-    false,
-    false,
-    374,
-    descriptor_table_protodef_opentelemetry_2fproto_2fresource_2fv1_2fresource_2eproto,
-    "opentelemetry/proto/resource/v1/resource.proto",
-    &descriptor_table_opentelemetry_2fproto_2fresource_2fv1_2fresource_2eproto_once,
-    descriptor_table_opentelemetry_2fproto_2fresource_2fv1_2fresource_2eproto_deps,
-    1,
-    1,
-    schemas,
-    file_default_instances,
-    TableStruct_opentelemetry_2fproto_2fresource_2fv1_2fresource_2eproto::offsets,
-    file_level_enum_descriptors_opentelemetry_2fproto_2fresource_2fv1_2fresource_2eproto,
-    file_level_service_descriptors_opentelemetry_2fproto_2fresource_2fv1_2fresource_2eproto,
+PROTOBUF_CONSTINIT const ::_pbi::DescriptorTable
+    descriptor_table_opentelemetry_2fproto_2fresource_2fv1_2fresource_2eproto = {
+        false,
+        false,
+        374,
+        descriptor_table_protodef_opentelemetry_2fproto_2fresource_2fv1_2fresource_2eproto,
+        "opentelemetry/proto/resource/v1/resource.proto",
+        &descriptor_table_opentelemetry_2fproto_2fresource_2fv1_2fresource_2eproto_once,
+        descriptor_table_opentelemetry_2fproto_2fresource_2fv1_2fresource_2eproto_deps,
+        1,
+        1,
+        schemas,
+        file_default_instances,
+        TableStruct_opentelemetry_2fproto_2fresource_2fv1_2fresource_2eproto::offsets,
+        file_level_enum_descriptors_opentelemetry_2fproto_2fresource_2fv1_2fresource_2eproto,
+        file_level_service_descriptors_opentelemetry_2fproto_2fresource_2fv1_2fresource_2eproto,
 };
 namespace opentelemetry {
 namespace proto {
@@ -125,288 +124,265 @@ namespace v1 {
 // ===================================================================
 
 class Resource::_Internal {
- public:
+public:
 };
 
 void Resource::clear_attributes() {
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  _impl_.attributes_.Clear();
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	_impl_.attributes_.Clear();
 }
-Resource::Resource(::google::protobuf::Arena* arena)
+Resource::Resource(::google::protobuf::Arena *arena)
 #if defined(PROTOBUF_CUSTOM_VTABLE)
     : ::google::protobuf::Message(arena, _class_data_.base()) {
-#else   // PROTOBUF_CUSTOM_VTABLE
+#else  // PROTOBUF_CUSTOM_VTABLE
     : ::google::protobuf::Message(arena) {
-#endif  // PROTOBUF_CUSTOM_VTABLE
-  SharedCtor(arena);
-  // @@protoc_insertion_point(arena_constructor:opentelemetry.proto.resource.v1.Resource)
+#endif // PROTOBUF_CUSTOM_VTABLE
+	SharedCtor(arena);
+	// @@protoc_insertion_point(arena_constructor:opentelemetry.proto.resource.v1.Resource)
 }
-inline PROTOBUF_NDEBUG_INLINE Resource::Impl_::Impl_(
-    ::google::protobuf::internal::InternalVisibility visibility, ::google::protobuf::Arena* arena,
-    const Impl_& from, const ::opentelemetry::proto::resource::v1::Resource& from_msg)
-      : attributes_{visibility, arena, from.attributes_},
-        _cached_size_{0} {}
+inline PROTOBUF_NDEBUG_INLINE Resource::Impl_::Impl_(::google::protobuf::internal::InternalVisibility visibility,
+                                                     ::google::protobuf::Arena *arena, const Impl_ &from,
+                                                     const ::opentelemetry::proto::resource::v1::Resource &from_msg)
+    : attributes_ {visibility, arena, from.attributes_}, _cached_size_ {0} {
+}
 
-Resource::Resource(
-    ::google::protobuf::Arena* arena,
-    const Resource& from)
+Resource::Resource(::google::protobuf::Arena *arena, const Resource &from)
 #if defined(PROTOBUF_CUSTOM_VTABLE)
     : ::google::protobuf::Message(arena, _class_data_.base()) {
-#else   // PROTOBUF_CUSTOM_VTABLE
+#else  // PROTOBUF_CUSTOM_VTABLE
     : ::google::protobuf::Message(arena) {
-#endif  // PROTOBUF_CUSTOM_VTABLE
-  Resource* const _this = this;
-  (void)_this;
-  _internal_metadata_.MergeFrom<::google::protobuf::UnknownFieldSet>(
-      from._internal_metadata_);
-  new (&_impl_) Impl_(internal_visibility(), arena, from._impl_, from);
-  _impl_.dropped_attributes_count_ = from._impl_.dropped_attributes_count_;
+#endif // PROTOBUF_CUSTOM_VTABLE
+	Resource *const _this = this;
+	(void)_this;
+	_internal_metadata_.MergeFrom<::google::protobuf::UnknownFieldSet>(from._internal_metadata_);
+	new (&_impl_) Impl_(internal_visibility(), arena, from._impl_, from);
+	_impl_.dropped_attributes_count_ = from._impl_.dropped_attributes_count_;
 
-  // @@protoc_insertion_point(copy_constructor:opentelemetry.proto.resource.v1.Resource)
+	// @@protoc_insertion_point(copy_constructor:opentelemetry.proto.resource.v1.Resource)
 }
-inline PROTOBUF_NDEBUG_INLINE Resource::Impl_::Impl_(
-    ::google::protobuf::internal::InternalVisibility visibility,
-    ::google::protobuf::Arena* arena)
-      : attributes_{visibility, arena},
-        _cached_size_{0} {}
+inline PROTOBUF_NDEBUG_INLINE Resource::Impl_::Impl_(::google::protobuf::internal::InternalVisibility visibility,
+                                                     ::google::protobuf::Arena *arena)
+    : attributes_ {visibility, arena}, _cached_size_ {0} {
+}
 
-inline void Resource::SharedCtor(::_pb::Arena* arena) {
-  new (&_impl_) Impl_(internal_visibility(), arena);
-  _impl_.dropped_attributes_count_ = {};
+inline void Resource::SharedCtor(::_pb::Arena *arena) {
+	new (&_impl_) Impl_(internal_visibility(), arena);
+	_impl_.dropped_attributes_count_ = {};
 }
 Resource::~Resource() {
-  // @@protoc_insertion_point(destructor:opentelemetry.proto.resource.v1.Resource)
-  SharedDtor(*this);
+	// @@protoc_insertion_point(destructor:opentelemetry.proto.resource.v1.Resource)
+	SharedDtor(*this);
 }
-inline void Resource::SharedDtor(MessageLite& self) {
-  Resource& this_ = static_cast<Resource&>(self);
-  this_._internal_metadata_.Delete<::google::protobuf::UnknownFieldSet>();
-  ABSL_DCHECK(this_.GetArena() == nullptr);
-  this_._impl_.~Impl_();
+inline void Resource::SharedDtor(MessageLite &self) {
+	Resource &this_ = static_cast<Resource &>(self);
+	this_._internal_metadata_.Delete<::google::protobuf::UnknownFieldSet>();
+	ABSL_DCHECK(this_.GetArena() == nullptr);
+	this_._impl_.~Impl_();
 }
 
-inline void* Resource::PlacementNew_(const void*, void* mem,
-                                        ::google::protobuf::Arena* arena) {
-  return ::new (mem) Resource(arena);
+inline void *Resource::PlacementNew_(const void *, void *mem, ::google::protobuf::Arena *arena) {
+	return ::new (mem) Resource(arena);
 }
 constexpr auto Resource::InternalNewImpl_() {
-  constexpr auto arena_bits = ::google::protobuf::internal::EncodePlacementArenaOffsets({
-      PROTOBUF_FIELD_OFFSET(Resource, _impl_.attributes_) +
-          decltype(Resource::_impl_.attributes_)::
-              InternalGetArenaOffset(
-                  ::google::protobuf::Message::internal_visibility()),
-  });
-  if (arena_bits.has_value()) {
-    return ::google::protobuf::internal::MessageCreator::ZeroInit(
-        sizeof(Resource), alignof(Resource), *arena_bits);
-  } else {
-    return ::google::protobuf::internal::MessageCreator(&Resource::PlacementNew_,
-                                 sizeof(Resource),
-                                 alignof(Resource));
-  }
+	constexpr auto arena_bits = ::google::protobuf::internal::EncodePlacementArenaOffsets({
+	    PROTOBUF_FIELD_OFFSET(Resource, _impl_.attributes_) +
+	        decltype(Resource::_impl_.attributes_)::InternalGetArenaOffset(
+	            ::google::protobuf::Message::internal_visibility()),
+	});
+	if (arena_bits.has_value()) {
+		return ::google::protobuf::internal::MessageCreator::ZeroInit(sizeof(Resource), alignof(Resource), *arena_bits);
+	} else {
+		return ::google::protobuf::internal::MessageCreator(&Resource::PlacementNew_, sizeof(Resource),
+		                                                    alignof(Resource));
+	}
 }
 PROTOBUF_CONSTINIT
 PROTOBUF_ATTRIBUTE_INIT_PRIORITY1
 const ::google::protobuf::internal::ClassDataFull Resource::_class_data_ = {
-    ::google::protobuf::internal::ClassData{
+    ::google::protobuf::internal::ClassData {
         &_Resource_default_instance_._instance,
         &_table_.header,
-        nullptr,  // OnDemandRegisterArenaDtor
-        nullptr,  // IsInitialized
+        nullptr, // OnDemandRegisterArenaDtor
+        nullptr, // IsInitialized
         &Resource::MergeImpl,
         ::google::protobuf::Message::GetNewImpl<Resource>(),
 #if defined(PROTOBUF_CUSTOM_VTABLE)
         &Resource::SharedDtor,
-        ::google::protobuf::Message::GetClearImpl<Resource>(), &Resource::ByteSizeLong,
-            &Resource::_InternalSerialize,
-#endif  // PROTOBUF_CUSTOM_VTABLE
+        ::google::protobuf::Message::GetClearImpl<Resource>(),
+        &Resource::ByteSizeLong,
+        &Resource::_InternalSerialize,
+#endif // PROTOBUF_CUSTOM_VTABLE
         PROTOBUF_FIELD_OFFSET(Resource, _impl_._cached_size_),
         false,
     },
-    &Resource::kDescriptorMethods,
-    &descriptor_table_opentelemetry_2fproto_2fresource_2fv1_2fresource_2eproto,
-    nullptr,  // tracker
+    &Resource::kDescriptorMethods, &descriptor_table_opentelemetry_2fproto_2fresource_2fv1_2fresource_2eproto,
+    nullptr, // tracker
 };
-const ::google::protobuf::internal::ClassData* Resource::GetClassData() const {
-  ::google::protobuf::internal::PrefetchToLocalCache(&_class_data_);
-  ::google::protobuf::internal::PrefetchToLocalCache(_class_data_.tc_table);
-  return _class_data_.base();
+const ::google::protobuf::internal::ClassData *Resource::GetClassData() const {
+	::google::protobuf::internal::PrefetchToLocalCache(&_class_data_);
+	::google::protobuf::internal::PrefetchToLocalCache(_class_data_.tc_table);
+	return _class_data_.base();
 }
-PROTOBUF_CONSTINIT PROTOBUF_ATTRIBUTE_INIT_PRIORITY1
-const ::_pbi::TcParseTable<1, 2, 1, 0, 2> Resource::_table_ = {
-  {
-    0,  // no _has_bits_
-    0, // no _extensions_
-    2, 8,  // max_field_number, fast_idx_mask
-    offsetof(decltype(_table_), field_lookup_table),
-    4294967292,  // skipmap
-    offsetof(decltype(_table_), field_entries),
-    2,  // num_field_entries
-    1,  // num_aux_entries
-    offsetof(decltype(_table_), aux_entries),
-    _class_data_.base(),
-    nullptr,  // post_loop_handler
-    ::_pbi::TcParser::GenericFallback,  // fallback
-    #ifdef PROTOBUF_PREFETCH_PARSE_TABLE
-    ::_pbi::TcParser::GetTable<::opentelemetry::proto::resource::v1::Resource>(),  // to_prefetch
-    #endif  // PROTOBUF_PREFETCH_PARSE_TABLE
-  }, {{
-    // uint32 dropped_attributes_count = 2;
-    {::_pbi::TcParser::SingularVarintNoZag1<::uint32_t, offsetof(Resource, _impl_.dropped_attributes_count_), 63>(),
-     {16, 63, 0, PROTOBUF_FIELD_OFFSET(Resource, _impl_.dropped_attributes_count_)}},
-    // repeated .opentelemetry.proto.common.v1.KeyValue attributes = 1;
-    {::_pbi::TcParser::FastMtR1,
-     {10, 63, 0, PROTOBUF_FIELD_OFFSET(Resource, _impl_.attributes_)}},
-  }}, {{
-    65535, 65535
-  }}, {{
-    // repeated .opentelemetry.proto.common.v1.KeyValue attributes = 1;
-    {PROTOBUF_FIELD_OFFSET(Resource, _impl_.attributes_), 0, 0,
-    (0 | ::_fl::kFcRepeated | ::_fl::kMessage | ::_fl::kTvTable)},
-    // uint32 dropped_attributes_count = 2;
-    {PROTOBUF_FIELD_OFFSET(Resource, _impl_.dropped_attributes_count_), 0, 0,
-    (0 | ::_fl::kFcSingular | ::_fl::kUInt32)},
-  }}, {{
-    {::_pbi::TcParser::GetTable<::opentelemetry::proto::common::v1::KeyValue>()},
-  }}, {{
-  }},
+PROTOBUF_CONSTINIT PROTOBUF_ATTRIBUTE_INIT_PRIORITY1 const ::_pbi::TcParseTable<1, 2, 1, 0, 2> Resource::_table_ = {
+    {
+        0,    // no _has_bits_
+        0,    // no _extensions_
+        2, 8, // max_field_number, fast_idx_mask
+        offsetof(decltype(_table_), field_lookup_table),
+        4294967292, // skipmap
+        offsetof(decltype(_table_), field_entries),
+        2, // num_field_entries
+        1, // num_aux_entries
+        offsetof(decltype(_table_), aux_entries), _class_data_.base(),
+        nullptr,                           // post_loop_handler
+        ::_pbi::TcParser::GenericFallback, // fallback
+#ifdef PROTOBUF_PREFETCH_PARSE_TABLE
+        ::_pbi::TcParser::GetTable<::opentelemetry::proto::resource::v1::Resource>(), // to_prefetch
+#endif                                                                                // PROTOBUF_PREFETCH_PARSE_TABLE
+    },
+    {{
+        // uint32 dropped_attributes_count = 2;
+        {::_pbi::TcParser::SingularVarintNoZag1<::uint32_t, offsetof(Resource, _impl_.dropped_attributes_count_), 63>(),
+         {16, 63, 0, PROTOBUF_FIELD_OFFSET(Resource, _impl_.dropped_attributes_count_)}},
+        // repeated .opentelemetry.proto.common.v1.KeyValue attributes = 1;
+        {::_pbi::TcParser::FastMtR1, {10, 63, 0, PROTOBUF_FIELD_OFFSET(Resource, _impl_.attributes_)}},
+    }},
+    {{65535, 65535}},
+    {{
+        // repeated .opentelemetry.proto.common.v1.KeyValue attributes = 1;
+        {PROTOBUF_FIELD_OFFSET(Resource, _impl_.attributes_), 0, 0,
+         (0 | ::_fl::kFcRepeated | ::_fl::kMessage | ::_fl::kTvTable)},
+        // uint32 dropped_attributes_count = 2;
+        {PROTOBUF_FIELD_OFFSET(Resource, _impl_.dropped_attributes_count_), 0, 0,
+         (0 | ::_fl::kFcSingular | ::_fl::kUInt32)},
+    }},
+    {{
+        {::_pbi::TcParser::GetTable<::opentelemetry::proto::common::v1::KeyValue>()},
+    }},
+    {{}},
 };
 
 PROTOBUF_NOINLINE void Resource::Clear() {
-// @@protoc_insertion_point(message_clear_start:opentelemetry.proto.resource.v1.Resource)
-  ::google::protobuf::internal::TSanWrite(&_impl_);
-  ::uint32_t cached_has_bits = 0;
-  // Prevent compiler warnings about cached_has_bits being unused
-  (void) cached_has_bits;
+	// @@protoc_insertion_point(message_clear_start:opentelemetry.proto.resource.v1.Resource)
+	::google::protobuf::internal::TSanWrite(&_impl_);
+	::uint32_t cached_has_bits = 0;
+	// Prevent compiler warnings about cached_has_bits being unused
+	(void)cached_has_bits;
 
-  _impl_.attributes_.Clear();
-  _impl_.dropped_attributes_count_ = 0u;
-  _internal_metadata_.Clear<::google::protobuf::UnknownFieldSet>();
+	_impl_.attributes_.Clear();
+	_impl_.dropped_attributes_count_ = 0u;
+	_internal_metadata_.Clear<::google::protobuf::UnknownFieldSet>();
 }
 
 #if defined(PROTOBUF_CUSTOM_VTABLE)
-        ::uint8_t* Resource::_InternalSerialize(
-            const MessageLite& base, ::uint8_t* target,
-            ::google::protobuf::io::EpsCopyOutputStream* stream) {
-          const Resource& this_ = static_cast<const Resource&>(base);
-#else   // PROTOBUF_CUSTOM_VTABLE
-        ::uint8_t* Resource::_InternalSerialize(
-            ::uint8_t* target,
-            ::google::protobuf::io::EpsCopyOutputStream* stream) const {
-          const Resource& this_ = *this;
-#endif  // PROTOBUF_CUSTOM_VTABLE
-          // @@protoc_insertion_point(serialize_to_array_start:opentelemetry.proto.resource.v1.Resource)
-          ::uint32_t cached_has_bits = 0;
-          (void)cached_has_bits;
+::uint8_t *Resource::_InternalSerialize(const MessageLite &base, ::uint8_t *target,
+                                        ::google::protobuf::io::EpsCopyOutputStream *stream) {
+	const Resource &this_ = static_cast<const Resource &>(base);
+#else  // PROTOBUF_CUSTOM_VTABLE
+::uint8_t *Resource::_InternalSerialize(::uint8_t *target, ::google::protobuf::io::EpsCopyOutputStream *stream) const {
+	const Resource &this_ = *this;
+#endif // PROTOBUF_CUSTOM_VTABLE
+       // @@protoc_insertion_point(serialize_to_array_start:opentelemetry.proto.resource.v1.Resource)
+	::uint32_t cached_has_bits = 0;
+	(void)cached_has_bits;
 
-          // repeated .opentelemetry.proto.common.v1.KeyValue attributes = 1;
-          for (unsigned i = 0, n = static_cast<unsigned>(
-                                   this_._internal_attributes_size());
-               i < n; i++) {
-            const auto& repfield = this_._internal_attributes().Get(i);
-            target =
-                ::google::protobuf::internal::WireFormatLite::InternalWriteMessage(
-                    1, repfield, repfield.GetCachedSize(),
-                    target, stream);
-          }
+	// repeated .opentelemetry.proto.common.v1.KeyValue attributes = 1;
+	for (unsigned i = 0, n = static_cast<unsigned>(this_._internal_attributes_size()); i < n; i++) {
+		const auto &repfield = this_._internal_attributes().Get(i);
+		target = ::google::protobuf::internal::WireFormatLite::InternalWriteMessage(
+		    1, repfield, repfield.GetCachedSize(), target, stream);
+	}
 
-          // uint32 dropped_attributes_count = 2;
-          if (this_._internal_dropped_attributes_count() != 0) {
-            target = stream->EnsureSpace(target);
-            target = ::_pbi::WireFormatLite::WriteUInt32ToArray(
-                2, this_._internal_dropped_attributes_count(), target);
-          }
+	// uint32 dropped_attributes_count = 2;
+	if (this_._internal_dropped_attributes_count() != 0) {
+		target = stream->EnsureSpace(target);
+		target = ::_pbi::WireFormatLite::WriteUInt32ToArray(2, this_._internal_dropped_attributes_count(), target);
+	}
 
-          if (PROTOBUF_PREDICT_FALSE(this_._internal_metadata_.have_unknown_fields())) {
-            target =
-                ::_pbi::WireFormat::InternalSerializeUnknownFieldsToArray(
-                    this_._internal_metadata_.unknown_fields<::google::protobuf::UnknownFieldSet>(::google::protobuf::UnknownFieldSet::default_instance), target, stream);
-          }
-          // @@protoc_insertion_point(serialize_to_array_end:opentelemetry.proto.resource.v1.Resource)
-          return target;
-        }
+	if (PROTOBUF_PREDICT_FALSE(this_._internal_metadata_.have_unknown_fields())) {
+		target = ::_pbi::WireFormat::InternalSerializeUnknownFieldsToArray(
+		    this_._internal_metadata_.unknown_fields<::google::protobuf::UnknownFieldSet>(
+		        ::google::protobuf::UnknownFieldSet::default_instance),
+		    target, stream);
+	}
+	// @@protoc_insertion_point(serialize_to_array_end:opentelemetry.proto.resource.v1.Resource)
+	return target;
+}
 
 #if defined(PROTOBUF_CUSTOM_VTABLE)
-        ::size_t Resource::ByteSizeLong(const MessageLite& base) {
-          const Resource& this_ = static_cast<const Resource&>(base);
-#else   // PROTOBUF_CUSTOM_VTABLE
-        ::size_t Resource::ByteSizeLong() const {
-          const Resource& this_ = *this;
-#endif  // PROTOBUF_CUSTOM_VTABLE
-          // @@protoc_insertion_point(message_byte_size_start:opentelemetry.proto.resource.v1.Resource)
-          ::size_t total_size = 0;
+::size_t Resource::ByteSizeLong(const MessageLite &base) {
+	const Resource &this_ = static_cast<const Resource &>(base);
+#else  // PROTOBUF_CUSTOM_VTABLE
+::size_t Resource::ByteSizeLong() const {
+	const Resource &this_ = *this;
+#endif // PROTOBUF_CUSTOM_VTABLE
+       // @@protoc_insertion_point(message_byte_size_start:opentelemetry.proto.resource.v1.Resource)
+	::size_t total_size = 0;
 
-          ::uint32_t cached_has_bits = 0;
-          // Prevent compiler warnings about cached_has_bits being unused
-          (void)cached_has_bits;
+	::uint32_t cached_has_bits = 0;
+	// Prevent compiler warnings about cached_has_bits being unused
+	(void)cached_has_bits;
 
-          ::_pbi::Prefetch5LinesFrom7Lines(&this_);
-           {
-            // repeated .opentelemetry.proto.common.v1.KeyValue attributes = 1;
-            {
-              total_size += 1UL * this_._internal_attributes_size();
-              for (const auto& msg : this_._internal_attributes()) {
-                total_size += ::google::protobuf::internal::WireFormatLite::MessageSize(msg);
-              }
-            }
-          }
-           {
-            // uint32 dropped_attributes_count = 2;
-            if (this_._internal_dropped_attributes_count() != 0) {
-              total_size += ::_pbi::WireFormatLite::UInt32SizePlusOne(
-                  this_._internal_dropped_attributes_count());
-            }
-          }
-          return this_.MaybeComputeUnknownFieldsSize(total_size,
-                                                     &this_._impl_._cached_size_);
-        }
+	::_pbi::Prefetch5LinesFrom7Lines(&this_);
+	{// repeated .opentelemetry.proto.common.v1.KeyValue attributes = 1;
+	 {total_size += 1UL * this_._internal_attributes_size();
+	for (const auto &msg : this_._internal_attributes()) {
+		total_size += ::google::protobuf::internal::WireFormatLite::MessageSize(msg);
+	}
+}
+} // namespace v1
+{
+	// uint32 dropped_attributes_count = 2;
+	if (this_._internal_dropped_attributes_count() != 0) {
+		total_size += ::_pbi::WireFormatLite::UInt32SizePlusOne(this_._internal_dropped_attributes_count());
+	}
+}
+return this_.MaybeComputeUnknownFieldsSize(total_size, &this_._impl_._cached_size_);
+} // namespace resource
 
-void Resource::MergeImpl(::google::protobuf::MessageLite& to_msg, const ::google::protobuf::MessageLite& from_msg) {
-  auto* const _this = static_cast<Resource*>(&to_msg);
-  auto& from = static_cast<const Resource&>(from_msg);
-  // @@protoc_insertion_point(class_specific_merge_from_start:opentelemetry.proto.resource.v1.Resource)
-  ABSL_DCHECK_NE(&from, _this);
-  ::uint32_t cached_has_bits = 0;
-  (void) cached_has_bits;
+void Resource::MergeImpl(::google::protobuf::MessageLite &to_msg, const ::google::protobuf::MessageLite &from_msg) {
+	auto *const _this = static_cast<Resource *>(&to_msg);
+	auto &from = static_cast<const Resource &>(from_msg);
+	// @@protoc_insertion_point(class_specific_merge_from_start:opentelemetry.proto.resource.v1.Resource)
+	ABSL_DCHECK_NE(&from, _this);
+	::uint32_t cached_has_bits = 0;
+	(void)cached_has_bits;
 
-  _this->_internal_mutable_attributes()->MergeFrom(
-      from._internal_attributes());
-  if (from._internal_dropped_attributes_count() != 0) {
-    _this->_impl_.dropped_attributes_count_ = from._impl_.dropped_attributes_count_;
-  }
-  _this->_internal_metadata_.MergeFrom<::google::protobuf::UnknownFieldSet>(from._internal_metadata_);
+	_this->_internal_mutable_attributes()->MergeFrom(from._internal_attributes());
+	if (from._internal_dropped_attributes_count() != 0) {
+		_this->_impl_.dropped_attributes_count_ = from._impl_.dropped_attributes_count_;
+	}
+	_this->_internal_metadata_.MergeFrom<::google::protobuf::UnknownFieldSet>(from._internal_metadata_);
 }
 
-void Resource::CopyFrom(const Resource& from) {
-// @@protoc_insertion_point(class_specific_copy_from_start:opentelemetry.proto.resource.v1.Resource)
-  if (&from == this) return;
-  Clear();
-  MergeFrom(from);
+void Resource::CopyFrom(const Resource &from) {
+	// @@protoc_insertion_point(class_specific_copy_from_start:opentelemetry.proto.resource.v1.Resource)
+	if (&from == this)
+		return;
+	Clear();
+	MergeFrom(from);
 }
 
-
-void Resource::InternalSwap(Resource* PROTOBUF_RESTRICT other) {
-  using std::swap;
-  _internal_metadata_.InternalSwap(&other->_internal_metadata_);
-  _impl_.attributes_.InternalSwap(&other->_impl_.attributes_);
-        swap(_impl_.dropped_attributes_count_, other->_impl_.dropped_attributes_count_);
+void Resource::InternalSwap(Resource *PROTOBUF_RESTRICT other) {
+	using std::swap;
+	_internal_metadata_.InternalSwap(&other->_internal_metadata_);
+	_impl_.attributes_.InternalSwap(&other->_impl_.attributes_);
+	swap(_impl_.dropped_attributes_count_, other->_impl_.dropped_attributes_count_);
 }
 
 ::google::protobuf::Metadata Resource::GetMetadata() const {
-  return ::google::protobuf::Message::GetMetadataImpl(GetClassData()->full());
+	return ::google::protobuf::Message::GetMetadataImpl(GetClassData()->full());
 }
 // @@protoc_insertion_point(namespace_scope)
-}  // namespace v1
-}  // namespace resource
-}  // namespace proto
-}  // namespace opentelemetry
+} // namespace proto
+} // namespace opentelemetry
+} // namespace proto
+} // namespace opentelemetry
 namespace google {
-namespace protobuf {
-}  // namespace protobuf
-}  // namespace google
+namespace protobuf {} // namespace protobuf
+} // namespace google
 // @@protoc_insertion_point(global_scope)
-PROTOBUF_ATTRIBUTE_INIT_PRIORITY2 static ::std::false_type
-    _static_init2_ PROTOBUF_UNUSED =
-        (::_pbi::AddDescriptors(&descriptor_table_opentelemetry_2fproto_2fresource_2fv1_2fresource_2eproto),
-         ::std::false_type{});
+PROTOBUF_ATTRIBUTE_INIT_PRIORITY2 static ::std::false_type _static_init2_ PROTOBUF_UNUSED =
+    (::_pbi::AddDescriptors(&descriptor_table_opentelemetry_2fproto_2fresource_2fv1_2fresource_2eproto),
+     ::std::false_type {});
 #include "google/protobuf/port_undef.inc"
