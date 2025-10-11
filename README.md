@@ -1,86 +1,277 @@
-# Duckspan
+# duckspan
 
-This repository is based on https://github.com/duckdb/extension-template, check it out if you want to build and ship your own DuckDB extension.
+Query OpenTelemetry data with SQL. Attach OTLP streams as DuckDB databases, read OTLP files.
 
----
+## Quick Start
 
-This extension, Duckspan, allow you to ... <extension_goal>.
+```sql
+-- Load extension
+LOAD duckspan;
 
+-- Attach live OTLP stream (starts gRPC receiver on port 4317)
+ATTACH 'otlp:localhost:4317' AS live (TYPE otlp);
+
+-- Query accumulated telemetry
+SELECT * FROM live.traces;
+SELECT * FROM live.metrics;
+SELECT * FROM live.logs;
+
+-- Stop receiver
+DETACH live;
+
+-- Read OTLP files (JSON or protobuf, auto-detected)
+SELECT * FROM read_otlp('traces.jsonl');
+SELECT * FROM read_otlp('s3://bucket/traces/*.pb');
+```
+
+## Features
+
+**Live OTLP Streams**
+- `ATTACH` creates a gRPC receiver on specified port
+- Auto-creates tables: `{name}.traces`, `{name}.metrics`, `{name}.logs`
+- OpenTelemetry SDKs send data → DuckDB accumulates it
+- `DETACH` stops receiver and removes database
+
+**File Reading**
+- `read_otlp(filepath)` reads OTLP JSON/protobuf files
+- Supports JSON and protobuf formats (auto-detected)
+- Works with local files, S3, HTTP, Azure, GCS
+- Same schema as attached tables
+
+**Unified Schema**
+- All signal types use: `(timestamp TIMESTAMP, resource JSON, data JSON)`
+- Query with DuckDB's JSON functions
+- `resource` = service/host metadata
+- `data` = signal-specific payload
+
+## Usage
+
+### ATTACH/DETACH Lifecycle
+
+```sql
+-- Start receiver on port 4317
+ATTACH 'otlp:localhost:4317' AS live (TYPE otlp);
+
+-- Different port
+ATTACH 'otlp:0.0.0.0:4318' AS metrics (TYPE otlp);
+
+-- Multiple simultaneous streams
+ATTACH 'otlp:localhost:4317' AS traces1 (TYPE otlp);
+ATTACH 'otlp:localhost:4318' AS traces2 (TYPE otlp);
+
+-- Cleanup
+DETACH traces1;
+DETACH traces2;
+```
+
+### Querying Traces
+
+```sql
+-- Extract service name and span details
+SELECT
+    json_extract(resource, '$.service.name') as service,
+    json_extract(data, '$.name') as span_name,
+    json_extract(data, '$.traceId') as trace_id,
+    timestamp
+FROM live.traces
+WHERE timestamp > NOW() - INTERVAL 1 HOUR;
+
+-- Find slow requests (duration > 1 second)
+SELECT
+    json_extract(resource, '$.service.name') as service,
+    json_extract(data, '$.name') as operation,
+    (json_extract(data, '$.endTimeUnixNano')::BIGINT -
+     json_extract(data, '$.startTimeUnixNano')::BIGINT) / 1000000 as duration_ms
+FROM live.traces
+WHERE duration_ms > 1000
+ORDER BY duration_ms DESC;
+
+-- Error rate by service
+SELECT
+    json_extract(resource, '$.service.name') as service,
+    COUNT(*) as total_spans,
+    SUM(CASE WHEN json_extract(data, '$.status.code') != 0 THEN 1 ELSE 0 END) as errors,
+    (errors::FLOAT / total_spans * 100)::INT as error_pct
+FROM live.traces
+WHERE timestamp > NOW() - INTERVAL 15 MINUTES
+GROUP BY service;
+```
+
+### Reading Files
+
+```sql
+-- Local files
+SELECT COUNT(*) FROM read_otlp('test/data/traces.jsonl');
+
+-- S3 (with DuckDB's S3 support)
+SELECT * FROM read_otlp('s3://bucket/telemetry/*.jsonl');
+
+-- HTTP
+SELECT * FROM read_otlp('https://example.com/traces.jsonl');
+
+-- Protobuf (auto-detected)
+SELECT * FROM read_otlp('traces.pb');
+
+-- Verify schema
+SELECT
+    typeof(timestamp) as ts_type,
+    typeof(resource) as resource_type,
+    typeof(data) as data_type
+FROM read_otlp('traces.jsonl')
+LIMIT 1;
+```
+
+### Persisting Stream Data
+
+```sql
+-- Attach and accumulate data
+ATTACH 'otlp:localhost:4317' AS live (TYPE otlp);
+
+-- Let telemetry flow in for a while...
+
+-- Save to permanent tables
+CREATE TABLE archive_traces AS SELECT * FROM live.traces;
+CREATE TABLE archive_metrics AS SELECT * FROM live.metrics;
+
+-- Stop receiver
+DETACH live;
+
+-- Query archived data
+SELECT * FROM archive_traces WHERE timestamp > NOW() - INTERVAL 1 DAY;
+```
+
+## Data Model
+
+All signal types (traces, metrics, logs) use the same schema:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `timestamp` | TIMESTAMP | When the event occurred |
+| `resource` | JSON | Service/host metadata |
+| `data` | JSON | Signal-specific payload |
+
+**Example Row:**
+```json
+{
+  "timestamp": "2024-01-15 10:30:00",
+  "resource": {
+    "service.name": "api-server",
+    "host.name": "prod-01"
+  },
+  "data": {
+    "traceId": "5B8EFFF798038103D269B633813FC60C",
+    "spanId": "EEE19B7EC3C1B174",
+    "name": "GET /users",
+    "startTimeUnixNano": "1640000000000000000",
+    "endTimeUnixNano": "1640000000100000000",
+    "attributes": {
+      "http.method": "GET",
+      "http.url": "/users",
+      "http.status_code": 200
+    },
+    "status": {"code": 0}
+  }
+}
+```
 
 ## Building
-### Managing dependencies
-DuckDB extensions uses VCPKG for dependency management. Enabling VCPKG is very simple: follow the [installation instructions](https://vcpkg.io/en/getting-started) or just run the following:
-```shell
+
+### Prerequisites
+
+Install VCPKG for dependency management:
+
+```bash
 git clone https://github.com/Microsoft/vcpkg.git
 ./vcpkg/bootstrap-vcpkg.sh
 export VCPKG_TOOLCHAIN_PATH=`pwd`/vcpkg/scripts/buildsystems/vcpkg.cmake
 ```
-Note: VCPKG is only required for extensions that want to rely on it for dependency management. If you want to develop an extension without dependencies, or want to do your own dependency management, just skip this step. Note that the example extension uses VCPKG to build with a dependency for instructive purposes, so when skipping this step the build may not work without removing the dependency.
 
-### Build steps
-Now to build the extension, run:
-```sh
-make
-```
-The main binaries that will be built are:
-```sh
-./build/release/duckdb
-./build/release/test/unittest
-./build/release/extension/duckspan/duckspan.duckdb_extension
-```
-- `duckdb` is the binary for the duckdb shell with the extension code automatically loaded.
-- `unittest` is the test runner of duckdb. Again, the extension is already linked into the binary.
-- `duckspan.duckdb_extension` is the loadable binary as it would be distributed.
+### Build
 
-## Running the extension
-To run the extension code, simply start the shell with `./build/release/duckdb`.
+Use ninja for performance:
 
-Now we can use the features from the extension directly in DuckDB. The template contains a single scalar function `duckspan()` that takes a string arguments and returns a string:
-```
-D select duckspan('Jane') as result;
-┌───────────────┐
-│    result     │
-│    varchar    │
-├───────────────┤
-│ Duckspan Jane 🐥 │
-└───────────────┘
+```bash
+GEN=ninja make
 ```
 
-## Running the tests
-Different tests can be created for DuckDB extensions. The primary way of testing DuckDB extensions should be the SQL tests in `./test/sql`. These SQL tests can be run using:
-```sh
+Builds:
+- `./build/release/duckdb` - DuckDB shell with extension loaded
+- `./build/release/test/unittest` - Test runner
+- `./build/release/extension/duckspan/duckspan.duckdb_extension` - Loadable extension
+
+### Testing
+
+```bash
+# SQL tests
 make test
+
+# OTLP integration test (requires uv)
+uv run test/python/test_otlp_export.py
+
+# Or via make
+make test-otlp-export
 ```
 
-### Installing the deployed binaries
-To install your extension binaries from S3, you will need to do two things. Firstly, DuckDB should be launched with the
-`allow_unsigned_extensions` option set to true. How to set this will depend on the client you're using. Some examples:
+## Development
 
-CLI:
-```shell
-duckdb -unsigned
+### Pre-commit Hooks
+
+Uses `uv` for Python tooling:
+
+```bash
+# Install hooks
+uvx --from pre-commit pre-commit install
+
+# Run manually
+uvx --from pre-commit pre-commit run --all-files
 ```
 
-Python:
-```python
-con = duckdb.connect(':memory:', config={'allow_unsigned_extensions' : 'true'})
+Hooks:
+- clang-format (C++ formatting)
+- black (Python formatting)
+- cmake-format/cmake-lint
+
+### Code Formatting
+
+```bash
+# Check format
+make format-check
+
+# Auto-fix
+make format-fix
 ```
 
-NodeJS:
-```js
-db = new duckdb.Database(':memory:', {"allow_unsigned_extensions": "true"});
-```
+## Architecture
 
-Secondly, you will need to set the repository endpoint in DuckDB to the HTTP url of your bucket + version of the extension
-you want to install. To do this run the following SQL query in DuckDB:
+- **Extension Type**: Storage extension registered for `TYPE otlp`
+- **ATTACH Handler**: Parses connection string, starts gRPC server, creates tables
+- **gRPC Receiver**: Implements OTLP collector service endpoints (traces/metrics/logs)
+- **Table Functions**: `read_otlp()` streams OTLP files with format auto-detection
+- **Data Conversion**: Protobuf → JSON for SQL queryability
+
+### Dependencies (via VCPKG)
+- gRPC (OTLP receiver)
+- Protobuf (wire format)
+- OpenSSL (gRPC dependency)
+
+## Limitations
+
+**Data Retention**: Attached streams accumulate data in memory indefinitely. Manual cleanup required:
+
 ```sql
-SET custom_extension_repository='bucket.s3.eu-west-1.amazonaws.com/<your_extension_name>/latest';
-```
-Note that the `/latest` path will allow you to install the latest extension version available for your current version of
-DuckDB. To specify a specific version, you can pass the version instead.
+-- Option 1: Periodic DELETE
+DELETE FROM live.traces WHERE timestamp < NOW() - INTERVAL 1 HOUR;
 
-After running these steps, you can install and load your extension using the regular INSTALL/LOAD commands in DuckDB:
-```sql
-INSTALL duckspan
-LOAD duckspan
+-- Option 2: Periodic persist-and-detach
+CREATE TABLE archive AS SELECT * FROM live.traces;
+DETACH live;
+ATTACH 'otlp:localhost:4317' AS live (TYPE otlp);
 ```
+
+Future versions may add automatic TTL or persistent backing.
+
+## References
+
+- [OpenTelemetry Protocol (OTLP)](https://opentelemetry.io/docs/specs/otlp/)
+- [DuckDB Extensions](https://duckdb.org/docs/extensions/overview)
+- [Extension Template](https://github.com/duckdb/extension-template)
