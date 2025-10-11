@@ -5,6 +5,8 @@
 
 namespace duckdb {
 
+#ifndef DUCKSPAN_DISABLE_GRPC
+
 //! OTLPStorageExtension implements DuckDB's StorageExtension interface
 //! This enables ATTACH 'otlp://host:port' AS name (TYPE otlp)
 class OTLPStorageExtension {
@@ -21,5 +23,17 @@ public:
 	static unique_ptr<TransactionManager> CreateTransactionManager(optional_ptr<StorageExtensionInfo> storage_info,
 	                                                               AttachedDatabase &db, Catalog &catalog);
 };
+
+#else
+
+//! WASM stub: OTLPStorageExtension is not available in WASM builds
+//! ATTACH functionality requires gRPC which doesn't work in WASM
+class OTLPStorageExtension {
+public:
+	//! Returns nullptr - storage extension not available in WASM
+	static unique_ptr<StorageExtension> Create();
+};
+
+#endif // DUCKSPAN_DISABLE_GRPC
 
 } // namespace duckdb

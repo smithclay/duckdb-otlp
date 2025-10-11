@@ -1,5 +1,7 @@
 #pragma once
 
+#ifndef DUCKSPAN_DISABLE_GRPC
+
 #include "duckdb.hpp"
 #include "otlp_storage_info.hpp"
 #include <grpcpp/grpcpp.h>
@@ -47,3 +49,5 @@ private:
 };
 
 } // namespace duckdb
+
+#endif // DUCKSPAN_DISABLE_GRPC
