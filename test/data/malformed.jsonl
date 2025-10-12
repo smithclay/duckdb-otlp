@@ -1,0 +1,4 @@
+{"invalid": "not otlp json"}
+this is not json at all
+{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"valid-service"}}]},"scopeSpans":[{"spans":[{"traceId":"ABC","spanId":"DEF","name":"valid span","startTimeUnixNano":"1640000000000000000","endTimeUnixNano":"1640000000100000000"}]}]}]}
+{incomplete json

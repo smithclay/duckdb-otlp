@@ -1,0 +1,56 @@
+# name: test/sql/read_otlp_json.test
+# description: Test read_otlp() table function with JSON files
+# group: [sql]
+
+require duckspan
+
+# Test that read_otlp function exists
+query I
+SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'read_otlp';
+----
+1
+
+# Test reading traces
+query I
+SELECT COUNT(*) FROM read_otlp('test/data/traces_simple.jsonl');
+----
+3
+
+# Test that we get the correct schema
+query III
+SELECT
+    typeof(timestamp) as ts_type,
+    typeof(resource) as resource_type,
+    typeof(data) as data_type
+FROM read_otlp('test/data/traces_simple.jsonl')
+LIMIT 1;
+----
+TIMESTAMP	JSON	JSON
+
+# Test reading metrics
+query I
+SELECT COUNT(*) FROM read_otlp('test/data/metrics_simple.jsonl');
+----
+3
+
+# Test reading logs
+query I
+SELECT COUNT(*) FROM read_otlp('test/data/logs_simple.jsonl');
+----
+3
+
+# Test that resource is not empty
+query I
+SELECT LENGTH(resource::VARCHAR) > 10
+FROM read_otlp('test/data/traces_simple.jsonl')
+LIMIT 1;
+----
+true
+
+# Test that data is not empty and contains expected string
+query I
+SELECT data::VARCHAR LIKE '%resourceSpans%'
+FROM read_otlp('test/data/traces_simple.jsonl')
+LIMIT 1;
+----
+true

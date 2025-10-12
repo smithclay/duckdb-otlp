@@ -13,12 +13,14 @@ concurrency:
 
 jobs:
   duckdb-stable-build:
+    # disabled to not consume all my gh action credits
+    if: false
     name: Build extension binaries
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.4.0
     with:
       duckdb_version: v1.4.0
       ci_tools_version: v1.4.0
-      extension_name: quack
+      extension_name: duckspan
 
   code-quality-check:
     name: Code Quality Check
@@ -26,5 +28,5 @@ jobs:
     with:
       duckdb_version: v1.4.0
       ci_tools_version: v1.4.0
-      extension_name: quack
-      format_checks: 'format;tidy'
+      extension_name: duckspan
+      format_checks: 'format'  # Skip tidy-check in CI (requires vcpkg dependencies)
