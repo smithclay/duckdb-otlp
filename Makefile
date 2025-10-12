@@ -31,6 +31,7 @@ format-fix:
 	@echo "Format fix complete"
 
 # Override tidy-check to exclude generated files
+# Note: tidy-check requires vcpkg dependencies - run locally with VCPKG_TOOLCHAIN_PATH set
 tidy-check:
 	mkdir -p ./build/tidy
 	cmake $(GENERATOR) $(BUILD_FLAGS) $(EXT_DEBUG_FLAGS) -DDISABLE_UNITY=1 -DCLANG_TIDY=1 -S $(DUCKDB_SRCDIR) -B build/tidy
