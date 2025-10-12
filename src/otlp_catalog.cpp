@@ -64,6 +64,36 @@ optional_ptr<CatalogEntry> OTLPCatalog::GetEntry(ClientContext &context, const s
 	return entry_ptr;
 }
 
+optional_ptr<CatalogEntry> OTLPCatalog::GetEntryCached(const string &name) {
+	// Check cache first
+	auto entry_key = DEFAULT_SCHEMA + string(".") + name;
+	auto it = table_entries_.find(entry_key);
+	if (it != table_entries_.end()) {
+		return it->second.get();
+	}
+
+	// Not cached - create it
+	auto buffer = storage_info_->GetBuffer(name);
+	if (!buffer) {
+		return nullptr;
+	}
+
+	// Create table info
+	auto table_info = make_uniq<CreateTableInfo>();
+	table_info->schema = DEFAULT_SCHEMA;
+	table_info->table = name;
+	table_info->columns.AddColumn(ColumnDefinition("timestamp", LogicalType::TIMESTAMP));
+	table_info->columns.AddColumn(ColumnDefinition("resource", LogicalType::JSON()));
+	table_info->columns.AddColumn(ColumnDefinition("data", LogicalType::JSON()));
+
+	// Create and cache
+	auto entry = make_uniq<OTLPTableEntry>(*this, *main_schema_, *table_info, buffer);
+	auto entry_ptr = entry.get();
+	table_entries_[entry_key] = std::move(entry);
+
+	return entry_ptr;
+}
+
 void OTLPCatalog::ScanSchemas(ClientContext &context, std::function<void(SchemaCatalogEntry &)> callback) {
 	// Only have one schema - the main schema
 	if (main_schema_) {

@@ -41,23 +41,34 @@ void OTLPScanFunction(ClientContext &context, TableFunctionInput &data, DataChun
 	auto &state = data.global_state->Cast<OTLPScanState>();
 
 	idx_t output_idx = 0;
-	while (state.current_row < state.rows.size() && output_idx < STANDARD_VECTOR_SIZE) {
-		auto &row = state.rows[state.current_row];
+	idx_t count = MinValue<idx_t>(STANDARD_VECTOR_SIZE, state.rows.size() - state.current_row);
 
-		// Set timestamp
-		output.SetValue(0, output_idx, Value::TIMESTAMP(row.timestamp));
-
-		// Set resource JSON
-		output.SetValue(1, output_idx, Value(row.resource_json));
-
-		// Set data JSON
-		output.SetValue(2, output_idx, Value(row.data_json));
-
-		state.current_row++;
-		output_idx++;
+	if (count == 0) {
+		output.SetCardinality(0);
+		return;
 	}
 
-	output.SetCardinality(output_idx);
+	// Get vectors for each column
+	auto timestamp_data = FlatVector::GetData<timestamp_t>(output.data[0]);
+	auto &resource_vector = output.data[1];
+	auto &data_vector = output.data[2];
+
+	// Fill vectors
+	for (idx_t i = 0; i < count; i++) {
+		auto &row = state.rows[state.current_row + i];
+
+		// Set timestamp
+		timestamp_data[i] = row.timestamp;
+
+		// Set resource JSON
+		FlatVector::GetData<string_t>(resource_vector)[i] = StringVector::AddString(resource_vector, row.resource_json);
+
+		// Set data JSON
+		FlatVector::GetData<string_t>(data_vector)[i] = StringVector::AddString(data_vector, row.data_json);
+	}
+
+	state.current_row += count;
+	output.SetCardinality(count);
 }
 
 } // namespace duckdb

@@ -25,6 +25,9 @@ public:
 	//! Get a catalog entry by name (returns virtual table entries)
 	optional_ptr<CatalogEntry> GetEntry(ClientContext &context, const string &schema, const string &name);
 
+	//! Get a cached entry by name (for enumeration without context)
+	optional_ptr<CatalogEntry> GetEntryCached(const string &name);
+
 	//! Scan all schemas in this catalog
 	void ScanSchemas(ClientContext &context, std::function<void(SchemaCatalogEntry &)> callback) override;
 

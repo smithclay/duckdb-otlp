@@ -46,9 +46,6 @@ idx_t OTLPProtobufParser::ParseTracesData(const char *data, size_t length, vecto
 		return 0;
 	}
 
-	// Convert entire TracesData to JSON once (instead of per-span)
-	string traces_data_json = MessageToJSON(traces_data);
-
 	idx_t row_count = 0;
 
 	// Iterate through resource spans
@@ -66,11 +63,12 @@ idx_t OTLPProtobufParser::ParseTracesData(const char *data, size_t length, vecto
 				// Extract timestamp from startTimeUnixNano (with rounding)
 				timestamp_t ts = NanosToTimestamp(span.start_time_unix_nano());
 
+				// Convert individual span to JSON (not entire TracesData)
+				string span_json = MessageToJSON(span);
+
 				timestamps.push_back(ts);
 				resources.push_back(resource_json);
-
-				// Use pre-converted JSON data
-				datas.push_back(traces_data_json);
+				datas.push_back(span_json);
 
 				row_count++;
 			}
@@ -90,9 +88,6 @@ idx_t OTLPProtobufParser::ParseMetricsData(const char *data, size_t length, vect
 		return 0;
 	}
 
-	// Convert entire MetricsData to JSON once
-	string metrics_data_json = MessageToJSON(metrics_data);
-
 	idx_t row_count = 0;
 
 	// Iterate through resource metrics
@@ -111,11 +106,12 @@ idx_t OTLPProtobufParser::ParseMetricsData(const char *data, size_t length, vect
 				// Use current timestamp for now (will improve in later iterations)
 				timestamp_t ts = Timestamp::GetCurrentTimestamp();
 
+				// Convert individual metric to JSON (not entire MetricsData)
+				string metric_json = MessageToJSON(metric);
+
 				timestamps.push_back(ts);
 				resources.push_back(resource_json);
-
-				// Use pre-converted JSON data
-				datas.push_back(metrics_data_json);
+				datas.push_back(metric_json);
 
 				row_count++;
 			}
@@ -135,9 +131,6 @@ idx_t OTLPProtobufParser::ParseLogsData(const char *data, size_t length, vector<
 		return 0;
 	}
 
-	// Convert entire LogsData to JSON once
-	string logs_data_json = MessageToJSON(logs_data);
-
 	idx_t row_count = 0;
 
 	// Iterate through resource logs
@@ -155,11 +148,12 @@ idx_t OTLPProtobufParser::ParseLogsData(const char *data, size_t length, vector<
 				// Extract timestamp from time_unix_nano (with rounding)
 				timestamp_t ts = NanosToTimestamp(log_record.time_unix_nano());
 
+				// Convert individual log record to JSON (not entire LogsData)
+				string log_json = MessageToJSON(log_record);
+
 				timestamps.push_back(ts);
 				resources.push_back(resource_json);
-
-				// Use pre-converted JSON data
-				datas.push_back(logs_data_json);
+				datas.push_back(log_json);
 
 				row_count++;
 			}

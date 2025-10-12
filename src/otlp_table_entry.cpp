@@ -25,6 +25,7 @@ TableFunction OTLPTableEntry::GetScanFunction(ClientContext &context, unique_ptr
 
 	// Create table function - the bind function won't be called in this flow
 	TableFunction scan_func("otlp_scan", {}, OTLPScanFunction, nullptr, OTLPScanInitGlobal);
+	scan_func.projection_pushdown = true;
 	return scan_func;
 }
 

@@ -139,34 +139,79 @@ bool OTLPJSONParser::ExtractData(const string &json, string &data) {
 bool OTLPJSONParser::ParseLine(const string &line, timestamp_t &timestamp, string &resource, string &data) {
 	last_error = "";
 
-	// Validate JSON
-	if (!IsValidOTLPJSON(line)) {
+	// Quick check: should start with '{'
+	string trimmed = line;
+	StringUtil::Trim(trimmed);
+	if (trimmed.empty() || trimmed[0] != '{') {
 		last_error = "Invalid JSON format";
 		return false;
 	}
 
-	// Check if this is actually OTLP format (has resourceSpans/resourceMetrics/resourceLogs)
-	auto signal_type = DetectSignalType(line);
+	// Parse JSON once and reuse the document for all extractions
+	auto doc = duckdb_yyjson::yyjson_read(trimmed.c_str(), trimmed.size(), 0);
+	if (!doc) {
+		last_error = "Invalid JSON format";
+		return false;
+	}
+
+	auto root = duckdb_yyjson::yyjson_doc_get_root(doc);
+	if (!duckdb_yyjson::yyjson_is_obj(root)) {
+		duckdb_yyjson::yyjson_doc_free(doc);
+		last_error = "Invalid JSON format";
+		return false;
+	}
+
+	// Detect signal type from root object (single scan, no string search)
+	SignalType signal_type = SignalType::UNKNOWN;
+	const char *field_name = nullptr;
+
+	if (duckdb_yyjson::yyjson_obj_get(root, "resourceSpans")) {
+		signal_type = SignalType::TRACES;
+		field_name = "resourceSpans";
+	} else if (duckdb_yyjson::yyjson_obj_get(root, "resourceMetrics")) {
+		signal_type = SignalType::METRICS;
+		field_name = "resourceMetrics";
+	} else if (duckdb_yyjson::yyjson_obj_get(root, "resourceLogs")) {
+		signal_type = SignalType::LOGS;
+		field_name = "resourceLogs";
+	}
+
 	if (signal_type == SignalType::UNKNOWN) {
+		duckdb_yyjson::yyjson_doc_free(doc);
 		last_error = "Not OTLP format - missing resourceSpans/resourceMetrics/resourceLogs";
 		return false;
 	}
 
-	// Extract components
-	if (!ExtractTimestamp(line, timestamp)) {
-		last_error = "Failed to extract timestamp";
-		return false;
+	// Extract resource from the same document
+	duckdb_yyjson::yyjson_val *resource_val = nullptr;
+	auto resource_array = duckdb_yyjson::yyjson_obj_get(root, field_name);
+	if (resource_array && duckdb_yyjson::yyjson_is_arr(resource_array)) {
+		auto first_elem = duckdb_yyjson::yyjson_arr_get_first(resource_array);
+		if (first_elem) {
+			resource_val = duckdb_yyjson::yyjson_obj_get(first_elem, "resource");
+		}
 	}
 
-	if (!ExtractResource(line, resource)) {
-		last_error = "Failed to extract resource";
-		return false;
+	if (resource_val) {
+		auto json_str = duckdb_yyjson::yyjson_val_write(resource_val, 0, nullptr);
+		if (json_str) {
+			resource = string(json_str);
+			free(json_str);
+		} else {
+			resource = "{}";
+		}
+	} else {
+		resource = "{}";
 	}
 
-	if (!ExtractData(line, data)) {
-		last_error = "Failed to extract data";
-		return false;
-	}
+	// Extract timestamp (use current time for now, will improve later)
+	timestamp = Timestamp::GetCurrentTimestamp();
+
+	// Store entire JSON as data
+	data = trimmed;
+
+	// Free document
+	duckdb_yyjson::yyjson_doc_free(doc);
 
 	return true;
 }

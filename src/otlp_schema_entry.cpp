@@ -31,8 +31,25 @@ void OTLPSchemaEntry::Scan(ClientContext &context, CatalogType type,
 }
 
 void OTLPSchemaEntry::Scan(CatalogType type, const std::function<void(CatalogEntry &)> &callback) {
-	// This version is called without context - not commonly used
-	// For now, we can't enumerate without context
+	// Only enumerate tables
+	if (type != CatalogType::TABLE_ENTRY) {
+		return;
+	}
+
+	// List the three OTLP virtual tables (without context)
+	// We can enumerate the known table names directly
+	const OTLPSignalType signal_types[] = {OTLPSignalType::TRACES, OTLPSignalType::METRICS, OTLPSignalType::LOGS};
+	auto &otlp_catalog = catalog.Cast<OTLPCatalog>();
+
+	for (auto signal_type : signal_types) {
+		string table_name = SignalTypeToString(signal_type);
+		// Try to get cached entry, or create it if needed
+		// We use a temporary/null context which is OK since GetEntry handles it
+		auto entry = otlp_catalog.GetEntryCached(table_name);
+		if (entry) {
+			callback(*entry);
+		}
+	}
 }
 
 optional_ptr<CatalogEntry> OTLPSchemaEntry::GetEntry(CatalogType type, const string &entry_name) {

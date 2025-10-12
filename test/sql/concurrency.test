@@ -30,7 +30,7 @@ SELECT COUNT(*) FROM concurrent_test.logs;
 # Test schema enumeration (exercises catalog scanning)
 query I
 SELECT COUNT(*) FROM information_schema.tables
-WHERE table_schema = 'concurrent_test';
+WHERE table_catalog = 'concurrent_test' AND table_schema = 'main';
 ----
 3
 
