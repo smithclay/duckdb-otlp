@@ -13,7 +13,7 @@ ATTACH 'otlp:localhost:4317' AS live (TYPE otlp);
 
 -- Query accumulated telemetry with strongly-typed columns
 SELECT TraceId, SpanName, ServiceName, Duration FROM live.otel_traces;
-SELECT MetricName, MetricType, Value FROM live.otel_metrics WHERE MetricType = 'gauge';
+SELECT MetricName, Value FROM live.otel_metrics_gauge;
 SELECT SeverityText, Body, ServiceName FROM live.otel_logs;
 
 -- Stop receiver
@@ -29,10 +29,14 @@ SELECT * FROM read_otlp_logs('https://example.com/logs.jsonl');
 
 **Live OTLP Streams**
 - `ATTACH` creates a gRPC receiver on specified port
-- Auto-creates ClickHouse-compatible tables:
+- Auto-creates ClickHouse-compatible tables (7 tables total):
   - `{name}.otel_traces` - 22 strongly-typed columns
   - `{name}.otel_logs` - 15 strongly-typed columns
-  - `{name}.otel_metrics` - 27 columns with union schema (MetricType discriminator)
+  - `{name}.otel_metrics_gauge` - 10 columns for gauge metrics
+  - `{name}.otel_metrics_sum` - 12 columns for sum/counter metrics
+  - `{name}.otel_metrics_histogram` - 15 columns for histogram metrics
+  - `{name}.otel_metrics_exp_histogram` - 19 columns for exponential histogram metrics
+  - `{name}.otel_metrics_summary` - 13 columns for summary metrics
 - OpenTelemetry SDKs send data → DuckDB accumulates it
 - `DETACH` stops receiver and removes database
 
@@ -40,7 +44,7 @@ SELECT * FROM read_otlp_logs('https://example.com/logs.jsonl');
 - Specialized table functions for each signal type:
   - `read_otlp_traces(filepath)` - returns 22 columns
   - `read_otlp_logs(filepath)` - returns 15 columns
-  - `read_otlp_metrics(filepath)` - returns 27 columns (union schema)
+  - `read_otlp_metrics(filepath)` - returns 10 columns (gauge schema)
 - Supports JSON (`.json`, `.jsonl`) and protobuf (`.pb`) formats (auto-detected)
 - Works with local files, S3, HTTP, Azure, GCS
 - Same schema as attached tables
@@ -49,7 +53,7 @@ SELECT * FROM read_otlp_logs('https://example.com/logs.jsonl');
 - All signals use strongly-typed columns (no JSON extraction required)
 - Traces: TraceId, SpanId, SpanName, ServiceName, Duration, Attributes, etc.
 - Logs: Timestamp, ServiceName, SeverityText, Body, etc.
-- Metrics: MetricType discriminator, type-specific union columns
+- Metrics: 5 separate tables, each with type-specific columns (gauge, sum, histogram, exp_histogram, summary)
 - Compatible with OpenTelemetry ClickHouse exporter schema
 
 ## Usage
@@ -157,14 +161,14 @@ LIMIT 100;
 ### Querying Metrics
 
 ```sql
--- Query gauge metrics (filter by MetricType)
+-- Query gauge metrics (direct table access)
 SELECT
     Timestamp,
     ServiceName,
     MetricName,
     Value
-FROM live.otel_metrics
-WHERE MetricType = 'gauge' AND MetricName = 'system.memory.usage'
+FROM live.otel_metrics_gauge
+WHERE MetricName = 'system.memory.usage'
 ORDER BY Timestamp DESC;
 
 -- Query sum metrics (counters)
@@ -174,8 +178,8 @@ SELECT
     Value,
     IsMonotonic,
     AggregationTemporality
-FROM live.otel_metrics
-WHERE MetricType = 'sum' AND MetricName = 'http.server.requests';
+FROM live.otel_metrics_sum
+WHERE MetricName = 'http.server.requests';
 
 -- Query histogram metrics
 SELECT
@@ -185,23 +189,44 @@ SELECT
     Min,
     Max,
     Sum / Count as avg_value
-FROM live.otel_metrics
-WHERE MetricType = 'histogram' AND MetricName = 'http.server.duration'
+FROM live.otel_metrics_histogram
+WHERE MetricName = 'http.server.duration'
 ORDER BY Timestamp DESC
 LIMIT 10;
 
--- Union query across all metric types
+-- Query exponential histogram metrics
 SELECT
-    Timestamp,
-    ServiceName,
     MetricName,
-    MetricType,
-    Value,  -- Populated for gauge/sum only
-    Count,  -- Populated for histogram/summary
-    Sum     -- Populated for histogram/summary
-FROM read_otlp_metrics('metrics.jsonl')
+    Count,
+    Sum,
+    Scale,
+    ZeroCount,
+    PositiveBucketCounts
+FROM live.otel_metrics_exp_histogram
 WHERE ServiceName = 'api-server'
-ORDER BY Timestamp;
+ORDER BY Timestamp DESC;
+
+-- Query summary metrics
+SELECT
+    MetricName,
+    Count,
+    Sum,
+    QuantileValues,
+    QuantileQuantiles
+FROM live.otel_metrics_summary
+WHERE ServiceName = 'api-server'
+ORDER BY Timestamp DESC;
+
+-- Union query across all metric types
+SELECT 'gauge' as type, MetricName, ServiceName FROM live.otel_metrics_gauge
+UNION ALL
+SELECT 'sum' as type, MetricName, ServiceName FROM live.otel_metrics_sum
+UNION ALL
+SELECT 'histogram' as type, MetricName, ServiceName FROM live.otel_metrics_histogram
+UNION ALL
+SELECT 'exp_histogram' as type, MetricName, ServiceName FROM live.otel_metrics_exp_histogram
+UNION ALL
+SELECT 'summary' as type, MetricName, ServiceName FROM live.otel_metrics_summary;
 ```
 
 ### Reading Files
@@ -230,13 +255,12 @@ SELECT
 FROM read_otlp_traces('traces.jsonl')
 LIMIT 1;
 
--- Verify metrics schema (27 columns with union)
+-- Verify metrics schema (10 columns for gauge)
 SELECT
     MetricName,
-    MetricType,
     Value,
-    Count,
-    Sum
+    ServiceName,
+    Timestamp
 FROM read_otlp_metrics('metrics.jsonl')
 LIMIT 1;
 ```
@@ -249,10 +273,14 @@ ATTACH 'otlp:localhost:4317' AS live (TYPE otlp);
 
 -- Let telemetry flow in for a while...
 
--- Save to permanent tables
+-- Save to permanent tables (all 7 tables)
 CREATE TABLE archive_traces AS SELECT * FROM live.otel_traces;
-CREATE TABLE archive_metrics AS SELECT * FROM live.otel_metrics;
 CREATE TABLE archive_logs AS SELECT * FROM live.otel_logs;
+CREATE TABLE archive_metrics_gauge AS SELECT * FROM live.otel_metrics_gauge;
+CREATE TABLE archive_metrics_sum AS SELECT * FROM live.otel_metrics_sum;
+CREATE TABLE archive_metrics_histogram AS SELECT * FROM live.otel_metrics_histogram;
+CREATE TABLE archive_metrics_exp_histogram AS SELECT * FROM live.otel_metrics_exp_histogram;
+CREATE TABLE archive_metrics_summary AS SELECT * FROM live.otel_metrics_summary;
 
 -- Stop receiver
 DETACH live;
@@ -310,42 +338,64 @@ SELECT * FROM archive_traces WHERE Timestamp > NOW() - INTERVAL 1 DAY;
 | `ScopeAttributes` | MAP(VARCHAR, VARCHAR) | Scope attributes |
 | `LogAttributes` | MAP(VARCHAR, VARCHAR) | Log record attributes |
 
-### Metrics Union Schema (27 columns)
+### Metrics Schemas (5 separate tables)
 
-All metric types share a base schema with type-specific union columns:
+All metric tables share 9 base columns plus type-specific columns:
 
-**Base Columns (9):**
-- `Timestamp` (TIMESTAMP_NS)
-- `ServiceName` (VARCHAR)
-- `MetricName` (VARCHAR)
-- `MetricDescription` (VARCHAR)
-- `MetricUnit` (VARCHAR)
-- `ResourceAttributes` (MAP)
-- `ScopeName` (VARCHAR)
-- `ScopeVersion` (VARCHAR)
-- `Attributes` (MAP)
+**Base Columns (all tables):**
+- `Timestamp` (TIMESTAMP_NS) - Metric timestamp
+- `ServiceName` (VARCHAR) - Service name (extracted from resource)
+- `MetricName` (VARCHAR) - Metric name
+- `MetricDescription` (VARCHAR) - Metric description
+- `MetricUnit` (VARCHAR) - Metric unit
+- `ResourceAttributes` (MAP) - Resource attributes
+- `ScopeName` (VARCHAR) - Instrumentation scope name
+- `ScopeVersion` (VARCHAR) - Instrumentation scope version
+- `Attributes` (MAP) - Data point attributes
 
-**Discriminator:**
-- `MetricType` (VARCHAR) - one of: `'gauge'`, `'sum'`, `'histogram'`, `'exponential_histogram'`, `'summary'`
+#### otel_metrics_gauge (10 columns)
 
-**Union Columns (type-specific, NULL for other types):**
-- `Value` (DOUBLE) - gauge, sum
-- `AggregationTemporality` (INTEGER) - sum, histogram, exponential_histogram
-- `IsMonotonic` (BOOLEAN) - sum
-- `Count` (UBIGINT) - histogram, exponential_histogram, summary
-- `Sum` (DOUBLE) - histogram, exponential_histogram, summary
-- `Min` (DOUBLE) - histogram, exponential_histogram
-- `Max` (DOUBLE) - histogram, exponential_histogram
-- `BucketCounts` (LIST(UBIGINT)) - histogram
-- `ExplicitBounds` (LIST(DOUBLE)) - histogram
-- `Scale` (INTEGER) - exponential_histogram
-- `ZeroCount` (UBIGINT) - exponential_histogram
-- `PositiveOffset` (INTEGER) - exponential_histogram
-- `PositiveBucketCounts` (LIST(UBIGINT)) - exponential_histogram
-- `NegativeOffset` (INTEGER) - exponential_histogram
-- `NegativeBucketCounts` (LIST(UBIGINT)) - exponential_histogram
-- `QuantileValues` (LIST(DOUBLE)) - summary
-- `QuantileQuantiles` (LIST(DOUBLE)) - summary
+Base columns (9) plus:
+- `Value` (DOUBLE) - Current gauge value
+
+#### otel_metrics_sum (12 columns)
+
+Base columns (9) plus:
+- `Value` (DOUBLE) - Current sum value
+- `AggregationTemporality` (INTEGER) - 0=unspecified, 1=delta, 2=cumulative
+- `IsMonotonic` (BOOLEAN) - Whether sum is monotonically increasing
+
+#### otel_metrics_histogram (15 columns)
+
+Base columns (9) plus:
+- `Count` (UBIGINT) - Total count of observations
+- `Sum` (DOUBLE) - Sum of all observed values
+- `BucketCounts` (LIST(UBIGINT)) - Count per bucket
+- `ExplicitBounds` (LIST(DOUBLE)) - Bucket boundaries
+- `Min` (DOUBLE) - Minimum observed value
+- `Max` (DOUBLE) - Maximum observed value
+
+#### otel_metrics_exp_histogram (19 columns)
+
+Base columns (9) plus:
+- `Count` (UBIGINT) - Total count of observations
+- `Sum` (DOUBLE) - Sum of all observed values
+- `Scale` (INTEGER) - Bucket scale factor
+- `ZeroCount` (UBIGINT) - Count of zero values
+- `PositiveOffset` (INTEGER) - Offset for positive buckets
+- `PositiveBucketCounts` (LIST(UBIGINT)) - Positive bucket counts
+- `NegativeOffset` (INTEGER) - Offset for negative buckets
+- `NegativeBucketCounts` (LIST(UBIGINT)) - Negative bucket counts
+- `Min` (DOUBLE) - Minimum observed value
+- `Max` (DOUBLE) - Maximum observed value
+
+#### otel_metrics_summary (13 columns)
+
+Base columns (9) plus:
+- `Count` (UBIGINT) - Total count of observations
+- `Sum` (DOUBLE) - Sum of all observed values
+- `QuantileValues` (LIST(DOUBLE)) - Quantile values
+- `QuantileQuantiles` (LIST(DOUBLE)) - Quantile positions (0-1)
 
 ## Building
 

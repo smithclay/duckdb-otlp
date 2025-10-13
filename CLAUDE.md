@@ -74,10 +74,14 @@ This is a **DuckDB Storage Extension** registered for `TYPE otlp`. It implements
 
 **Custom Catalog (`otlp_catalog.cpp/hpp`)**
 - Implements DuckDB's `Catalog` interface for virtual tables
-- Auto-creates three tables per attached database following OpenTelemetry ClickHouse exporter schema:
+- Auto-creates seven tables per attached database following OpenTelemetry ClickHouse exporter schema:
   - `otel_traces` - trace spans with 22 strongly-typed columns
   - `otel_logs` - log records with 15 strongly-typed columns
-  - `otel_metrics` - all metric types with 27-column union schema (MetricType discriminator)
+  - `otel_metrics_gauge` - gauge metrics with 10 columns
+  - `otel_metrics_sum` - sum metrics with 12 columns
+  - `otel_metrics_histogram` - histogram metrics with 15 columns
+  - `otel_metrics_exp_histogram` - exponential histogram metrics with 19 columns
+  - `otel_metrics_summary` - summary metrics with 13 columns
 - Backed by thread-safe ring buffers (in-memory FIFO storage)
 
 **Ring Buffer (`ring_buffer.cpp/hpp`)**
@@ -91,7 +95,7 @@ This is a **DuckDB Storage Extension** registered for `TYPE otlp`. It implements
 - Implements OpenTelemetry Collector Protocol gRPC endpoints
 - Three service endpoints: `/v1/traces`, `/v1/metrics`, `/v1/logs`
 - Parses incoming protobuf messages and extracts strongly-typed columns
-- All metrics types (gauge, sum, histogram, exponential histogram, summary) go to single buffer with MetricType discriminator
+- Routes metrics to appropriate buffer based on type (gauge, sum, histogram, exponential histogram, summary)
 - Converts trace/span IDs to hex, calculates durations, extracts attributes as MAPs
 - Runs on background thread, lifecycle tied to ATTACH/DETACH
 
@@ -118,12 +122,12 @@ User: ATTACH 'otlp:localhost:4317' AS live (TYPE otlp)
   ↓
 OTLPStorageExtension::Attach()
   ↓ Parses connection string (host:port)
-  ↓ Creates OTLPStorageInfo with 3 ring buffers (1 traces, 1 logs, 1 metrics)
+  ↓ Creates OTLPStorageInfo with 7 ring buffers (1 traces, 1 logs, 5 metrics)
   ↓ Starts gRPC receiver on background thread
   ↓
 Returns OTLPCatalog with virtual tables
   ↓
-User: SELECT * FROM live.otel_metrics WHERE MetricType = 'gauge'
+User: SELECT * FROM live.otel_traces
   ↓
 OTLPScan reads from ring buffer → returns strongly-typed rows
 ```
@@ -154,7 +158,7 @@ The `src/generated/` directory contains protobuf and gRPC stubs generated from O
 ## Key Design Decisions
 
 ### ClickHouse-Compatible Schema (v2)
-The extension follows the OpenTelemetry ClickHouse exporter schema with 3 tables and strongly-typed columns:
+The extension follows the OpenTelemetry ClickHouse exporter schema with 7 separate tables and strongly-typed columns:
 
 **Traces Table (`otel_traces` - 22 columns):**
 - Direct column access: `trace_id`, `span_id`, `parent_span_id`, `trace_state`
@@ -169,20 +173,22 @@ The extension follows the OpenTelemetry ClickHouse exporter schema with 3 tables
 - Extracted metadata: `service_name`
 - Nested data: `resource_attributes` (MAP), `attributes` (MAP)
 
-**Metrics Table (`otel_metrics` - 27 columns with union schema):**
-- Common base columns (9): `timestamp`, `service_name`, `metric_name`, `metric_description`, `metric_unit`, `resource_attributes`, `scope_name`, `scope_version`, `attributes`
-- Discriminator: `metric_type` (VARCHAR) - one of: `'gauge'`, `'sum'`, `'histogram'`, `'exponential_histogram'`, `'summary'`
-- Type-specific union columns (type-specific, NULL for other types):
-  - **Gauge/Sum**: `value` (double), `aggregation_temporality` (int, sum only), `is_monotonic` (bool, sum only)
-  - **Histogram**: `count`, `sum`, `bucket_counts` (list), `explicit_bounds` (list), `min`, `max`
-  - **Exponential Histogram**: `count`, `sum`, `scale`, `zero_count`, `positive_offset`, `positive_bucket_counts`, `negative_offset`, `negative_bucket_counts`, `min`, `max`
-  - **Summary**: `count`, `sum`, `quantile_values` (list), `quantile_quantiles` (list)
+**Metrics Tables (5 types with 10-19 columns each):**
+All metric tables share 9 base columns plus type-specific fields:
+- Common base: `timestamp`, `service_name`, `metric_name`, `metric_description`, `metric_unit`, `resource_attributes`, `scope_name`, `scope_version`, `attributes`
+- Type-specific fields:
+  - **Gauge** (10 columns): `value` (double)
+  - **Sum** (12 columns): `value`, `aggregation_temporality` (int), `is_monotonic` (bool)
+  - **Histogram** (15 columns): `count`, `sum`, `bucket_counts` (list), `explicit_bounds` (list), `min`, `max`
+  - **Exponential Histogram** (19 columns): `count`, `sum`, `scale`, `zero_count`, `positive_offset`, `positive_bucket_counts`, `negative_offset`, `negative_bucket_counts`, `min`, `max`
+  - **Summary** (13 columns): `count`, `sum`, `quantile_values` (list), `quantile_quantiles` (list)
 
 This design enables:
-- Direct SQL access to fields without JSON extraction (`WHERE metric_type = 'gauge'`)
+- Direct SQL access to fields without JSON extraction (`SELECT * FROM otel_metrics_gauge`)
+- No NULL columns - each table has only the columns it needs
 - Efficient filtering and aggregation on typed columns
 - Compatibility with ClickHouse-based OTLP tools and queries
-- Unified querying across all metric types with discriminator-based filtering
+- Automatic metrics routing based on protobuf message type
 
 ### In-Memory Storage
 Attached databases store data in ring buffers (memory-only). There is no persistent storage. Users must:

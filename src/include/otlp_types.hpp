@@ -4,14 +4,18 @@
 
 namespace duckdb {
 
-//! OTLP signal types - the three types of telemetry data
+//! OTLP signal types - the three gRPC service types (OTLP protocol level)
 enum class OTLPSignalType : uint8_t { TRACES = 0, METRICS = 1, LOGS = 2 };
 
-//! OTLP table types - 3 tables with union schema for metrics
+//! OTLP table types - 7 tables (1 traces, 1 logs, 5 metric types)
 enum class OTLPTableType : uint8_t {
 	TRACES = 0,
 	LOGS = 1,
-	METRICS = 2 // Single table with union schema (27 columns, MetricType discriminator)
+	METRICS_GAUGE = 2,
+	METRICS_SUM = 3,
+	METRICS_HISTOGRAM = 4,
+	METRICS_EXP_HISTOGRAM = 5,
+	METRICS_SUMMARY = 6
 };
 
 //! Metric data types from OTLP spec
@@ -24,29 +28,23 @@ enum class OTLPMetricType : uint8_t {
 	UNKNOWN = 255
 };
 
-//! Convert signal type enum to table name string (old 3-table schema)
-inline string SignalTypeToString(OTLPSignalType type) {
-	switch (type) {
-	case OTLPSignalType::TRACES:
-		return "traces";
-	case OTLPSignalType::METRICS:
-		return "metrics";
-	case OTLPSignalType::LOGS:
-		return "logs";
-	default:
-		throw InternalException("Invalid OTLP signal type");
-	}
-}
-
-//! Convert table type enum to table name string (3-table union schema)
+//! Convert table type enum to table name string
 inline string TableTypeToString(OTLPTableType type) {
 	switch (type) {
 	case OTLPTableType::TRACES:
 		return "otel_traces";
 	case OTLPTableType::LOGS:
 		return "otel_logs";
-	case OTLPTableType::METRICS:
-		return "otel_metrics";
+	case OTLPTableType::METRICS_GAUGE:
+		return "otel_metrics_gauge";
+	case OTLPTableType::METRICS_SUM:
+		return "otel_metrics_sum";
+	case OTLPTableType::METRICS_HISTOGRAM:
+		return "otel_metrics_histogram";
+	case OTLPTableType::METRICS_EXP_HISTOGRAM:
+		return "otel_metrics_exp_histogram";
+	case OTLPTableType::METRICS_SUMMARY:
+		return "otel_metrics_summary";
 	default:
 		throw InternalException("Invalid OTLP table type");
 	}
@@ -56,7 +54,11 @@ inline string TableTypeToString(OTLPTableType type) {
 inline optional_ptr<OTLPTableType> StringToTableType(const string &name) {
 	static OTLPTableType traces_type = OTLPTableType::TRACES;
 	static OTLPTableType logs_type = OTLPTableType::LOGS;
-	static OTLPTableType metrics_type = OTLPTableType::METRICS;
+	static OTLPTableType metrics_gauge_type = OTLPTableType::METRICS_GAUGE;
+	static OTLPTableType metrics_sum_type = OTLPTableType::METRICS_SUM;
+	static OTLPTableType metrics_histogram_type = OTLPTableType::METRICS_HISTOGRAM;
+	static OTLPTableType metrics_exp_histogram_type = OTLPTableType::METRICS_EXP_HISTOGRAM;
+	static OTLPTableType metrics_summary_type = OTLPTableType::METRICS_SUMMARY;
 
 	if (name == "otel_traces") {
 		return &traces_type;
@@ -64,26 +66,20 @@ inline optional_ptr<OTLPTableType> StringToTableType(const string &name) {
 	if (name == "otel_logs") {
 		return &logs_type;
 	}
-	if (name == "otel_metrics") {
-		return &metrics_type;
+	if (name == "otel_metrics_gauge") {
+		return &metrics_gauge_type;
 	}
-	return nullptr;
-}
-
-//! Convert table name string to signal type enum (old API for compatibility)
-inline optional_ptr<OTLPSignalType> StringToSignalType(const string &name) {
-	static OTLPSignalType traces_type = OTLPSignalType::TRACES;
-	static OTLPSignalType metrics_type = OTLPSignalType::METRICS;
-	static OTLPSignalType logs_type = OTLPSignalType::LOGS;
-
-	if (name == "traces" || name == "otel_traces") {
-		return &traces_type;
+	if (name == "otel_metrics_sum") {
+		return &metrics_sum_type;
 	}
-	if (name == "logs" || name == "otel_logs") {
-		return &logs_type;
+	if (name == "otel_metrics_histogram") {
+		return &metrics_histogram_type;
 	}
-	if (name == "metrics" || name == "otel_metrics") {
-		return &metrics_type;
+	if (name == "otel_metrics_exp_histogram") {
+		return &metrics_exp_histogram_type;
+	}
+	if (name == "otel_metrics_summary") {
+		return &metrics_summary_type;
 	}
 	return nullptr;
 }

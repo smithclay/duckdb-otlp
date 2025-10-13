@@ -5,7 +5,7 @@
 #include "otlp_receiver.hpp"
 #include "otlp_traces_schema.hpp"
 #include "otlp_logs_schema.hpp"
-#include "otlp_metrics_union_schema.hpp"
+#include "otlp_metrics_schemas.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/parser/parsed_data/create_schema_info.hpp"
@@ -32,6 +32,44 @@ void OTLPCatalog::Initialize(bool load_builtin) {
 	main_schema_ = make_uniq<OTLPSchemaEntry>(*this, info);
 }
 
+std::pair<vector<string>, vector<LogicalType>> OTLPCatalog::GetSchemaForTableType(OTLPTableType type) {
+	vector<string> column_names;
+	vector<LogicalType> column_types;
+
+	switch (type) {
+	case OTLPTableType::TRACES:
+		column_names = OTLPTracesSchema::GetColumnNames();
+		column_types = OTLPTracesSchema::GetColumnTypes();
+		break;
+	case OTLPTableType::LOGS:
+		column_names = OTLPLogsSchema::GetColumnNames();
+		column_types = OTLPLogsSchema::GetColumnTypes();
+		break;
+	case OTLPTableType::METRICS_GAUGE:
+		column_names = OTLPMetricsGaugeSchema::GetColumnNames();
+		column_types = OTLPMetricsGaugeSchema::GetColumnTypes();
+		break;
+	case OTLPTableType::METRICS_SUM:
+		column_names = OTLPMetricsSumSchema::GetColumnNames();
+		column_types = OTLPMetricsSumSchema::GetColumnTypes();
+		break;
+	case OTLPTableType::METRICS_HISTOGRAM:
+		column_names = OTLPMetricsHistogramSchema::GetColumnNames();
+		column_types = OTLPMetricsHistogramSchema::GetColumnTypes();
+		break;
+	case OTLPTableType::METRICS_EXP_HISTOGRAM:
+		column_names = OTLPMetricsExpHistogramSchema::GetColumnNames();
+		column_types = OTLPMetricsExpHistogramSchema::GetColumnTypes();
+		break;
+	case OTLPTableType::METRICS_SUMMARY:
+		column_names = OTLPMetricsSummarySchema::GetColumnNames();
+		column_types = OTLPMetricsSummarySchema::GetColumnTypes();
+		break;
+	}
+
+	return {column_names, column_types};
+}
+
 optional_ptr<CatalogEntry> OTLPCatalog::GetEntry(ClientContext &context, const string &schema, const string &name) {
 	// Only support default schema
 	if (schema != DEFAULT_SCHEMA) {
@@ -56,30 +94,15 @@ optional_ptr<CatalogEntry> OTLPCatalog::GetEntry(ClientContext &context, const s
 	table_info->schema = schema;
 	table_info->table = name;
 
-	// Determine table type and add columns
+	// Determine table type and get schema
 	auto table_type = StringToTableType(name);
 	if (!table_type) {
 		return nullptr; // Unknown table name
 	}
 
-	vector<string> column_names;
-	vector<LogicalType> column_types;
-
-	switch (*table_type) {
-	case OTLPTableType::TRACES:
-		column_names = OTLPTracesSchema::GetColumnNames();
-		column_types = OTLPTracesSchema::GetColumnTypes();
-		break;
-	case OTLPTableType::LOGS:
-		column_names = OTLPLogsSchema::GetColumnNames();
-		column_types = OTLPLogsSchema::GetColumnTypes();
-		break;
-	case OTLPTableType::METRICS:
-		column_names = OTLPMetricsUnionSchema::GetColumnNames();
-		column_types = OTLPMetricsUnionSchema::GetColumnTypes();
-		break;
-	default:
-		return nullptr;
+	auto [column_names, column_types] = GetSchemaForTableType(*table_type);
+	if (column_names.empty()) {
+		return nullptr; // Schema not found
 	}
 
 	// Add columns to table info
@@ -115,24 +138,9 @@ optional_ptr<CatalogEntry> OTLPCatalog::GetEntryCached(const string &name) {
 		return nullptr;
 	}
 
-	vector<string> column_names;
-	vector<LogicalType> column_types;
-
-	switch (*table_type) {
-	case OTLPTableType::TRACES:
-		column_names = OTLPTracesSchema::GetColumnNames();
-		column_types = OTLPTracesSchema::GetColumnTypes();
-		break;
-	case OTLPTableType::LOGS:
-		column_names = OTLPLogsSchema::GetColumnNames();
-		column_types = OTLPLogsSchema::GetColumnTypes();
-		break;
-	case OTLPTableType::METRICS:
-		column_names = OTLPMetricsUnionSchema::GetColumnNames();
-		column_types = OTLPMetricsUnionSchema::GetColumnTypes();
-		break;
-	default:
-		return nullptr;
+	auto [column_names, column_types] = GetSchemaForTableType(*table_type);
+	if (column_names.empty()) {
+		return nullptr; // Schema not found
 	}
 
 	// Create table info
@@ -184,12 +192,16 @@ void OTLPCatalog::DropSchema(ClientContext &context, DropInfo &info) {
 
 DatabaseSize OTLPCatalog::GetDatabaseSize(ClientContext &context) {
 	DatabaseSize result;
-	// Approximate size based on ring buffer contents (all 3 tables)
+	// Approximate size based on ring buffer contents (all 7 tables)
 	idx_t total_size = 0;
 	if (storage_info_) {
 		total_size += storage_info_->traces_buffer->Size();
 		total_size += storage_info_->logs_buffer->Size();
-		total_size += storage_info_->metrics_buffer->Size();
+		total_size += storage_info_->metrics_gauge_buffer->Size();
+		total_size += storage_info_->metrics_sum_buffer->Size();
+		total_size += storage_info_->metrics_histogram_buffer->Size();
+		total_size += storage_info_->metrics_exp_histogram_buffer->Size();
+		total_size += storage_info_->metrics_summary_buffer->Size();
 	}
 	// Rough estimate: 1KB per row
 	result.bytes = total_size * 1024;

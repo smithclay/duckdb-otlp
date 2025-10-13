@@ -17,10 +17,16 @@ void OTLPSchemaEntry::Scan(ClientContext &context, CatalogType type,
 		return;
 	}
 
-	// List the three OTLP virtual tables
-	const OTLPSignalType signal_types[] = {OTLPSignalType::TRACES, OTLPSignalType::METRICS, OTLPSignalType::LOGS};
-	for (auto signal_type : signal_types) {
-		string table_name = SignalTypeToString(signal_type);
+	// List all 7 OTLP virtual tables (1 traces, 1 logs, 5 metric types)
+	const OTLPTableType table_types[] = {OTLPTableType::TRACES,
+	                                     OTLPTableType::LOGS,
+	                                     OTLPTableType::METRICS_GAUGE,
+	                                     OTLPTableType::METRICS_SUM,
+	                                     OTLPTableType::METRICS_HISTOGRAM,
+	                                     OTLPTableType::METRICS_EXP_HISTOGRAM,
+	                                     OTLPTableType::METRICS_SUMMARY};
+	for (auto table_type : table_types) {
+		string table_name = TableTypeToString(table_type);
 		// Get the table entry from the catalog using our custom GetEntry
 		auto &otlp_catalog = catalog.Cast<OTLPCatalog>();
 		auto entry = otlp_catalog.GetEntry(context, DEFAULT_SCHEMA, table_name);
@@ -36,15 +42,19 @@ void OTLPSchemaEntry::Scan(CatalogType type, const std::function<void(CatalogEnt
 		return;
 	}
 
-	// List the three OTLP virtual tables (without context)
-	// We can enumerate the known table names directly
-	const OTLPSignalType signal_types[] = {OTLPSignalType::TRACES, OTLPSignalType::METRICS, OTLPSignalType::LOGS};
+	// List all 7 OTLP virtual tables (without context)
+	const OTLPTableType table_types[] = {OTLPTableType::TRACES,
+	                                     OTLPTableType::LOGS,
+	                                     OTLPTableType::METRICS_GAUGE,
+	                                     OTLPTableType::METRICS_SUM,
+	                                     OTLPTableType::METRICS_HISTOGRAM,
+	                                     OTLPTableType::METRICS_EXP_HISTOGRAM,
+	                                     OTLPTableType::METRICS_SUMMARY};
 	auto &otlp_catalog = catalog.Cast<OTLPCatalog>();
 
-	for (auto signal_type : signal_types) {
-		string table_name = SignalTypeToString(signal_type);
+	for (auto table_type : table_types) {
+		string table_name = TableTypeToString(table_type);
 		// Try to get cached entry, or create it if needed
-		// We use a temporary/null context which is OK since GetEntry handles it
 		auto entry = otlp_catalog.GetEntryCached(table_name);
 		if (entry) {
 			callback(*entry);
@@ -62,9 +72,9 @@ optional_ptr<CatalogEntry> OTLPSchemaEntry::GetEntry(CatalogType type, const str
 	// Note: This is a simplified lookup that doesn't use transactions
 	auto &otlp_catalog = catalog.Cast<OTLPCatalog>();
 
-	// Check if it's one of our known tables
-	auto signal_type = StringToSignalType(entry_name);
-	if (signal_type) {
+	// Check if it's one of our known tables using table type lookup
+	auto table_type = StringToTableType(entry_name);
+	if (table_type) {
 		// We'd need a ClientContext to call GetEntry properly
 		// For now, just return nullptr - this method is not commonly used
 		return nullptr;

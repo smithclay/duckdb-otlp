@@ -2,7 +2,7 @@
 #include "otlp_helpers.hpp"
 #include "otlp_traces_schema.hpp"
 #include "otlp_logs_schema.hpp"
-#include "otlp_metrics_union_schema.hpp"
+#include "otlp_metrics_schemas.hpp"
 
 // Generated gRPC service stubs
 #include "opentelemetry/proto/collector/trace/v1/trace_service.grpc.pb.h"
@@ -162,12 +162,6 @@ public:
 					return grpc::Status(grpc::StatusCode::INTERNAL, "Invalid metrics request");
 				}
 
-				// Get single metrics buffer (union schema)
-				auto buffer = storage_info_->GetBuffer(OTLPTableType::METRICS);
-				if (!buffer) {
-					return grpc::Status(grpc::StatusCode::INTERNAL, "Metrics buffer not found");
-				}
-
 				// Iterate through all resource metrics
 				for (const auto &resource_metric : metrics_request->resource_metrics()) {
 					const auto &resource = resource_metric.resource();
@@ -186,207 +180,205 @@ public:
 							string metric_description = metric.description();
 							string metric_unit = metric.unit();
 
-							// Determine metric type and insert into union schema
+							// Route to appropriate buffer based on metric type
 							if (metric.has_gauge()) {
-								// Gauge metrics
+								// Gauge metrics - route to gauge buffer
+								auto buffer = storage_info_->GetBufferForMetric(OTLPMetricType::GAUGE);
+								if (!buffer) {
+									continue;
+								}
+
 								for (const auto &data_point : metric.gauge().data_points()) {
-									vector<Value> row(OTLPMetricsUnionSchema::COLUMN_COUNT);
+									vector<Value> row(OTLPMetricsGaugeSchema::COLUMN_COUNT);
 
 									auto timestamp = NanosToTimestamp(data_point.time_unix_nano());
 
-									// Base columns (0-8)
-									row[OTLPMetricsUnionSchema::COL_TIMESTAMP] = Value::TIMESTAMPNS(timestamp);
-									row[OTLPMetricsUnionSchema::COL_SERVICE_NAME] = Value(service_name);
-									row[OTLPMetricsUnionSchema::COL_METRIC_NAME] = Value(metric_name);
-									row[OTLPMetricsUnionSchema::COL_METRIC_DESCRIPTION] = Value(metric_description);
-									row[OTLPMetricsUnionSchema::COL_METRIC_UNIT] = Value(metric_unit);
-									row[OTLPMetricsUnionSchema::COL_RESOURCE_ATTRIBUTES] = resource_attrs;
-									row[OTLPMetricsUnionSchema::COL_SCOPE_NAME] = Value(scope_name);
-									row[OTLPMetricsUnionSchema::COL_SCOPE_VERSION] = Value(scope_version);
-									row[OTLPMetricsUnionSchema::COL_ATTRIBUTES] =
+									// Populate gauge schema (10 columns)
+									row[OTLPMetricsGaugeSchema::COL_TIMESTAMP] = Value::TIMESTAMPNS(timestamp);
+									row[OTLPMetricsGaugeSchema::COL_SERVICE_NAME] = Value(service_name);
+									row[OTLPMetricsGaugeSchema::COL_METRIC_NAME] = Value(metric_name);
+									row[OTLPMetricsGaugeSchema::COL_METRIC_DESCRIPTION] = Value(metric_description);
+									row[OTLPMetricsGaugeSchema::COL_METRIC_UNIT] = Value(metric_unit);
+									row[OTLPMetricsGaugeSchema::COL_RESOURCE_ATTRIBUTES] = resource_attrs;
+									row[OTLPMetricsGaugeSchema::COL_SCOPE_NAME] = Value(scope_name);
+									row[OTLPMetricsGaugeSchema::COL_SCOPE_VERSION] = Value(scope_version);
+									row[OTLPMetricsGaugeSchema::COL_ATTRIBUTES] =
 									    ConvertAttributesToMap(data_point.attributes());
 
-									// Metric type discriminator (9)
-									row[OTLPMetricsUnionSchema::COL_METRIC_TYPE] = Value("gauge");
-
-									// Gauge-specific columns (10)
 									double value = data_point.has_as_double()
 									                   ? data_point.as_double()
 									                   : static_cast<double>(data_point.as_int());
-									row[OTLPMetricsUnionSchema::COL_VALUE] = Value::DOUBLE(value);
-
-									// Other union columns remain NULL (default constructed)
+									row[OTLPMetricsGaugeSchema::COL_VALUE] = Value::DOUBLE(value);
 
 									buffer->Insert(row);
 								}
 							} else if (metric.has_sum()) {
-								// Sum metrics
+								// Sum metrics - route to sum buffer
+								auto buffer = storage_info_->GetBufferForMetric(OTLPMetricType::SUM);
+								if (!buffer) {
+									continue;
+								}
+
 								for (const auto &data_point : metric.sum().data_points()) {
-									vector<Value> row(OTLPMetricsUnionSchema::COLUMN_COUNT);
+									vector<Value> row(OTLPMetricsSumSchema::COLUMN_COUNT);
 
 									auto timestamp = NanosToTimestamp(data_point.time_unix_nano());
 
-									// Base columns (0-8)
-									row[OTLPMetricsUnionSchema::COL_TIMESTAMP] = Value::TIMESTAMPNS(timestamp);
-									row[OTLPMetricsUnionSchema::COL_SERVICE_NAME] = Value(service_name);
-									row[OTLPMetricsUnionSchema::COL_METRIC_NAME] = Value(metric_name);
-									row[OTLPMetricsUnionSchema::COL_METRIC_DESCRIPTION] = Value(metric_description);
-									row[OTLPMetricsUnionSchema::COL_METRIC_UNIT] = Value(metric_unit);
-									row[OTLPMetricsUnionSchema::COL_RESOURCE_ATTRIBUTES] = resource_attrs;
-									row[OTLPMetricsUnionSchema::COL_SCOPE_NAME] = Value(scope_name);
-									row[OTLPMetricsUnionSchema::COL_SCOPE_VERSION] = Value(scope_version);
-									row[OTLPMetricsUnionSchema::COL_ATTRIBUTES] =
+									// Populate sum schema (12 columns)
+									row[OTLPMetricsSumSchema::COL_TIMESTAMP] = Value::TIMESTAMPNS(timestamp);
+									row[OTLPMetricsSumSchema::COL_SERVICE_NAME] = Value(service_name);
+									row[OTLPMetricsSumSchema::COL_METRIC_NAME] = Value(metric_name);
+									row[OTLPMetricsSumSchema::COL_METRIC_DESCRIPTION] = Value(metric_description);
+									row[OTLPMetricsSumSchema::COL_METRIC_UNIT] = Value(metric_unit);
+									row[OTLPMetricsSumSchema::COL_RESOURCE_ATTRIBUTES] = resource_attrs;
+									row[OTLPMetricsSumSchema::COL_SCOPE_NAME] = Value(scope_name);
+									row[OTLPMetricsSumSchema::COL_SCOPE_VERSION] = Value(scope_version);
+									row[OTLPMetricsSumSchema::COL_ATTRIBUTES] =
 									    ConvertAttributesToMap(data_point.attributes());
 
-									// Metric type discriminator (9)
-									row[OTLPMetricsUnionSchema::COL_METRIC_TYPE] = Value("sum");
-
-									// Sum-specific columns (10-12)
 									double value = data_point.has_as_double()
 									                   ? data_point.as_double()
 									                   : static_cast<double>(data_point.as_int());
-									row[OTLPMetricsUnionSchema::COL_VALUE] = Value::DOUBLE(value);
-									row[OTLPMetricsUnionSchema::COL_AGGREGATION_TEMPORALITY] =
+									row[OTLPMetricsSumSchema::COL_VALUE] = Value::DOUBLE(value);
+									row[OTLPMetricsSumSchema::COL_AGGREGATION_TEMPORALITY] =
 									    Value::INTEGER(static_cast<int32_t>(metric.sum().aggregation_temporality()));
-									row[OTLPMetricsUnionSchema::COL_IS_MONOTONIC] =
+									row[OTLPMetricsSumSchema::COL_IS_MONOTONIC] =
 									    Value::BOOLEAN(metric.sum().is_monotonic());
-
-									// Other union columns remain NULL
 
 									buffer->Insert(row);
 								}
 							} else if (metric.has_histogram()) {
-								// Histogram metrics
+								// Histogram metrics - route to histogram buffer
+								auto buffer = storage_info_->GetBufferForMetric(OTLPMetricType::HISTOGRAM);
+								if (!buffer) {
+									continue;
+								}
+
 								for (const auto &data_point : metric.histogram().data_points()) {
-									vector<Value> row(OTLPMetricsUnionSchema::COLUMN_COUNT);
+									vector<Value> row(OTLPMetricsHistogramSchema::COLUMN_COUNT);
 
 									auto timestamp = NanosToTimestamp(data_point.time_unix_nano());
 
-									// Base columns (0-8)
-									row[OTLPMetricsUnionSchema::COL_TIMESTAMP] = Value::TIMESTAMPNS(timestamp);
-									row[OTLPMetricsUnionSchema::COL_SERVICE_NAME] = Value(service_name);
-									row[OTLPMetricsUnionSchema::COL_METRIC_NAME] = Value(metric_name);
-									row[OTLPMetricsUnionSchema::COL_METRIC_DESCRIPTION] = Value(metric_description);
-									row[OTLPMetricsUnionSchema::COL_METRIC_UNIT] = Value(metric_unit);
-									row[OTLPMetricsUnionSchema::COL_RESOURCE_ATTRIBUTES] = resource_attrs;
-									row[OTLPMetricsUnionSchema::COL_SCOPE_NAME] = Value(scope_name);
-									row[OTLPMetricsUnionSchema::COL_SCOPE_VERSION] = Value(scope_version);
-									row[OTLPMetricsUnionSchema::COL_ATTRIBUTES] =
+									// Populate histogram schema (15 columns)
+									row[OTLPMetricsHistogramSchema::COL_TIMESTAMP] = Value::TIMESTAMPNS(timestamp);
+									row[OTLPMetricsHistogramSchema::COL_SERVICE_NAME] = Value(service_name);
+									row[OTLPMetricsHistogramSchema::COL_METRIC_NAME] = Value(metric_name);
+									row[OTLPMetricsHistogramSchema::COL_METRIC_DESCRIPTION] = Value(metric_description);
+									row[OTLPMetricsHistogramSchema::COL_METRIC_UNIT] = Value(metric_unit);
+									row[OTLPMetricsHistogramSchema::COL_RESOURCE_ATTRIBUTES] = resource_attrs;
+									row[OTLPMetricsHistogramSchema::COL_SCOPE_NAME] = Value(scope_name);
+									row[OTLPMetricsHistogramSchema::COL_SCOPE_VERSION] = Value(scope_version);
+									row[OTLPMetricsHistogramSchema::COL_ATTRIBUTES] =
 									    ConvertAttributesToMap(data_point.attributes());
 
-									// Metric type discriminator (9)
-									row[OTLPMetricsUnionSchema::COL_METRIC_TYPE] = Value("histogram");
-
-									// Histogram-specific columns (13-16, 25-26)
-									row[OTLPMetricsUnionSchema::COL_COUNT] = Value::UBIGINT(data_point.count());
-									row[OTLPMetricsUnionSchema::COL_SUM] = data_point.has_sum()
-									                                           ? Value::DOUBLE(data_point.sum())
-									                                           : Value(LogicalType::DOUBLE);
-									row[OTLPMetricsUnionSchema::COL_BUCKET_COUNTS] =
-									    Value(LogicalType::LIST(LogicalType::UBIGINT)); // NULL for now
-									row[OTLPMetricsUnionSchema::COL_EXPLICIT_BOUNDS] =
-									    Value(LogicalType::LIST(LogicalType::DOUBLE)); // NULL for now
-									row[OTLPMetricsUnionSchema::COL_MIN] = data_point.has_min()
-									                                           ? Value::DOUBLE(data_point.min())
-									                                           : Value(LogicalType::DOUBLE);
-									row[OTLPMetricsUnionSchema::COL_MAX] = data_point.has_max()
-									                                           ? Value::DOUBLE(data_point.max())
-									                                           : Value(LogicalType::DOUBLE);
-
-									// Other union columns remain NULL
+									row[OTLPMetricsHistogramSchema::COL_COUNT] = Value::UBIGINT(data_point.count());
+									row[OTLPMetricsHistogramSchema::COL_SUM] = data_point.has_sum()
+									                                               ? Value::DOUBLE(data_point.sum())
+									                                               : Value(LogicalType::DOUBLE);
+									row[OTLPMetricsHistogramSchema::COL_BUCKET_COUNTS] =
+									    Value(LogicalType::LIST(LogicalType::UBIGINT));
+									row[OTLPMetricsHistogramSchema::COL_EXPLICIT_BOUNDS] =
+									    Value(LogicalType::LIST(LogicalType::DOUBLE));
+									row[OTLPMetricsHistogramSchema::COL_MIN] = data_point.has_min()
+									                                               ? Value::DOUBLE(data_point.min())
+									                                               : Value(LogicalType::DOUBLE);
+									row[OTLPMetricsHistogramSchema::COL_MAX] = data_point.has_max()
+									                                               ? Value::DOUBLE(data_point.max())
+									                                               : Value(LogicalType::DOUBLE);
 
 									buffer->Insert(row);
 								}
 							} else if (metric.has_exponential_histogram()) {
-								// Exponential Histogram metrics
+								// Exponential Histogram metrics - route to exp_histogram buffer
+								auto buffer = storage_info_->GetBufferForMetric(OTLPMetricType::EXPONENTIAL_HISTOGRAM);
+								if (!buffer) {
+									continue;
+								}
+
 								for (const auto &data_point : metric.exponential_histogram().data_points()) {
-									vector<Value> row(OTLPMetricsUnionSchema::COLUMN_COUNT);
+									vector<Value> row(OTLPMetricsExpHistogramSchema::COLUMN_COUNT);
 
 									auto timestamp = NanosToTimestamp(data_point.time_unix_nano());
 
-									// Base columns (0-8)
-									row[OTLPMetricsUnionSchema::COL_TIMESTAMP] = Value::TIMESTAMPNS(timestamp);
-									row[OTLPMetricsUnionSchema::COL_SERVICE_NAME] = Value(service_name);
-									row[OTLPMetricsUnionSchema::COL_METRIC_NAME] = Value(metric_name);
-									row[OTLPMetricsUnionSchema::COL_METRIC_DESCRIPTION] = Value(metric_description);
-									row[OTLPMetricsUnionSchema::COL_METRIC_UNIT] = Value(metric_unit);
-									row[OTLPMetricsUnionSchema::COL_RESOURCE_ATTRIBUTES] = resource_attrs;
-									row[OTLPMetricsUnionSchema::COL_SCOPE_NAME] = Value(scope_name);
-									row[OTLPMetricsUnionSchema::COL_SCOPE_VERSION] = Value(scope_version);
-									row[OTLPMetricsUnionSchema::COL_ATTRIBUTES] =
+									// Populate exp_histogram schema (19 columns)
+									row[OTLPMetricsExpHistogramSchema::COL_TIMESTAMP] = Value::TIMESTAMPNS(timestamp);
+									row[OTLPMetricsExpHistogramSchema::COL_SERVICE_NAME] = Value(service_name);
+									row[OTLPMetricsExpHistogramSchema::COL_METRIC_NAME] = Value(metric_name);
+									row[OTLPMetricsExpHistogramSchema::COL_METRIC_DESCRIPTION] =
+									    Value(metric_description);
+									row[OTLPMetricsExpHistogramSchema::COL_METRIC_UNIT] = Value(metric_unit);
+									row[OTLPMetricsExpHistogramSchema::COL_RESOURCE_ATTRIBUTES] = resource_attrs;
+									row[OTLPMetricsExpHistogramSchema::COL_SCOPE_NAME] = Value(scope_name);
+									row[OTLPMetricsExpHistogramSchema::COL_SCOPE_VERSION] = Value(scope_version);
+									row[OTLPMetricsExpHistogramSchema::COL_ATTRIBUTES] =
 									    ConvertAttributesToMap(data_point.attributes());
 
-									// Metric type discriminator (9)
-									row[OTLPMetricsUnionSchema::COL_METRIC_TYPE] = Value("exponential_histogram");
-
-									// Exponential Histogram-specific columns (13-14, 17-22, 25-26)
-									row[OTLPMetricsUnionSchema::COL_COUNT] = Value::UBIGINT(data_point.count());
-									row[OTLPMetricsUnionSchema::COL_SUM] = data_point.has_sum()
-									                                           ? Value::DOUBLE(data_point.sum())
-									                                           : Value(LogicalType::DOUBLE);
-									row[OTLPMetricsUnionSchema::COL_SCALE] = Value::INTEGER(data_point.scale());
-									row[OTLPMetricsUnionSchema::COL_ZERO_COUNT] =
+									row[OTLPMetricsExpHistogramSchema::COL_COUNT] = Value::UBIGINT(data_point.count());
+									row[OTLPMetricsExpHistogramSchema::COL_SUM] = data_point.has_sum()
+									                                                  ? Value::DOUBLE(data_point.sum())
+									                                                  : Value(LogicalType::DOUBLE);
+									row[OTLPMetricsExpHistogramSchema::COL_SCALE] = Value::INTEGER(data_point.scale());
+									row[OTLPMetricsExpHistogramSchema::COL_ZERO_COUNT] =
 									    Value::UBIGINT(data_point.zero_count());
+
 									// Check existence of optional fields before accessing
 									if (data_point.has_positive()) {
-										row[OTLPMetricsUnionSchema::COL_POSITIVE_OFFSET] =
+										row[OTLPMetricsExpHistogramSchema::COL_POSITIVE_OFFSET] =
 										    Value::INTEGER(data_point.positive().offset());
 									} else {
-										row[OTLPMetricsUnionSchema::COL_POSITIVE_OFFSET] = Value::INTEGER(0);
+										row[OTLPMetricsExpHistogramSchema::COL_POSITIVE_OFFSET] = Value::INTEGER(0);
 									}
-									row[OTLPMetricsUnionSchema::COL_POSITIVE_BUCKET_COUNTS] =
-									    Value(LogicalType::LIST(LogicalType::UBIGINT)); // NULL for now
+									row[OTLPMetricsExpHistogramSchema::COL_POSITIVE_BUCKET_COUNTS] =
+									    Value(LogicalType::LIST(LogicalType::UBIGINT));
+
 									if (data_point.has_negative()) {
-										row[OTLPMetricsUnionSchema::COL_NEGATIVE_OFFSET] =
+										row[OTLPMetricsExpHistogramSchema::COL_NEGATIVE_OFFSET] =
 										    Value::INTEGER(data_point.negative().offset());
 									} else {
-										row[OTLPMetricsUnionSchema::COL_NEGATIVE_OFFSET] = Value::INTEGER(0);
+										row[OTLPMetricsExpHistogramSchema::COL_NEGATIVE_OFFSET] = Value::INTEGER(0);
 									}
-									row[OTLPMetricsUnionSchema::COL_NEGATIVE_BUCKET_COUNTS] =
-									    Value(LogicalType::LIST(LogicalType::UBIGINT)); // NULL for now
-									row[OTLPMetricsUnionSchema::COL_MIN] = data_point.has_min()
-									                                           ? Value::DOUBLE(data_point.min())
-									                                           : Value(LogicalType::DOUBLE);
-									row[OTLPMetricsUnionSchema::COL_MAX] = data_point.has_max()
-									                                           ? Value::DOUBLE(data_point.max())
-									                                           : Value(LogicalType::DOUBLE);
+									row[OTLPMetricsExpHistogramSchema::COL_NEGATIVE_BUCKET_COUNTS] =
+									    Value(LogicalType::LIST(LogicalType::UBIGINT));
 
-									// Other union columns remain NULL
+									row[OTLPMetricsExpHistogramSchema::COL_MIN] = data_point.has_min()
+									                                                  ? Value::DOUBLE(data_point.min())
+									                                                  : Value(LogicalType::DOUBLE);
+									row[OTLPMetricsExpHistogramSchema::COL_MAX] = data_point.has_max()
+									                                                  ? Value::DOUBLE(data_point.max())
+									                                                  : Value(LogicalType::DOUBLE);
 
 									buffer->Insert(row);
 								}
 							} else if (metric.has_summary()) {
-								// Summary metrics
+								// Summary metrics - route to summary buffer
+								auto buffer = storage_info_->GetBufferForMetric(OTLPMetricType::SUMMARY);
+								if (!buffer) {
+									continue;
+								}
+
 								for (const auto &data_point : metric.summary().data_points()) {
-									vector<Value> row(OTLPMetricsUnionSchema::COLUMN_COUNT);
+									vector<Value> row(OTLPMetricsSummarySchema::COLUMN_COUNT);
 
 									auto timestamp = NanosToTimestamp(data_point.time_unix_nano());
 
-									// Base columns (0-8)
-									row[OTLPMetricsUnionSchema::COL_TIMESTAMP] = Value::TIMESTAMPNS(timestamp);
-									row[OTLPMetricsUnionSchema::COL_SERVICE_NAME] = Value(service_name);
-									row[OTLPMetricsUnionSchema::COL_METRIC_NAME] = Value(metric_name);
-									row[OTLPMetricsUnionSchema::COL_METRIC_DESCRIPTION] = Value(metric_description);
-									row[OTLPMetricsUnionSchema::COL_METRIC_UNIT] = Value(metric_unit);
-									row[OTLPMetricsUnionSchema::COL_RESOURCE_ATTRIBUTES] = resource_attrs;
-									row[OTLPMetricsUnionSchema::COL_SCOPE_NAME] = Value(scope_name);
-									row[OTLPMetricsUnionSchema::COL_SCOPE_VERSION] = Value(scope_version);
-									row[OTLPMetricsUnionSchema::COL_ATTRIBUTES] =
+									// Populate summary schema (13 columns)
+									row[OTLPMetricsSummarySchema::COL_TIMESTAMP] = Value::TIMESTAMPNS(timestamp);
+									row[OTLPMetricsSummarySchema::COL_SERVICE_NAME] = Value(service_name);
+									row[OTLPMetricsSummarySchema::COL_METRIC_NAME] = Value(metric_name);
+									row[OTLPMetricsSummarySchema::COL_METRIC_DESCRIPTION] = Value(metric_description);
+									row[OTLPMetricsSummarySchema::COL_METRIC_UNIT] = Value(metric_unit);
+									row[OTLPMetricsSummarySchema::COL_RESOURCE_ATTRIBUTES] = resource_attrs;
+									row[OTLPMetricsSummarySchema::COL_SCOPE_NAME] = Value(scope_name);
+									row[OTLPMetricsSummarySchema::COL_SCOPE_VERSION] = Value(scope_version);
+									row[OTLPMetricsSummarySchema::COL_ATTRIBUTES] =
 									    ConvertAttributesToMap(data_point.attributes());
 
-									// Metric type discriminator (9)
-									row[OTLPMetricsUnionSchema::COL_METRIC_TYPE] = Value("summary");
-
-									// Summary-specific columns (13-14, 23-24)
-									row[OTLPMetricsUnionSchema::COL_COUNT] = Value::UBIGINT(data_point.count());
-									row[OTLPMetricsUnionSchema::COL_SUM] =
-									    Value::DOUBLE(data_point.sum()); // sum is not optional in summary
-									row[OTLPMetricsUnionSchema::COL_QUANTILE_VALUES] =
-									    Value(LogicalType::LIST(LogicalType::DOUBLE)); // NULL for now
-									row[OTLPMetricsUnionSchema::COL_QUANTILE_QUANTILES] =
-									    Value(LogicalType::LIST(LogicalType::DOUBLE)); // NULL for now
-
-									// Other union columns remain NULL
+									row[OTLPMetricsSummarySchema::COL_COUNT] = Value::UBIGINT(data_point.count());
+									row[OTLPMetricsSummarySchema::COL_SUM] = Value::DOUBLE(data_point.sum());
+									row[OTLPMetricsSummarySchema::COL_QUANTILE_VALUES] =
+									    Value(LogicalType::LIST(LogicalType::DOUBLE));
+									row[OTLPMetricsSummarySchema::COL_QUANTILE_QUANTILES] =
+									    Value(LogicalType::LIST(LogicalType::DOUBLE));
 
 									buffer->Insert(row);
 								}

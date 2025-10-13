@@ -1,6 +1,7 @@
 #include "read_otlp.hpp"
 #include "otlp_traces_schema.hpp"
 #include "otlp_logs_schema.hpp"
+#include "otlp_metrics_schemas.hpp"
 #include "otlp_metrics_union_schema.hpp"
 #include "format_detector.hpp"
 #include "protobuf_parser.hpp"
@@ -75,10 +76,11 @@ static unique_ptr<FunctionData> BindMetrics(ClientContext &context, TableFunctio
 	}
 
 	auto file_path = input.inputs[0].ToString();
+	// File reading uses union schema to support all metric types in a single table
 	return_types = OTLPMetricsUnionSchema::GetColumnTypes();
 	names = OTLPMetricsUnionSchema::GetColumnNames();
 
-	return make_uniq<ReadOTLPBindData>(file_path, OTLPTableType::METRICS);
+	return make_uniq<ReadOTLPBindData>(file_path, OTLPTableType::METRICS_GAUGE);
 }
 
 unique_ptr<GlobalTableFunctionState> ReadOTLPTableFunction::Init(ClientContext &context,
@@ -138,7 +140,7 @@ unique_ptr<GlobalTableFunctionState> ReadOTLPTableFunction::Init(ClientContext &
 					success = state->json_parser->ParseTracesToTypedRows(line, state->rows);
 				} else if (bind_data.table_type == OTLPTableType::LOGS) {
 					success = state->json_parser->ParseLogsToTypedRows(line, state->rows);
-				} else if (bind_data.table_type == OTLPTableType::METRICS) {
+				} else if (bind_data.table_type == OTLPTableType::METRICS_GAUGE) {
 					// Parse all metric types into union schema
 					success = state->json_parser->ParseMetricsToTypedRows(line, state->rows);
 				} else {
@@ -169,7 +171,7 @@ unique_ptr<GlobalTableFunctionState> ReadOTLPTableFunction::Init(ClientContext &
 					success = state->json_parser->ParseTracesToTypedRows(file_contents, state->rows);
 				} else if (bind_data.table_type == OTLPTableType::LOGS) {
 					success = state->json_parser->ParseLogsToTypedRows(file_contents, state->rows);
-				} else if (bind_data.table_type == OTLPTableType::METRICS) {
+				} else if (bind_data.table_type == OTLPTableType::METRICS_GAUGE) {
 					success = state->json_parser->ParseMetricsToTypedRows(file_contents, state->rows);
 				} else {
 					throw IOException("Unsupported table type for JSON parsing");
@@ -201,8 +203,8 @@ unique_ptr<GlobalTableFunctionState> ReadOTLPTableFunction::Init(ClientContext &
 			row_count = state->protobuf_parser->ParseTracesToTypedRows(file_contents.data(), total_read, state->rows);
 		} else if (bind_data.table_type == OTLPTableType::LOGS) {
 			row_count = state->protobuf_parser->ParseLogsToTypedRows(file_contents.data(), total_read, state->rows);
-		} else if (bind_data.table_type == OTLPTableType::METRICS) {
-			// Parse all metric types into union schema
+		} else if (bind_data.table_type == OTLPTableType::METRICS_GAUGE) {
+			// Parse all metric types into gauge schema
 			row_count = state->protobuf_parser->ParseMetricsToTypedRows(file_contents.data(), total_read, state->rows);
 		} else {
 			throw IOException("Unsupported table type for protobuf parsing");

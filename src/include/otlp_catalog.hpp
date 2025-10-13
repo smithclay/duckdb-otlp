@@ -2,6 +2,7 @@
 
 #include "duckdb/catalog/catalog.hpp"
 #include "ring_buffer.hpp"
+#include "otlp_types.hpp"
 #include <unordered_map>
 
 namespace duckdb {
@@ -59,6 +60,9 @@ public:
 	string GetDBPath() override;
 
 private:
+	//! Helper to get schema (column names and types) for a given table type
+	static std::pair<vector<string>, vector<LogicalType>> GetSchemaForTableType(OTLPTableType type);
+
 	shared_ptr<OTLPStorageInfo> storage_info_;
 	unique_ptr<SchemaCatalogEntry> main_schema_;
 	unordered_map<string, unique_ptr<OTLPTableEntry>> table_entries_; // Cache of table entries

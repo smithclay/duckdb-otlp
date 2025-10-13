@@ -23,7 +23,7 @@ SELECT COUNT(*) FROM concurrent_test.otel_logs;
 0
 
 query I
-SELECT COUNT(*) FROM concurrent_test.otel_metrics;
+SELECT COUNT(*) FROM concurrent_test.otel_metrics_gauge;
 ----
 0
 
@@ -39,7 +39,7 @@ SELECT COUNT(*) FROM concurrent_test.otel_logs;
 0
 
 query I
-SELECT COUNT(*) FROM concurrent_test.otel_metrics;
+SELECT COUNT(*) FROM concurrent_test.otel_metrics_gauge;
 ----
 0
 
