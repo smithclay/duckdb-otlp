@@ -200,11 +200,73 @@ def test_otlp_export():
     # Give data a moment to be processed
     time.sleep(0.5)
 
-    # TODO Phase 5.6: Query the ring buffer tables to verify data
-    # This will be added once tables are exposed in the catalog
+    # Query the ring buffer tables to verify data
+    print("\n5. Verifying data in ring buffer tables...")
+
+    try:
+        # Check traces table
+        trace_count = con.execute("SELECT COUNT(*) FROM live.otel_traces").fetchone()[0]
+        print(f"✓ Traces table: {trace_count} rows")
+
+        if trace_count > 0:
+            # Verify trace fields
+            trace_data = con.execute(
+                """
+                SELECT service_name, span_name, span_kind
+                FROM live.otel_traces
+                LIMIT 1
+            """
+            ).fetchone()
+            print(
+                f"  Sample trace: service={trace_data[0]}, span={trace_data[1]}, kind={trace_data[2]}"
+            )
+    except Exception as e:
+        print(f"✗ Failed to query traces: {e}")
+
+    try:
+        # Check logs table
+        log_count = con.execute("SELECT COUNT(*) FROM live.otel_logs").fetchone()[0]
+        print(f"✓ Logs table: {log_count} rows")
+
+        if log_count > 0:
+            # Verify log fields
+            log_data = con.execute(
+                """
+                SELECT service_name, body, severity_text
+                FROM live.otel_logs
+                LIMIT 1
+            """
+            ).fetchone()
+            print(
+                f"  Sample log: service={log_data[0]}, body={log_data[1]}, severity={log_data[2]}"
+            )
+    except Exception as e:
+        print(f"✗ Failed to query logs: {e}")
+
+    try:
+        # Check metrics tables (sum is most common for counters)
+        metrics_count = con.execute(
+            "SELECT COUNT(*) FROM live.otel_metrics_sum"
+        ).fetchone()[0]
+        print(f"✓ Metrics (sum) table: {metrics_count} rows")
+
+        if metrics_count > 0:
+            # Verify metric fields
+            metric_data = con.execute(
+                """
+                SELECT service_name, metric_name, value, is_monotonic
+                FROM live.otel_metrics_sum
+                LIMIT 1
+            """
+            ).fetchone()
+            print(
+                f"  Sample metric: service={metric_data[0]}, name={metric_data[1]}, value={metric_data[2]}, monotonic={metric_data[3]}"
+            )
+    except Exception as e:
+        print(f"✗ Failed to query metrics: {e}")
 
     # Detach and verify cleanup
-    print("\n5. Detaching OTLP receiver...")
+    print("\n6. Detaching OTLP receiver...")
     try:
         con.execute("DETACH live")
         print("✓ OTLP receiver stopped successfully")
@@ -214,7 +276,7 @@ def test_otlp_export():
         return False
 
     # Verify receiver is actually stopped
-    print("\n6. Verifying receiver is stopped...")
+    print("\n7. Verifying receiver is stopped...")
     time.sleep(1.0)
     if test_receiver_stopped():
         print("✓ Receiver correctly stopped (connection refused)")

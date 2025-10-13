@@ -8,24 +8,19 @@
 namespace duckdb {
 
 //! Thread-safe ring buffer for OTLP telemetry data
-//! Stores rows with schema: (timestamp TIMESTAMP, resource JSON, data JSON)
+//! Stores rows with strongly-typed columns (vector of Values per row)
 class RingBuffer {
 public:
-	struct Row {
-		timestamp_t timestamp;
-		string resource_json;
-		string data_json;
-
-		Row(timestamp_t ts, const string &res, const string &data)
-		    : timestamp(ts), resource_json(res), data_json(data) {
-		}
-	};
+	//! A row is a vector of Values, one per column
+	//! The schema (column count and types) is determined by the table type
+	using Row = vector<Value>;
 
 	explicit RingBuffer(idx_t capacity);
 	~RingBuffer() = default;
 
 	//! Insert a new row (thread-safe, FIFO eviction when full)
-	void Insert(timestamp_t timestamp, const string &resource_json, const string &data_json);
+	//! The row must match the schema expected by the ring buffer
+	void Insert(const Row &row);
 
 	//! Read all current rows (thread-safe snapshot)
 	vector<Row> ReadAll() const;

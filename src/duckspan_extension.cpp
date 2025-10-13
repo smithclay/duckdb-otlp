@@ -43,8 +43,10 @@ static void LoadInternal(ExtensionLoader &loader) {
 #endif
 
 	// Register OTLP table function (available in all builds including WASM)
-	auto read_otlp_function = ReadOTLPTableFunction::GetFunction();
-	loader.RegisterFunction(read_otlp_function);
+	// Register read_otlp_* table functions
+	loader.RegisterFunction(ReadOTLPTableFunction::GetTracesFunction());
+	loader.RegisterFunction(ReadOTLPTableFunction::GetLogsFunction());
+	loader.RegisterFunction(ReadOTLPTableFunction::GetMetricsFunction());
 
 	// Register a scalar function (from template, keeping for now)
 	auto duckspan_scalar_function =

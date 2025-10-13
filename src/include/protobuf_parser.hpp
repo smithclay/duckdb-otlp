@@ -19,7 +19,7 @@ public:
 	OTLPProtobufParser();
 	~OTLPProtobufParser();
 
-	//! Parse OTLP protobuf data and extract rows
+	//! Legacy parsing methods (v1 schema - return JSON)
 	//! Returns number of rows extracted
 	idx_t ParseTracesData(const char *data, size_t length, vector<timestamp_t> &timestamps, vector<string> &resources,
 	                      vector<string> &datas);
@@ -29,6 +29,12 @@ public:
 
 	idx_t ParseLogsData(const char *data, size_t length, vector<timestamp_t> &timestamps, vector<string> &resources,
 	                    vector<string> &datas);
+
+	//! New v2 schema parsing methods (return strongly-typed rows)
+	//! Each row is a vector<Value> with typed columns
+	idx_t ParseTracesToTypedRows(const char *data, size_t length, vector<vector<Value>> &rows);
+	idx_t ParseLogsToTypedRows(const char *data, size_t length, vector<vector<Value>> &rows);
+	idx_t ParseMetricsToTypedRows(const char *data, size_t length, vector<vector<Value>> &rows);
 
 	//! Get the last parsing error message
 	string GetLastError() const;

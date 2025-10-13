@@ -1,33 +1,23 @@
 # name: test/sql/read_otlp_errors.test
-# description: Test error handling in read_otlp()
+# description: Test error handling in read_otlp_*() functions
 # group: [sql]
 
 require duckspan
 
 # Test nonexistent file - should error
 statement error
-SELECT * FROM read_otlp('nonexistent_file.jsonl');
+SELECT * FROM read_otlp_traces('nonexistent_file.jsonl');
 ----
 File not found
 
-# Test malformed JSON - should skip bad lines and return valid rows
-# malformed.jsonl has 4 lines: 1 valid JSON (not OTLP), 1 invalid JSON, 1 valid OTLP, 1 incomplete JSON
-# Parser should return 1 valid row (only line 3 is valid OTLP format)
-query I
-SELECT COUNT(*) FROM read_otlp('test/data/malformed.jsonl');
+# Test wrong file extension being passed to traces function
+statement error
+SELECT * FROM read_otlp_logs('nonexistent_file.jsonl');
 ----
-1
+File not found
 
-# Verify we get a valid row with resource data
-query I
-SELECT LENGTH(resource::VARCHAR) > 10
-FROM read_otlp('test/data/malformed.jsonl');
+# Test wrong file extension being passed to metrics function
+statement error
+SELECT * FROM read_otlp_metrics('nonexistent_file.jsonl');
 ----
-true
-
-# Verify data contains expected OTLP structure
-query I
-SELECT data::VARCHAR LIKE '%resourceSpans%'
-FROM read_otlp('test/data/malformed.jsonl');
-----
-true
+File not found

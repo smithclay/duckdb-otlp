@@ -1,56 +1,175 @@
 # name: test/sql/read_otlp_json.test
-# description: Test read_otlp() table function with JSON files
+# description: Test read_otlp_*() table functions with JSON files (v2 schema)
 # group: [sql]
 
 require duckspan
 
-# Test that read_otlp function exists
+# Test that all three table functions exist
 query I
-SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'read_otlp';
-----
-1
-
-# Test reading traces
-query I
-SELECT COUNT(*) FROM read_otlp('test/data/traces_simple.jsonl');
+SELECT COUNT(*) FROM duckdb_functions() WHERE function_name IN ('read_otlp_traces', 'read_otlp_logs', 'read_otlp_metrics');
 ----
 3
 
-# Test that we get the correct schema
+#
+# Traces Tests
+#
+
+# Test reading traces - verify row count
+query I
+SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_simple.jsonl');
+----
+3
+
+# Test traces schema - verify key column types
+query IIIII
+SELECT
+    typeof(Timestamp) as ts_type,
+    typeof(TraceId) as trace_id_type,
+    typeof(SpanId) as span_id_type,
+    typeof(ServiceName) as service_type,
+    typeof(Duration) as duration_type
+FROM read_otlp_traces('test/data/traces_simple.jsonl')
+LIMIT 1;
+----
+TIMESTAMP_NS	VARCHAR	VARCHAR	VARCHAR	BIGINT
+
+# Test traces content - verify specific values
 query III
 SELECT
-    typeof(timestamp) as ts_type,
-    typeof(resource) as resource_type,
-    typeof(data) as data_type
-FROM read_otlp('test/data/traces_simple.jsonl')
+    LENGTH(TraceId) > 0 as has_trace_id,
+    LENGTH(SpanId) > 0 as has_span_id,
+    ServiceName = 'test-service' as correct_service
+FROM read_otlp_traces('test/data/traces_simple.jsonl')
 LIMIT 1;
 ----
-TIMESTAMP	JSON	JSON
+true	true	true
 
-# Test reading metrics
+# Test traces - verify span name extraction
 query I
-SELECT COUNT(*) FROM read_otlp('test/data/metrics_simple.jsonl');
+SELECT COUNT(*)
+FROM read_otlp_traces('test/data/traces_simple.jsonl')
+WHERE SpanName LIKE '%users%';
+----
+2
+
+# Test traces - verify duration is calculated
+query I
+SELECT COUNT(*)
+FROM read_otlp_traces('test/data/traces_simple.jsonl')
+WHERE Duration > 0;
 ----
 3
 
-# Test reading logs
+#
+# Logs Tests
+#
+
+# Test reading logs - verify row count
 query I
-SELECT COUNT(*) FROM read_otlp('test/data/logs_simple.jsonl');
+SELECT COUNT(*) FROM read_otlp_logs('test/data/logs_simple.jsonl');
 ----
 3
 
-# Test that resource is not empty
-query I
-SELECT LENGTH(resource::VARCHAR) > 10
-FROM read_otlp('test/data/traces_simple.jsonl')
+# Test logs schema - verify key column types
+query IIII
+SELECT
+    typeof(Timestamp) as ts_type,
+    typeof(ServiceName) as service_type,
+    typeof(SeverityText) as severity_type,
+    typeof(Body) as body_type
+FROM read_otlp_logs('test/data/logs_simple.jsonl')
 LIMIT 1;
+----
+TIMESTAMP_NS	VARCHAR	VARCHAR	VARCHAR
+
+# Test logs content - verify specific values
+query II
+SELECT
+    ServiceName = 'test-service' as correct_service,
+    LENGTH(Body) > 0 as has_body
+FROM read_otlp_logs('test/data/logs_simple.jsonl')
+LIMIT 1;
+----
+true	true
+
+# Test logs - verify severity levels
+query I
+SELECT COUNT(*)
+FROM read_otlp_logs('test/data/logs_simple.jsonl')
+WHERE SeverityText IN ('INFO', 'WARN', 'ERROR');
+----
+3
+
+#
+# Metrics Tests
+#
+
+# Test reading metrics - verify row count (3 metrics: sum, gauge, histogram)
+query I
+SELECT COUNT(*) FROM read_otlp_metrics('test/data/metrics_simple.jsonl');
+----
+3
+
+# Test metrics schema - verify key column types
+query IIIII
+SELECT
+    typeof(Timestamp) as ts_type,
+    typeof(ServiceName) as service_type,
+    typeof(MetricName) as name_type,
+    typeof(MetricType) as type_type,
+    typeof(Value) as value_type
+FROM read_otlp_metrics('test/data/metrics_simple.jsonl')
+LIMIT 1;
+----
+TIMESTAMP_NS	VARCHAR	VARCHAR	VARCHAR	DOUBLE
+
+# Test metrics - verify metric type discriminator
+query III
+SELECT
+    MetricType,
+    Value IS NOT NULL as has_value,
+    Count IS NOT NULL as has_count
+FROM read_otlp_metrics('test/data/metrics_simple.jsonl')
+ORDER BY MetricName;
+----
+histogram	false	true
+sum	true	false
+gauge	true	false
+
+# Test metrics - verify sum metric fields
+query III
+SELECT
+    Value = 42.0 as correct_value,
+    AggregationTemporality = 2 as correct_temporality,
+    IsMonotonic = true as correct_monotonic
+FROM read_otlp_metrics('test/data/metrics_simple.jsonl')
+WHERE MetricType = 'sum';
+----
+true	true	true
+
+# Test metrics - verify gauge metric value
+query I
+SELECT Value = 524288000.0
+FROM read_otlp_metrics('test/data/metrics_simple.jsonl')
+WHERE MetricType = 'gauge';
 ----
 true
 
-# Test that data is not empty and contains expected string
-query I
-SELECT data::VARCHAR LIKE '%resourceSpans%'
-FROM read_otlp('test/data/traces_simple.jsonl')
-LIMIT 1;
+# Test metrics - verify histogram metric fields
+query III
+SELECT
+    Count = 100 as correct_count,
+    Sum = 5000.0 as correct_sum,
+    AggregationTemporality = 2 as correct_temporality
+FROM read_otlp_metrics('test/data/metrics_simple.jsonl')
+WHERE MetricType = 'histogram';
 ----
-true
+true	true	true
+
+# Test metrics - verify service name extraction
+query I
+SELECT COUNT(*)
+FROM read_otlp_metrics('test/data/metrics_simple.jsonl')
+WHERE ServiceName = 'test-service';
+----
+3

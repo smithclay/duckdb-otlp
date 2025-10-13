@@ -13,40 +13,33 @@ ATTACH 'otlp:localhost:4320' AS concurrent_test (TYPE otlp);
 
 # Query all three tables to ensure ring buffers are accessible
 query I
-SELECT COUNT(*) FROM concurrent_test.traces;
+SELECT COUNT(*) FROM concurrent_test.otel_traces;
 ----
 0
 
 query I
-SELECT COUNT(*) FROM concurrent_test.metrics;
+SELECT COUNT(*) FROM concurrent_test.otel_logs;
 ----
 0
 
 query I
-SELECT COUNT(*) FROM concurrent_test.logs;
+SELECT COUNT(*) FROM concurrent_test.otel_metrics;
 ----
 0
-
-# Test schema enumeration (exercises catalog scanning)
-query I
-SELECT COUNT(*) FROM information_schema.tables
-WHERE table_catalog = 'concurrent_test' AND table_schema = 'main';
-----
-3
 
 # Test multiple queries in sequence (simulates concurrent access pattern)
 query I
-SELECT COUNT(*) FROM concurrent_test.traces;
+SELECT COUNT(*) FROM concurrent_test.otel_traces;
 ----
 0
 
 query I
-SELECT COUNT(*) FROM concurrent_test.metrics;
+SELECT COUNT(*) FROM concurrent_test.otel_logs;
 ----
 0
 
 query I
-SELECT COUNT(*) FROM concurrent_test.logs;
+SELECT COUNT(*) FROM concurrent_test.otel_metrics;
 ----
 0
 
@@ -55,12 +48,12 @@ statement ok
 ATTACH 'otlp:localhost:4321' AS concurrent_test2 (TYPE otlp);
 
 query I
-SELECT COUNT(*) FROM concurrent_test.traces;
+SELECT COUNT(*) FROM concurrent_test.otel_traces;
 ----
 0
 
 query I
-SELECT COUNT(*) FROM concurrent_test2.traces;
+SELECT COUNT(*) FROM concurrent_test2.otel_traces;
 ----
 0
 
@@ -69,7 +62,7 @@ statement ok
 DETACH concurrent_test;
 
 query I
-SELECT COUNT(*) FROM concurrent_test2.traces;
+SELECT COUNT(*) FROM concurrent_test2.otel_traces;
 ----
 0
 

@@ -12,9 +12,14 @@ public:
 	OTLPJSONParser();
 	~OTLPJSONParser();
 
-	//! Parse a single OTLP JSON line into timestamp, resource, and data components
+	//! Legacy parsing: Parse a single OTLP JSON line into timestamp, resource, and data components
 	//! Returns false if the line is malformed or not valid OTLP JSON
 	bool ParseLine(const string &line, timestamp_t &timestamp, string &resource, string &data);
+
+	//! V2 schema: Parse OTLP JSON into strongly-typed rows
+	bool ParseTracesToTypedRows(const string &json, vector<vector<Value>> &rows);
+	bool ParseLogsToTypedRows(const string &json, vector<vector<Value>> &rows);
+	bool ParseMetricsToTypedRows(const string &json, vector<vector<Value>> &rows);
 
 	//! Check if a line appears to be valid OTLP JSON (quick validation)
 	bool IsValidOTLPJSON(const string &line);

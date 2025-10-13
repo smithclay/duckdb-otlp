@@ -6,17 +6,17 @@ RingBuffer::RingBuffer(idx_t capacity) : capacity_(capacity), write_pos_(0), siz
 	buffer_.reserve(capacity);
 }
 
-void RingBuffer::Insert(timestamp_t timestamp, const string &resource_json, const string &data_json) {
+void RingBuffer::Insert(const Row &row) {
 	std::unique_lock<std::shared_mutex> lock(mutex_);
 
 	if (size_ < capacity_) {
 		// Buffer not full yet - just append
-		buffer_.emplace_back(timestamp, resource_json, data_json);
+		buffer_.push_back(row);
 		size_++;
-		// write_pos_ stays at 0 until buffer is full
+		write_pos_ = size_ % capacity_; // Track next insertion point
 	} else {
 		// Buffer full - overwrite oldest (FIFO eviction)
-		buffer_[write_pos_] = Row(timestamp, resource_json, data_json);
+		buffer_[write_pos_] = row;
 		// Move write position (circular)
 		write_pos_ = (write_pos_ + 1) % capacity_;
 	}

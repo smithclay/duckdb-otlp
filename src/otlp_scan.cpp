@@ -40,7 +40,6 @@ unique_ptr<GlobalTableFunctionState> OTLPScanInitGlobal(ClientContext &context, 
 void OTLPScanFunction(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
 	auto &state = data.global_state->Cast<OTLPScanState>();
 
-	idx_t output_idx = 0;
 	idx_t count = MinValue<idx_t>(STANDARD_VECTOR_SIZE, state.rows.size() - state.current_row);
 
 	if (count == 0) {
@@ -48,23 +47,26 @@ void OTLPScanFunction(ClientContext &context, TableFunctionInput &data, DataChun
 		return;
 	}
 
-	// Get vectors for each column
-	auto timestamp_data = FlatVector::GetData<timestamp_t>(output.data[0]);
-	auto &resource_vector = output.data[1];
-	auto &data_vector = output.data[2];
+	// Each row is a vector<Value> with one Value per column
+	// Copy values from rows into output DataChunk columns
+	idx_t column_count = output.ColumnCount();
 
-	// Fill vectors
-	for (idx_t i = 0; i < count; i++) {
-		auto &row = state.rows[state.current_row + i];
+	for (idx_t col_idx = 0; col_idx < column_count; col_idx++) {
+		auto &vec = output.data[col_idx];
 
-		// Set timestamp
-		timestamp_data[i] = row.timestamp;
+		for (idx_t row_idx = 0; row_idx < count; row_idx++) {
+			auto &row = state.rows[state.current_row + row_idx];
 
-		// Set resource JSON
-		FlatVector::GetData<string_t>(resource_vector)[i] = StringVector::AddString(resource_vector, row.resource_json);
-
-		// Set data JSON
-		FlatVector::GetData<string_t>(data_vector)[i] = StringVector::AddString(data_vector, row.data_json);
+			// Safety check: ensure row has enough columns
+			if (col_idx < row.size()) {
+				// Copy Value to vector at position row_idx
+				auto &value = row[col_idx];
+				vec.SetValue(row_idx, value);
+			} else {
+				// Missing column - set to NULL
+				FlatVector::SetNull(vec, row_idx, true);
+			}
+		}
 	}
 
 	state.current_row += count;

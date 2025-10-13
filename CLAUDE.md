@@ -74,19 +74,25 @@ This is a **DuckDB Storage Extension** registered for `TYPE otlp`. It implements
 
 **Custom Catalog (`otlp_catalog.cpp/hpp`)**
 - Implements DuckDB's `Catalog` interface for virtual tables
-- Auto-creates three tables per attached database: `traces`, `metrics`, `logs`
+- Auto-creates three tables per attached database following OpenTelemetry ClickHouse exporter schema:
+  - `otel_traces` - trace spans with 22 strongly-typed columns
+  - `otel_logs` - log records with 15 strongly-typed columns
+  - `otel_metrics` - all metric types with 27-column union schema (MetricType discriminator)
 - Backed by thread-safe ring buffers (in-memory FIFO storage)
 
 **Ring Buffer (`ring_buffer.cpp/hpp`)**
 - Thread-safe circular buffer with shared-read/exclusive-write semantics
-- Stores rows as `(timestamp TIMESTAMP, resource JSON, data JSON)`
+- Stores rows as `vector<Value>` with strongly-typed columns (no JSON)
+- Each table type has its own schema with specific column definitions
 - FIFO eviction when capacity reached
 - Used as backing storage for virtual tables
 
 **gRPC Receiver (`otlp_receiver.cpp/hpp`)**
 - Implements OpenTelemetry Collector Protocol gRPC endpoints
 - Three service endpoints: `/v1/traces`, `/v1/metrics`, `/v1/logs`
-- Converts incoming protobuf → JSON → inserts into ring buffers
+- Parses incoming protobuf messages and extracts strongly-typed columns
+- All metrics types (gauge, sum, histogram, exponential histogram, summary) go to single buffer with MetricType discriminator
+- Converts trace/span IDs to hex, calculates durations, extracts attributes as MAPs
 - Runs on background thread, lifecycle tied to ATTACH/DETACH
 
 **Table Function (`read_otlp.cpp/hpp`)**
@@ -112,14 +118,14 @@ User: ATTACH 'otlp:localhost:4317' AS live (TYPE otlp)
   ↓
 OTLPStorageExtension::Attach()
   ↓ Parses connection string (host:port)
-  ↓ Creates OTLPStorageInfo with 3 ring buffers
+  ↓ Creates OTLPStorageInfo with 3 ring buffers (1 traces, 1 logs, 1 metrics)
   ↓ Starts gRPC receiver on background thread
   ↓
 Returns OTLPCatalog with virtual tables
   ↓
-User: SELECT * FROM live.traces
+User: SELECT * FROM live.otel_metrics WHERE MetricType = 'gauge'
   ↓
-OTLPScan reads from ring buffer → returns rows
+OTLPScan reads from ring buffer → returns strongly-typed rows
 ```
 
 **File Reading Flow:**
@@ -132,6 +138,9 @@ If JSON: JSONParser::Parse() - streaming JSON parsing
 If protobuf: ProtobufParser::Parse() - protobuf deserialization
   ↓
 Yields rows: (timestamp, resource JSON, data JSON)
+
+Note: File reading still uses legacy (timestamp, resource, data) schema.
+      Future work will update to strongly-typed columns matching ATTACH schema.
 ```
 
 ### Generated Code
@@ -144,18 +153,41 @@ The `src/generated/` directory contains protobuf and gRPC stubs generated from O
 
 ## Key Design Decisions
 
-### Unified Schema
-All three signal types (traces, metrics, logs) use the same schema:
-- `timestamp TIMESTAMP` - Event timestamp
-- `resource JSON` - Service/host metadata
-- `data JSON` - Signal-specific payload
+### ClickHouse-Compatible Schema (v2)
+The extension follows the OpenTelemetry ClickHouse exporter schema with 3 tables and strongly-typed columns:
 
-This simplifies the implementation and allows flexible querying with DuckDB's JSON functions.
+**Traces Table (`otel_traces` - 22 columns):**
+- Direct column access: `trace_id`, `span_id`, `parent_span_id`, `trace_state`
+- Computed fields: `duration` (calculated from start/end times)
+- Extracted metadata: `service_name` (from resource attributes)
+- Converted enums: `span_kind` (string), `status_code` (string)
+- Nested data: `resource_attributes` (MAP), `attributes` (MAP), `events` (LIST), `links` (LIST)
+
+**Logs Table (`otel_logs` - 15 columns):**
+- Direct fields: `timestamp`, `observed_timestamp`, `body`, `severity_text`, `severity_number`
+- Trace correlation: `trace_id`, `span_id`, `trace_flags`
+- Extracted metadata: `service_name`
+- Nested data: `resource_attributes` (MAP), `attributes` (MAP)
+
+**Metrics Table (`otel_metrics` - 27 columns with union schema):**
+- Common base columns (9): `timestamp`, `service_name`, `metric_name`, `metric_description`, `metric_unit`, `resource_attributes`, `scope_name`, `scope_version`, `attributes`
+- Discriminator: `metric_type` (VARCHAR) - one of: `'gauge'`, `'sum'`, `'histogram'`, `'exponential_histogram'`, `'summary'`
+- Type-specific union columns (type-specific, NULL for other types):
+  - **Gauge/Sum**: `value` (double), `aggregation_temporality` (int, sum only), `is_monotonic` (bool, sum only)
+  - **Histogram**: `count`, `sum`, `bucket_counts` (list), `explicit_bounds` (list), `min`, `max`
+  - **Exponential Histogram**: `count`, `sum`, `scale`, `zero_count`, `positive_offset`, `positive_bucket_counts`, `negative_offset`, `negative_bucket_counts`, `min`, `max`
+  - **Summary**: `count`, `sum`, `quantile_values` (list), `quantile_quantiles` (list)
+
+This design enables:
+- Direct SQL access to fields without JSON extraction (`WHERE metric_type = 'gauge'`)
+- Efficient filtering and aggregation on typed columns
+- Compatibility with ClickHouse-based OTLP tools and queries
+- Unified querying across all metric types with discriminator-based filtering
 
 ### In-Memory Storage
 Attached databases store data in ring buffers (memory-only). There is no persistent storage. Users must:
 - Periodically `DELETE` old data
-- Or `CREATE TABLE archive AS SELECT * FROM live.traces` to persist
+- Or `CREATE TABLE archive AS SELECT * FROM live.otel_traces` to persist
 
 ### Thread Safety
 - Ring buffers use `std::shared_mutex` for concurrent reads, exclusive writes

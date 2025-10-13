@@ -3,6 +3,9 @@
 #include "otlp_table_entry.hpp"
 #include "otlp_schema_entry.hpp"
 #include "otlp_receiver.hpp"
+#include "otlp_traces_schema.hpp"
+#include "otlp_logs_schema.hpp"
+#include "otlp_metrics_union_schema.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/parser/parsed_data/create_schema_info.hpp"
@@ -48,13 +51,41 @@ optional_ptr<CatalogEntry> OTLPCatalog::GetEntry(ClientContext &context, const s
 		return it->second.get(); // Return cached entry
 	}
 
-	// Create table info with schema
+	// Create table info with appropriate schema based on table name
 	auto table_info = make_uniq<CreateTableInfo>();
 	table_info->schema = schema;
 	table_info->table = name;
-	table_info->columns.AddColumn(ColumnDefinition("timestamp", LogicalType::TIMESTAMP));
-	table_info->columns.AddColumn(ColumnDefinition("resource", LogicalType::JSON()));
-	table_info->columns.AddColumn(ColumnDefinition("data", LogicalType::JSON()));
+
+	// Determine table type and add columns
+	auto table_type = StringToTableType(name);
+	if (!table_type) {
+		return nullptr; // Unknown table name
+	}
+
+	vector<string> column_names;
+	vector<LogicalType> column_types;
+
+	switch (*table_type) {
+	case OTLPTableType::TRACES:
+		column_names = OTLPTracesSchema::GetColumnNames();
+		column_types = OTLPTracesSchema::GetColumnTypes();
+		break;
+	case OTLPTableType::LOGS:
+		column_names = OTLPLogsSchema::GetColumnNames();
+		column_types = OTLPLogsSchema::GetColumnTypes();
+		break;
+	case OTLPTableType::METRICS:
+		column_names = OTLPMetricsUnionSchema::GetColumnNames();
+		column_types = OTLPMetricsUnionSchema::GetColumnTypes();
+		break;
+	default:
+		return nullptr;
+	}
+
+	// Add columns to table info
+	for (idx_t i = 0; i < column_names.size(); i++) {
+		table_info->columns.AddColumn(ColumnDefinition(column_names[i], column_types[i]));
+	}
 
 	// Create and cache the table entry
 	auto entry = make_uniq<OTLPTableEntry>(*this, *main_schema_, *table_info, buffer);
@@ -78,13 +109,41 @@ optional_ptr<CatalogEntry> OTLPCatalog::GetEntryCached(const string &name) {
 		return nullptr;
 	}
 
+	// Determine table type and get schema
+	auto table_type = StringToTableType(name);
+	if (!table_type) {
+		return nullptr;
+	}
+
+	vector<string> column_names;
+	vector<LogicalType> column_types;
+
+	switch (*table_type) {
+	case OTLPTableType::TRACES:
+		column_names = OTLPTracesSchema::GetColumnNames();
+		column_types = OTLPTracesSchema::GetColumnTypes();
+		break;
+	case OTLPTableType::LOGS:
+		column_names = OTLPLogsSchema::GetColumnNames();
+		column_types = OTLPLogsSchema::GetColumnTypes();
+		break;
+	case OTLPTableType::METRICS:
+		column_names = OTLPMetricsUnionSchema::GetColumnNames();
+		column_types = OTLPMetricsUnionSchema::GetColumnTypes();
+		break;
+	default:
+		return nullptr;
+	}
+
 	// Create table info
 	auto table_info = make_uniq<CreateTableInfo>();
 	table_info->schema = DEFAULT_SCHEMA;
 	table_info->table = name;
-	table_info->columns.AddColumn(ColumnDefinition("timestamp", LogicalType::TIMESTAMP));
-	table_info->columns.AddColumn(ColumnDefinition("resource", LogicalType::JSON()));
-	table_info->columns.AddColumn(ColumnDefinition("data", LogicalType::JSON()));
+
+	// Add columns
+	for (idx_t i = 0; i < column_names.size(); i++) {
+		table_info->columns.AddColumn(ColumnDefinition(column_names[i], column_types[i]));
+	}
 
 	// Create and cache
 	auto entry = make_uniq<OTLPTableEntry>(*this, *main_schema_, *table_info, buffer);
@@ -125,12 +184,12 @@ void OTLPCatalog::DropSchema(ClientContext &context, DropInfo &info) {
 
 DatabaseSize OTLPCatalog::GetDatabaseSize(ClientContext &context) {
 	DatabaseSize result;
-	// Approximate size based on ring buffer contents
+	// Approximate size based on ring buffer contents (all 3 tables)
 	idx_t total_size = 0;
 	if (storage_info_) {
 		total_size += storage_info_->traces_buffer->Size();
-		total_size += storage_info_->metrics_buffer->Size();
 		total_size += storage_info_->logs_buffer->Size();
+		total_size += storage_info_->metrics_buffer->Size();
 	}
 	// Rough estimate: 1KB per row
 	result.bytes = total_size * 1024;

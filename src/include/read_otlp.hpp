@@ -5,21 +5,17 @@
 #include "json_parser.hpp"
 #include "protobuf_parser.hpp"
 #include "format_detector.hpp"
+#include "otlp_types.hpp"
 
 namespace duckdb {
 
-//! read_otlp() table function for reading OTLP JSON Lines files
+//! read_otlp_*() table functions for reading OTLP files with strongly-typed schemas
 class ReadOTLPTableFunction {
 public:
-	//! Register the read_otlp table function
-	static void RegisterFunction(DatabaseInstance &db);
-
-	//! Get the table function (for registration via ExtensionLoader)
-	static TableFunction GetFunction();
-
-	//! Bind function data
-	static unique_ptr<FunctionData> Bind(ClientContext &context, TableFunctionBindInput &input,
-	                                     vector<LogicalType> &return_types, vector<string> &names);
+	//! Get table functions for registration
+	static TableFunction GetTracesFunction();
+	static TableFunction GetLogsFunction();
+	static TableFunction GetMetricsFunction();
 
 	//! Initialize scan state
 	static unique_ptr<GlobalTableFunctionState> Init(ClientContext &context, TableFunctionInitInput &input);
@@ -31,8 +27,9 @@ public:
 //! Bind data for read_otlp function
 struct ReadOTLPBindData : public TableFunctionData {
 	string file_path;
+	OTLPTableType table_type; // Detected table type for v2 schema
 
-	explicit ReadOTLPBindData(string path) : file_path(std::move(path)) {
+	explicit ReadOTLPBindData(string path, OTLPTableType type) : file_path(std::move(path)), table_type(type) {
 	}
 };
 
@@ -49,16 +46,13 @@ struct ReadOTLPGlobalState : public GlobalTableFunctionState {
 	idx_t skipped_lines;
 	bool warning_emitted;
 
-	// For protobuf parsing and single JSON object parsing
-	vector<timestamp_t> timestamps;
-	vector<string> resources;
-	vector<string> datas;
+	// V2 schema: strongly-typed rows
+	vector<vector<Value>> rows;
 	idx_t current_row;
-	bool is_single_json_object;
 
 	ReadOTLPGlobalState()
 	    : format(OTLPFormat::UNKNOWN), current_line(0), finished(false), buffer_offset(0), skipped_lines(0),
-	      warning_emitted(false), current_row(0), is_single_json_object(false) {
+	      warning_emitted(false), current_row(0) {
 	}
 
 	idx_t MaxThreads() const override {

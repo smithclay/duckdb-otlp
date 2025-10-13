@@ -1,5 +1,7 @@
 #include "read_otlp.hpp"
-#include "otlp_schema.hpp"
+#include "otlp_traces_schema.hpp"
+#include "otlp_logs_schema.hpp"
+#include "otlp_metrics_union_schema.hpp"
 #include "format_detector.hpp"
 #include "protobuf_parser.hpp"
 #include "duckdb/common/exception.hpp"
@@ -10,31 +12,73 @@
 
 namespace duckdb {
 
-void ReadOTLPTableFunction::RegisterFunction(DatabaseInstance &db) {
-	// This function is not currently used since we register via GetFunction()
-	// But keeping it for future use if needed
+// Forward declare specialized bind functions
+static unique_ptr<FunctionData> BindTraces(ClientContext &context, TableFunctionBindInput &input,
+                                           vector<LogicalType> &return_types, vector<string> &names);
+static unique_ptr<FunctionData> BindLogs(ClientContext &context, TableFunctionBindInput &input,
+                                         vector<LogicalType> &return_types, vector<string> &names);
+static unique_ptr<FunctionData> BindMetrics(ClientContext &context, TableFunctionBindInput &input,
+                                            vector<LogicalType> &return_types, vector<string> &names);
+
+// Forward declare helper functions
+static bool ReadLine(FileHandle &file_handle, string &buffer, idx_t &buffer_offset, string &line);
+
+TableFunction ReadOTLPTableFunction::GetTracesFunction() {
+	TableFunction func("read_otlp_traces", {LogicalType::VARCHAR}, Scan, BindTraces, Init);
+	func.name = "read_otlp_traces";
+	return func;
 }
 
-TableFunction ReadOTLPTableFunction::GetFunction() {
-	TableFunction read_otlp("read_otlp", {LogicalType::VARCHAR}, Scan, Bind, Init);
-	read_otlp.name = "read_otlp";
-	return read_otlp;
+TableFunction ReadOTLPTableFunction::GetLogsFunction() {
+	TableFunction func("read_otlp_logs", {LogicalType::VARCHAR}, Scan, BindLogs, Init);
+	func.name = "read_otlp_logs";
+	return func;
 }
 
-unique_ptr<FunctionData> ReadOTLPTableFunction::Bind(ClientContext &context, TableFunctionBindInput &input,
-                                                     vector<LogicalType> &return_types, vector<string> &names) {
-	// Get file path from first argument
+TableFunction ReadOTLPTableFunction::GetMetricsFunction() {
+	TableFunction func("read_otlp_metrics", {LogicalType::VARCHAR}, Scan, BindMetrics, Init);
+	func.name = "read_otlp_metrics";
+	return func;
+}
+
+// Specialized bind functions for each table type
+static unique_ptr<FunctionData> BindTraces(ClientContext &context, TableFunctionBindInput &input,
+                                           vector<LogicalType> &return_types, vector<string> &names) {
 	if (input.inputs.size() != 1) {
-		throw BinderException("read_otlp requires exactly one argument (file path)");
+		throw BinderException("read_otlp_traces requires exactly one argument (file path)");
 	}
 
 	auto file_path = input.inputs[0].ToString();
+	return_types = OTLPTracesSchema::GetColumnTypes();
+	names = OTLPTracesSchema::GetColumnNames();
 
-	// Set return schema to OTLP unified schema
-	return_types = OTLPSchema::GetTypes();
-	names = OTLPSchema::GetNames();
+	return make_uniq<ReadOTLPBindData>(file_path, OTLPTableType::TRACES);
+}
 
-	return make_uniq<ReadOTLPBindData>(file_path);
+static unique_ptr<FunctionData> BindLogs(ClientContext &context, TableFunctionBindInput &input,
+                                         vector<LogicalType> &return_types, vector<string> &names) {
+	if (input.inputs.size() != 1) {
+		throw BinderException("read_otlp_logs requires exactly one argument (file path)");
+	}
+
+	auto file_path = input.inputs[0].ToString();
+	return_types = OTLPLogsSchema::GetColumnTypes();
+	names = OTLPLogsSchema::GetColumnNames();
+
+	return make_uniq<ReadOTLPBindData>(file_path, OTLPTableType::LOGS);
+}
+
+static unique_ptr<FunctionData> BindMetrics(ClientContext &context, TableFunctionBindInput &input,
+                                            vector<LogicalType> &return_types, vector<string> &names) {
+	if (input.inputs.size() != 1) {
+		throw BinderException("read_otlp_metrics requires exactly one argument (file path)");
+	}
+
+	auto file_path = input.inputs[0].ToString();
+	return_types = OTLPMetricsUnionSchema::GetColumnTypes();
+	names = OTLPMetricsUnionSchema::GetColumnNames();
+
+	return make_uniq<ReadOTLPBindData>(file_path, OTLPTableType::METRICS);
 }
 
 unique_ptr<GlobalTableFunctionState> ReadOTLPTableFunction::Init(ClientContext &context,
@@ -70,40 +114,79 @@ unique_ptr<GlobalTableFunctionState> ReadOTLPTableFunction::Init(ClientContext &
 	state->file_handle->Seek(0);
 
 	if (state->format == OTLPFormat::JSON) {
-		// JSON format - read entire file and try to parse as single OTLP object first
 		state->json_parser = make_uniq<OTLPJSONParser>();
 
-		// Read entire file into memory to check if it's a single JSON object
-		auto file_size = fs.GetFileSize(*state->file_handle);
-		if (file_size > 0 &&
-		    file_size < static_cast<int64_t>(100) * 1024 * 1024) { // Limit to 100MB for single object parsing
-			string file_contents;
-			file_contents.resize(file_size);
-			idx_t total_read = state->file_handle->Read((void *)file_contents.data(), file_size);
-			file_contents.resize(total_read);
+		// Detect format based on file extension
+		bool is_jsonl = StringUtil::EndsWith(StringUtil::Lower(bind_data.file_path), ".jsonl");
 
-			// Try parsing as single OTLP JSON object
-			timestamp_t timestamp;
-			string resource_json;
-			string data_json;
+		if (is_jsonl) {
+			// JSONL format - read line by line and parse each line to strongly-typed rows
+			string buffer;
+			idx_t buffer_offset = 0;
+			string line;
 
-			if (state->json_parser->ParseLine(file_contents, timestamp, resource_json, data_json)) {
-				// Successfully parsed as single object - store it
-				state->timestamps.push_back(timestamp);
-				state->resources.push_back(resource_json);
-				state->datas.push_back(data_json);
-				state->is_single_json_object = true;
-			} else {
-				// Not a single object, fall back to line-by-line parsing
-				state->file_handle->Seek(0);
-				state->is_single_json_object = false;
+			while (ReadLine(*state->file_handle, buffer, buffer_offset, line)) {
+				// Skip empty lines
+				StringUtil::Trim(line);
+				if (line.empty()) {
+					continue;
+				}
+
+				// Parse each line based on table type from bind data (v2 schema)
+				bool success = false;
+				if (bind_data.table_type == OTLPTableType::TRACES) {
+					success = state->json_parser->ParseTracesToTypedRows(line, state->rows);
+				} else if (bind_data.table_type == OTLPTableType::LOGS) {
+					success = state->json_parser->ParseLogsToTypedRows(line, state->rows);
+				} else if (bind_data.table_type == OTLPTableType::METRICS) {
+					// Parse all metric types into union schema
+					success = state->json_parser->ParseMetricsToTypedRows(line, state->rows);
+				} else {
+					throw IOException("Unsupported table type for JSON parsing");
+				}
+
+				if (!success) {
+					string error = state->json_parser->GetLastError();
+					throw IOException("Failed to parse OTLP JSON data on line: " + error);
+				}
+			}
+
+			if (state->rows.empty()) {
+				throw IOException("No valid OTLP data found in JSONL file");
 			}
 		} else {
-			// File too large or empty, use line-by-line parsing
-			state->is_single_json_object = false;
+			// Single JSON object format - read entire file as one JSON object
+			auto file_size = fs.GetFileSize(*state->file_handle);
+			if (file_size > 0 && file_size < static_cast<int64_t>(100) * 1024 * 1024) { // Limit to 100MB
+				string file_contents;
+				file_contents.resize(file_size);
+				idx_t total_read = state->file_handle->Read((void *)file_contents.data(), file_size);
+				file_contents.resize(total_read);
+
+				// Parse entire file based on table type from bind data (v2 schema)
+				bool success = false;
+				if (bind_data.table_type == OTLPTableType::TRACES) {
+					success = state->json_parser->ParseTracesToTypedRows(file_contents, state->rows);
+				} else if (bind_data.table_type == OTLPTableType::LOGS) {
+					success = state->json_parser->ParseLogsToTypedRows(file_contents, state->rows);
+				} else if (bind_data.table_type == OTLPTableType::METRICS) {
+					success = state->json_parser->ParseMetricsToTypedRows(file_contents, state->rows);
+				} else {
+					throw IOException("Unsupported table type for JSON parsing");
+				}
+
+				if (!success || state->rows.empty()) {
+					string error = state->json_parser->GetLastError();
+					throw IOException("Failed to parse OTLP JSON data: " + error);
+				}
+			} else {
+				throw IOException("JSON file too large or empty (limit: 100MB)");
+			}
 		}
+
+		state->current_row = 0;
 	} else if (state->format == OTLPFormat::PROTOBUF) {
-		// Protobuf format - read entire file and parse
+		// Protobuf format - read entire file and parse to strongly-typed rows
 		state->protobuf_parser = make_uniq<OTLPProtobufParser>();
 
 		// Read entire file into memory
@@ -112,22 +195,17 @@ unique_ptr<GlobalTableFunctionState> ReadOTLPTableFunction::Init(ClientContext &
 		file_contents.resize(file_size);
 		idx_t total_read = state->file_handle->Read((void *)file_contents.data(), file_size);
 
-		// Detect signal type
-		auto signal_type = FormatDetector::DetectProtobufSignalType(file_contents.data(), total_read);
-
-		// Parse based on signal type
+		// Parse based on table type from bind data (v2 schema)
 		idx_t row_count = 0;
-		if (signal_type == FormatDetector::SignalType::TRACES) {
-			row_count = state->protobuf_parser->ParseTracesData(file_contents.data(), total_read, state->timestamps,
-			                                                    state->resources, state->datas);
-		} else if (signal_type == FormatDetector::SignalType::METRICS) {
-			row_count = state->protobuf_parser->ParseMetricsData(file_contents.data(), total_read, state->timestamps,
-			                                                     state->resources, state->datas);
-		} else if (signal_type == FormatDetector::SignalType::LOGS) {
-			row_count = state->protobuf_parser->ParseLogsData(file_contents.data(), total_read, state->timestamps,
-			                                                  state->resources, state->datas);
+		if (bind_data.table_type == OTLPTableType::TRACES) {
+			row_count = state->protobuf_parser->ParseTracesToTypedRows(file_contents.data(), total_read, state->rows);
+		} else if (bind_data.table_type == OTLPTableType::LOGS) {
+			row_count = state->protobuf_parser->ParseLogsToTypedRows(file_contents.data(), total_read, state->rows);
+		} else if (bind_data.table_type == OTLPTableType::METRICS) {
+			// Parse all metric types into union schema
+			row_count = state->protobuf_parser->ParseMetricsToTypedRows(file_contents.data(), total_read, state->rows);
 		} else {
-			throw IOException("Unable to detect OTLP signal type from protobuf data");
+			throw IOException("Unsupported table type for protobuf parsing");
 		}
 
 		if (row_count == 0) {
@@ -144,22 +222,6 @@ unique_ptr<GlobalTableFunctionState> ReadOTLPTableFunction::Init(ClientContext &
 	state->finished = false;
 
 	return std::move(state);
-}
-
-// Helper to add a row to the output chunk
-static void AddRowToOutput(DataChunk &output, idx_t output_idx, timestamp_t timestamp, const string &resource,
-                           const string &data) {
-	// Set timestamp
-	auto timestamp_data = FlatVector::GetData<timestamp_t>(output.data[OTLPSchema::TIMESTAMP_COL]);
-	timestamp_data[output_idx] = timestamp;
-
-	// Set resource JSON
-	auto &resource_vector = output.data[OTLPSchema::RESOURCE_COL];
-	FlatVector::GetData<string_t>(resource_vector)[output_idx] = StringVector::AddString(resource_vector, resource);
-
-	// Set data JSON
-	auto &data_vector = output.data[OTLPSchema::DATA_COL];
-	FlatVector::GetData<string_t>(data_vector)[output_idx] = StringVector::AddString(data_vector, data);
 }
 
 // Helper to read next line from file handle
@@ -204,60 +266,21 @@ void ReadOTLPTableFunction::Scan(ClientContext &context, TableFunctionInput &dat
 	idx_t output_idx = 0;
 	constexpr idx_t BATCH_SIZE = STANDARD_VECTOR_SIZE;
 
-	if (gstate.format == OTLPFormat::PROTOBUF || gstate.is_single_json_object) {
-		// Protobuf: return pre-parsed data
-		while (output_idx < BATCH_SIZE && gstate.current_row < gstate.timestamps.size()) {
-			AddRowToOutput(output, output_idx, gstate.timestamps[gstate.current_row],
-			               gstate.resources[gstate.current_row], gstate.datas[gstate.current_row]);
-			output_idx++;
-			gstate.current_row++;
+	// Output strongly-typed rows from v2 schema
+	while (output_idx < BATCH_SIZE && gstate.current_row < gstate.rows.size()) {
+		auto &row = gstate.rows[gstate.current_row];
+
+		// Copy each column value from parsed row to output chunk
+		for (idx_t col_idx = 0; col_idx < row.size(); col_idx++) {
+			output.data[col_idx].SetValue(output_idx, row[col_idx]);
 		}
 
-		if (gstate.current_row >= gstate.timestamps.size()) {
-			gstate.finished = true;
-		}
-	} else {
-		// JSON: Read lines until we fill the output chunk or reach EOF
-		while (output_idx < BATCH_SIZE) {
-			// Read next line from file
-			string line;
-			if (!ReadLine(*gstate.file_handle, gstate.buffer, gstate.buffer_offset, line)) {
-				// EOF reached
-				gstate.finished = true;
-				break;
-			}
+		output_idx++;
+		gstate.current_row++;
+	}
 
-			gstate.current_line++;
-
-			// Skip empty lines
-			StringUtil::Trim(line);
-			if (line.empty()) {
-				continue;
-			}
-
-			// Parse OTLP JSON line
-			timestamp_t timestamp;
-			string resource_json;
-			string data_json;
-
-			if (!gstate.json_parser->ParseLine(line, timestamp, resource_json, data_json)) {
-				// Skip malformed lines and track for warning
-				gstate.skipped_lines++;
-				continue;
-			}
-
-			// Add parsed data to output chunk
-			AddRowToOutput(output, output_idx++, timestamp, resource_json, data_json);
-		}
-
-		// Emit warning about skipped lines once at end of scan
-		if (gstate.finished && gstate.skipped_lines > 0 && !gstate.warning_emitted) {
-			string warning_msg = StringUtil::Format("Skipped %llu malformed or invalid OTLP JSON line%s",
-			                                        gstate.skipped_lines, gstate.skipped_lines == 1 ? "" : "s");
-			// Note: In DuckDB, warnings are typically handled via ErrorData
-			// For now, we silently skip - full warning support can be added later
-			gstate.warning_emitted = true;
-		}
+	if (gstate.current_row >= gstate.rows.size()) {
+		gstate.finished = true;
 	}
 
 	output.SetCardinality(output_idx);
