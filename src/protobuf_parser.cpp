@@ -434,9 +434,204 @@ idx_t OTLPProtobufParser::ParseMetricsToTypedRows(const char *data, size_t lengt
 						rows.push_back(std::move(row));
 						row_count++;
 					}
+				} else if (metric.has_histogram()) {
+					// Histogram metrics
+					for (const auto &data_point : metric.histogram().data_points()) {
+						vector<Value> row(OTLPMetricsUnionSchema::COLUMN_COUNT);
+
+						auto timestamp = NanosToTimestamp(data_point.time_unix_nano());
+
+						// Base columns (9)
+						row[OTLPMetricsBaseSchema::COL_TIMESTAMP] = Value::TIMESTAMPNS(timestamp);
+						row[OTLPMetricsBaseSchema::COL_SERVICE_NAME] = Value(service_name);
+						row[OTLPMetricsBaseSchema::COL_METRIC_NAME] = Value(metric_name);
+						row[OTLPMetricsBaseSchema::COL_METRIC_DESCRIPTION] = Value(metric_description);
+						row[OTLPMetricsBaseSchema::COL_METRIC_UNIT] = Value(metric_unit);
+						row[OTLPMetricsBaseSchema::COL_RESOURCE_ATTRIBUTES] = resource_attrs;
+						row[OTLPMetricsBaseSchema::COL_SCOPE_NAME] = Value(scope_name);
+						row[OTLPMetricsBaseSchema::COL_SCOPE_VERSION] = Value(scope_version);
+						row[OTLPMetricsBaseSchema::COL_ATTRIBUTES] = ConvertAttributesToMap(data_point.attributes());
+
+						// Union discriminator
+						row[OTLPMetricsUnionSchema::COL_METRIC_TYPE] = Value("histogram");
+
+						// Histogram-specific columns
+						row[OTLPMetricsUnionSchema::COL_AGGREGATION_TEMPORALITY] =
+						    Value::INTEGER(static_cast<int32_t>(metric.histogram().aggregation_temporality()));
+						row[OTLPMetricsUnionSchema::COL_COUNT] = Value::UBIGINT(data_point.count());
+						row[OTLPMetricsUnionSchema::COL_SUM] =
+						    Value::DOUBLE(data_point.has_sum() ? data_point.sum() : 0.0);
+						row[OTLPMetricsUnionSchema::COL_MIN] =
+						    Value::DOUBLE(data_point.has_min() ? data_point.min() : 0.0);
+						row[OTLPMetricsUnionSchema::COL_MAX] =
+						    Value::DOUBLE(data_point.has_max() ? data_point.max() : 0.0);
+
+						// Bucket counts
+						vector<Value> bucket_counts;
+						for (uint64_t count : data_point.bucket_counts()) {
+							bucket_counts.push_back(Value::UBIGINT(count));
+						}
+						row[OTLPMetricsUnionSchema::COL_BUCKET_COUNTS] =
+						    Value::LIST(LogicalType::UBIGINT, bucket_counts);
+
+						// Explicit bounds
+						vector<Value> explicit_bounds;
+						for (double bound : data_point.explicit_bounds()) {
+							explicit_bounds.push_back(Value::DOUBLE(bound));
+						}
+						row[OTLPMetricsUnionSchema::COL_EXPLICIT_BOUNDS] =
+						    Value::LIST(LogicalType::DOUBLE, explicit_bounds);
+
+						// NULL other union columns
+						row[OTLPMetricsUnionSchema::COL_VALUE] = Value(LogicalType::DOUBLE);
+						row[OTLPMetricsUnionSchema::COL_IS_MONOTONIC] = Value(LogicalType::BOOLEAN);
+						row[OTLPMetricsUnionSchema::COL_SCALE] = Value(LogicalType::INTEGER);
+						row[OTLPMetricsUnionSchema::COL_ZERO_COUNT] = Value(LogicalType::UBIGINT);
+						row[OTLPMetricsUnionSchema::COL_POSITIVE_OFFSET] = Value(LogicalType::INTEGER);
+						row[OTLPMetricsUnionSchema::COL_POSITIVE_BUCKET_COUNTS] =
+						    Value(LogicalType::LIST(LogicalType::UBIGINT));
+						row[OTLPMetricsUnionSchema::COL_NEGATIVE_OFFSET] = Value(LogicalType::INTEGER);
+						row[OTLPMetricsUnionSchema::COL_NEGATIVE_BUCKET_COUNTS] =
+						    Value(LogicalType::LIST(LogicalType::UBIGINT));
+						row[OTLPMetricsUnionSchema::COL_QUANTILE_VALUES] =
+						    Value(LogicalType::LIST(LogicalType::DOUBLE));
+						row[OTLPMetricsUnionSchema::COL_QUANTILE_QUANTILES] =
+						    Value(LogicalType::LIST(LogicalType::DOUBLE));
+
+						rows.push_back(std::move(row));
+						row_count++;
+					}
+				} else if (metric.has_exponential_histogram()) {
+					// Exponential Histogram metrics
+					for (const auto &data_point : metric.exponential_histogram().data_points()) {
+						vector<Value> row(OTLPMetricsUnionSchema::COLUMN_COUNT);
+
+						auto timestamp = NanosToTimestamp(data_point.time_unix_nano());
+
+						// Base columns (9)
+						row[OTLPMetricsBaseSchema::COL_TIMESTAMP] = Value::TIMESTAMPNS(timestamp);
+						row[OTLPMetricsBaseSchema::COL_SERVICE_NAME] = Value(service_name);
+						row[OTLPMetricsBaseSchema::COL_METRIC_NAME] = Value(metric_name);
+						row[OTLPMetricsBaseSchema::COL_METRIC_DESCRIPTION] = Value(metric_description);
+						row[OTLPMetricsBaseSchema::COL_METRIC_UNIT] = Value(metric_unit);
+						row[OTLPMetricsBaseSchema::COL_RESOURCE_ATTRIBUTES] = resource_attrs;
+						row[OTLPMetricsBaseSchema::COL_SCOPE_NAME] = Value(scope_name);
+						row[OTLPMetricsBaseSchema::COL_SCOPE_VERSION] = Value(scope_version);
+						row[OTLPMetricsBaseSchema::COL_ATTRIBUTES] = ConvertAttributesToMap(data_point.attributes());
+
+						// Union discriminator
+						row[OTLPMetricsUnionSchema::COL_METRIC_TYPE] = Value("exponential_histogram");
+
+						// Exponential histogram-specific columns
+						row[OTLPMetricsUnionSchema::COL_AGGREGATION_TEMPORALITY] = Value::INTEGER(
+						    static_cast<int32_t>(metric.exponential_histogram().aggregation_temporality()));
+						row[OTLPMetricsUnionSchema::COL_COUNT] = Value::UBIGINT(data_point.count());
+						row[OTLPMetricsUnionSchema::COL_SUM] =
+						    Value::DOUBLE(data_point.has_sum() ? data_point.sum() : 0.0);
+						row[OTLPMetricsUnionSchema::COL_SCALE] = Value::INTEGER(data_point.scale());
+						row[OTLPMetricsUnionSchema::COL_ZERO_COUNT] = Value::UBIGINT(data_point.zero_count());
+						row[OTLPMetricsUnionSchema::COL_MIN] =
+						    Value::DOUBLE(data_point.has_min() ? data_point.min() : 0.0);
+						row[OTLPMetricsUnionSchema::COL_MAX] =
+						    Value::DOUBLE(data_point.has_max() ? data_point.max() : 0.0);
+
+						// Positive buckets
+						row[OTLPMetricsUnionSchema::COL_POSITIVE_OFFSET] =
+						    Value::INTEGER(data_point.has_positive() ? data_point.positive().offset() : 0);
+						vector<Value> positive_bucket_counts;
+						if (data_point.has_positive()) {
+							for (uint64_t count : data_point.positive().bucket_counts()) {
+								positive_bucket_counts.push_back(Value::UBIGINT(count));
+							}
+						}
+						row[OTLPMetricsUnionSchema::COL_POSITIVE_BUCKET_COUNTS] =
+						    Value::LIST(LogicalType::UBIGINT, positive_bucket_counts);
+
+						// Negative buckets
+						row[OTLPMetricsUnionSchema::COL_NEGATIVE_OFFSET] =
+						    Value::INTEGER(data_point.has_negative() ? data_point.negative().offset() : 0);
+						vector<Value> negative_bucket_counts;
+						if (data_point.has_negative()) {
+							for (uint64_t count : data_point.negative().bucket_counts()) {
+								negative_bucket_counts.push_back(Value::UBIGINT(count));
+							}
+						}
+						row[OTLPMetricsUnionSchema::COL_NEGATIVE_BUCKET_COUNTS] =
+						    Value::LIST(LogicalType::UBIGINT, negative_bucket_counts);
+
+						// NULL other union columns
+						row[OTLPMetricsUnionSchema::COL_VALUE] = Value(LogicalType::DOUBLE);
+						row[OTLPMetricsUnionSchema::COL_IS_MONOTONIC] = Value(LogicalType::BOOLEAN);
+						row[OTLPMetricsUnionSchema::COL_BUCKET_COUNTS] = Value(LogicalType::LIST(LogicalType::UBIGINT));
+						row[OTLPMetricsUnionSchema::COL_EXPLICIT_BOUNDS] =
+						    Value(LogicalType::LIST(LogicalType::DOUBLE));
+						row[OTLPMetricsUnionSchema::COL_QUANTILE_VALUES] =
+						    Value(LogicalType::LIST(LogicalType::DOUBLE));
+						row[OTLPMetricsUnionSchema::COL_QUANTILE_QUANTILES] =
+						    Value(LogicalType::LIST(LogicalType::DOUBLE));
+
+						rows.push_back(std::move(row));
+						row_count++;
+					}
+				} else if (metric.has_summary()) {
+					// Summary metrics
+					for (const auto &data_point : metric.summary().data_points()) {
+						vector<Value> row(OTLPMetricsUnionSchema::COLUMN_COUNT);
+
+						auto timestamp = NanosToTimestamp(data_point.time_unix_nano());
+
+						// Base columns (9)
+						row[OTLPMetricsBaseSchema::COL_TIMESTAMP] = Value::TIMESTAMPNS(timestamp);
+						row[OTLPMetricsBaseSchema::COL_SERVICE_NAME] = Value(service_name);
+						row[OTLPMetricsBaseSchema::COL_METRIC_NAME] = Value(metric_name);
+						row[OTLPMetricsBaseSchema::COL_METRIC_DESCRIPTION] = Value(metric_description);
+						row[OTLPMetricsBaseSchema::COL_METRIC_UNIT] = Value(metric_unit);
+						row[OTLPMetricsBaseSchema::COL_RESOURCE_ATTRIBUTES] = resource_attrs;
+						row[OTLPMetricsBaseSchema::COL_SCOPE_NAME] = Value(scope_name);
+						row[OTLPMetricsBaseSchema::COL_SCOPE_VERSION] = Value(scope_version);
+						row[OTLPMetricsBaseSchema::COL_ATTRIBUTES] = ConvertAttributesToMap(data_point.attributes());
+
+						// Union discriminator
+						row[OTLPMetricsUnionSchema::COL_METRIC_TYPE] = Value("summary");
+
+						// Summary-specific columns
+						row[OTLPMetricsUnionSchema::COL_COUNT] = Value::UBIGINT(data_point.count());
+						row[OTLPMetricsUnionSchema::COL_SUM] = Value::DOUBLE(data_point.sum());
+
+						// Quantile values and quantiles
+						vector<Value> quantile_values;
+						vector<Value> quantile_quantiles;
+						for (const auto &quantile : data_point.quantile_values()) {
+							quantile_quantiles.push_back(Value::DOUBLE(quantile.quantile()));
+							quantile_values.push_back(Value::DOUBLE(quantile.value()));
+						}
+						row[OTLPMetricsUnionSchema::COL_QUANTILE_VALUES] =
+						    Value::LIST(LogicalType::DOUBLE, quantile_values);
+						row[OTLPMetricsUnionSchema::COL_QUANTILE_QUANTILES] =
+						    Value::LIST(LogicalType::DOUBLE, quantile_quantiles);
+
+						// NULL other union columns
+						row[OTLPMetricsUnionSchema::COL_VALUE] = Value(LogicalType::DOUBLE);
+						row[OTLPMetricsUnionSchema::COL_AGGREGATION_TEMPORALITY] = Value(LogicalType::INTEGER);
+						row[OTLPMetricsUnionSchema::COL_IS_MONOTONIC] = Value(LogicalType::BOOLEAN);
+						row[OTLPMetricsUnionSchema::COL_BUCKET_COUNTS] = Value(LogicalType::LIST(LogicalType::UBIGINT));
+						row[OTLPMetricsUnionSchema::COL_EXPLICIT_BOUNDS] =
+						    Value(LogicalType::LIST(LogicalType::DOUBLE));
+						row[OTLPMetricsUnionSchema::COL_MIN] = Value(LogicalType::DOUBLE);
+						row[OTLPMetricsUnionSchema::COL_MAX] = Value(LogicalType::DOUBLE);
+						row[OTLPMetricsUnionSchema::COL_SCALE] = Value(LogicalType::INTEGER);
+						row[OTLPMetricsUnionSchema::COL_ZERO_COUNT] = Value(LogicalType::UBIGINT);
+						row[OTLPMetricsUnionSchema::COL_POSITIVE_OFFSET] = Value(LogicalType::INTEGER);
+						row[OTLPMetricsUnionSchema::COL_POSITIVE_BUCKET_COUNTS] =
+						    Value(LogicalType::LIST(LogicalType::UBIGINT));
+						row[OTLPMetricsUnionSchema::COL_NEGATIVE_OFFSET] = Value(LogicalType::INTEGER);
+						row[OTLPMetricsUnionSchema::COL_NEGATIVE_BUCKET_COUNTS] =
+						    Value(LogicalType::LIST(LogicalType::UBIGINT));
+
+						rows.push_back(std::move(row));
+						row_count++;
+					}
 				}
-				// TODO: Add histogram, exponential_histogram, and summary parsing
-				// For now, skip other metric types
 			}
 		}
 	}

@@ -1,0 +1,41 @@
+# name: test/sql/union_view.test
+# description: Test otel_metrics_union view in ATTACH mode
+# group: [duckspan]
+
+require duckspan
+
+# ATTACH in-memory OTLP storage
+statement ok
+ATTACH 'otlp:localhost:4318' AS test (TYPE otlp);
+
+# Verify the union view exists and has correct schema
+query I
+SELECT COUNT(*) FROM (DESCRIBE test.otel_metrics_union);
+----
+27
+
+# Verify MetricType column exists
+query I
+SELECT column_name FROM (DESCRIBE test.otel_metrics_union) WHERE column_name = 'MetricType';
+----
+MetricType
+
+# Verify base columns exist
+query I
+SELECT COUNT(*) FROM (DESCRIBE test.otel_metrics_union) WHERE column_name IN ('Timestamp', 'ServiceName', 'MetricName', 'MetricDescription', 'MetricUnit', 'ResourceAttributes', 'ScopeName', 'ScopeVersion', 'Attributes');
+----
+9
+
+# Verify type-specific columns exist
+query I
+SELECT COUNT(*) FROM (DESCRIBE test.otel_metrics_union) WHERE column_name IN ('Value', 'AggregationTemporality', 'IsMonotonic', 'Count', 'Sum', 'BucketCounts', 'ExplicitBounds', 'Scale', 'ZeroCount', 'PositiveOffset', 'PositiveBucketCounts', 'NegativeOffset', 'NegativeBucketCounts', 'QuantileValues', 'QuantileQuantiles', 'Min', 'Max');
+----
+17
+
+# Should be able to query the view (even if empty)
+statement ok
+SELECT * FROM test.otel_metrics_union LIMIT 10;
+
+# Clean up
+statement ok
+DETACH test;

@@ -25,14 +25,20 @@ void OTLPSchemaEntry::Scan(ClientContext &context, CatalogType type,
 	                                     OTLPTableType::METRICS_HISTOGRAM,
 	                                     OTLPTableType::METRICS_EXP_HISTOGRAM,
 	                                     OTLPTableType::METRICS_SUMMARY};
+	auto &otlp_catalog = catalog.Cast<OTLPCatalog>();
 	for (auto table_type : table_types) {
 		string table_name = TableTypeToString(table_type);
 		// Get the table entry from the catalog using our custom GetEntry
-		auto &otlp_catalog = catalog.Cast<OTLPCatalog>();
 		auto entry = otlp_catalog.GetEntry(context, DEFAULT_SCHEMA, table_name);
 		if (entry) {
 			callback(*entry);
 		}
+	}
+
+	// Also include the metrics union view
+	auto union_entry = otlp_catalog.GetEntry(context, DEFAULT_SCHEMA, "otel_metrics_union");
+	if (union_entry) {
+		callback(*union_entry);
 	}
 }
 
@@ -59,6 +65,12 @@ void OTLPSchemaEntry::Scan(CatalogType type, const std::function<void(CatalogEnt
 		if (entry) {
 			callback(*entry);
 		}
+	}
+
+	// Also include the metrics union view
+	auto union_entry = otlp_catalog.GetEntryCached("otel_metrics_union");
+	if (union_entry) {
+		callback(*union_entry);
 	}
 }
 

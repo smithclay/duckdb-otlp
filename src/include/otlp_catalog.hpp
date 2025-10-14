@@ -65,7 +65,8 @@ private:
 
 	shared_ptr<OTLPStorageInfo> storage_info_;
 	unique_ptr<SchemaCatalogEntry> main_schema_;
-	unordered_map<string, unique_ptr<OTLPTableEntry>> table_entries_; // Cache of table entries
+	unordered_map<string, unique_ptr<TableCatalogEntry>>
+	    table_entries_; // Cache of table entries (OTLPTableEntry or OTLPMetricsUnionTableEntry)
 };
 
 } // namespace duckdb

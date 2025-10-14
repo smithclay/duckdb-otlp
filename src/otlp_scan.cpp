@@ -49,6 +49,8 @@ void OTLPScanFunction(ClientContext &context, TableFunctionInput &data, DataChun
 
 	// Each row is a vector<Value> with one Value per column
 	// Copy values from rows into output DataChunk columns
+	// For virtual tables with projection_pushdown, DuckDB handles column projection
+	// before calling this function, so output.ColumnCount() already matches the projected columns
 	idx_t column_count = output.ColumnCount();
 
 	for (idx_t col_idx = 0; col_idx < column_count; col_idx++) {

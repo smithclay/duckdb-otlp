@@ -18,14 +18,23 @@ TableFunction OTLPTableEntry::GetScanFunction(ClientContext &context, unique_ptr
 	// Create bind data with ring buffer pointer
 	auto otlp_bind_data = make_uniq<OTLPScanBindData>();
 	otlp_bind_data->buffer = ring_buffer_;
-	otlp_bind_data->column_names = {"timestamp", "resource", "data"};
-	otlp_bind_data->column_types = {LogicalType::TIMESTAMP, LogicalType::JSON(), LogicalType::JSON()};
+
+	// Use the schema from this table (as defined in CreateTableInfo)
+	vector<string> column_names;
+	vector<LogicalType> column_types;
+	for (auto &column : columns.Logical()) {
+		column_names.push_back(column.Name());
+		column_types.push_back(column.Type());
+	}
+
+	otlp_bind_data->column_names = column_names;
+	otlp_bind_data->column_types = column_types;
 
 	bind_data = std::move(otlp_bind_data);
 
 	// Create table function - the bind function won't be called in this flow
 	TableFunction scan_func("otlp_scan", {}, OTLPScanFunction, nullptr, OTLPScanInitGlobal);
-	scan_func.projection_pushdown = true;
+	scan_func.projection_pushdown = false; // Disable projection pushdown for simplicity
 	return scan_func;
 }
 

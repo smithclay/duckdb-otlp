@@ -42,7 +42,9 @@ set(EXTENSION_SOURCES_GRPC
     src/otlp_catalog.cpp
     src/otlp_schema_entry.cpp
     src/otlp_table_entry.cpp
+    src/otlp_metrics_union_table_entry.cpp
     src/otlp_scan.cpp
+    src/otlp_metrics_union_scan.cpp
     src/otlp_storage_extension.cpp
     src/otlp_receiver.cpp
     src/otlp_transaction.cpp

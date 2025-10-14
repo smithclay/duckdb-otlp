@@ -89,6 +89,12 @@ struct OTLPStorageInfo : public StorageExtensionInfo {
 		}
 		return nullptr;
 	}
+
+	//! Get all metric buffers (for union view)
+	vector<shared_ptr<RingBuffer>> GetAllMetricBuffers() {
+		return {metrics_gauge_buffer, metrics_sum_buffer, metrics_histogram_buffer, metrics_exp_histogram_buffer,
+		        metrics_summary_buffer};
+	}
 };
 
 } // namespace duckdb

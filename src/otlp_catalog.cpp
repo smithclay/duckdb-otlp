@@ -1,11 +1,13 @@
 #include "otlp_catalog.hpp"
 #include "otlp_storage_info.hpp"
 #include "otlp_table_entry.hpp"
+#include "otlp_metrics_union_table_entry.hpp"
 #include "otlp_schema_entry.hpp"
 #include "otlp_receiver.hpp"
 #include "otlp_traces_schema.hpp"
 #include "otlp_logs_schema.hpp"
 #include "otlp_metrics_schemas.hpp"
+#include "otlp_metrics_union_schema.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/parser/parsed_data/create_schema_info.hpp"
@@ -76,17 +78,43 @@ optional_ptr<CatalogEntry> OTLPCatalog::GetEntry(ClientContext &context, const s
 		return nullptr;
 	}
 
-	// Get ring buffer for this table name
-	auto buffer = storage_info_->GetBuffer(name);
-	if (!buffer) {
-		return nullptr; // Not one of our virtual tables
-	}
-
 	// Check if we already created this entry (cache lookup)
 	auto entry_key = schema + "." + name;
 	auto it = table_entries_.find(entry_key);
 	if (it != table_entries_.end()) {
 		return it->second.get(); // Return cached entry
+	}
+
+	// Special handling for metrics union view
+	if (name == "otel_metrics_union") {
+		// Create table info with union schema
+		auto table_info = make_uniq<CreateTableInfo>();
+		table_info->schema = schema;
+		table_info->table = name;
+
+		// Add union schema columns (27 columns)
+		auto column_names = OTLPMetricsUnionSchema::GetColumnNames();
+		auto column_types = OTLPMetricsUnionSchema::GetColumnTypes();
+
+		for (idx_t i = 0; i < column_names.size(); i++) {
+			table_info->columns.AddColumn(ColumnDefinition(column_names[i], column_types[i]));
+		}
+
+		// Get all metric buffers
+		auto buffers = storage_info_->GetAllMetricBuffers();
+
+		// Create and cache the union table entry
+		auto entry = make_uniq<OTLPMetricsUnionTableEntry>(*this, *main_schema_, *table_info, buffers);
+		auto entry_ptr = entry.get();
+		table_entries_[entry_key] = std::move(entry);
+
+		return entry_ptr;
+	}
+
+	// Get ring buffer for this table name
+	auto buffer = storage_info_->GetBuffer(name);
+	if (!buffer) {
+		return nullptr; // Not one of our virtual tables
 	}
 
 	// Create table info with appropriate schema based on table name
@@ -124,6 +152,32 @@ optional_ptr<CatalogEntry> OTLPCatalog::GetEntryCached(const string &name) {
 	auto it = table_entries_.find(entry_key);
 	if (it != table_entries_.end()) {
 		return it->second.get();
+	}
+
+	// Special handling for metrics union view
+	if (name == "otel_metrics_union") {
+		// Create table info with union schema
+		auto table_info = make_uniq<CreateTableInfo>();
+		table_info->schema = DEFAULT_SCHEMA;
+		table_info->table = name;
+
+		// Add union schema columns (27 columns)
+		auto column_names = OTLPMetricsUnionSchema::GetColumnNames();
+		auto column_types = OTLPMetricsUnionSchema::GetColumnTypes();
+
+		for (idx_t i = 0; i < column_names.size(); i++) {
+			table_info->columns.AddColumn(ColumnDefinition(column_names[i], column_types[i]));
+		}
+
+		// Get all metric buffers
+		auto buffers = storage_info_->GetAllMetricBuffers();
+
+		// Create and cache the union table entry
+		auto entry = make_uniq<OTLPMetricsUnionTableEntry>(*this, *main_schema_, *table_info, buffers);
+		auto entry_ptr = entry.get();
+		table_entries_[entry_key] = std::move(entry);
+
+		return entry_ptr;
 	}
 
 	// Not cached - create it

@@ -289,6 +289,77 @@ DETACH live;
 SELECT * FROM archive_traces WHERE Timestamp > NOW() - INTERVAL 1 DAY;
 ```
 
+### Data Transfer Patterns
+
+The extension provides two modes with different schemas:
+- **ATTACH mode**: 7 separate strongly-typed tables (10-19 columns each)
+- **File reading mode**: Simplified gauge-like schema (10 columns)
+
+#### Current Limitations
+
+1. **ATTACH databases are read-only** - Ring buffers are only writable by the gRPC receiver, not SQL INSERT/UPDATE/DELETE
+2. **File reading has limited schema** - Currently returns only gauge-like columns (base 9 + Value)
+
+Full union schema support for file reading is planned for a future release.
+
+#### Supported Patterns
+
+**Pattern 1: ATTACH → Permanent Table (Archive Live Streams)**
+
+```sql
+ATTACH 'otlp:localhost:4317' AS live (TYPE otlp);
+
+-- Archive metrics by type
+CREATE TABLE archive_gauge AS
+SELECT * FROM live.otel_metrics_gauge;
+
+CREATE TABLE archive_sum AS
+SELECT * FROM live.otel_metrics_sum;
+
+CREATE TABLE archive_histogram AS
+SELECT * FROM live.otel_metrics_histogram;
+```
+
+**Pattern 2: ATTACH → File (Export Live Data)**
+
+```sql
+-- Export gauge metrics to CSV
+COPY (
+    SELECT * FROM live.otel_metrics_gauge
+) TO 'export_gauge.csv' (HEADER, DELIMITER ',');
+
+-- Export to Parquet for efficient storage
+COPY (
+    SELECT * FROM live.otel_metrics_histogram
+) TO 'export_histogram.parquet';
+
+-- Export to JSON Lines format
+COPY (
+    SELECT to_json(struct_pack(*)) as json_row
+    FROM live.otel_metrics_sum
+) TO 'export_sum.jsonl';
+```
+
+**Pattern 3: Combining Live and Historical Data**
+
+```sql
+-- Query both ATTACH (live) and permanent tables (archived)
+ATTACH 'otlp:localhost:4317' AS live (TYPE otlp);
+
+-- Create archive from live data
+CREATE TABLE archived_gauge AS
+SELECT * FROM live.otel_metrics_gauge;
+
+-- Query combining live and archived data
+SELECT 'live' as source, * FROM live.otel_metrics_gauge
+UNION ALL
+SELECT 'archived' as source, * FROM archived_gauge
+ORDER BY Timestamp DESC
+LIMIT 100;
+```
+
+For more details, see [SCHEMA_BRIDGE.md](SCHEMA_BRIDGE.md).
+
 ## Data Model
 
 ### Traces Schema (22 columns)

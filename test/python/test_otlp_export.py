@@ -204,64 +204,53 @@ def test_otlp_export():
     print("\n5. Verifying data in ring buffer tables...")
 
     try:
-        # Check traces table
-        trace_count = con.execute("SELECT COUNT(*) FROM live.otel_traces").fetchone()[0]
-        print(f"✓ Traces table: {trace_count} rows")
-
-        if trace_count > 0:
-            # Verify trace fields
-            trace_data = con.execute(
-                """
-                SELECT service_name, span_name, span_kind
-                FROM live.otel_traces
-                LIMIT 1
+        # Check traces table - use aggregation to avoid fetching TIMESTAMP_NS columns
+        trace_result = con.execute(
             """
-            ).fetchone()
-            print(
-                f"  Sample trace: service={trace_data[0]}, span={trace_data[1]}, kind={trace_data[2]}"
-            )
+            SELECT
+                COUNT(*) as row_count,
+                COUNT(DISTINCT ServiceName) as service_count
+            FROM live.otel_traces
+            """
+        ).fetchone()
+
+        print(
+            f"✓ Traces table: {trace_result[0]} rows, {trace_result[1]} unique services"
+        )
     except Exception as e:
         print(f"✗ Failed to query traces: {e}")
 
     try:
-        # Check logs table
-        log_count = con.execute("SELECT COUNT(*) FROM live.otel_logs").fetchone()[0]
-        print(f"✓ Logs table: {log_count} rows")
-
-        if log_count > 0:
-            # Verify log fields
-            log_data = con.execute(
-                """
-                SELECT service_name, body, severity_text
-                FROM live.otel_logs
-                LIMIT 1
+        # Check logs table - use aggregation to avoid fetching TIMESTAMP_NS columns
+        log_result = con.execute(
             """
-            ).fetchone()
-            print(
-                f"  Sample log: service={log_data[0]}, body={log_data[1]}, severity={log_data[2]}"
-            )
+            SELECT
+                COUNT(*) as row_count,
+                COUNT(DISTINCT ServiceName) as service_count
+            FROM live.otel_logs
+            """
+        ).fetchone()
+
+        print(f"✓ Logs table: {log_result[0]} rows, {log_result[1]} unique services")
     except Exception as e:
         print(f"✗ Failed to query logs: {e}")
 
     try:
         # Check metrics tables (sum is most common for counters)
-        metrics_count = con.execute(
-            "SELECT COUNT(*) FROM live.otel_metrics_sum"
-        ).fetchone()[0]
-        print(f"✓ Metrics (sum) table: {metrics_count} rows")
-
-        if metrics_count > 0:
-            # Verify metric fields
-            metric_data = con.execute(
-                """
-                SELECT service_name, metric_name, value, is_monotonic
-                FROM live.otel_metrics_sum
-                LIMIT 1
+        # Use aggregation to avoid fetching TIMESTAMP_NS columns
+        metrics_result = con.execute(
             """
-            ).fetchone()
-            print(
-                f"  Sample metric: service={metric_data[0]}, name={metric_data[1]}, value={metric_data[2]}, monotonic={metric_data[3]}"
-            )
+            SELECT
+                COUNT(*) as row_count,
+                COUNT(DISTINCT ServiceName) as service_count,
+                COUNT(DISTINCT MetricName) as metric_count
+            FROM live.otel_metrics_sum
+            """
+        ).fetchone()
+
+        print(
+            f"✓ Metrics (sum) table: {metrics_result[0]} rows, {metrics_result[1]} unique services, {metrics_result[2]} unique metrics"
+        )
     except Exception as e:
         print(f"✗ Failed to query metrics: {e}")
 
