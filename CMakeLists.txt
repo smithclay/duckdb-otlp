@@ -30,21 +30,21 @@ set(PROTO_SOURCES
     src/generated/opentelemetry/proto/collector/logs/v1/logs_service.grpc.pb.cc)
 
 # Core sources (minimal set for WASM)
-set(EXTENSION_SOURCES_JSON_ONLY src/duckspan_extension.cpp src/otlp_schema.cpp
-                                src/json_parser.cpp src/read_otlp.cpp)
+set(EXTENSION_SOURCES_JSON_ONLY
+    src/duckspan_extension.cpp src/otlp_schema.cpp src/json_parser.cpp
+    src/read_otlp.cpp src/row_builders_traces_logs.cpp)
 
 # Protobuf sources (requires vcpkg, excluded for WASM)
 set(EXTENSION_SOURCES_PROTOBUF src/protobuf_parser.cpp src/format_detector.cpp)
 
 # gRPC/network sources (excluded for WASM)
 set(EXTENSION_SOURCES_GRPC
-    src/ring_buffer.cpp
+    src/columnar_ring_buffer.cpp
+    src/row_builders.cpp
     src/otlp_catalog.cpp
     src/otlp_schema_entry.cpp
-    src/otlp_table_entry.cpp
-    src/otlp_metrics_union_table_entry.cpp
-    src/otlp_scan.cpp
-    src/otlp_metrics_union_scan.cpp
+    src/otlp_columnar_table_entry.cpp
+    src/otlp_columnar_scan.cpp
     src/otlp_storage_extension.cpp
     src/otlp_receiver.cpp
     src/otlp_transaction.cpp

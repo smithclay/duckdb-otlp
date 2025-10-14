@@ -14,12 +14,69 @@ namespace duckdb {
 //! Shared helper functions for parsing OTLP protobuf data
 //! Used by both otlp_receiver.cpp (gRPC) and protobuf_parser.cpp (file reading)
 
+// Forward declaration used by ConvertAttributesToMap
+inline string AnyValueToString(const opentelemetry::proto::common::v1::AnyValue &any_value);
+
 //! Helper: Convert OTLP KeyValue attributes to DuckDB MAP
 inline Value ConvertAttributesToMap(
     const google::protobuf::RepeatedPtrField<opentelemetry::proto::common::v1::KeyValue> &attributes) {
-	// Create empty MAP for now - will populate in future iteration
-	// TODO: Actually populate the MAP with key-value pairs
-	return Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+	// Represent attributes as MAP<VARCHAR, VARCHAR> by stringifying AnyValue
+	// Note: This preserves information and avoids JSON extraction in SQL.
+	// Complex nested/array values are JSON-serialized strings.
+	vector<Value> keys;
+	vector<Value> vals;
+	keys.reserve(static_cast<size_t>(attributes.size()));
+	vals.reserve(static_cast<size_t>(attributes.size()));
+
+	for (const auto &kv : attributes) {
+		const auto &key = kv.key();
+		const auto &val = kv.value();
+		string sval;
+		if (val.has_string_value()) {
+			sval = val.string_value();
+		} else if (val.has_int_value()) {
+			sval = std::to_string(val.int_value());
+		} else if (val.has_double_value()) {
+			sval = std::to_string(val.double_value());
+		} else if (val.has_bool_value()) {
+			sval = val.bool_value() ? "true" : "false";
+		} else if (val.has_kvlist_value()) {
+			// Serialize KV list to compact JSON string key1=...,key2=... style
+			// For simplicity, use JSON-like rendering
+			string out = "{";
+			bool first = true;
+			for (const auto &subkv : val.kvlist_value().values()) {
+				if (!first)
+					out += ",";
+				first = false;
+				out += '"' + subkv.key() + '"';
+				out += ":";
+				out += '"' + AnyValueToString(subkv.value()) + '"';
+			}
+			out += "}";
+			sval = std::move(out);
+		} else if (val.has_array_value()) {
+			// Serialize array to JSON-like [v1,v2]
+			string out = "[";
+			bool first = true;
+			for (const auto &elem : val.array_value().values()) {
+				if (!first)
+					out += ",";
+				first = false;
+				out += '"' + AnyValueToString(elem) + '"';
+			}
+			out += "]";
+			sval = std::move(out);
+		} else {
+			sval = "";
+		}
+
+		keys.emplace_back(Value(key));
+		vals.emplace_back(Value(sval));
+	}
+
+	// Build MAP from key and value lists
+	return Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, keys, vals);
 }
 
 //! Helper: Extract service.name from resource attributes
@@ -45,12 +102,16 @@ inline string BytesToHex(const string &bytes) {
 			}
 		}
 		if (is_hex) {
-			return bytes; // Already hex, don't double-encode
+			// Normalize to lowercase for consistency
+			string normalized = bytes;
+			for (auto &c : normalized)
+				c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+			return normalized; // Already hex, normalized
 		}
 	}
 
 	// Convert binary to hex
-	static const char hex_chars[] = "0123456789ABCDEF";
+	static const char hex_chars[] = "0123456789abcdef";
 	string result;
 	result.reserve(bytes.size() * 2);
 	for (unsigned char c : bytes) {
@@ -116,6 +177,41 @@ inline string AnyValueToString(const opentelemetry::proto::common::v1::AnyValue 
 		return std::to_string(any_value.double_value());
 	} else if (any_value.has_bool_value()) {
 		return any_value.bool_value() ? "true" : "false";
+	}
+	return "";
+}
+
+//! Helper: Convert AnyValue to a JSON-like string (handles nested kvlist/array)
+inline string AnyValueToJSONString(const opentelemetry::proto::common::v1::AnyValue &any_value) {
+	if (any_value.has_string_value() || any_value.has_int_value() || any_value.has_double_value() ||
+	    any_value.has_bool_value()) {
+		return AnyValueToString(any_value);
+	}
+	if (any_value.has_kvlist_value()) {
+		string out = "{";
+		bool first = true;
+		for (const auto &subkv : any_value.kvlist_value().values()) {
+			if (!first)
+				out += ",";
+			first = false;
+			out += '"' + subkv.key() + '"';
+			out += ":";
+			out += '"' + AnyValueToString(subkv.value()) + '"';
+		}
+		out += "}";
+		return out;
+	}
+	if (any_value.has_array_value()) {
+		string out = "[";
+		bool first = true;
+		for (const auto &elem : any_value.array_value().values()) {
+			if (!first)
+				out += ",";
+			first = false;
+			out += '"' + AnyValueToString(elem) + '"';
+		}
+		out += "]";
+		return out;
 	}
 	return "";
 }

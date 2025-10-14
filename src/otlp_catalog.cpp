@@ -1,8 +1,7 @@
 #include "otlp_catalog.hpp"
 #include "otlp_storage_info.hpp"
-#include "otlp_table_entry.hpp"
-#include "otlp_metrics_union_table_entry.hpp"
 #include "otlp_schema_entry.hpp"
+#include "otlp_columnar_table_entry.hpp"
 #include "otlp_receiver.hpp"
 #include "otlp_traces_schema.hpp"
 #include "otlp_logs_schema.hpp"
@@ -100,18 +99,16 @@ optional_ptr<CatalogEntry> OTLPCatalog::GetEntry(ClientContext &context, const s
 			table_info->columns.AddColumn(ColumnDefinition(column_names[i], column_types[i]));
 		}
 
-		// Get all metric buffers
-		auto buffers = storage_info_->GetAllMetricBuffers();
+		// Use pre-flattened union buffer and a columnar scan
+		auto buffer = storage_info_->GetMetricsUnionBuffer();
 
-		// Create and cache the union table entry
-		auto entry = make_uniq<OTLPMetricsUnionTableEntry>(*this, *main_schema_, *table_info, buffers);
+		auto entry = make_uniq<OTLPColumnarTableEntry>(*this, *main_schema_, *table_info, buffer);
 		auto entry_ptr = entry.get();
 		table_entries_[entry_key] = std::move(entry);
-
 		return entry_ptr;
 	}
 
-	// Get ring buffer for this table name
+	// Get columnar buffer for this table name
 	auto buffer = storage_info_->GetBuffer(name);
 	if (!buffer) {
 		return nullptr; // Not one of our virtual tables
@@ -139,7 +136,7 @@ optional_ptr<CatalogEntry> OTLPCatalog::GetEntry(ClientContext &context, const s
 	}
 
 	// Create and cache the table entry
-	auto entry = make_uniq<OTLPTableEntry>(*this, *main_schema_, *table_info, buffer);
+	auto entry = make_uniq<OTLPColumnarTableEntry>(*this, *main_schema_, *table_info, buffer);
 	auto entry_ptr = entry.get();
 	table_entries_[entry_key] = std::move(entry);
 
@@ -161,22 +158,16 @@ optional_ptr<CatalogEntry> OTLPCatalog::GetEntryCached(const string &name) {
 		table_info->schema = DEFAULT_SCHEMA;
 		table_info->table = name;
 
-		// Add union schema columns (27 columns)
 		auto column_names = OTLPMetricsUnionSchema::GetColumnNames();
 		auto column_types = OTLPMetricsUnionSchema::GetColumnTypes();
-
 		for (idx_t i = 0; i < column_names.size(); i++) {
 			table_info->columns.AddColumn(ColumnDefinition(column_names[i], column_types[i]));
 		}
 
-		// Get all metric buffers
-		auto buffers = storage_info_->GetAllMetricBuffers();
-
-		// Create and cache the union table entry
-		auto entry = make_uniq<OTLPMetricsUnionTableEntry>(*this, *main_schema_, *table_info, buffers);
+		auto buffer = storage_info_->GetMetricsUnionBuffer();
+		auto entry = make_uniq<OTLPColumnarTableEntry>(*this, *main_schema_, *table_info, buffer);
 		auto entry_ptr = entry.get();
 		table_entries_[entry_key] = std::move(entry);
-
 		return entry_ptr;
 	}
 
@@ -208,7 +199,7 @@ optional_ptr<CatalogEntry> OTLPCatalog::GetEntryCached(const string &name) {
 	}
 
 	// Create and cache
-	auto entry = make_uniq<OTLPTableEntry>(*this, *main_schema_, *table_info, buffer);
+	auto entry = make_uniq<OTLPColumnarTableEntry>(*this, *main_schema_, *table_info, buffer);
 	auto entry_ptr = entry.get();
 	table_entries_[entry_key] = std::move(entry);
 

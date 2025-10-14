@@ -3,6 +3,7 @@
 #include "otlp_traces_schema.hpp"
 #include "otlp_logs_schema.hpp"
 #include "otlp_metrics_union_schema.hpp"
+#include "row_builders_traces_logs.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "yyjson.hpp"
@@ -305,6 +306,93 @@ static double GetDoubleValue(duckdb_yyjson::yyjson_val *obj, const char *key, do
 	return default_val;
 }
 
+// Helper: Convert OTLP JSON AnyValue object to string
+static string JSONAnyToString(duckdb_yyjson::yyjson_val *any_obj) {
+	if (!any_obj || !duckdb_yyjson::yyjson_is_obj(any_obj)) {
+		return "";
+	}
+	auto s = duckdb_yyjson::yyjson_obj_get(any_obj, "stringValue");
+	if (s && duckdb_yyjson::yyjson_is_str(s)) {
+		auto str = duckdb_yyjson::yyjson_get_str(s);
+		return str ? string(str) : "";
+	}
+	auto i = duckdb_yyjson::yyjson_obj_get(any_obj, "intValue");
+	if (i && duckdb_yyjson::yyjson_is_int(i)) {
+		return std::to_string(duckdb_yyjson::yyjson_get_int(i));
+	}
+	auto d = duckdb_yyjson::yyjson_obj_get(any_obj, "doubleValue");
+	if (d && duckdb_yyjson::yyjson_is_real(d)) {
+		return std::to_string(duckdb_yyjson::yyjson_get_real(d));
+	}
+	auto b = duckdb_yyjson::yyjson_obj_get(any_obj, "boolValue");
+	if (b && (duckdb_yyjson::yyjson_is_true(b) || duckdb_yyjson::yyjson_is_false(b))) {
+		return duckdb_yyjson::yyjson_is_true(b) ? "true" : "false";
+	}
+	auto kvl = duckdb_yyjson::yyjson_obj_get(any_obj, "kvlistValue");
+	if (kvl) {
+		auto values = duckdb_yyjson::yyjson_obj_get(kvl, "values");
+		string out = "{";
+		bool first = true;
+		if (values && duckdb_yyjson::yyjson_is_arr(values)) {
+			size_t iidx, imax;
+			duckdb_yyjson::yyjson_val *item;
+			yyjson_arr_foreach(values, iidx, imax, item) {
+				if (!duckdb_yyjson::yyjson_is_obj(item))
+					continue;
+				auto key = GetStringValue(item, "key");
+				auto v = duckdb_yyjson::yyjson_obj_get(item, "value");
+				if (!first)
+					out += ",";
+				first = false;
+				out += '"' + key + '"';
+				out += ":";
+				out += '"' + JSONAnyToString(v) + '"';
+			}
+		}
+		out += "}";
+		return out;
+	}
+	auto arr = duckdb_yyjson::yyjson_obj_get(any_obj, "arrayValue");
+	if (arr) {
+		auto values = duckdb_yyjson::yyjson_obj_get(arr, "values");
+		string out = "[";
+		bool first = true;
+		if (values && duckdb_yyjson::yyjson_is_arr(values)) {
+			size_t iidx, imax;
+			duckdb_yyjson::yyjson_val *item;
+			yyjson_arr_foreach(values, iidx, imax, item) {
+				if (!first)
+					out += ",";
+				first = false;
+				out += '"' + JSONAnyToString(item) + '"';
+			}
+		}
+		out += "]";
+		return out;
+	}
+	return "";
+}
+
+// Build DuckDB MAP<VARCHAR,VARCHAR> from OTLP JSON attributes array
+static Value JSONAttributesToMap(duckdb_yyjson::yyjson_val *attributes_arr) {
+	vector<Value> keys;
+	vector<Value> vals;
+	if (attributes_arr && duckdb_yyjson::yyjson_is_arr(attributes_arr)) {
+		size_t idx, max;
+		duckdb_yyjson::yyjson_val *attr;
+		yyjson_arr_foreach(attributes_arr, idx, max, attr) {
+			if (!duckdb_yyjson::yyjson_is_obj(attr))
+				continue;
+			auto key = GetStringValue(attr, "key");
+			auto val = duckdb_yyjson::yyjson_obj_get(attr, "value");
+			string sval = JSONAnyToString(val);
+			keys.emplace_back(Value(key));
+			vals.emplace_back(Value(sval));
+		}
+	}
+	return Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, keys, vals);
+}
+
 bool OTLPJSONParser::ParseTracesToTypedRows(const string &json, vector<vector<Value>> &rows) {
 	last_error = "";
 
@@ -329,10 +417,12 @@ bool OTLPJSONParser::ParseTracesToTypedRows(const string &json, vector<vector<Va
 	yyjson_arr_foreach(resource_spans_array, idx1, max1, resource_span) {
 		auto resource = duckdb_yyjson::yyjson_obj_get(resource_span, "resource");
 
-		// Extract service name from resource attributes
+		// Extract service name and resource attributes
 		string service_name = "unknown_service";
+		Value resource_attributes_map = Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, {}, {});
 		if (resource) {
 			auto attrs = duckdb_yyjson::yyjson_obj_get(resource, "attributes");
+			resource_attributes_map = JSONAttributesToMap(attrs);
 			if (attrs && duckdb_yyjson::yyjson_is_arr(attrs)) {
 				size_t attr_idx, attr_max;
 				duckdb_yyjson::yyjson_val *attr;
@@ -341,7 +431,7 @@ bool OTLPJSONParser::ParseTracesToTypedRows(const string &json, vector<vector<Va
 					if (key == "service.name") {
 						auto value = duckdb_yyjson::yyjson_obj_get(attr, "value");
 						if (value) {
-							service_name = GetStringValue(value, "stringValue");
+							service_name = JSONAnyToString(value);
 						}
 						break;
 					}
@@ -369,55 +459,70 @@ bool OTLPJSONParser::ParseTracesToTypedRows(const string &json, vector<vector<Va
 			size_t idx3, max3;
 			duckdb_yyjson::yyjson_val *span;
 			yyjson_arr_foreach(spans_array, idx3, max3, span) {
-				vector<Value> row(OTLPTracesSchema::COLUMN_COUNT);
-
-				// Extract timestamps
 				auto start_time = GetUint64Value(span, "startTimeUnixNano");
 				auto end_time = GetUint64Value(span, "endTimeUnixNano");
-				auto timestamp = NanosToTimestamp(start_time);
-				auto duration = end_time - start_time;
+				auto ts = NanosToTimestamp(start_time);
+				int64_t duration = (int64_t)(end_time - start_time);
 
-				// Populate row (22 columns)
-				row[OTLPTracesSchema::COL_TIMESTAMP] = Value::TIMESTAMPNS(timestamp);
-				row[OTLPTracesSchema::COL_TRACE_ID] = Value(BytesToHex(GetStringValue(span, "traceId")));
-				row[OTLPTracesSchema::COL_SPAN_ID] = Value(BytesToHex(GetStringValue(span, "spanId")));
-				row[OTLPTracesSchema::COL_PARENT_SPAN_ID] = Value(BytesToHex(GetStringValue(span, "parentSpanId")));
-				row[OTLPTracesSchema::COL_TRACE_STATE] = Value(GetStringValue(span, "traceState"));
-				row[OTLPTracesSchema::COL_SPAN_NAME] = Value(GetStringValue(span, "name"));
-
-				// SpanKind enum - convert from string or int
-				auto kind_str = GetStringValue(span, "kind");
-				row[OTLPTracesSchema::COL_SPAN_KIND] = Value(kind_str.empty() ? "UNSPECIFIED" : kind_str);
-
-				row[OTLPTracesSchema::COL_SERVICE_NAME] = Value(service_name);
-				row[OTLPTracesSchema::COL_RESOURCE_ATTRIBUTES] =
-				    Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR)); // NULL MAP
-				row[OTLPTracesSchema::COL_SCOPE_NAME] = Value(scope_name);
-				row[OTLPTracesSchema::COL_SCOPE_VERSION] = Value(scope_version);
-				row[OTLPTracesSchema::COL_SPAN_ATTRIBUTES] =
-				    Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR)); // NULL MAP
-				row[OTLPTracesSchema::COL_DURATION] = Value::BIGINT(duration);
-
-				// Status
 				auto status = duckdb_yyjson::yyjson_obj_get(span, "status");
 				string status_code = GetStringValue(status, "code");
 				if (status_code.empty())
 					status_code = "UNSET";
-				row[OTLPTracesSchema::COL_STATUS_CODE] = Value(status_code);
-				row[OTLPTracesSchema::COL_STATUS_MESSAGE] = Value(GetStringValue(status, "message"));
 
-				// Events and Links - NULL LISTs for now
-				row[OTLPTracesSchema::COL_EVENTS_TIMESTAMP] = Value(LogicalType::LIST(LogicalType::TIMESTAMP_NS));
-				row[OTLPTracesSchema::COL_EVENTS_NAME] = Value(LogicalType::LIST(LogicalType::VARCHAR));
-				row[OTLPTracesSchema::COL_EVENTS_ATTRIBUTES] =
-				    Value(LogicalType::LIST(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR)));
-				row[OTLPTracesSchema::COL_LINKS_TRACE_ID] = Value(LogicalType::LIST(LogicalType::VARCHAR));
-				row[OTLPTracesSchema::COL_LINKS_SPAN_ID] = Value(LogicalType::LIST(LogicalType::VARCHAR));
-				row[OTLPTracesSchema::COL_LINKS_TRACE_STATE] = Value(LogicalType::LIST(LogicalType::VARCHAR));
-				row[OTLPTracesSchema::COL_LINKS_ATTRIBUTES] =
-				    Value(LogicalType::LIST(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR)));
+				vector<Value> ev_ts;
+				vector<Value> ev_names;
+				vector<Value> ev_attrs;
+				auto events_arr = duckdb_yyjson::yyjson_obj_get(span, "events");
+				if (events_arr && duckdb_yyjson::yyjson_is_arr(events_arr)) {
+					size_t eidx, emax;
+					duckdb_yyjson::yyjson_val *event;
+					yyjson_arr_foreach(events_arr, eidx, emax, event) {
+						auto et = GetUint64Value(event, "timeUnixNano");
+						ev_ts.emplace_back(Value::TIMESTAMPNS(NanosToTimestamp(et)));
+						ev_names.emplace_back(Value(GetStringValue(event, "name")));
+						ev_attrs.emplace_back(JSONAttributesToMap(duckdb_yyjson::yyjson_obj_get(event, "attributes")));
+					}
+				}
 
-				rows.push_back(std::move(row));
+				// Links
+				vector<Value> l_trace_ids, l_span_ids, l_trace_states, l_link_attrs;
+				auto links_arr = duckdb_yyjson::yyjson_obj_get(span, "links");
+				if (links_arr && duckdb_yyjson::yyjson_is_arr(links_arr)) {
+					size_t lidx, lmax;
+					duckdb_yyjson::yyjson_val *link;
+					yyjson_arr_foreach(links_arr, lidx, lmax, link) {
+						l_trace_ids.emplace_back(Value(BytesToHex(GetStringValue(link, "traceId"))));
+						l_span_ids.emplace_back(Value(BytesToHex(GetStringValue(link, "spanId"))));
+						l_trace_states.emplace_back(Value(GetStringValue(link, "traceState")));
+						l_link_attrs.emplace_back(
+						    JSONAttributesToMap(duckdb_yyjson::yyjson_obj_get(link, "attributes")));
+					}
+				}
+
+				auto kind_str = GetStringValue(span, "kind");
+				TracesRowData d {ts,
+				                 BytesToHex(GetStringValue(span, "traceId")),
+				                 BytesToHex(GetStringValue(span, "spanId")),
+				                 BytesToHex(GetStringValue(span, "parentSpanId")),
+				                 GetStringValue(span, "traceState"),
+				                 GetStringValue(span, "name"),
+				                 (kind_str.empty() ? string("UNSPECIFIED") : kind_str),
+				                 service_name,
+				                 resource_attributes_map,
+				                 scope_name,
+				                 scope_version,
+				                 JSONAttributesToMap(duckdb_yyjson::yyjson_obj_get(span, "attributes")),
+				                 duration,
+				                 status_code,
+				                 GetStringValue(status, "message"),
+				                 std::move(ev_ts),
+				                 std::move(ev_names),
+				                 std::move(ev_attrs),
+				                 std::move(l_trace_ids),
+				                 std::move(l_span_ids),
+				                 std::move(l_trace_states),
+				                 std::move(l_link_attrs)};
+				rows.push_back(BuildTracesRow(d));
 			}
 		}
 	}
@@ -492,41 +597,26 @@ bool OTLPJSONParser::ParseLogsToTypedRows(const string &json, vector<vector<Valu
 			size_t idx3, max3;
 			duckdb_yyjson::yyjson_val *log_record;
 			yyjson_arr_foreach(log_records_array, idx3, max3, log_record) {
-				vector<Value> row(OTLPLogsSchema::COLUMN_COUNT);
-
-				// Extract timestamp
-				auto time_unix_nano = GetUint64Value(log_record, "timeUnixNano");
-				auto timestamp = NanosToTimestamp(time_unix_nano);
-
-				// Populate row (15 columns)
-				row[OTLPLogsSchema::COL_TIMESTAMP] = Value::TIMESTAMPNS(timestamp);
-				row[OTLPLogsSchema::COL_TRACE_ID] = Value(BytesToHex(GetStringValue(log_record, "traceId")));
-				row[OTLPLogsSchema::COL_SPAN_ID] = Value(BytesToHex(GetStringValue(log_record, "spanId")));
-				row[OTLPLogsSchema::COL_TRACE_FLAGS] = Value::UINTEGER(GetUintValue(log_record, "flags"));
-				row[OTLPLogsSchema::COL_SEVERITY_TEXT] = Value(GetStringValue(log_record, "severityText"));
-				row[OTLPLogsSchema::COL_SEVERITY_NUMBER] = Value::INTEGER(GetIntValue(log_record, "severityNumber"));
-				row[OTLPLogsSchema::COL_SERVICE_NAME] = Value(service_name);
-
-				// Body - can be string or object
+				auto ts = NanosToTimestamp(GetUint64Value(log_record, "timeUnixNano"));
 				auto body = duckdb_yyjson::yyjson_obj_get(log_record, "body");
-				string body_str = "";
-				if (body) {
-					body_str = GetStringValue(body, "stringValue");
-				}
-				row[OTLPLogsSchema::COL_BODY] = Value(body_str);
-
-				row[OTLPLogsSchema::COL_RESOURCE_SCHEMA_URL] = Value(resource_schema_url);
-				row[OTLPLogsSchema::COL_RESOURCE_ATTRIBUTES] =
-				    Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR)); // NULL MAP
-				row[OTLPLogsSchema::COL_SCOPE_SCHEMA_URL] = Value(scope_schema_url);
-				row[OTLPLogsSchema::COL_SCOPE_NAME] = Value(scope_name);
-				row[OTLPLogsSchema::COL_SCOPE_VERSION] = Value(scope_version);
-				row[OTLPLogsSchema::COL_SCOPE_ATTRIBUTES] =
-				    Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR)); // NULL MAP
-				row[OTLPLogsSchema::COL_LOG_ATTRIBUTES] =
-				    Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR)); // NULL MAP
-
-				rows.push_back(std::move(row));
+				string body_str = body ? GetStringValue(body, "stringValue") : "";
+				LogsRowData d {
+				    ts,
+				    BytesToHex(GetStringValue(log_record, "traceId")),
+				    BytesToHex(GetStringValue(log_record, "spanId")),
+				    GetUintValue(log_record, "flags"),
+				    GetStringValue(log_record, "severityText"),
+				    GetIntValue(log_record, "severityNumber"),
+				    service_name,
+				    body_str,
+				    resource_schema_url,
+				    JSONAttributesToMap(resource ? duckdb_yyjson::yyjson_obj_get(resource, "attributes") : nullptr),
+				    scope_schema_url,
+				    scope_name,
+				    scope_version,
+				    JSONAttributesToMap(scope ? duckdb_yyjson::yyjson_obj_get(scope, "attributes") : nullptr),
+				    JSONAttributesToMap(duckdb_yyjson::yyjson_obj_get(log_record, "attributes"))};
+				rows.push_back(BuildLogsRow(d));
 			}
 		}
 	}
@@ -621,12 +711,13 @@ bool OTLPJSONParser::ParseMetricsToTypedRows(const string &json, vector<vector<V
 							row[OTLPMetricsBaseSchema::COL_METRIC_NAME] = Value(metric_name);
 							row[OTLPMetricsBaseSchema::COL_METRIC_DESCRIPTION] = Value(metric_description);
 							row[OTLPMetricsBaseSchema::COL_METRIC_UNIT] = Value(metric_unit);
-							row[OTLPMetricsBaseSchema::COL_RESOURCE_ATTRIBUTES] =
-							    Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+							// Resource and datapoint attributes
+							row[OTLPMetricsBaseSchema::COL_RESOURCE_ATTRIBUTES] = JSONAttributesToMap(
+							    resource ? duckdb_yyjson::yyjson_obj_get(resource, "attributes") : nullptr);
 							row[OTLPMetricsBaseSchema::COL_SCOPE_NAME] = Value(scope_name);
 							row[OTLPMetricsBaseSchema::COL_SCOPE_VERSION] = Value(scope_version);
 							row[OTLPMetricsBaseSchema::COL_ATTRIBUTES] =
-							    Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+							    JSONAttributesToMap(duckdb_yyjson::yyjson_obj_get(data_point, "attributes"));
 
 							// Union discriminator
 							row[OTLPMetricsUnionSchema::COL_METRIC_TYPE] = Value("gauge");
@@ -688,12 +779,12 @@ bool OTLPJSONParser::ParseMetricsToTypedRows(const string &json, vector<vector<V
 							row[OTLPMetricsBaseSchema::COL_METRIC_NAME] = Value(metric_name);
 							row[OTLPMetricsBaseSchema::COL_METRIC_DESCRIPTION] = Value(metric_description);
 							row[OTLPMetricsBaseSchema::COL_METRIC_UNIT] = Value(metric_unit);
-							row[OTLPMetricsBaseSchema::COL_RESOURCE_ATTRIBUTES] =
-							    Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+							row[OTLPMetricsBaseSchema::COL_RESOURCE_ATTRIBUTES] = JSONAttributesToMap(
+							    resource ? duckdb_yyjson::yyjson_obj_get(resource, "attributes") : nullptr);
 							row[OTLPMetricsBaseSchema::COL_SCOPE_NAME] = Value(scope_name);
 							row[OTLPMetricsBaseSchema::COL_SCOPE_VERSION] = Value(scope_version);
 							row[OTLPMetricsBaseSchema::COL_ATTRIBUTES] =
-							    Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+							    JSONAttributesToMap(duckdb_yyjson::yyjson_obj_get(data_point, "attributes"));
 
 							// Union discriminator
 							row[OTLPMetricsUnionSchema::COL_METRIC_TYPE] = Value("sum");
@@ -760,12 +851,12 @@ bool OTLPJSONParser::ParseMetricsToTypedRows(const string &json, vector<vector<V
 							row[OTLPMetricsBaseSchema::COL_METRIC_NAME] = Value(metric_name);
 							row[OTLPMetricsBaseSchema::COL_METRIC_DESCRIPTION] = Value(metric_description);
 							row[OTLPMetricsBaseSchema::COL_METRIC_UNIT] = Value(metric_unit);
-							row[OTLPMetricsBaseSchema::COL_RESOURCE_ATTRIBUTES] =
-							    Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+							row[OTLPMetricsBaseSchema::COL_RESOURCE_ATTRIBUTES] = JSONAttributesToMap(
+							    resource ? duckdb_yyjson::yyjson_obj_get(resource, "attributes") : nullptr);
 							row[OTLPMetricsBaseSchema::COL_SCOPE_NAME] = Value(scope_name);
 							row[OTLPMetricsBaseSchema::COL_SCOPE_VERSION] = Value(scope_version);
 							row[OTLPMetricsBaseSchema::COL_ATTRIBUTES] =
-							    Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+							    JSONAttributesToMap(duckdb_yyjson::yyjson_obj_get(data_point, "attributes"));
 
 							// Union discriminator
 							row[OTLPMetricsUnionSchema::COL_METRIC_TYPE] = Value("histogram");
@@ -824,12 +915,12 @@ bool OTLPJSONParser::ParseMetricsToTypedRows(const string &json, vector<vector<V
 							row[OTLPMetricsBaseSchema::COL_METRIC_NAME] = Value(metric_name);
 							row[OTLPMetricsBaseSchema::COL_METRIC_DESCRIPTION] = Value(metric_description);
 							row[OTLPMetricsBaseSchema::COL_METRIC_UNIT] = Value(metric_unit);
-							row[OTLPMetricsBaseSchema::COL_RESOURCE_ATTRIBUTES] =
-							    Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+							row[OTLPMetricsBaseSchema::COL_RESOURCE_ATTRIBUTES] = JSONAttributesToMap(
+							    resource ? duckdb_yyjson::yyjson_obj_get(resource, "attributes") : nullptr);
 							row[OTLPMetricsBaseSchema::COL_SCOPE_NAME] = Value(scope_name);
 							row[OTLPMetricsBaseSchema::COL_SCOPE_VERSION] = Value(scope_version);
 							row[OTLPMetricsBaseSchema::COL_ATTRIBUTES] =
-							    Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+							    JSONAttributesToMap(duckdb_yyjson::yyjson_obj_get(data_point, "attributes"));
 
 							// Union discriminator
 							row[OTLPMetricsUnionSchema::COL_METRIC_TYPE] = Value("exponential_histogram");

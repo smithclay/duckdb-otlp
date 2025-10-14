@@ -149,8 +149,10 @@ unique_ptr<GlobalTableFunctionState> ReadOTLPTableFunction::Init(ClientContext &
 
 				if (!success) {
 					string error = state->json_parser->GetLastError();
-					throw IOException("Failed to parse OTLP JSON data on line: " + error);
+					throw IOException("Failed to parse OTLP JSON data on line (approx) '" +
+					                  std::to_string(state->current_line + 1) + "': " + error);
 				}
+				state->current_line++;
 			}
 
 			if (state->rows.empty()) {
@@ -188,11 +190,15 @@ unique_ptr<GlobalTableFunctionState> ReadOTLPTableFunction::Init(ClientContext &
 
 		state->current_row = 0;
 	} else if (state->format == OTLPFormat::PROTOBUF) {
-		// Protobuf format - read entire file and parse to strongly-typed rows
+		// Protobuf format - read entire file and parse to strongly-typed rows (with size cap)
 		state->protobuf_parser = make_uniq<OTLPProtobufParser>();
 
 		// Read entire file into memory
 		auto file_size = fs.GetFileSize(*state->file_handle);
+		const int64_t max_proto_bytes = static_cast<int64_t>(100) * 1024 * 1024; // 100MB
+		if (file_size <= 0 || file_size > max_proto_bytes) {
+			throw IOException("Protobuf file too large or empty (limit: 100MB)");
+		}
 		string file_contents;
 		file_contents.resize(file_size);
 		idx_t total_read = state->file_handle->Read((void *)file_contents.data(), file_size);

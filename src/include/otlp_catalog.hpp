@@ -1,17 +1,15 @@
 #pragma once
 
 #include "duckdb/catalog/catalog.hpp"
-#include "ring_buffer.hpp"
 #include "otlp_types.hpp"
 #include <unordered_map>
 
 namespace duckdb {
 
 class OTLPStorageInfo;
-class OTLPTableEntry;
 
 //! Custom catalog for OTLP storage extension
-//! Provides virtual tables backed by ring buffers
+//! Provides virtual tables backed by columnar ring buffers
 class OTLPCatalog : public Catalog {
 public:
 	explicit OTLPCatalog(AttachedDatabase &db, shared_ptr<OTLPStorageInfo> storage_info);

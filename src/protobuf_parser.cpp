@@ -4,6 +4,7 @@
 #include "otlp_logs_schema.hpp"
 #include "otlp_metrics_schemas.hpp"
 #include "otlp_metrics_union_schema.hpp"
+#include "row_builders_traces_logs.hpp"
 #include "otlp_types.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/types/timestamp.hpp"
@@ -107,9 +108,23 @@ idx_t OTLPProtobufParser::ParseMetricsData(const char *data, size_t length, vect
 		for (const auto &scope_metric : resource_metric.scope_metrics()) {
 			// Iterate through metrics
 			for (const auto &metric : scope_metric.metrics()) {
-				// Extract timestamp - metrics have different structures
-				// Use current timestamp for now (will improve in later iterations)
-				timestamp_t ts = Timestamp::GetCurrentTimestamp();
+				// Extract best-effort timestamp from metric datapoints
+				uint64_t nanos = 0;
+				if (metric.has_gauge() && !metric.gauge().data_points().empty()) {
+					nanos = metric.gauge().data_points(0).time_unix_nano();
+				} else if (metric.has_sum() && !metric.sum().data_points().empty()) {
+					nanos = metric.sum().data_points(0).time_unix_nano();
+				} else if (metric.has_histogram() && !metric.histogram().data_points().empty()) {
+					nanos = metric.histogram().data_points(0).time_unix_nano();
+				} else if (metric.has_exponential_histogram() &&
+				           !metric.exponential_histogram().data_points().empty()) {
+					nanos = metric.exponential_histogram().data_points(0).time_unix_nano();
+				} else if (metric.has_summary() && !metric.summary().data_points().empty()) {
+					nanos = metric.summary().data_points(0).time_unix_nano();
+				}
+
+				timestamp_t ts =
+				    nanos ? duckdb::NanosToTimestamp(static_cast<int64_t>(nanos)) : Timestamp::GetCurrentTimestamp();
 
 				// Convert individual metric to JSON (not entire MetricsData)
 				string metric_json = MessageToJSON(metric);
@@ -187,7 +202,7 @@ idx_t OTLPProtobufParser::ParseTracesToTypedRows(const char *data, size_t length
 
 	idx_t row_count = 0;
 
-	// Iterate through resource spans (similar to otlp_receiver.cpp)
+	// Iterate through resource spans (using shared row builders)
 	for (const auto &resource_span : traces_data.resource_spans()) {
 		const auto &resource = resource_span.resource();
 		string service_name = ExtractServiceName(resource);
@@ -201,41 +216,39 @@ idx_t OTLPProtobufParser::ParseTracesToTypedRows(const char *data, size_t length
 
 			// Iterate through spans
 			for (const auto &span : scope_span.spans()) {
-				vector<Value> row(OTLPTracesSchema::COLUMN_COUNT);
+				TracesRowData d;
+				d.timestamp = NanosToTimestamp(span.start_time_unix_nano());
+				d.trace_id = BytesToHex(span.trace_id());
+				d.span_id = BytesToHex(span.span_id());
+				d.parent_span_id = BytesToHex(span.parent_span_id());
+				d.trace_state = span.trace_state();
+				d.span_name = span.name();
+				d.span_kind = SpanKindToString(span.kind());
+				d.service_name = service_name;
+				d.resource_attributes = resource_attrs;
+				d.scope_name = scope_name;
+				d.scope_version = scope_version;
+				d.span_attributes = ConvertAttributesToMap(span.attributes());
+				d.duration_ns = (int64_t)(span.end_time_unix_nano() - span.start_time_unix_nano());
+				d.status_code = StatusCodeToString(span.status().code());
+				d.status_message = span.status().message();
 
-				// Extract timestamp from span start time
-				auto timestamp = NanosToTimestamp(span.start_time_unix_nano());
-				auto duration = span.end_time_unix_nano() - span.start_time_unix_nano(); // nanoseconds
+				// Events
+				for (const auto &ev : span.events()) {
+					d.events_timestamps.emplace_back(Value::TIMESTAMPNS(NanosToTimestamp(ev.time_unix_nano())));
+					d.events_names.emplace_back(Value(ev.name()));
+					d.events_attributes.emplace_back(ConvertAttributesToMap(ev.attributes()));
+				}
 
-				// Populate row (22 columns)
-				row[OTLPTracesSchema::COL_TIMESTAMP] = Value::TIMESTAMPNS(timestamp);
-				row[OTLPTracesSchema::COL_TRACE_ID] = Value(BytesToHex(span.trace_id()));
-				row[OTLPTracesSchema::COL_SPAN_ID] = Value(BytesToHex(span.span_id()));
-				row[OTLPTracesSchema::COL_PARENT_SPAN_ID] = Value(BytesToHex(span.parent_span_id()));
-				row[OTLPTracesSchema::COL_TRACE_STATE] = Value(span.trace_state());
-				row[OTLPTracesSchema::COL_SPAN_NAME] = Value(span.name());
-				row[OTLPTracesSchema::COL_SPAN_KIND] = Value(SpanKindToString(span.kind()));
-				row[OTLPTracesSchema::COL_SERVICE_NAME] = Value(service_name);
-				row[OTLPTracesSchema::COL_RESOURCE_ATTRIBUTES] = resource_attrs;
-				row[OTLPTracesSchema::COL_SCOPE_NAME] = Value(scope_name);
-				row[OTLPTracesSchema::COL_SCOPE_VERSION] = Value(scope_version);
-				row[OTLPTracesSchema::COL_SPAN_ATTRIBUTES] = ConvertAttributesToMap(span.attributes());
-				row[OTLPTracesSchema::COL_DURATION] = Value::BIGINT(duration);
-				row[OTLPTracesSchema::COL_STATUS_CODE] = Value(StatusCodeToString(span.status().code()));
-				row[OTLPTracesSchema::COL_STATUS_MESSAGE] = Value(span.status().message());
+				// Links
+				for (const auto &lnk : span.links()) {
+					d.links_trace_ids.emplace_back(Value(BytesToHex(lnk.trace_id())));
+					d.links_span_ids.emplace_back(Value(BytesToHex(lnk.span_id())));
+					d.links_trace_states.emplace_back(Value(lnk.trace_state()));
+					d.links_attributes.emplace_back(ConvertAttributesToMap(lnk.attributes()));
+				}
 
-				// Events and Links - use NULL LISTs for now
-				row[OTLPTracesSchema::COL_EVENTS_TIMESTAMP] = Value(LogicalType::LIST(LogicalType::TIMESTAMP_NS));
-				row[OTLPTracesSchema::COL_EVENTS_NAME] = Value(LogicalType::LIST(LogicalType::VARCHAR));
-				row[OTLPTracesSchema::COL_EVENTS_ATTRIBUTES] =
-				    Value(LogicalType::LIST(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR)));
-				row[OTLPTracesSchema::COL_LINKS_TRACE_ID] = Value(LogicalType::LIST(LogicalType::VARCHAR));
-				row[OTLPTracesSchema::COL_LINKS_SPAN_ID] = Value(LogicalType::LIST(LogicalType::VARCHAR));
-				row[OTLPTracesSchema::COL_LINKS_TRACE_STATE] = Value(LogicalType::LIST(LogicalType::VARCHAR));
-				row[OTLPTracesSchema::COL_LINKS_ATTRIBUTES] =
-				    Value(LogicalType::LIST(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR)));
-
-				rows.push_back(std::move(row));
+				rows.push_back(BuildTracesRow(d));
 				row_count++;
 			}
 		}
@@ -271,29 +284,23 @@ idx_t OTLPProtobufParser::ParseLogsToTypedRows(const char *data, size_t length, 
 
 			// Iterate through log records
 			for (const auto &log_record : scope_log.log_records()) {
-				vector<Value> row(OTLPLogsSchema::COLUMN_COUNT);
-
-				// Extract timestamp
-				auto timestamp = NanosToTimestamp(log_record.time_unix_nano());
-
-				// Populate row (15 columns)
-				row[OTLPLogsSchema::COL_TIMESTAMP] = Value::TIMESTAMPNS(timestamp);
-				row[OTLPLogsSchema::COL_TRACE_ID] = Value(BytesToHex(log_record.trace_id()));
-				row[OTLPLogsSchema::COL_SPAN_ID] = Value(BytesToHex(log_record.span_id()));
-				row[OTLPLogsSchema::COL_TRACE_FLAGS] = Value::UINTEGER(log_record.flags());
-				row[OTLPLogsSchema::COL_SEVERITY_TEXT] = Value(log_record.severity_text());
-				row[OTLPLogsSchema::COL_SEVERITY_NUMBER] = Value::INTEGER(log_record.severity_number());
-				row[OTLPLogsSchema::COL_SERVICE_NAME] = Value(service_name);
-				row[OTLPLogsSchema::COL_BODY] = Value(AnyValueToString(log_record.body()));
-				row[OTLPLogsSchema::COL_RESOURCE_SCHEMA_URL] = Value(resource_schema_url);
-				row[OTLPLogsSchema::COL_RESOURCE_ATTRIBUTES] = resource_attrs;
-				row[OTLPLogsSchema::COL_SCOPE_SCHEMA_URL] = Value(scope_schema_url);
-				row[OTLPLogsSchema::COL_SCOPE_NAME] = Value(scope_name);
-				row[OTLPLogsSchema::COL_SCOPE_VERSION] = Value(scope_version);
-				row[OTLPLogsSchema::COL_SCOPE_ATTRIBUTES] = ConvertAttributesToMap(scope.attributes());
-				row[OTLPLogsSchema::COL_LOG_ATTRIBUTES] = ConvertAttributesToMap(log_record.attributes());
-
-				rows.push_back(std::move(row));
+				LogsRowData d;
+				d.timestamp = NanosToTimestamp(log_record.time_unix_nano());
+				d.trace_id = BytesToHex(log_record.trace_id());
+				d.span_id = BytesToHex(log_record.span_id());
+				d.trace_flags = log_record.flags();
+				d.severity_text = log_record.severity_text();
+				d.severity_number = log_record.severity_number();
+				d.service_name = service_name;
+				d.body = AnyValueToJSONString(log_record.body());
+				d.resource_schema_url = resource_schema_url;
+				d.resource_attributes = resource_attrs;
+				d.scope_schema_url = scope_schema_url;
+				d.scope_name = scope_name;
+				d.scope_version = scope_version;
+				d.scope_attributes = ConvertAttributesToMap(scope.attributes());
+				d.log_attributes = ConvertAttributesToMap(log_record.attributes());
+				rows.push_back(BuildLogsRow(d));
 				row_count++;
 			}
 		}
