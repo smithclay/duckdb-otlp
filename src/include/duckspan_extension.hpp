@@ -1,14 +1,5 @@
 #pragma once
 
-#include "duckdb.hpp"
-
-namespace duckdb {
-
-class DuckspanExtension : public Extension {
-public:
-	void Load(ExtensionLoader &db) override;
-	std::string Name() override;
-	std::string Version() const override;
-};
-
-} // namespace duckdb
+// Forwarding header for DuckDB's build system
+// The actual implementation is in src/storage/duckspan_extension.hpp
+#include "../storage/duckspan_extension.hpp"

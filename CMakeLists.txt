@@ -13,7 +13,17 @@ set(EXTENSION_NAME ${TARGET_NAME}_extension)
 set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
 
 project(${TARGET_NAME})
-include_directories(src/include)
+include_directories(
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/storage
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/catalog
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/schema
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/table
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/buffer
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/receiver
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/parsers
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/function
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/wasm)
 
 # Generated protobuf sources (Phase 5.1)
 set(PROTO_SOURCES
@@ -31,23 +41,26 @@ set(PROTO_SOURCES
 
 # Core sources (minimal set for WASM)
 set(EXTENSION_SOURCES_JSON_ONLY
-    src/duckspan_extension.cpp src/otlp_schema.cpp src/json_parser.cpp
-    src/read_otlp.cpp src/row_builders_traces_logs.cpp)
+    src/storage/duckspan_extension.cpp src/catalog/otlp_schema.cpp
+    src/parsers/json_parser.cpp src/function/read_otlp.cpp
+    src/receiver/row_builders_traces_logs.cpp)
 
 # Protobuf sources (requires vcpkg, excluded for WASM)
-set(EXTENSION_SOURCES_PROTOBUF src/protobuf_parser.cpp src/format_detector.cpp)
+set(EXTENSION_SOURCES_PROTOBUF src/parsers/protobuf_parser.cpp
+                               src/parsers/format_detector.cpp)
 
 # gRPC/network sources (excluded for WASM)
 set(EXTENSION_SOURCES_GRPC
-    src/columnar_ring_buffer.cpp
-    src/row_builders.cpp
-    src/otlp_catalog.cpp
-    src/otlp_schema_entry.cpp
-    src/otlp_columnar_table_entry.cpp
-    src/otlp_columnar_scan.cpp
-    src/otlp_storage_extension.cpp
-    src/otlp_receiver.cpp
-    src/otlp_transaction.cpp
+    src/buffer/columnar_ring_buffer.cpp
+    src/receiver/row_builders.cpp
+    src/catalog/otlp_catalog.cpp
+    src/catalog/otlp_schema_entry.cpp
+    src/table/otlp_columnar_table_entry.cpp
+    src/table/otlp_columnar_scan.cpp
+    src/storage/otlp_storage_extension.cpp
+    src/receiver/otlp_receiver.cpp
+    src/storage/otlp_transaction.cpp
+    src/catalog/schema_bridge.cpp
     ${PROTO_SOURCES})
 
 # Conditionally include sources based on platform
@@ -61,8 +74,8 @@ else()
     STATUS "Building for WASM: JSON parsing only (no Protobuf, no gRPC/ATTACH)")
   set(EXTENSION_SOURCES ${EXTENSION_SOURCES_JSON_ONLY})
   # Add WASM-specific stubs
-  list(APPEND EXTENSION_SOURCES src/otlp_storage_extension_wasm.cpp
-       src/protobuf_parser_wasm.cpp src/format_detector_wasm.cpp)
+  list(APPEND EXTENSION_SOURCES src/wasm/otlp_storage_extension_wasm.cpp
+       src/wasm/protobuf_parser_wasm.cpp src/wasm/format_detector_wasm.cpp)
   # Define WASM build flags
   add_compile_definitions(DUCKSPAN_DISABLE_GRPC=1 DUCKSPAN_DISABLE_PROTOBUF=1)
 endif()
