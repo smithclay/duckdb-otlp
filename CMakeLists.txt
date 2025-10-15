@@ -54,6 +54,7 @@ set(EXTENSION_SOURCES_GRPC
     src/buffer/columnar_ring_buffer.cpp
     src/receiver/row_builders.cpp
     src/receiver/row_builders_metrics.cpp
+    src/function/otlp_metrics_union.cpp
     src/catalog/otlp_catalog.cpp
     src/catalog/otlp_schema_entry.cpp
     src/table/otlp_columnar_table_entry.cpp

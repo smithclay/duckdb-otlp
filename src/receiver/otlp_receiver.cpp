@@ -3,9 +3,6 @@
 #include "schema/otlp_traces_schema.hpp"
 #include "schema/otlp_logs_schema.hpp"
 #include "schema/otlp_metrics_schemas.hpp"
-#include "schema/otlp_metrics_union_schema.hpp"
-#include "receiver/row_builders.hpp"
-#include "receiver/row_builders_metrics.hpp"
 
 // Generated gRPC service stubs
 #include "opentelemetry/proto/collector/trace/v1/trace_service.grpc.pb.h"
@@ -16,7 +13,6 @@
 
 #include <google/protobuf/util/json_util.h>
 #include <grpcpp/server_builder.h>
-#include "receiver/row_builders_traces_logs.hpp"
 
 namespace duckdb {
 
@@ -171,14 +167,11 @@ public:
 							if (metric.has_gauge()) {
 								// Gauge metrics - route to gauge buffer
 								auto buffer = storage_info_->GetBufferForMetric(OTLPMetricType::GAUGE);
-								auto union_buffer = storage_info_->GetMetricsUnionBuffer();
 								if (!buffer) {
 									continue;
 								}
 
 								auto mapp = buffer->GetAppender();
-								vector<vector<Value>> union_batch;
-								union_batch.reserve(metric.gauge().data_points_size());
 								for (const auto &data_point : metric.gauge().data_points()) {
 									auto timestamp = NanosToTimestamp(data_point.time_unix_nano());
 									double value = data_point.has_as_double()
@@ -200,28 +193,16 @@ public:
 									mapp.SetDouble(OTLPMetricsGaugeSchema::COL_VALUE, value);
 									mapp.CommitRow();
 
-									// Build union row using shared builder
-									if (union_buffer) {
-										MetricsGaugeData d {
-										    timestamp,   service_name,   metric_name, metric_description,
-										    metric_unit, resource_attrs, scope_name,  scope_version,
-										    dp_attrs,    value};
-										union_batch.push_back(TransformGaugeRow(BuildMetricsGaugeRow(d)));
-									}
+									// Union is provided as a read-time view; no union buffer writes.
 								}
-								if (union_buffer && !union_batch.empty())
-									union_buffer->AppendRows(union_batch);
 							} else if (metric.has_sum()) {
 								// Sum metrics - route to sum buffer
 								auto buffer = storage_info_->GetBufferForMetric(OTLPMetricType::SUM);
-								auto union_buffer = storage_info_->GetMetricsUnionBuffer();
 								if (!buffer) {
 									continue;
 								}
 
 								auto mapp_sum = buffer->GetAppender();
-								vector<vector<Value>> union_batch;
-								union_batch.reserve(metric.sum().data_points_size());
 								for (const auto &data_point : metric.sum().data_points()) {
 									auto timestamp = NanosToTimestamp(data_point.time_unix_nano());
 									double value = data_point.has_as_double()
@@ -250,36 +231,16 @@ public:
 									mapp_sum.SetBoolean(OTLPMetricsSumSchema::COL_IS_MONOTONIC, is_monotonic);
 									mapp_sum.CommitRow();
 
-									// Build union row using shared builder
-									if (union_buffer) {
-										MetricsSumData d {timestamp,
-										                  service_name,
-										                  metric_name,
-										                  metric_description,
-										                  metric_unit,
-										                  resource_attrs,
-										                  scope_name,
-										                  scope_version,
-										                  dp_attrs,
-										                  value,
-										                  aggregation_temporality,
-										                  is_monotonic};
-										union_batch.push_back(TransformSumRow(BuildMetricsSumRow(d)));
-									}
+									// Union is provided as a read-time view; no union buffer writes.
 								}
-								if (union_buffer && !union_batch.empty())
-									union_buffer->AppendRows(union_batch);
 							} else if (metric.has_histogram()) {
 								// Histogram metrics - route to histogram buffer
 								auto buffer = storage_info_->GetBufferForMetric(OTLPMetricType::HISTOGRAM);
-								auto union_buffer = storage_info_->GetMetricsUnionBuffer();
 								if (!buffer) {
 									continue;
 								}
 
 								auto mapp_hist = buffer->GetAppender();
-								vector<vector<Value>> union_batch;
-								union_batch.reserve(metric.histogram().data_points_size());
 								for (const auto &data_point : metric.histogram().data_points()) {
 									auto timestamp = NanosToTimestamp(data_point.time_unix_nano());
 									auto dp_attrs = ConvertAttributesToMap(data_point.attributes());
@@ -329,39 +290,16 @@ public:
 										mapp_hist.SetNull(OTLPMetricsHistogramSchema::COL_MAX);
 									mapp_hist.CommitRow();
 
-									// Build union row using shared builder
-									if (union_buffer) {
-										MetricsHistogramData d {timestamp,
-										                        service_name,
-										                        metric_name,
-										                        metric_description,
-										                        metric_unit,
-										                        resource_attrs,
-										                        scope_name,
-										                        scope_version,
-										                        dp_attrs,
-										                        data_point.count(),
-										                        data_point.has_sum() ? data_point.sum() : 0.0,
-										                        bucket_counts,
-										                        explicit_bounds,
-										                        data_point.has_min() ? data_point.min() : 0.0,
-										                        data_point.has_max() ? data_point.max() : 0.0};
-										union_batch.push_back(TransformHistogramRow(BuildMetricsHistogramRow(d)));
-									}
+									// Union is provided as a read-time view; no union buffer writes.
 								}
-								if (union_buffer && !union_batch.empty())
-									union_buffer->AppendRows(union_batch);
 							} else if (metric.has_exponential_histogram()) {
 								// Exponential Histogram metrics - route to exp_histogram buffer
 								auto buffer = storage_info_->GetBufferForMetric(OTLPMetricType::EXPONENTIAL_HISTOGRAM);
-								auto union_buffer = storage_info_->GetMetricsUnionBuffer();
 								if (!buffer) {
 									continue;
 								}
 
 								auto mapp_exph = buffer->GetAppender();
-								vector<vector<Value>> union_batch_exph;
-								union_batch_exph.reserve(metric.exponential_histogram().data_points_size());
 								for (const auto &data_point : metric.exponential_histogram().data_points()) {
 									auto timestamp = NanosToTimestamp(data_point.time_unix_nano());
 									auto dp_attrs = ConvertAttributesToMap(data_point.attributes());
@@ -424,45 +362,16 @@ public:
 										mapp_exph.SetNull(OTLPMetricsExpHistogramSchema::COL_MAX);
 									mapp_exph.CommitRow();
 
-									// Build union row using shared builder
-									if (union_buffer) {
-										MetricsExpHistogramData d {
-										    timestamp,
-										    service_name,
-										    metric_name,
-										    metric_description,
-										    metric_unit,
-										    resource_attrs,
-										    scope_name,
-										    scope_version,
-										    dp_attrs,
-										    data_point.count(),
-										    data_point.has_sum() ? data_point.sum() : 0.0,
-										    data_point.scale(),
-										    data_point.zero_count(),
-										    data_point.has_positive() ? data_point.positive().offset() : 0,
-										    pos_bucket_counts,
-										    data_point.has_negative() ? data_point.negative().offset() : 0,
-										    neg_bucket_counts,
-										    data_point.has_min() ? data_point.min() : 0.0,
-										    data_point.has_max() ? data_point.max() : 0.0};
-										union_batch_exph.push_back(
-										    TransformExpHistogramRow(BuildMetricsExpHistogramRow(d)));
-									}
+									// Union is provided as a read-time view; no union buffer writes.
 								}
-								if (union_buffer && !union_batch_exph.empty())
-									union_buffer->AppendRows(union_batch_exph);
 							} else if (metric.has_summary()) {
 								// Summary metrics - route to summary buffer
 								auto buffer = storage_info_->GetBufferForMetric(OTLPMetricType::SUMMARY);
-								auto union_buffer = storage_info_->GetMetricsUnionBuffer();
 								if (!buffer) {
 									continue;
 								}
 
 								auto mapp_sumry = buffer->GetAppender();
-								vector<vector<Value>> union_batch_sum;
-								union_batch_sum.reserve(metric.summary().data_points_size());
 								for (const auto &data_point : metric.summary().data_points()) {
 									auto timestamp = NanosToTimestamp(data_point.time_unix_nano());
 									auto dp_attrs = ConvertAttributesToMap(data_point.attributes());
@@ -498,18 +407,8 @@ public:
 									                    Value::LIST(LogicalType::DOUBLE, quantile_quantiles));
 									mapp_sumry.CommitRow();
 
-									// Build union row using shared builder
-									if (union_buffer) {
-										MetricsSummaryData d {timestamp,          service_name,     metric_name,
-										                      metric_description, metric_unit,      resource_attrs,
-										                      scope_name,         scope_version,    dp_attrs,
-										                      data_point.count(), data_point.sum(), quantile_values,
-										                      quantile_quantiles};
-										union_batch_sum.push_back(TransformSummaryRow(BuildMetricsSummaryRow(d)));
-									}
+									// Union is provided as a read-time view; no union buffer writes.
 								}
-								if (union_buffer && !union_batch_sum.empty())
-									union_buffer->AppendRows(union_batch_sum);
 							}
 						}
 					}

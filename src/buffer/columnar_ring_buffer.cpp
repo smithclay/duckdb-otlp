@@ -241,32 +241,18 @@ void ColumnarRingBuffer::AppendChunk(DataChunk &input) {
 	}
 }
 
-vector<shared_ptr<const ColumnarStoredChunk>> ColumnarRingBuffer::Snapshot() const {
-	std::shared_lock<std::shared_mutex> lock(mutex_);
+vector<shared_ptr<const ColumnarStoredChunk>> ColumnarRingBuffer::Snapshot() {
+	// Seal the current in-flight chunk (if any) to avoid copying
+	std::unique_lock<std::shared_mutex> lock(mutex_);
+	if (current_chunk_ && current_size_ > 0) {
+		FinalizeCurrentChunk();
+		// Start a new chunk for subsequent appends
+		EnsureCurrentChunk();
+	}
 	vector<shared_ptr<const ColumnarStoredChunk>> result;
-	result.reserve(chunks_.size() + 1);
+	result.reserve(chunks_.size());
 	for (auto &ptr : chunks_) {
 		result.push_back(ptr);
-	}
-	// include current in-flight chunk as a sealed shallow copy
-	if (current_chunk_ && current_size_ > 0) {
-		auto temp = make_shared_ptr<ColumnarStoredChunk>();
-		temp->chunk = make_uniq<DataChunk>();
-		temp->chunk->Initialize(Allocator::DefaultAllocator(), types_, current_size_);
-		// Copy current rows into a temporary immutable chunk
-		for (idx_t c = 0; c < types_.size(); c++) {
-			auto &src = current_chunk_->data[c];
-			auto &dst = temp->chunk->data[c];
-			for (idx_t r = 0; r < current_size_; r++) {
-				// copy via Value to handle complex types safely
-				dst.SetValue(r, src.GetValue(r));
-			}
-		}
-		temp->chunk->SetCardinality(current_size_);
-		temp->size = current_size_;
-		temp->ts_min_us = current_ts_min_us_;
-		temp->ts_max_us = current_ts_max_us_;
-		result.push_back(temp);
 	}
 	return result;
 }

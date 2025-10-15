@@ -57,14 +57,19 @@ public:
 	bool InMemory() override;
 	string GetDBPath() override;
 
+public:
+	// Expose storage info for internal functions
+	shared_ptr<OTLPStorageInfo> GetStorageInfo() {
+		return storage_info_;
+	}
+
 private:
 	//! Helper to get schema (column names and types) for a given table type
 	static std::pair<vector<string>, vector<LogicalType>> GetSchemaForTableType(OTLPTableType type);
 
 	shared_ptr<OTLPStorageInfo> storage_info_;
 	unique_ptr<SchemaCatalogEntry> main_schema_;
-	unordered_map<string, unique_ptr<TableCatalogEntry>>
-	    table_entries_; // Cache of table entries (OTLPTableEntry or OTLPMetricsUnionTableEntry)
+	unordered_map<string, unique_ptr<CatalogEntry>> table_entries_; // Cache of entries (tables or views)
 };
 
 } // namespace duckdb

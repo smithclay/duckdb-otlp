@@ -9,6 +9,11 @@
 
 namespace duckdb {
 
+// Define deleter for forward-declared OTLPReceiver
+void OTLPReceiverDeleter::operator()(OTLPReceiver *p) {
+	delete p;
+}
+
 // Destructor implementation (declared in otlp_storage_info.hpp)
 OTLPStorageInfo::~OTLPStorageInfo() {
 	// Stop receiver if running
@@ -78,13 +83,15 @@ unique_ptr<Catalog> OTLPStorageExtension::Attach(optional_ptr<StorageExtensionIn
 	catalog->Initialize(false); // Don't load builtins
 
 	// Create and start gRPC receiver (inserts into ring buffers)
-	otlp_info->receiver = make_uniq<OTLPReceiver>(host, port, otlp_info);
+	otlp_info->receiver = unique_ptr<OTLPReceiver, OTLPReceiverDeleter>(new OTLPReceiver(host, port, otlp_info));
 	try {
 		otlp_info->receiver->Start();
 	} catch (std::exception &ex) {
 		throw IOException("Failed to start OTLP gRPC receiver on " + host + ":" + std::to_string(port) + ": " +
 		                  string(ex.what()));
 	}
+
+	// Union is exposed via table function (otlp_metrics_union); no view creation here
 
 	return catalog;
 }

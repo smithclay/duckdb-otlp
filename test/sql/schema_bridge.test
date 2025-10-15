@@ -19,7 +19,7 @@ WHERE database_name = 'live'
 AND schema_name = 'main'
 AND table_name LIKE 'otel_metrics_%';
 ----
-6
+5
 
 # Verify gauge table schema
 query I
@@ -47,6 +47,10 @@ AND table_schema = 'main'
 AND table_name = 'otel_metrics_histogram';
 ----
 15
+
+# Union function can be referenced (even if empty)
+statement ok
+SELECT 1 FROM otlp_metrics_union('live') LIMIT 0;
 
 #
 # Test 2: Archive ATTACH Tables to Permanent Tables

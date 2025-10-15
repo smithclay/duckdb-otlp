@@ -12,65 +12,44 @@ OTLPSchemaEntry::OTLPSchemaEntry(Catalog &catalog, CreateSchemaInfo &info) : Sch
 
 void OTLPSchemaEntry::Scan(ClientContext &context, CatalogType type,
                            const std::function<void(CatalogEntry &)> &callback) {
-	// Only enumerate tables
-	if (type != CatalogType::TABLE_ENTRY) {
-		return;
-	}
-
-	// List all 7 OTLP virtual tables (1 traces, 1 logs, 5 metric types)
-	const OTLPTableType table_types[] = {OTLPTableType::TRACES,
-	                                     OTLPTableType::LOGS,
-	                                     OTLPTableType::METRICS_GAUGE,
-	                                     OTLPTableType::METRICS_SUM,
-	                                     OTLPTableType::METRICS_HISTOGRAM,
-	                                     OTLPTableType::METRICS_EXP_HISTOGRAM,
-	                                     OTLPTableType::METRICS_SUMMARY};
 	auto &otlp_catalog = catalog.Cast<OTLPCatalog>();
-	for (auto table_type : table_types) {
-		string table_name = TableTypeToString(table_type);
-		// Get the table entry from the catalog using our custom GetEntry
-		auto entry = otlp_catalog.GetEntry(context, DEFAULT_SCHEMA, table_name);
-		if (entry) {
-			callback(*entry);
+	if (type == CatalogType::TABLE_ENTRY) {
+		// List all 7 OTLP virtual tables (1 traces, 1 logs, 5 metric types)
+		const OTLPTableType table_types[] = {OTLPTableType::TRACES,
+		                                     OTLPTableType::LOGS,
+		                                     OTLPTableType::METRICS_GAUGE,
+		                                     OTLPTableType::METRICS_SUM,
+		                                     OTLPTableType::METRICS_HISTOGRAM,
+		                                     OTLPTableType::METRICS_EXP_HISTOGRAM,
+		                                     OTLPTableType::METRICS_SUMMARY};
+		for (auto table_type : table_types) {
+			string table_name = TableTypeToString(table_type);
+			auto entry = otlp_catalog.GetEntry(context, DEFAULT_SCHEMA, table_name);
+			if (entry) {
+				callback(*entry);
+			}
 		}
-	}
-
-	// Also include the metrics union view
-	auto union_entry = otlp_catalog.GetEntry(context, DEFAULT_SCHEMA, "otel_metrics_union");
-	if (union_entry) {
-		callback(*union_entry);
 	}
 }
 
 void OTLPSchemaEntry::Scan(CatalogType type, const std::function<void(CatalogEntry &)> &callback) {
-	// Only enumerate tables
-	if (type != CatalogType::TABLE_ENTRY) {
-		return;
-	}
-
-	// List all 7 OTLP virtual tables (without context)
-	const OTLPTableType table_types[] = {OTLPTableType::TRACES,
-	                                     OTLPTableType::LOGS,
-	                                     OTLPTableType::METRICS_GAUGE,
-	                                     OTLPTableType::METRICS_SUM,
-	                                     OTLPTableType::METRICS_HISTOGRAM,
-	                                     OTLPTableType::METRICS_EXP_HISTOGRAM,
-	                                     OTLPTableType::METRICS_SUMMARY};
 	auto &otlp_catalog = catalog.Cast<OTLPCatalog>();
-
-	for (auto table_type : table_types) {
-		string table_name = TableTypeToString(table_type);
-		// Try to get cached entry, or create it if needed
-		auto entry = otlp_catalog.GetEntryCached(table_name);
-		if (entry) {
-			callback(*entry);
+	if (type == CatalogType::TABLE_ENTRY) {
+		// List all 7 OTLP virtual tables (without context)
+		const OTLPTableType table_types[] = {OTLPTableType::TRACES,
+		                                     OTLPTableType::LOGS,
+		                                     OTLPTableType::METRICS_GAUGE,
+		                                     OTLPTableType::METRICS_SUM,
+		                                     OTLPTableType::METRICS_HISTOGRAM,
+		                                     OTLPTableType::METRICS_EXP_HISTOGRAM,
+		                                     OTLPTableType::METRICS_SUMMARY};
+		for (auto table_type : table_types) {
+			string table_name = TableTypeToString(table_type);
+			auto entry = otlp_catalog.GetEntryCached(table_name);
+			if (entry) {
+				callback(*entry);
+			}
 		}
-	}
-
-	// Also include the metrics union view
-	auto union_entry = otlp_catalog.GetEntryCached("otel_metrics_union");
-	if (union_entry) {
-		callback(*union_entry);
 	}
 }
 

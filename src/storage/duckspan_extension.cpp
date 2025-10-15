@@ -9,6 +9,7 @@
 
 // OTLP functionality
 #include "function/read_otlp.hpp"
+#include "function/otlp_metrics_union.hpp"
 #ifndef DUCKSPAN_DISABLE_GRPC
 #include "storage/otlp_storage_extension.hpp"
 // OpenSSL linked through vcpkg (only for gRPC builds)
@@ -47,6 +48,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(ReadOTLPTableFunction::GetTracesFunction());
 	loader.RegisterFunction(ReadOTLPTableFunction::GetLogsFunction());
 	loader.RegisterFunction(ReadOTLPTableFunction::GetMetricsFunction());
+	loader.RegisterFunction(GetOTLPMetricsUnionFunction());
 
 	// Register a scalar function (from template, keeping for now)
 	auto duckspan_scalar_function =

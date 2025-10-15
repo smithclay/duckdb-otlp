@@ -70,7 +70,7 @@ public:
 	}
 
 	//! Take a snapshot of current immutable chunks for scanning
-	vector<shared_ptr<const ColumnarStoredChunk>> Snapshot() const;
+	vector<shared_ptr<const ColumnarStoredChunk>> Snapshot();
 
 	//! Current total rows (approximate; snapshot for stable view)
 	idx_t Size() const;

@@ -6,12 +6,14 @@
 #include "schema/otlp_traces_schema.hpp"
 #include "schema/otlp_logs_schema.hpp"
 #include "schema/otlp_metrics_schemas.hpp"
-#include "schema/otlp_metrics_union_schema.hpp"
 #include "schema/otlp_types.hpp"
 
 namespace duckdb {
 
 class OTLPReceiver;
+struct OTLPReceiverDeleter {
+	void operator()(OTLPReceiver *p);
+};
 
 //! Information about an attached OTLP database
 struct OTLPStorageInfo : public StorageExtensionInfo {
@@ -28,11 +30,8 @@ struct OTLPStorageInfo : public StorageExtensionInfo {
 	shared_ptr<ColumnarRingBuffer> metrics_exp_histogram_buffer;
 	shared_ptr<ColumnarRingBuffer> metrics_summary_buffer;
 
-	// Pre-flattened metrics union buffer (27-column union schema, columnar)
-	shared_ptr<ColumnarRingBuffer> metrics_union_buffer;
-
 	// gRPC receiver
-	unique_ptr<OTLPReceiver> receiver;
+	unique_ptr<OTLPReceiver, OTLPReceiverDeleter> receiver;
 
 	OTLPStorageInfo(const string &host_p, uint16_t port_p, idx_t buffer_capacity = 10000)
 	    : host(host_p), port(port_p), schema_name("") {
@@ -57,9 +56,6 @@ struct OTLPStorageInfo : public StorageExtensionInfo {
 		metrics_summary_buffer = make_shared_ptr<ColumnarRingBuffer>(
 		    OTLPMetricsSummarySchema::GetColumnTypes(), STANDARD_VECTOR_SIZE, 256,
 		    OTLPMetricsBaseSchema::COL_SERVICE_NAME, OTLPMetricsBaseSchema::COL_METRIC_NAME);
-		metrics_union_buffer = make_shared_ptr<ColumnarRingBuffer>(
-		    OTLPMetricsUnionSchema::GetColumnTypes(), STANDARD_VECTOR_SIZE, 256,
-		    OTLPMetricsUnionSchema::COL_SERVICE_NAME, OTLPMetricsUnionSchema::COL_METRIC_NAME);
 	}
 
 	~OTLPStorageInfo() override; // Defined in otlp_storage_extension.cpp
@@ -117,11 +113,6 @@ struct OTLPStorageInfo : public StorageExtensionInfo {
 	vector<shared_ptr<ColumnarRingBuffer>> GetAllMetricBuffers() {
 		return {metrics_gauge_buffer, metrics_sum_buffer, metrics_histogram_buffer, metrics_exp_histogram_buffer,
 		        metrics_summary_buffer};
-	}
-
-	//! Get pre-flattened metrics union buffer
-	shared_ptr<ColumnarRingBuffer> GetMetricsUnionBuffer() {
-		return metrics_union_buffer;
 	}
 };
 
