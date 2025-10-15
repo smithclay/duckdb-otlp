@@ -4,6 +4,8 @@
 #include "schema/otlp_logs_schema.hpp"
 #include "schema/otlp_metrics_union_schema.hpp"
 #include "receiver/row_builders_traces_logs.hpp"
+#include "receiver/row_builders_metrics.hpp"
+#include "receiver/row_builders.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "yyjson.hpp"
@@ -701,28 +703,9 @@ bool OTLPJSONParser::ParseMetricsToTypedRows(const string &json, vector<vector<V
 						size_t dp_idx, dp_max;
 						duckdb_yyjson::yyjson_val *data_point;
 						yyjson_arr_foreach(data_points, dp_idx, dp_max, data_point) {
-							vector<Value> row(OTLPMetricsUnionSchema::COLUMN_COUNT);
-
 							auto timestamp = NanosToTimestamp(GetUint64Value(data_point, "timeUnixNano"));
 
-							// Base columns (9)
-							row[OTLPMetricsBaseSchema::COL_TIMESTAMP] = Value::TIMESTAMPNS(timestamp);
-							row[OTLPMetricsBaseSchema::COL_SERVICE_NAME] = Value(service_name);
-							row[OTLPMetricsBaseSchema::COL_METRIC_NAME] = Value(metric_name);
-							row[OTLPMetricsBaseSchema::COL_METRIC_DESCRIPTION] = Value(metric_description);
-							row[OTLPMetricsBaseSchema::COL_METRIC_UNIT] = Value(metric_unit);
-							// Resource and datapoint attributes
-							row[OTLPMetricsBaseSchema::COL_RESOURCE_ATTRIBUTES] = JSONAttributesToMap(
-							    resource ? duckdb_yyjson::yyjson_obj_get(resource, "attributes") : nullptr);
-							row[OTLPMetricsBaseSchema::COL_SCOPE_NAME] = Value(scope_name);
-							row[OTLPMetricsBaseSchema::COL_SCOPE_VERSION] = Value(scope_version);
-							row[OTLPMetricsBaseSchema::COL_ATTRIBUTES] =
-							    JSONAttributesToMap(duckdb_yyjson::yyjson_obj_get(data_point, "attributes"));
-
-							// Union discriminator
-							row[OTLPMetricsUnionSchema::COL_METRIC_TYPE] = Value("gauge");
-
-							// Gauge value - check field existence first (not value == 0.0, as 0.0 is valid)
+							// Extract gauge value - check field existence first (0.0 is valid)
 							double value = 0.0;
 							auto as_double_field = duckdb_yyjson::yyjson_obj_get(data_point, "asDouble");
 							if (as_double_field) {
@@ -730,33 +713,23 @@ bool OTLPJSONParser::ParseMetricsToTypedRows(const string &json, vector<vector<V
 							} else {
 								value = (double)GetUint64Value(data_point, "asInt");
 							}
-							row[OTLPMetricsUnionSchema::COL_VALUE] = Value::DOUBLE(value);
 
-							// NULL all other union columns
-							for (idx_t i = OTLPMetricsUnionSchema::COL_AGGREGATION_TEMPORALITY;
-							     i < OTLPMetricsUnionSchema::COLUMN_COUNT; i++) {
-								if (i == OTLPMetricsUnionSchema::COL_VALUE)
-									continue;
-								if (i == OTLPMetricsUnionSchema::COL_IS_MONOTONIC) {
-									row[i] = Value(LogicalType::BOOLEAN);
-								} else if (i == OTLPMetricsUnionSchema::COL_COUNT ||
-								           i == OTLPMetricsUnionSchema::COL_ZERO_COUNT) {
-									row[i] = Value(LogicalType::UBIGINT);
-								} else if (i == OTLPMetricsUnionSchema::COL_AGGREGATION_TEMPORALITY ||
-								           i == OTLPMetricsUnionSchema::COL_SCALE ||
-								           i == OTLPMetricsUnionSchema::COL_POSITIVE_OFFSET ||
-								           i == OTLPMetricsUnionSchema::COL_NEGATIVE_OFFSET) {
-									row[i] = Value(LogicalType::INTEGER);
-								} else if (i == OTLPMetricsUnionSchema::COL_SUM ||
-								           i == OTLPMetricsUnionSchema::COL_MIN ||
-								           i == OTLPMetricsUnionSchema::COL_MAX) {
-									row[i] = Value(LogicalType::DOUBLE);
-								} else {
-									row[i] = Value(LogicalType::LIST(LogicalType::UBIGINT));
-								}
-							}
+							// Build type-specific row using shared builder
+							MetricsGaugeData d {
+							    timestamp,
+							    service_name,
+							    metric_name,
+							    metric_description,
+							    metric_unit,
+							    JSONAttributesToMap(resource ? duckdb_yyjson::yyjson_obj_get(resource, "attributes")
+							                                 : nullptr),
+							    scope_name,
+							    scope_version,
+							    JSONAttributesToMap(duckdb_yyjson::yyjson_obj_get(data_point, "attributes")),
+							    value};
 
-							rows.push_back(std::move(row));
+							// Transform to union schema for file reading
+							rows.push_back(TransformGaugeRow(BuildMetricsGaugeRow(d)));
 						}
 					}
 				}
@@ -769,27 +742,9 @@ bool OTLPJSONParser::ParseMetricsToTypedRows(const string &json, vector<vector<V
 						size_t dp_idx, dp_max;
 						duckdb_yyjson::yyjson_val *data_point;
 						yyjson_arr_foreach(data_points, dp_idx, dp_max, data_point) {
-							vector<Value> row(OTLPMetricsUnionSchema::COLUMN_COUNT);
-
 							auto timestamp = NanosToTimestamp(GetUint64Value(data_point, "timeUnixNano"));
 
-							// Base columns
-							row[OTLPMetricsBaseSchema::COL_TIMESTAMP] = Value::TIMESTAMPNS(timestamp);
-							row[OTLPMetricsBaseSchema::COL_SERVICE_NAME] = Value(service_name);
-							row[OTLPMetricsBaseSchema::COL_METRIC_NAME] = Value(metric_name);
-							row[OTLPMetricsBaseSchema::COL_METRIC_DESCRIPTION] = Value(metric_description);
-							row[OTLPMetricsBaseSchema::COL_METRIC_UNIT] = Value(metric_unit);
-							row[OTLPMetricsBaseSchema::COL_RESOURCE_ATTRIBUTES] = JSONAttributesToMap(
-							    resource ? duckdb_yyjson::yyjson_obj_get(resource, "attributes") : nullptr);
-							row[OTLPMetricsBaseSchema::COL_SCOPE_NAME] = Value(scope_name);
-							row[OTLPMetricsBaseSchema::COL_SCOPE_VERSION] = Value(scope_version);
-							row[OTLPMetricsBaseSchema::COL_ATTRIBUTES] =
-							    JSONAttributesToMap(duckdb_yyjson::yyjson_obj_get(data_point, "attributes"));
-
-							// Union discriminator
-							row[OTLPMetricsUnionSchema::COL_METRIC_TYPE] = Value("sum");
-
-							// Sum value - check field existence first (not value == 0.0, as 0.0 is valid)
+							// Extract sum value
 							double value = 0.0;
 							auto as_double_field = duckdb_yyjson::yyjson_obj_get(data_point, "asDouble");
 							if (as_double_field) {
@@ -797,38 +752,31 @@ bool OTLPJSONParser::ParseMetricsToTypedRows(const string &json, vector<vector<V
 							} else {
 								value = (double)GetUint64Value(data_point, "asInt");
 							}
-							row[OTLPMetricsUnionSchema::COL_VALUE] = Value::DOUBLE(value);
 
-							// Sum-specific fields
-							row[OTLPMetricsUnionSchema::COL_AGGREGATION_TEMPORALITY] =
-							    Value::INTEGER(GetIntValue(sum, "aggregationTemporality"));
-							row[OTLPMetricsUnionSchema::COL_IS_MONOTONIC] = Value::BOOLEAN(
+							// Extract sum-specific fields
+							int32_t agg_temp = GetIntValue(sum, "aggregationTemporality");
+							bool is_monotonic =
 							    duckdb_yyjson::yyjson_obj_get(sum, "isMonotonic") &&
-							    duckdb_yyjson::yyjson_get_bool(duckdb_yyjson::yyjson_obj_get(sum, "isMonotonic")));
+							    duckdb_yyjson::yyjson_get_bool(duckdb_yyjson::yyjson_obj_get(sum, "isMonotonic"));
 
-							// NULL all other union columns
-							row[OTLPMetricsUnionSchema::COL_COUNT] = Value(LogicalType::UBIGINT);
-							row[OTLPMetricsUnionSchema::COL_SUM] = Value(LogicalType::DOUBLE);
-							row[OTLPMetricsUnionSchema::COL_BUCKET_COUNTS] =
-							    Value(LogicalType::LIST(LogicalType::UBIGINT));
-							row[OTLPMetricsUnionSchema::COL_EXPLICIT_BOUNDS] =
-							    Value(LogicalType::LIST(LogicalType::DOUBLE));
-							row[OTLPMetricsUnionSchema::COL_MIN] = Value(LogicalType::DOUBLE);
-							row[OTLPMetricsUnionSchema::COL_MAX] = Value(LogicalType::DOUBLE);
-							row[OTLPMetricsUnionSchema::COL_SCALE] = Value(LogicalType::INTEGER);
-							row[OTLPMetricsUnionSchema::COL_ZERO_COUNT] = Value(LogicalType::UBIGINT);
-							row[OTLPMetricsUnionSchema::COL_POSITIVE_OFFSET] = Value(LogicalType::INTEGER);
-							row[OTLPMetricsUnionSchema::COL_POSITIVE_BUCKET_COUNTS] =
-							    Value(LogicalType::LIST(LogicalType::UBIGINT));
-							row[OTLPMetricsUnionSchema::COL_NEGATIVE_OFFSET] = Value(LogicalType::INTEGER);
-							row[OTLPMetricsUnionSchema::COL_NEGATIVE_BUCKET_COUNTS] =
-							    Value(LogicalType::LIST(LogicalType::UBIGINT));
-							row[OTLPMetricsUnionSchema::COL_QUANTILE_VALUES] =
-							    Value(LogicalType::LIST(LogicalType::DOUBLE));
-							row[OTLPMetricsUnionSchema::COL_QUANTILE_QUANTILES] =
-							    Value(LogicalType::LIST(LogicalType::DOUBLE));
+							// Build type-specific row using shared builder
+							MetricsSumData d {
+							    timestamp,
+							    service_name,
+							    metric_name,
+							    metric_description,
+							    metric_unit,
+							    JSONAttributesToMap(resource ? duckdb_yyjson::yyjson_obj_get(resource, "attributes")
+							                                 : nullptr),
+							    scope_name,
+							    scope_version,
+							    JSONAttributesToMap(duckdb_yyjson::yyjson_obj_get(data_point, "attributes")),
+							    value,
+							    agg_temp,
+							    is_monotonic};
 
-							rows.push_back(std::move(row));
+							// Transform to union schema for file reading
+							rows.push_back(TransformSumRow(BuildMetricsSumRow(d)));
 						}
 					}
 				}
@@ -841,58 +789,29 @@ bool OTLPJSONParser::ParseMetricsToTypedRows(const string &json, vector<vector<V
 						size_t dp_idx, dp_max;
 						duckdb_yyjson::yyjson_val *data_point;
 						yyjson_arr_foreach(data_points, dp_idx, dp_max, data_point) {
-							vector<Value> row(OTLPMetricsUnionSchema::COLUMN_COUNT);
-
 							auto timestamp = NanosToTimestamp(GetUint64Value(data_point, "timeUnixNano"));
 
-							// Base columns
-							row[OTLPMetricsBaseSchema::COL_TIMESTAMP] = Value::TIMESTAMPNS(timestamp);
-							row[OTLPMetricsBaseSchema::COL_SERVICE_NAME] = Value(service_name);
-							row[OTLPMetricsBaseSchema::COL_METRIC_NAME] = Value(metric_name);
-							row[OTLPMetricsBaseSchema::COL_METRIC_DESCRIPTION] = Value(metric_description);
-							row[OTLPMetricsBaseSchema::COL_METRIC_UNIT] = Value(metric_unit);
-							row[OTLPMetricsBaseSchema::COL_RESOURCE_ATTRIBUTES] = JSONAttributesToMap(
-							    resource ? duckdb_yyjson::yyjson_obj_get(resource, "attributes") : nullptr);
-							row[OTLPMetricsBaseSchema::COL_SCOPE_NAME] = Value(scope_name);
-							row[OTLPMetricsBaseSchema::COL_SCOPE_VERSION] = Value(scope_version);
-							row[OTLPMetricsBaseSchema::COL_ATTRIBUTES] =
-							    JSONAttributesToMap(duckdb_yyjson::yyjson_obj_get(data_point, "attributes"));
+							// Build type-specific row using shared builder
+							MetricsHistogramData d {
+							    timestamp,
+							    service_name,
+							    metric_name,
+							    metric_description,
+							    metric_unit,
+							    JSONAttributesToMap(resource ? duckdb_yyjson::yyjson_obj_get(resource, "attributes")
+							                                 : nullptr),
+							    scope_name,
+							    scope_version,
+							    JSONAttributesToMap(duckdb_yyjson::yyjson_obj_get(data_point, "attributes")),
+							    GetUint64Value(data_point, "count"),
+							    GetDoubleValue(data_point, "sum"),
+							    {}, // bucket_counts - TODO: parse from JSON
+							    {}, // explicit_bounds - TODO: parse from JSON
+							    GetDoubleValue(data_point, "min"),
+							    GetDoubleValue(data_point, "max")};
 
-							// Union discriminator
-							row[OTLPMetricsUnionSchema::COL_METRIC_TYPE] = Value("histogram");
-
-							// Histogram fields
-							row[OTLPMetricsUnionSchema::COL_AGGREGATION_TEMPORALITY] =
-							    Value::INTEGER(GetIntValue(histogram, "aggregationTemporality"));
-							row[OTLPMetricsUnionSchema::COL_COUNT] =
-							    Value::UBIGINT(GetUint64Value(data_point, "count"));
-							row[OTLPMetricsUnionSchema::COL_SUM] = Value::DOUBLE(GetDoubleValue(data_point, "sum"));
-							row[OTLPMetricsUnionSchema::COL_MIN] = Value::DOUBLE(GetDoubleValue(data_point, "min"));
-							row[OTLPMetricsUnionSchema::COL_MAX] = Value::DOUBLE(GetDoubleValue(data_point, "max"));
-
-							// Bucket counts and explicit bounds - NULL LISTs for now
-							row[OTLPMetricsUnionSchema::COL_BUCKET_COUNTS] =
-							    Value(LogicalType::LIST(LogicalType::UBIGINT));
-							row[OTLPMetricsUnionSchema::COL_EXPLICIT_BOUNDS] =
-							    Value(LogicalType::LIST(LogicalType::DOUBLE));
-
-							// NULL other union columns
-							row[OTLPMetricsUnionSchema::COL_VALUE] = Value(LogicalType::DOUBLE);
-							row[OTLPMetricsUnionSchema::COL_IS_MONOTONIC] = Value(LogicalType::BOOLEAN);
-							row[OTLPMetricsUnionSchema::COL_SCALE] = Value(LogicalType::INTEGER);
-							row[OTLPMetricsUnionSchema::COL_ZERO_COUNT] = Value(LogicalType::UBIGINT);
-							row[OTLPMetricsUnionSchema::COL_POSITIVE_OFFSET] = Value(LogicalType::INTEGER);
-							row[OTLPMetricsUnionSchema::COL_POSITIVE_BUCKET_COUNTS] =
-							    Value(LogicalType::LIST(LogicalType::UBIGINT));
-							row[OTLPMetricsUnionSchema::COL_NEGATIVE_OFFSET] = Value(LogicalType::INTEGER);
-							row[OTLPMetricsUnionSchema::COL_NEGATIVE_BUCKET_COUNTS] =
-							    Value(LogicalType::LIST(LogicalType::UBIGINT));
-							row[OTLPMetricsUnionSchema::COL_QUANTILE_VALUES] =
-							    Value(LogicalType::LIST(LogicalType::DOUBLE));
-							row[OTLPMetricsUnionSchema::COL_QUANTILE_QUANTILES] =
-							    Value(LogicalType::LIST(LogicalType::DOUBLE));
-
-							rows.push_back(std::move(row));
+							// Transform to union schema for file reading
+							rows.push_back(TransformHistogramRow(BuildMetricsHistogramRow(d)));
 						}
 					}
 				}
@@ -905,59 +824,33 @@ bool OTLPJSONParser::ParseMetricsToTypedRows(const string &json, vector<vector<V
 						size_t dp_idx, dp_max;
 						duckdb_yyjson::yyjson_val *data_point;
 						yyjson_arr_foreach(data_points, dp_idx, dp_max, data_point) {
-							vector<Value> row(OTLPMetricsUnionSchema::COLUMN_COUNT);
-
 							auto timestamp = NanosToTimestamp(GetUint64Value(data_point, "timeUnixNano"));
 
-							// Base columns
-							row[OTLPMetricsBaseSchema::COL_TIMESTAMP] = Value::TIMESTAMPNS(timestamp);
-							row[OTLPMetricsBaseSchema::COL_SERVICE_NAME] = Value(service_name);
-							row[OTLPMetricsBaseSchema::COL_METRIC_NAME] = Value(metric_name);
-							row[OTLPMetricsBaseSchema::COL_METRIC_DESCRIPTION] = Value(metric_description);
-							row[OTLPMetricsBaseSchema::COL_METRIC_UNIT] = Value(metric_unit);
-							row[OTLPMetricsBaseSchema::COL_RESOURCE_ATTRIBUTES] = JSONAttributesToMap(
-							    resource ? duckdb_yyjson::yyjson_obj_get(resource, "attributes") : nullptr);
-							row[OTLPMetricsBaseSchema::COL_SCOPE_NAME] = Value(scope_name);
-							row[OTLPMetricsBaseSchema::COL_SCOPE_VERSION] = Value(scope_version);
-							row[OTLPMetricsBaseSchema::COL_ATTRIBUTES] =
-							    JSONAttributesToMap(duckdb_yyjson::yyjson_obj_get(data_point, "attributes"));
+							// Build type-specific row using shared builder
+							MetricsExpHistogramData d {
+							    timestamp,
+							    service_name,
+							    metric_name,
+							    metric_description,
+							    metric_unit,
+							    JSONAttributesToMap(resource ? duckdb_yyjson::yyjson_obj_get(resource, "attributes")
+							                                 : nullptr),
+							    scope_name,
+							    scope_version,
+							    JSONAttributesToMap(duckdb_yyjson::yyjson_obj_get(data_point, "attributes")),
+							    GetUint64Value(data_point, "count"),
+							    GetDoubleValue(data_point, "sum"),
+							    GetIntValue(data_point, "scale"),
+							    GetUint64Value(data_point, "zeroCount"),
+							    0,  // positive_offset - TODO: parse from JSON
+							    {}, // positive_bucket_counts - TODO: parse from JSON
+							    0,  // negative_offset - TODO: parse from JSON
+							    {}, // negative_bucket_counts - TODO: parse from JSON
+							    GetDoubleValue(data_point, "min"),
+							    GetDoubleValue(data_point, "max")};
 
-							// Union discriminator
-							row[OTLPMetricsUnionSchema::COL_METRIC_TYPE] = Value("exponential_histogram");
-
-							// Exponential histogram fields
-							row[OTLPMetricsUnionSchema::COL_AGGREGATION_TEMPORALITY] =
-							    Value::INTEGER(GetIntValue(exp_histogram, "aggregationTemporality"));
-							row[OTLPMetricsUnionSchema::COL_COUNT] =
-							    Value::UBIGINT(GetUint64Value(data_point, "count"));
-							row[OTLPMetricsUnionSchema::COL_SUM] = Value::DOUBLE(GetDoubleValue(data_point, "sum"));
-							row[OTLPMetricsUnionSchema::COL_SCALE] = Value::INTEGER(GetIntValue(data_point, "scale"));
-							row[OTLPMetricsUnionSchema::COL_ZERO_COUNT] =
-							    Value::UBIGINT(GetUint64Value(data_point, "zeroCount"));
-							row[OTLPMetricsUnionSchema::COL_MIN] = Value::DOUBLE(GetDoubleValue(data_point, "min"));
-							row[OTLPMetricsUnionSchema::COL_MAX] = Value::DOUBLE(GetDoubleValue(data_point, "max"));
-
-							// Positive/negative bucket info - NULL LISTs for now
-							row[OTLPMetricsUnionSchema::COL_POSITIVE_OFFSET] = Value::INTEGER(0);
-							row[OTLPMetricsUnionSchema::COL_POSITIVE_BUCKET_COUNTS] =
-							    Value(LogicalType::LIST(LogicalType::UBIGINT));
-							row[OTLPMetricsUnionSchema::COL_NEGATIVE_OFFSET] = Value::INTEGER(0);
-							row[OTLPMetricsUnionSchema::COL_NEGATIVE_BUCKET_COUNTS] =
-							    Value(LogicalType::LIST(LogicalType::UBIGINT));
-
-							// NULL other union columns
-							row[OTLPMetricsUnionSchema::COL_VALUE] = Value(LogicalType::DOUBLE);
-							row[OTLPMetricsUnionSchema::COL_IS_MONOTONIC] = Value(LogicalType::BOOLEAN);
-							row[OTLPMetricsUnionSchema::COL_BUCKET_COUNTS] =
-							    Value(LogicalType::LIST(LogicalType::UBIGINT));
-							row[OTLPMetricsUnionSchema::COL_EXPLICIT_BOUNDS] =
-							    Value(LogicalType::LIST(LogicalType::DOUBLE));
-							row[OTLPMetricsUnionSchema::COL_QUANTILE_VALUES] =
-							    Value(LogicalType::LIST(LogicalType::DOUBLE));
-							row[OTLPMetricsUnionSchema::COL_QUANTILE_QUANTILES] =
-							    Value(LogicalType::LIST(LogicalType::DOUBLE));
-
-							rows.push_back(std::move(row));
+							// Transform to union schema for file reading
+							rows.push_back(TransformExpHistogramRow(BuildMetricsExpHistogramRow(d)));
 						}
 					}
 				}
@@ -970,57 +863,27 @@ bool OTLPJSONParser::ParseMetricsToTypedRows(const string &json, vector<vector<V
 						size_t dp_idx, dp_max;
 						duckdb_yyjson::yyjson_val *data_point;
 						yyjson_arr_foreach(data_points, dp_idx, dp_max, data_point) {
-							vector<Value> row(OTLPMetricsUnionSchema::COLUMN_COUNT);
-
 							auto timestamp = NanosToTimestamp(GetUint64Value(data_point, "timeUnixNano"));
 
-							// Base columns
-							row[OTLPMetricsBaseSchema::COL_TIMESTAMP] = Value::TIMESTAMPNS(timestamp);
-							row[OTLPMetricsBaseSchema::COL_SERVICE_NAME] = Value(service_name);
-							row[OTLPMetricsBaseSchema::COL_METRIC_NAME] = Value(metric_name);
-							row[OTLPMetricsBaseSchema::COL_METRIC_DESCRIPTION] = Value(metric_description);
-							row[OTLPMetricsBaseSchema::COL_METRIC_UNIT] = Value(metric_unit);
-							row[OTLPMetricsBaseSchema::COL_RESOURCE_ATTRIBUTES] =
-							    Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
-							row[OTLPMetricsBaseSchema::COL_SCOPE_NAME] = Value(scope_name);
-							row[OTLPMetricsBaseSchema::COL_SCOPE_VERSION] = Value(scope_version);
-							row[OTLPMetricsBaseSchema::COL_ATTRIBUTES] =
-							    Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+							// Build type-specific row using shared builder
+							MetricsSummaryData d {
+							    timestamp,
+							    service_name,
+							    metric_name,
+							    metric_description,
+							    metric_unit,
+							    JSONAttributesToMap(resource ? duckdb_yyjson::yyjson_obj_get(resource, "attributes")
+							                                 : nullptr),
+							    scope_name,
+							    scope_version,
+							    JSONAttributesToMap(duckdb_yyjson::yyjson_obj_get(data_point, "attributes")),
+							    GetUint64Value(data_point, "count"),
+							    GetDoubleValue(data_point, "sum"),
+							    {},  // quantile_values - TODO: parse from JSON
+							    {}}; // quantile_quantiles - TODO: parse from JSON
 
-							// Union discriminator
-							row[OTLPMetricsUnionSchema::COL_METRIC_TYPE] = Value("summary");
-
-							// Summary fields
-							row[OTLPMetricsUnionSchema::COL_COUNT] =
-							    Value::UBIGINT(GetUint64Value(data_point, "count"));
-							row[OTLPMetricsUnionSchema::COL_SUM] = Value::DOUBLE(GetDoubleValue(data_point, "sum"));
-
-							// Quantile values - NULL LISTs for now
-							row[OTLPMetricsUnionSchema::COL_QUANTILE_VALUES] =
-							    Value(LogicalType::LIST(LogicalType::DOUBLE));
-							row[OTLPMetricsUnionSchema::COL_QUANTILE_QUANTILES] =
-							    Value(LogicalType::LIST(LogicalType::DOUBLE));
-
-							// NULL other union columns
-							row[OTLPMetricsUnionSchema::COL_VALUE] = Value(LogicalType::DOUBLE);
-							row[OTLPMetricsUnionSchema::COL_AGGREGATION_TEMPORALITY] = Value(LogicalType::INTEGER);
-							row[OTLPMetricsUnionSchema::COL_IS_MONOTONIC] = Value(LogicalType::BOOLEAN);
-							row[OTLPMetricsUnionSchema::COL_BUCKET_COUNTS] =
-							    Value(LogicalType::LIST(LogicalType::UBIGINT));
-							row[OTLPMetricsUnionSchema::COL_EXPLICIT_BOUNDS] =
-							    Value(LogicalType::LIST(LogicalType::DOUBLE));
-							row[OTLPMetricsUnionSchema::COL_MIN] = Value(LogicalType::DOUBLE);
-							row[OTLPMetricsUnionSchema::COL_MAX] = Value(LogicalType::DOUBLE);
-							row[OTLPMetricsUnionSchema::COL_SCALE] = Value(LogicalType::INTEGER);
-							row[OTLPMetricsUnionSchema::COL_ZERO_COUNT] = Value(LogicalType::UBIGINT);
-							row[OTLPMetricsUnionSchema::COL_POSITIVE_OFFSET] = Value(LogicalType::INTEGER);
-							row[OTLPMetricsUnionSchema::COL_POSITIVE_BUCKET_COUNTS] =
-							    Value(LogicalType::LIST(LogicalType::UBIGINT));
-							row[OTLPMetricsUnionSchema::COL_NEGATIVE_OFFSET] = Value(LogicalType::INTEGER);
-							row[OTLPMetricsUnionSchema::COL_NEGATIVE_BUCKET_COUNTS] =
-							    Value(LogicalType::LIST(LogicalType::UBIGINT));
-
-							rows.push_back(std::move(row));
+							// Transform to union schema for file reading
+							rows.push_back(TransformSummaryRow(BuildMetricsSummaryRow(d)));
 						}
 					}
 				}
