@@ -9,6 +9,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "yyjson.hpp"
+#include <utility>
 
 namespace duckdb {
 
@@ -263,6 +264,12 @@ static uint64_t GetUint64Value(duckdb_yyjson::yyjson_val *obj, const char *key) 
 		}
 	} else if (duckdb_yyjson::yyjson_is_uint(val)) {
 		return duckdb_yyjson::yyjson_get_uint(val);
+	} else if (duckdb_yyjson::yyjson_is_int(val)) {
+		auto signed_val = duckdb_yyjson::yyjson_get_int(val);
+		if (signed_val < 0) {
+			return 0;
+		}
+		return static_cast<uint64_t>(signed_val);
 	}
 	return 0;
 }
@@ -306,6 +313,126 @@ static double GetDoubleValue(duckdb_yyjson::yyjson_val *obj, const char *key, do
 		return (double)duckdb_yyjson::yyjson_get_int(val);
 	}
 	return default_val;
+}
+
+static bool TryParseInt64Value(duckdb_yyjson::yyjson_val *val, int64_t &out) {
+	if (!val) {
+		return false;
+	}
+	if (duckdb_yyjson::yyjson_is_int(val)) {
+		out = duckdb_yyjson::yyjson_get_int(val);
+		return true;
+	}
+	if (duckdb_yyjson::yyjson_is_uint(val)) {
+		auto raw = duckdb_yyjson::yyjson_get_uint(val);
+		if (raw > NumericLimits<int64_t>::Maximum()) {
+			return false;
+		}
+		out = static_cast<int64_t>(raw);
+		return true;
+	}
+	if (duckdb_yyjson::yyjson_is_str(val)) {
+		auto str_ptr = duckdb_yyjson::yyjson_get_str(val);
+		if (!str_ptr) {
+			return false;
+		}
+		try {
+			auto text = string(str_ptr);
+			StringUtil::Trim(text);
+			if (text.empty()) {
+				return false;
+			}
+			out = std::stoll(text);
+			return true;
+		} catch (const std::exception &) {
+			return false;
+		}
+	}
+	return false;
+}
+
+static bool TryParseDoubleValue(duckdb_yyjson::yyjson_val *val, double &out) {
+	if (!val) {
+		return false;
+	}
+	if (duckdb_yyjson::yyjson_is_real(val)) {
+		out = duckdb_yyjson::yyjson_get_real(val);
+		return true;
+	}
+	if (duckdb_yyjson::yyjson_is_int(val)) {
+		out = static_cast<double>(duckdb_yyjson::yyjson_get_int(val));
+		return true;
+	}
+	if (duckdb_yyjson::yyjson_is_uint(val)) {
+		out = static_cast<double>(duckdb_yyjson::yyjson_get_uint(val));
+		return true;
+	}
+	if (duckdb_yyjson::yyjson_is_str(val)) {
+		auto str_ptr = duckdb_yyjson::yyjson_get_str(val);
+		if (!str_ptr) {
+			return false;
+		}
+		try {
+			auto text = string(str_ptr);
+			StringUtil::Trim(text);
+			if (text.empty()) {
+				return false;
+			}
+			out = std::stod(text);
+			return true;
+		} catch (const std::exception &) {
+			return false;
+		}
+	}
+	return false;
+}
+
+static bool TryGetInt64Field(duckdb_yyjson::yyjson_val *obj, const char *key, int64_t &out) {
+	if (!obj) {
+		return false;
+	}
+	auto val = duckdb_yyjson::yyjson_obj_get(obj, key);
+	return TryParseInt64Value(val, out);
+}
+
+static bool TryGetDoubleField(duckdb_yyjson::yyjson_val *obj, const char *key, double &out) {
+	if (!obj) {
+		return false;
+	}
+	auto val = duckdb_yyjson::yyjson_obj_get(obj, key);
+	return TryParseDoubleValue(val, out);
+}
+
+static vector<Value> ParseUint64List(duckdb_yyjson::yyjson_val *arr) {
+	vector<Value> result;
+	if (!arr || !duckdb_yyjson::yyjson_is_arr(arr)) {
+		return result;
+	}
+	size_t idx, max;
+	duckdb_yyjson::yyjson_val *item;
+	yyjson_arr_foreach(arr, idx, max, item) {
+		int64_t parsed = 0;
+		if (TryParseInt64Value(item, parsed) && parsed >= 0) {
+			result.emplace_back(Value::UBIGINT(static_cast<uint64_t>(parsed)));
+		}
+	}
+	return result;
+}
+
+static vector<Value> ParseDoubleList(duckdb_yyjson::yyjson_val *arr) {
+	vector<Value> result;
+	if (!arr || !duckdb_yyjson::yyjson_is_arr(arr)) {
+		return result;
+	}
+	size_t idx, max;
+	duckdb_yyjson::yyjson_val *item;
+	yyjson_arr_foreach(arr, idx, max, item) {
+		double parsed = 0;
+		if (TryParseDoubleValue(item, parsed)) {
+			result.emplace_back(Value::DOUBLE(parsed));
+		}
+	}
+	return result;
 }
 
 // Helper: Convert OTLP JSON AnyValue object to string
@@ -705,16 +832,23 @@ bool OTLPJSONParser::ParseMetricsToTypedRows(const string &json, vector<vector<V
 						yyjson_arr_foreach(data_points, dp_idx, dp_max, data_point) {
 							auto timestamp = NanosToTimestamp(GetUint64Value(data_point, "timeUnixNano"));
 
-							// Extract gauge value - check field existence first (0.0 is valid)
 							double value = 0.0;
-							auto as_double_field = duckdb_yyjson::yyjson_obj_get(data_point, "asDouble");
-							if (as_double_field) {
-								value = GetDoubleValue(data_point, "asDouble");
+							bool has_value = false;
+							if (TryParseDoubleValue(duckdb_yyjson::yyjson_obj_get(data_point, "asDouble"), value)) {
+								has_value = true;
 							} else {
-								value = (double)GetUint64Value(data_point, "asInt");
+								int64_t int_value = 0;
+								if (TryParseInt64Value(duckdb_yyjson::yyjson_obj_get(data_point, "asInt"), int_value)) {
+									value = static_cast<double>(int_value);
+									has_value = true;
+								}
+							}
+							if (!has_value) {
+								duckdb_yyjson::yyjson_doc_free(doc);
+								last_error = "Gauge data point missing numeric value";
+								return false;
 							}
 
-							// Build type-specific row using shared builder
 							MetricsGaugeData d {
 							    timestamp,
 							    service_name,
@@ -728,7 +862,6 @@ bool OTLPJSONParser::ParseMetricsToTypedRows(const string &json, vector<vector<V
 							    JSONAttributesToMap(duckdb_yyjson::yyjson_obj_get(data_point, "attributes")),
 							    value};
 
-							// Transform to union schema for file reading
 							rows.push_back(TransformGaugeRow(BuildMetricsGaugeRow(d)));
 						}
 					}
@@ -744,17 +877,34 @@ bool OTLPJSONParser::ParseMetricsToTypedRows(const string &json, vector<vector<V
 						yyjson_arr_foreach(data_points, dp_idx, dp_max, data_point) {
 							auto timestamp = NanosToTimestamp(GetUint64Value(data_point, "timeUnixNano"));
 
-							// Extract sum value
 							double value = 0.0;
-							auto as_double_field = duckdb_yyjson::yyjson_obj_get(data_point, "asDouble");
-							if (as_double_field) {
-								value = GetDoubleValue(data_point, "asDouble");
+							bool has_value = false;
+							if (TryParseDoubleValue(duckdb_yyjson::yyjson_obj_get(data_point, "asDouble"), value)) {
+								has_value = true;
 							} else {
-								value = (double)GetUint64Value(data_point, "asInt");
+								int64_t int_value = 0;
+								if (TryParseInt64Value(duckdb_yyjson::yyjson_obj_get(data_point, "asInt"), int_value)) {
+									value = static_cast<double>(int_value);
+									has_value = true;
+								}
+							}
+							if (!has_value) {
+								duckdb_yyjson::yyjson_doc_free(doc);
+								last_error = "Sum data point missing numeric value";
+								return false;
 							}
 
-							// Extract sum-specific fields
-							int32_t agg_temp = GetIntValue(sum, "aggregationTemporality");
+							int64_t agg_temp_raw = 0;
+							int32_t agg_temp = 0;
+							if (TryGetInt64Field(sum, "aggregationTemporality", agg_temp_raw)) {
+								if (agg_temp_raw < NumericLimits<int32_t>::Minimum()) {
+									agg_temp = NumericLimits<int32_t>::Minimum();
+								} else if (agg_temp_raw > NumericLimits<int32_t>::Maximum()) {
+									agg_temp = NumericLimits<int32_t>::Maximum();
+								} else {
+									agg_temp = static_cast<int32_t>(agg_temp_raw);
+								}
+							}
 							bool is_monotonic =
 							    duckdb_yyjson::yyjson_obj_get(sum, "isMonotonic") &&
 							    duckdb_yyjson::yyjson_get_bool(duckdb_yyjson::yyjson_obj_get(sum, "isMonotonic"));
@@ -791,7 +941,11 @@ bool OTLPJSONParser::ParseMetricsToTypedRows(const string &json, vector<vector<V
 						yyjson_arr_foreach(data_points, dp_idx, dp_max, data_point) {
 							auto timestamp = NanosToTimestamp(GetUint64Value(data_point, "timeUnixNano"));
 
-							// Build type-specific row using shared builder
+							auto bucket_counts =
+							    ParseUint64List(duckdb_yyjson::yyjson_obj_get(data_point, "bucketCounts"));
+							auto explicit_bounds =
+							    ParseDoubleList(duckdb_yyjson::yyjson_obj_get(data_point, "explicitBounds"));
+
 							MetricsHistogramData d {
 							    timestamp,
 							    service_name,
@@ -805,8 +959,8 @@ bool OTLPJSONParser::ParseMetricsToTypedRows(const string &json, vector<vector<V
 							    JSONAttributesToMap(duckdb_yyjson::yyjson_obj_get(data_point, "attributes")),
 							    GetUint64Value(data_point, "count"),
 							    GetDoubleValue(data_point, "sum"),
-							    {}, // bucket_counts - TODO: parse from JSON
-							    {}, // explicit_bounds - TODO: parse from JSON
+							    std::move(bucket_counts),
+							    std::move(explicit_bounds),
 							    GetDoubleValue(data_point, "min"),
 							    GetDoubleValue(data_point, "max")};
 
@@ -826,7 +980,52 @@ bool OTLPJSONParser::ParseMetricsToTypedRows(const string &json, vector<vector<V
 						yyjson_arr_foreach(data_points, dp_idx, dp_max, data_point) {
 							auto timestamp = NanosToTimestamp(GetUint64Value(data_point, "timeUnixNano"));
 
-							// Build type-specific row using shared builder
+							int64_t scale_raw = 0;
+							int32_t scale = 0;
+							if (TryGetInt64Field(data_point, "scale", scale_raw)) {
+								if (scale_raw < NumericLimits<int32_t>::Minimum()) {
+									scale = NumericLimits<int32_t>::Minimum();
+								} else if (scale_raw > NumericLimits<int32_t>::Maximum()) {
+									scale = NumericLimits<int32_t>::Maximum();
+								} else {
+									scale = static_cast<int32_t>(scale_raw);
+								}
+							}
+
+							auto positive = duckdb_yyjson::yyjson_obj_get(data_point, "positive");
+							int32_t positive_offset = 0;
+							if (positive && duckdb_yyjson::yyjson_is_obj(positive)) {
+								int64_t offset64 = 0;
+								if (TryGetInt64Field(positive, "offset", offset64)) {
+									if (offset64 < NumericLimits<int32_t>::Minimum()) {
+										positive_offset = NumericLimits<int32_t>::Minimum();
+									} else if (offset64 > NumericLimits<int32_t>::Maximum()) {
+										positive_offset = NumericLimits<int32_t>::Maximum();
+									} else {
+										positive_offset = static_cast<int32_t>(offset64);
+									}
+								}
+							}
+							auto positive_bucket_counts = ParseUint64List(
+							    positive ? duckdb_yyjson::yyjson_obj_get(positive, "bucketCounts") : nullptr);
+
+							auto negative = duckdb_yyjson::yyjson_obj_get(data_point, "negative");
+							int32_t negative_offset = 0;
+							if (negative && duckdb_yyjson::yyjson_is_obj(negative)) {
+								int64_t offset64 = 0;
+								if (TryGetInt64Field(negative, "offset", offset64)) {
+									if (offset64 < NumericLimits<int32_t>::Minimum()) {
+										negative_offset = NumericLimits<int32_t>::Minimum();
+									} else if (offset64 > NumericLimits<int32_t>::Maximum()) {
+										negative_offset = NumericLimits<int32_t>::Maximum();
+									} else {
+										negative_offset = static_cast<int32_t>(offset64);
+									}
+								}
+							}
+							auto negative_bucket_counts = ParseUint64List(
+							    negative ? duckdb_yyjson::yyjson_obj_get(negative, "bucketCounts") : nullptr);
+
 							MetricsExpHistogramData d {
 							    timestamp,
 							    service_name,
@@ -840,12 +1039,12 @@ bool OTLPJSONParser::ParseMetricsToTypedRows(const string &json, vector<vector<V
 							    JSONAttributesToMap(duckdb_yyjson::yyjson_obj_get(data_point, "attributes")),
 							    GetUint64Value(data_point, "count"),
 							    GetDoubleValue(data_point, "sum"),
-							    GetIntValue(data_point, "scale"),
+							    scale,
 							    GetUint64Value(data_point, "zeroCount"),
-							    0,  // positive_offset - TODO: parse from JSON
-							    {}, // positive_bucket_counts - TODO: parse from JSON
-							    0,  // negative_offset - TODO: parse from JSON
-							    {}, // negative_bucket_counts - TODO: parse from JSON
+							    positive_offset,
+							    std::move(positive_bucket_counts),
+							    negative_offset,
+							    std::move(negative_bucket_counts),
 							    GetDoubleValue(data_point, "min"),
 							    GetDoubleValue(data_point, "max")};
 
@@ -865,7 +1064,23 @@ bool OTLPJSONParser::ParseMetricsToTypedRows(const string &json, vector<vector<V
 						yyjson_arr_foreach(data_points, dp_idx, dp_max, data_point) {
 							auto timestamp = NanosToTimestamp(GetUint64Value(data_point, "timeUnixNano"));
 
-							// Build type-specific row using shared builder
+							vector<Value> quantile_values;
+							vector<Value> quantile_quantiles;
+							auto quantile_arr = duckdb_yyjson::yyjson_obj_get(data_point, "quantileValues");
+							if (quantile_arr && duckdb_yyjson::yyjson_is_arr(quantile_arr)) {
+								size_t qidx, qmax;
+								duckdb_yyjson::yyjson_val *quantile_entry;
+								yyjson_arr_foreach(quantile_arr, qidx, qmax, quantile_entry) {
+									double quantile = 0.0;
+									double quantile_value = 0.0;
+									if (TryGetDoubleField(quantile_entry, "quantile", quantile) &&
+									    TryGetDoubleField(quantile_entry, "value", quantile_value)) {
+										quantile_quantiles.emplace_back(Value::DOUBLE(quantile));
+										quantile_values.emplace_back(Value::DOUBLE(quantile_value));
+									}
+								}
+							}
+
 							MetricsSummaryData d {
 							    timestamp,
 							    service_name,
@@ -879,8 +1094,8 @@ bool OTLPJSONParser::ParseMetricsToTypedRows(const string &json, vector<vector<V
 							    JSONAttributesToMap(duckdb_yyjson::yyjson_obj_get(data_point, "attributes")),
 							    GetUint64Value(data_point, "count"),
 							    GetDoubleValue(data_point, "sum"),
-							    {},  // quantile_values - TODO: parse from JSON
-							    {}}; // quantile_quantiles - TODO: parse from JSON
+							    std::move(quantile_values),
+							    std::move(quantile_quantiles)};
 
 							// Transform to union schema for file reading
 							rows.push_back(TransformSummaryRow(BuildMetricsSummaryRow(d)));

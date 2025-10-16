@@ -441,6 +441,11 @@ void OTLPReceiver::Start() {
 		return; // Already running
 	}
 
+	if (server_thread_.joinable()) {
+		// Should not happen in normal operation, but join to avoid std::terminate
+		server_thread_.join();
+	}
+
 	shutdown_requested_.store(false);
 	startup_error_.clear();
 	server_thread_ = std::thread(&OTLPReceiver::ServerThread, this);
@@ -463,6 +468,10 @@ void OTLPReceiver::Start() {
 
 	// Check if startup failed
 	if (shutdown_requested_.load() && !running_.load()) {
+		if (server_thread_.joinable()) {
+			server_thread_.join();
+		}
+		server_.reset();
 		// Server failed to start
 		std::lock_guard<std::mutex> lock(error_mutex_);
 		if (!startup_error_.empty()) {
@@ -474,10 +483,6 @@ void OTLPReceiver::Start() {
 }
 
 void OTLPReceiver::Stop() {
-	if (!running_.load()) {
-		return; // Not running
-	}
-
 	shutdown_requested_.store(true);
 
 	if (server_) {
@@ -488,6 +493,7 @@ void OTLPReceiver::Stop() {
 		server_thread_.join();
 	}
 
+	server_.reset();
 	running_.store(false);
 }
 

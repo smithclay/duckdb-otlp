@@ -123,3 +123,79 @@ SELECT COUNT(*) FROM read_otlp_metrics('test/data/metrics_simple.jsonl')
 WHERE MetricType = 'gauge';
 ----
 1
+
+# Test metrics - verify sum metric retains integer values
+query I
+SELECT CAST(Value AS BIGINT)
+FROM read_otlp_metrics('test/data/metrics_simple.jsonl')
+WHERE MetricType = 'sum';
+----
+42
+
+# Test metrics - histogram bucket counts and bounds are populated
+query I
+SELECT
+    SUM(bucket_val)::BIGINT
+FROM read_otlp_metrics('test/data/metrics_simple.jsonl'),
+     UNNEST(BucketCounts) AS buckets(bucket_val)
+WHERE MetricType = 'histogram';
+----
+100
+
+query I
+SELECT
+    MAX(bound_val)
+FROM read_otlp_metrics('test/data/metrics_simple.jsonl'),
+     UNNEST(ExplicitBounds) AS bounds(bound_val)
+WHERE MetricType = 'histogram';
+----
+500.0
+
+# Extended metrics: all metric types including negative sums and quantiles
+query I
+SELECT COUNT(*) FROM read_otlp_metrics('test/data/metrics_all_types.jsonl');
+----
+5
+
+# Extended metrics - verify metric type coverage
+query I
+SELECT COUNT(DISTINCT MetricType) FROM read_otlp_metrics('test/data/metrics_all_types.jsonl');
+----
+5
+
+# Extended metrics - negative sum value parses correctly
+query I
+SELECT CAST(Value AS BIGINT)
+FROM read_otlp_metrics('test/data/metrics_all_types.jsonl')
+WHERE MetricType = 'sum';
+----
+-7
+
+# Extended metrics - exponential histogram buckets are captured
+query I
+SELECT
+    SUM(positive_val)::BIGINT
+FROM read_otlp_metrics('test/data/metrics_all_types.jsonl'),
+     UNNEST(PositiveBucketCounts) AS buckets(positive_val)
+WHERE MetricType = 'exponential_histogram';
+----
+9
+
+query I
+SELECT
+    SUM(negative_val)::BIGINT
+FROM read_otlp_metrics('test/data/metrics_all_types.jsonl'),
+     UNNEST(NegativeBucketCounts) AS buckets(negative_val)
+WHERE MetricType = 'exponential_histogram';
+----
+1
+
+# Extended metrics - summary quantiles are populated
+query I
+SELECT
+    COUNT(*)
+FROM read_otlp_metrics('test/data/metrics_all_types.jsonl'),
+     UNNEST(QuantileValues) AS quantiles(quantile_val)
+WHERE MetricType = 'summary';
+----
+2

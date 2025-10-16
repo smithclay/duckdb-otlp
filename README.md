@@ -107,8 +107,6 @@ WHERE MetricName = 'system.memory.usage'
 ORDER BY Timestamp DESC;
 ```
 
-For more query examples, see [SCHEMA.md](SCHEMA.md).
-
 ### Persisting Data
 
 ```sql
@@ -122,16 +120,35 @@ COPY (SELECT * FROM live.otel_traces) TO 'traces.parquet';
 COPY (SELECT * FROM live.otel_logs) TO 'logs.csv';
 ```
 
-For data transfer patterns and schema mapping, see [SCHEMA_BRIDGE.md](SCHEMA_BRIDGE.md).
-
 ## Schemas
 
-See [SCHEMA.md](SCHEMA.md) for complete column definitions.
+All tables use strongly-typed columns compatible with the OpenTelemetry ClickHouse exporter schema:
 
-**Quick reference:**
-- Traces: 22 columns (TraceId, SpanName, ServiceName, Duration, etc.)
-- Logs: 15 columns (Timestamp, SeverityText, Body, ServiceName, etc.)
-- Metrics: 5 tables with 10-19 columns each (gauge, sum, histogram, exp_histogram, summary)
+**Traces Table** - 22 columns including:
+- `TraceId`, `SpanId`, `ParentSpanId` - Trace identifiers
+- `SpanName`, `SpanKind` - Span metadata
+- `ServiceName` - Extracted from resource attributes
+- `Duration` - Calculated from start/end timestamps
+- `StatusCode`, `StatusMessage` - Span status
+- `ResourceAttributes`, `Attributes` - Key-value maps
+- `Events`, `Links` - Nested structured data
+
+**Logs Table** - 15 columns including:
+- `Timestamp`, `ObservedTimestamp` - Temporal data
+- `SeverityText`, `SeverityNumber` - Log level
+- `Body` - Log message content
+- `ServiceName` - Extracted from resource attributes
+- `TraceId`, `SpanId` - Trace correlation
+- `ResourceAttributes`, `Attributes` - Key-value maps
+
+**Metrics Tables** - 5 separate tables by type:
+- `otel_metrics_gauge` - 10 columns for gauge metrics
+- `otel_metrics_sum` - 12 columns for sum/counter metrics
+- `otel_metrics_histogram` - 15 columns for histogram metrics
+- `otel_metrics_exp_histogram` - 19 columns for exponential histograms
+- `otel_metrics_summary` - 13 columns for summary metrics
+
+All metric tables share common base columns: `Timestamp`, `ServiceName`, `MetricName`, `MetricDescription`, `MetricUnit`, `ResourceAttributes`, `ScopeName`, `ScopeVersion`, `Attributes`, plus type-specific fields like `Value`, `Count`, `Sum`, `BucketCounts`, etc.
 
 ## Building
 

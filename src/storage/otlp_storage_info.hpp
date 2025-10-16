@@ -35,26 +35,30 @@ struct OTLPStorageInfo : public StorageExtensionInfo {
 
 	OTLPStorageInfo(const string &host_p, uint16_t port_p, idx_t buffer_capacity = 10000)
 	    : host(host_p), port(port_p), schema_name("") {
+		idx_t effective_capacity = MaxValue<idx_t>(idx_t(1), buffer_capacity);
+		idx_t chunk_capacity = MinValue<idx_t>(STANDARD_VECTOR_SIZE, effective_capacity);
+		idx_t max_chunks = MaxValue<idx_t>(idx_t(1), (effective_capacity + chunk_capacity - 1) / chunk_capacity);
+
 		// Create columnar buffers for all 7 table types
 		traces_buffer =
-		    make_shared_ptr<ColumnarRingBuffer>(OTLPTracesSchema::GetColumnTypes(), STANDARD_VECTOR_SIZE, 256,
+		    make_shared_ptr<ColumnarRingBuffer>(OTLPTracesSchema::GetColumnTypes(), chunk_capacity, max_chunks,
 		                                        OTLPTracesSchema::COL_SERVICE_NAME, DConstants::INVALID_INDEX);
-		logs_buffer = make_shared_ptr<ColumnarRingBuffer>(OTLPLogsSchema::GetColumnTypes(), STANDARD_VECTOR_SIZE, 256,
+		logs_buffer = make_shared_ptr<ColumnarRingBuffer>(OTLPLogsSchema::GetColumnTypes(), chunk_capacity, max_chunks,
 		                                                  OTLPLogsSchema::COL_SERVICE_NAME, DConstants::INVALID_INDEX);
 		metrics_gauge_buffer = make_shared_ptr<ColumnarRingBuffer>(
-		    OTLPMetricsGaugeSchema::GetColumnTypes(), STANDARD_VECTOR_SIZE, 256,
+		    OTLPMetricsGaugeSchema::GetColumnTypes(), chunk_capacity, max_chunks,
 		    OTLPMetricsBaseSchema::COL_SERVICE_NAME, OTLPMetricsBaseSchema::COL_METRIC_NAME);
-		metrics_sum_buffer = make_shared_ptr<ColumnarRingBuffer>(
-		    OTLPMetricsSumSchema::GetColumnTypes(), STANDARD_VECTOR_SIZE, 256, OTLPMetricsBaseSchema::COL_SERVICE_NAME,
-		    OTLPMetricsBaseSchema::COL_METRIC_NAME);
+		metrics_sum_buffer = make_shared_ptr<ColumnarRingBuffer>(OTLPMetricsSumSchema::GetColumnTypes(), chunk_capacity,
+		                                                         max_chunks, OTLPMetricsBaseSchema::COL_SERVICE_NAME,
+		                                                         OTLPMetricsBaseSchema::COL_METRIC_NAME);
 		metrics_histogram_buffer = make_shared_ptr<ColumnarRingBuffer>(
-		    OTLPMetricsHistogramSchema::GetColumnTypes(), STANDARD_VECTOR_SIZE, 256,
+		    OTLPMetricsHistogramSchema::GetColumnTypes(), chunk_capacity, max_chunks,
 		    OTLPMetricsBaseSchema::COL_SERVICE_NAME, OTLPMetricsBaseSchema::COL_METRIC_NAME);
 		metrics_exp_histogram_buffer = make_shared_ptr<ColumnarRingBuffer>(
-		    OTLPMetricsExpHistogramSchema::GetColumnTypes(), STANDARD_VECTOR_SIZE, 256,
+		    OTLPMetricsExpHistogramSchema::GetColumnTypes(), chunk_capacity, max_chunks,
 		    OTLPMetricsBaseSchema::COL_SERVICE_NAME, OTLPMetricsBaseSchema::COL_METRIC_NAME);
 		metrics_summary_buffer = make_shared_ptr<ColumnarRingBuffer>(
-		    OTLPMetricsSummarySchema::GetColumnTypes(), STANDARD_VECTOR_SIZE, 256,
+		    OTLPMetricsSummarySchema::GetColumnTypes(), chunk_capacity, max_chunks,
 		    OTLPMetricsBaseSchema::COL_SERVICE_NAME, OTLPMetricsBaseSchema::COL_METRIC_NAME);
 	}
 
