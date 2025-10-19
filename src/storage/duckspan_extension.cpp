@@ -48,7 +48,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(ReadOTLPTableFunction::GetTracesFunction());
 	loader.RegisterFunction(ReadOTLPTableFunction::GetLogsFunction());
 	loader.RegisterFunction(ReadOTLPTableFunction::GetMetricsFunction());
+#ifndef DUCKSPAN_DISABLE_GRPC
 	loader.RegisterFunction(GetOTLPMetricsUnionFunction());
+#endif
 
 	// Register a scalar function (from template, keeping for now)
 	auto duckspan_scalar_function =

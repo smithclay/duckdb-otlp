@@ -1,6 +1,7 @@
 #pragma once
 
 #include "duckdb.hpp"
+#include "include/otlp_utils.hpp"
 
 // Generated protobuf stubs
 #include "opentelemetry/proto/common/v1/common.pb.h"
@@ -87,50 +88,6 @@ inline string ExtractServiceName(const opentelemetry::proto::resource::v1::Resou
 		}
 	}
 	return "unknown_service";
-}
-
-//! Helper: Convert bytes to hex string
-inline string BytesToHex(const string &bytes) {
-	// Check if already hex-encoded (all chars are [0-9A-Fa-f] and even length)
-	// JSON formats often provide trace IDs as hex strings already
-	if (bytes.size() % 2 == 0 && !bytes.empty()) {
-		bool is_hex = true;
-		for (char c : bytes) {
-			if (!std::isxdigit(static_cast<unsigned char>(c))) {
-				is_hex = false;
-				break;
-			}
-		}
-		if (is_hex) {
-			// Normalize to lowercase for consistency
-			string normalized = bytes;
-			for (auto &c : normalized)
-				c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-			return normalized; // Already hex, normalized
-		}
-	}
-
-	// Convert binary to hex
-	static const char hex_chars[] = "0123456789abcdef";
-	string result;
-	result.reserve(bytes.size() * 2);
-	for (unsigned char c : bytes) {
-		result.push_back(hex_chars[c >> 4]);
-		result.push_back(hex_chars[c & 0x0F]);
-	}
-	return result;
-}
-
-//! Helper: Convert Unix nanoseconds to DuckDB nanoseconds timestamp
-inline timestamp_ns_t NanosToTimestamp(uint64_t nanos) {
-	// DuckDB TIMESTAMP_NS is in nanoseconds, keep as-is
-	// Check for overflow: timestamp_ns_t is int64_t, max value is INT64_MAX
-	constexpr uint64_t MAX_TIMESTAMP_NS = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
-	if (nanos > MAX_TIMESTAMP_NS) {
-		// Clamp to maximum valid timestamp to avoid undefined behavior
-		return timestamp_ns_t(std::numeric_limits<int64_t>::max());
-	}
-	return timestamp_ns_t(static_cast<int64_t>(nanos));
 }
 
 //! Helper: Convert span kind enum to string

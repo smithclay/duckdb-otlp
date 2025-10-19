@@ -29,7 +29,7 @@ SELECT * FROM read_otlp_logs('https://example.com/logs.jsonl');
 
 ## Features
 
-**Live OTLP Streams**
+**Live OTLP Streams** (native builds only)
 - `ATTACH` creates a gRPC receiver on specified port
 - Auto-creates ClickHouse-compatible tables (7 tables total):
   - `otel_traces` - 22 strongly-typed columns
@@ -53,6 +53,26 @@ SELECT * FROM read_otlp_logs('https://example.com/logs.jsonl');
 - Direct column access: `ServiceName`, `TraceId`, `Duration`, `Value`, etc.
 - Compatible with OpenTelemetry ClickHouse exporter schema
 
+## Platform Support
+
+**Native Builds** (desktop/server)
+- Full feature set including `ATTACH` with gRPC receiver
+- Protobuf and JSON file format support
+- Columnar ring buffers with concurrent reads and predicate pushdown
+- Utility functions: `duckspan()`, `duckspan_openssl_version()`
+
+**WASM Builds** (browser/WebAssembly)
+- Built with `DUCKSPAN_DISABLE_GRPC` and `DUCKSPAN_DISABLE_PROTOBUF`
+- Lightweight JSON-only reader for restricted environments
+- Available functionality:
+  - `read_otlp_traces(path_or_url)`
+  - `read_otlp_logs(path_or_url)`
+  - `read_otlp_metrics(path_or_url)`
+- Limitations:
+  - No `ATTACH` support (no background networking in browser contexts)
+  - JSON/JSONL files only (protobuf not supported)
+  - No `otlp_metrics_union` table function
+
 ## Usage
 
 ### ATTACH/DETACH
@@ -63,6 +83,9 @@ ATTACH 'otlp:localhost:4317' AS live (TYPE otlp);
 
 -- Multiple simultaneous streams
 ATTACH 'otlp:localhost:4318' AS app2 (TYPE otlp);
+
+-- Tune in-memory retention (default ~25k rows per table)
+ATTACH 'otlp:localhost:4317' AS live_big (TYPE otlp, BUFFER_SIZE 50000);
 
 -- Cleanup
 DETACH live;

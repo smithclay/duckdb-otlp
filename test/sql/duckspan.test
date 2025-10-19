@@ -18,6 +18,10 @@ SELECT duckspan('Sam');
 Duckspan Sam 🐥
 
 query I
-SELECT duckspan_openssl_version('Michael') ILIKE 'Duckspan Michael, my linked OpenSSL version is OpenSSL%';
+SELECT CASE
+           WHEN EXISTS (SELECT 1 FROM duckdb_functions() WHERE function_name = 'duckspan_openssl_version')
+           THEN duckspan_openssl_version('Michael') ILIKE 'Duckspan Michael, my linked OpenSSL version is OpenSSL%'
+           ELSE true
+       END;
 ----
 true

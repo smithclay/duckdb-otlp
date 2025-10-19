@@ -1,5 +1,5 @@
 #include "parsers/json_parser.hpp"
-#include "receiver/otlp_helpers.hpp"
+#include "include/otlp_utils.hpp"
 #include "schema/otlp_traces_schema.hpp"
 #include "schema/otlp_logs_schema.hpp"
 #include "schema/otlp_metrics_union_schema.hpp"
