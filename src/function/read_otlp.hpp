@@ -26,10 +26,10 @@ public:
 
 //! Bind data for read_otlp function
 struct ReadOTLPBindData : public TableFunctionData {
-	string file_path;
+	string pattern;           // Glob pattern or single file path
 	OTLPTableType table_type; // Detected table type for v2 schema
 
-	explicit ReadOTLPBindData(string path, OTLPTableType type) : file_path(std::move(path)), table_type(type) {
+	explicit ReadOTLPBindData(string pattern_p, OTLPTableType type) : pattern(std::move(pattern_p)), table_type(type) {
 	}
 };
 
