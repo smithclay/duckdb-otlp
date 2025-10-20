@@ -13,18 +13,15 @@ OTLPProtobufParser::OTLPProtobufParser() {
 OTLPProtobufParser::~OTLPProtobufParser() {
 }
 
-idx_t OTLPProtobufParser::ParseTracesData(const char *data, size_t length, vector<timestamp_t> &timestamps,
-                                          vector<string> &resources, vector<string> &datas) {
+idx_t OTLPProtobufParser::ParseTracesToTypedRows(const char *data, size_t length, vector<vector<Value>> &rows) {
 	throw NotImplementedException("Protobuf parsing is not supported in WASM builds. Use JSON format instead.");
 }
 
-idx_t OTLPProtobufParser::ParseMetricsData(const char *data, size_t length, vector<timestamp_t> &timestamps,
-                                           vector<string> &resources, vector<string> &datas) {
+idx_t OTLPProtobufParser::ParseLogsToTypedRows(const char *data, size_t length, vector<vector<Value>> &rows) {
 	throw NotImplementedException("Protobuf parsing is not supported in WASM builds. Use JSON format instead.");
 }
 
-idx_t OTLPProtobufParser::ParseLogsData(const char *data, size_t length, vector<timestamp_t> &timestamps,
-                                        vector<string> &resources, vector<string> &datas) {
+idx_t OTLPProtobufParser::ParseMetricsToTypedRows(const char *data, size_t length, vector<vector<Value>> &rows) {
 	throw NotImplementedException("Protobuf parsing is not supported in WASM builds. Use JSON format instead.");
 }
 

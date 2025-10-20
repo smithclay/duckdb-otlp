@@ -138,13 +138,10 @@ User: SELECT * FROM read_otlp('traces.jsonl')
   ↓
 FormatDetector::DetectFormat() - sniff first bytes
   ↓
-If JSON: JSONParser::Parse() - streaming JSON parsing
-If protobuf: ProtobufParser::Parse() - protobuf deserialization
+If JSON: JSONParser::Parse*ToTypedRows() - streaming JSON parsing into typed rows
+If protobuf: ProtobufParser::Parse*ToTypedRows() - protobuf deserialization into typed rows
   ↓
-Yields rows: (timestamp, resource JSON, data JSON)
-
-Note: File reading still uses legacy (timestamp, resource, data) schema.
-      Future work will update to strongly-typed columns matching ATTACH schema.
+Yields strongly-typed rows matching the ATTACH table schemas
 ```
 
 ### Generated Code
