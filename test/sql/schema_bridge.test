@@ -163,6 +163,169 @@ AND column_name IN ('Count', 'Sum', 'BucketCounts', 'ExplicitBounds');
 ----
 4
 
+#
+# Test 5: File → Archive Table Transfer (Union Schema → Typed Tables)
+#
+# ATTACH tables are read-only (only accept data via gRPC), so we transfer to archive tables instead
+
+# Transfer gauge metrics from file to permanent table
+statement ok
+CREATE TABLE archive_gauge_from_file AS
+SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
+       ResourceAttributes, ScopeName, ScopeVersion, Attributes, Value
+FROM read_otlp_metrics('test/data/metrics_simple.jsonl')
+WHERE MetricType = 'gauge';
+
+# Verify gauge metric was transferred
+query I
+SELECT COUNT(*) FROM archive_gauge_from_file;
+----
+1
+
+# Verify gauge metric value
+query I
+SELECT CAST(Value AS BIGINT) FROM archive_gauge_from_file;
+----
+524288000
+
+# Transfer sum metrics from file to permanent table
+statement ok
+CREATE TABLE archive_sum_from_file AS
+SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
+       ResourceAttributes, ScopeName, ScopeVersion, Attributes,
+       Value, AggregationTemporality, IsMonotonic
+FROM read_otlp_metrics('test/data/metrics_simple.jsonl')
+WHERE MetricType = 'sum';
+
+# Verify sum metric was transferred
+query I
+SELECT COUNT(*) FROM archive_sum_from_file;
+----
+1
+
+# Transfer histogram metrics from file to permanent table
+statement ok
+CREATE TABLE archive_histogram_from_file AS
+SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
+       ResourceAttributes, ScopeName, ScopeVersion, Attributes,
+       Count, Sum, BucketCounts, ExplicitBounds, Min, Max
+FROM read_otlp_metrics('test/data/metrics_simple.jsonl')
+WHERE MetricType = 'histogram';
+
+# Verify histogram metric was transferred
+query I
+SELECT COUNT(*) FROM archive_histogram_from_file;
+----
+1
+
+# Test bulk transfer of all metric types from extended test file
+statement ok
+CREATE TABLE all_gauge_metrics AS
+SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
+       ResourceAttributes, ScopeName, ScopeVersion, Attributes, Value
+FROM read_otlp_metrics('test/data/metrics_all_types.jsonl')
+WHERE MetricType = 'gauge';
+
+statement ok
+CREATE TABLE all_sum_metrics AS
+SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
+       ResourceAttributes, ScopeName, ScopeVersion, Attributes,
+       Value, AggregationTemporality, IsMonotonic
+FROM read_otlp_metrics('test/data/metrics_all_types.jsonl')
+WHERE MetricType = 'sum';
+
+statement ok
+CREATE TABLE all_histogram_metrics AS
+SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
+       ResourceAttributes, ScopeName, ScopeVersion, Attributes,
+       Count, Sum, BucketCounts, ExplicitBounds, Min, Max
+FROM read_otlp_metrics('test/data/metrics_all_types.jsonl')
+WHERE MetricType = 'histogram';
+
+statement ok
+CREATE TABLE all_exp_histogram_metrics AS
+SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
+       ResourceAttributes, ScopeName, ScopeVersion, Attributes,
+       Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts,
+       NegativeOffset, NegativeBucketCounts, Min, Max
+FROM read_otlp_metrics('test/data/metrics_all_types.jsonl')
+WHERE MetricType = 'exponential_histogram';
+
+statement ok
+CREATE TABLE all_summary_metrics AS
+SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
+       ResourceAttributes, ScopeName, ScopeVersion, Attributes,
+       Count, Sum, QuantileValues, QuantileQuantiles
+FROM read_otlp_metrics('test/data/metrics_all_types.jsonl')
+WHERE MetricType = 'summary';
+
+# Verify all metric types were transferred (1 each from metrics_all_types.jsonl)
+query I
+SELECT COUNT(*) FROM all_gauge_metrics;
+----
+1
+
+query I
+SELECT COUNT(*) FROM all_sum_metrics;
+----
+1
+
+query I
+SELECT COUNT(*) FROM all_histogram_metrics;
+----
+1
+
+query I
+SELECT COUNT(*) FROM all_exp_histogram_metrics;
+----
+1
+
+query I
+SELECT COUNT(*) FROM all_summary_metrics;
+----
+1
+
+#
+# Test 6: ATTACH Union View (Typed → Union Schema)
+#
+
+# ATTACH tables are empty (no live gRPC data), but union view should work
+query I
+SELECT COUNT(*) FROM otlp_metrics_union('live');
+----
+0
+
+# Verify union view structure works (even with no data)
+statement ok
+SELECT Timestamp, ServiceName, MetricName, MetricType, Value
+FROM otlp_metrics_union('live')
+LIMIT 0;
+
+# Cleanup file-based archive tables
+statement ok
+DROP TABLE archive_gauge_from_file;
+
+statement ok
+DROP TABLE archive_sum_from_file;
+
+statement ok
+DROP TABLE archive_histogram_from_file;
+
+statement ok
+DROP TABLE all_gauge_metrics;
+
+statement ok
+DROP TABLE all_sum_metrics;
+
+statement ok
+DROP TABLE all_histogram_metrics;
+
+statement ok
+DROP TABLE all_exp_histogram_metrics;
+
+statement ok
+DROP TABLE all_summary_metrics;
+
 # Cleanup: Detach database
 statement ok
 DETACH live;

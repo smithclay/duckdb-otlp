@@ -143,6 +143,71 @@ COPY (SELECT * FROM live.otel_traces) TO 'traces.parquet';
 COPY (SELECT * FROM live.otel_logs) TO 'logs.csv';
 ```
 
+### Transferring Metrics Between Union and Typed Schemas
+
+**File Reading**: `read_otlp_metrics()` returns a union schema (27 columns) with a `MetricType` discriminator column containing all metric types.
+
+**ATTACH Mode**: Creates 5 separate typed tables, one for each metric type. Tables are read-only (only accept data via gRPC).
+
+**Loading files into permanent tables** - Transfer metrics from files into typed archive tables:
+
+```sql
+-- Load gauge metrics from file
+CREATE TABLE archive_gauge AS
+SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
+       ResourceAttributes, ScopeName, ScopeVersion, Attributes, Value
+FROM read_otlp_metrics('metrics.jsonl')
+WHERE MetricType = 'gauge';
+
+-- Load sum metrics
+CREATE TABLE archive_sum AS
+SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
+       ResourceAttributes, ScopeName, ScopeVersion, Attributes,
+       Value, AggregationTemporality, IsMonotonic
+FROM read_otlp_metrics('metrics.jsonl')
+WHERE MetricType = 'sum';
+
+-- Load histogram metrics
+CREATE TABLE archive_histogram AS
+SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
+       ResourceAttributes, ScopeName, ScopeVersion, Attributes,
+       Count, Sum, BucketCounts, ExplicitBounds, Min, Max
+FROM read_otlp_metrics('metrics.jsonl')
+WHERE MetricType = 'histogram';
+
+-- Load exponential histogram metrics
+CREATE TABLE archive_exp_histogram AS
+SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
+       ResourceAttributes, ScopeName, ScopeVersion, Attributes,
+       Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts,
+       NegativeOffset, NegativeBucketCounts, Min, Max
+FROM read_otlp_metrics('metrics.jsonl')
+WHERE MetricType = 'exponential_histogram';
+
+-- Load summary metrics
+CREATE TABLE archive_summary AS
+SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
+       ResourceAttributes, ScopeName, ScopeVersion, Attributes,
+       Count, Sum, QuantileValues, QuantileQuantiles
+FROM read_otlp_metrics('metrics.jsonl')
+WHERE MetricType = 'summary';
+```
+
+**Querying ATTACH as union** - View all metric types together using `otlp_metrics_union()`:
+
+```sql
+-- Query all metric types across live stream
+SELECT * FROM otlp_metrics_union('live')
+WHERE ServiceName = 'my-service'
+ORDER BY Timestamp DESC;
+
+-- Filter union view by metric type
+SELECT MetricName, Value
+FROM otlp_metrics_union('live')
+WHERE MetricType = 'gauge'
+  AND MetricName LIKE 'cpu%';
+```
+
 ## Schemas
 
 All tables use strongly-typed columns compatible with the OpenTelemetry ClickHouse exporter schema:

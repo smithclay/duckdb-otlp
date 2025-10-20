@@ -8,16 +8,16 @@ require duckspan
 statement error
 SELECT * FROM read_otlp_traces('nonexistent_file.jsonl');
 ----
-File not found
+No files found that match the pattern
 
 # Test wrong file extension being passed to traces function
 statement error
 SELECT * FROM read_otlp_logs('nonexistent_file.jsonl');
 ----
-File not found
+No files found that match the pattern
 
 # Test wrong file extension being passed to metrics function
 statement error
 SELECT * FROM read_otlp_metrics('nonexistent_file.jsonl');
 ----
-File not found
+No files found that match the pattern
