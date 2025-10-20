@@ -9,6 +9,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "yyjson.hpp"
+#include <optional>
 #include <utility>
 
 namespace duckdb {
@@ -401,6 +402,50 @@ static bool TryGetDoubleField(duckdb_yyjson::yyjson_val *obj, const char *key, d
 	}
 	auto val = duckdb_yyjson::yyjson_obj_get(obj, key);
 	return TryParseDoubleValue(val, out);
+}
+
+static bool ParseAggregationTemporalityValue(duckdb_yyjson::yyjson_val *val, int32_t &out) {
+	if (!val) {
+		return false;
+	}
+	if (duckdb_yyjson::yyjson_is_int(val)) {
+		auto raw = duckdb_yyjson::yyjson_get_int(val);
+		if (raw < NumericLimits<int32_t>::Minimum() || raw > NumericLimits<int32_t>::Maximum()) {
+			return false;
+		}
+		out = static_cast<int32_t>(raw);
+		return true;
+	}
+	if (duckdb_yyjson::yyjson_is_uint(val)) {
+		auto raw = duckdb_yyjson::yyjson_get_uint(val);
+		if (raw > NumericLimits<int32_t>::Maximum()) {
+			return false;
+		}
+		out = static_cast<int32_t>(raw);
+		return true;
+	}
+	if (duckdb_yyjson::yyjson_is_str(val)) {
+		auto str_ptr = duckdb_yyjson::yyjson_get_str(val);
+		if (!str_ptr) {
+			return false;
+		}
+		auto text = string(str_ptr);
+		StringUtil::Trim(text);
+		auto upper = StringUtil::Upper(text);
+		if (upper == "AGGREGATION_TEMPORALITY_DELTA" || upper == "DELTA") {
+			out = 1;
+			return true;
+		}
+		if (upper == "AGGREGATION_TEMPORALITY_CUMULATIVE" || upper == "CUMULATIVE") {
+			out = 2;
+			return true;
+		}
+		if (upper == "AGGREGATION_TEMPORALITY_UNSPECIFIED" || upper == "UNSPECIFIED") {
+			out = 0;
+			return true;
+		}
+	}
+	return false;
 }
 
 static vector<Value> ParseUint64List(duckdb_yyjson::yyjson_val *arr) {
@@ -894,16 +939,11 @@ bool OTLPJSONParser::ParseMetricsToTypedRows(const string &json, vector<vector<V
 								return false;
 							}
 
-							int64_t agg_temp_raw = 0;
-							int32_t agg_temp = 0;
-							if (TryGetInt64Field(sum, "aggregationTemporality", agg_temp_raw)) {
-								if (agg_temp_raw < NumericLimits<int32_t>::Minimum()) {
-									agg_temp = NumericLimits<int32_t>::Minimum();
-								} else if (agg_temp_raw > NumericLimits<int32_t>::Maximum()) {
-									agg_temp = NumericLimits<int32_t>::Maximum();
-								} else {
-									agg_temp = static_cast<int32_t>(agg_temp_raw);
-								}
+							std::optional<int32_t> agg_temp;
+							int32_t agg_temp_val = 0;
+							if (ParseAggregationTemporalityValue(
+							        duckdb_yyjson::yyjson_obj_get(sum, "aggregationTemporality"), agg_temp_val)) {
+								agg_temp = agg_temp_val;
 							}
 							bool is_monotonic =
 							    duckdb_yyjson::yyjson_obj_get(sum, "isMonotonic") &&
@@ -946,6 +986,22 @@ bool OTLPJSONParser::ParseMetricsToTypedRows(const string &json, vector<vector<V
 							auto explicit_bounds =
 							    ParseDoubleList(duckdb_yyjson::yyjson_obj_get(data_point, "explicitBounds"));
 
+							std::optional<double> sum_opt;
+							double sum_value = 0.0;
+							if (TryGetDoubleField(data_point, "sum", sum_value)) {
+								sum_opt = sum_value;
+							}
+							std::optional<double> min_opt;
+							double min_value = 0.0;
+							if (TryGetDoubleField(data_point, "min", min_value)) {
+								min_opt = min_value;
+							}
+							std::optional<double> max_opt;
+							double max_value = 0.0;
+							if (TryGetDoubleField(data_point, "max", max_value)) {
+								max_opt = max_value;
+							}
+
 							MetricsHistogramData d {
 							    timestamp,
 							    service_name,
@@ -958,11 +1014,11 @@ bool OTLPJSONParser::ParseMetricsToTypedRows(const string &json, vector<vector<V
 							    scope_version,
 							    JSONAttributesToMap(duckdb_yyjson::yyjson_obj_get(data_point, "attributes")),
 							    GetUint64Value(data_point, "count"),
-							    GetDoubleValue(data_point, "sum"),
+							    sum_opt,
 							    std::move(bucket_counts),
 							    std::move(explicit_bounds),
-							    GetDoubleValue(data_point, "min"),
-							    GetDoubleValue(data_point, "max")};
+							    min_opt,
+							    max_opt};
 
 							// Transform to union schema for file reading
 							rows.push_back(TransformHistogramRow(BuildMetricsHistogramRow(d)));
@@ -1026,6 +1082,22 @@ bool OTLPJSONParser::ParseMetricsToTypedRows(const string &json, vector<vector<V
 							auto negative_bucket_counts = ParseUint64List(
 							    negative ? duckdb_yyjson::yyjson_obj_get(negative, "bucketCounts") : nullptr);
 
+							std::optional<double> sum_opt;
+							double sum_value = 0.0;
+							if (TryGetDoubleField(data_point, "sum", sum_value)) {
+								sum_opt = sum_value;
+							}
+							std::optional<double> min_opt;
+							double min_value = 0.0;
+							if (TryGetDoubleField(data_point, "min", min_value)) {
+								min_opt = min_value;
+							}
+							std::optional<double> max_opt;
+							double max_value = 0.0;
+							if (TryGetDoubleField(data_point, "max", max_value)) {
+								max_opt = max_value;
+							}
+
 							MetricsExpHistogramData d {
 							    timestamp,
 							    service_name,
@@ -1038,15 +1110,15 @@ bool OTLPJSONParser::ParseMetricsToTypedRows(const string &json, vector<vector<V
 							    scope_version,
 							    JSONAttributesToMap(duckdb_yyjson::yyjson_obj_get(data_point, "attributes")),
 							    GetUint64Value(data_point, "count"),
-							    GetDoubleValue(data_point, "sum"),
+							    sum_opt,
 							    scale,
 							    GetUint64Value(data_point, "zeroCount"),
 							    positive_offset,
 							    std::move(positive_bucket_counts),
 							    negative_offset,
 							    std::move(negative_bucket_counts),
-							    GetDoubleValue(data_point, "min"),
-							    GetDoubleValue(data_point, "max")};
+							    min_opt,
+							    max_opt};
 
 							// Transform to union schema for file reading
 							rows.push_back(TransformExpHistogramRow(BuildMetricsExpHistogramRow(d)));
@@ -1081,6 +1153,12 @@ bool OTLPJSONParser::ParseMetricsToTypedRows(const string &json, vector<vector<V
 								}
 							}
 
+							std::optional<double> sum_opt;
+							double sum_value = 0.0;
+							if (TryGetDoubleField(data_point, "sum", sum_value)) {
+								sum_opt = sum_value;
+							}
+
 							MetricsSummaryData d {
 							    timestamp,
 							    service_name,
@@ -1093,7 +1171,7 @@ bool OTLPJSONParser::ParseMetricsToTypedRows(const string &json, vector<vector<V
 							    scope_version,
 							    JSONAttributesToMap(duckdb_yyjson::yyjson_obj_get(data_point, "attributes")),
 							    GetUint64Value(data_point, "count"),
-							    GetDoubleValue(data_point, "sum"),
+							    sum_opt,
 							    std::move(quantile_values),
 							    std::move(quantile_quantiles)};
 

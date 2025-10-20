@@ -76,6 +76,13 @@ FROM read_otlp_metrics('test/data/otlp_metrics.pb');
 ----
 true
 
+# AggregationTemporality column is INTEGER typed for protobuf input
+query I
+SELECT typeof(AggregationTemporality)
+FROM read_otlp_metrics('test/data/otlp_metrics.pb');
+----
+INTEGER
+
 #
 # Logs Tests
 #

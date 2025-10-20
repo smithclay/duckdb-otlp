@@ -29,7 +29,11 @@ vector<Value> BuildMetricsSumRow(const MetricsSumData &d) {
 	row[OTLPMetricsSumSchema::COL_SCOPE_VERSION] = Value(d.scope_version);
 	row[OTLPMetricsSumSchema::COL_ATTRIBUTES] = d.attributes;
 	row[OTLPMetricsSumSchema::COL_VALUE] = Value::DOUBLE(d.value);
-	row[OTLPMetricsSumSchema::COL_AGGREGATION_TEMPORALITY] = Value::INTEGER(d.aggregation_temporality);
+	if (d.aggregation_temporality) {
+		row[OTLPMetricsSumSchema::COL_AGGREGATION_TEMPORALITY] = Value::INTEGER(*d.aggregation_temporality);
+	} else {
+		row[OTLPMetricsSumSchema::COL_AGGREGATION_TEMPORALITY] = Value();
+	}
 	row[OTLPMetricsSumSchema::COL_IS_MONOTONIC] = Value::BOOLEAN(d.is_monotonic);
 	return row;
 }
@@ -46,11 +50,23 @@ vector<Value> BuildMetricsHistogramRow(const MetricsHistogramData &d) {
 	row[OTLPMetricsHistogramSchema::COL_SCOPE_VERSION] = Value(d.scope_version);
 	row[OTLPMetricsHistogramSchema::COL_ATTRIBUTES] = d.attributes;
 	row[OTLPMetricsHistogramSchema::COL_COUNT] = Value::UBIGINT(d.count);
-	row[OTLPMetricsHistogramSchema::COL_SUM] = Value::DOUBLE(d.sum);
+	if (d.sum) {
+		row[OTLPMetricsHistogramSchema::COL_SUM] = Value::DOUBLE(*d.sum);
+	} else {
+		row[OTLPMetricsHistogramSchema::COL_SUM] = Value();
+	}
 	row[OTLPMetricsHistogramSchema::COL_BUCKET_COUNTS] = Value::LIST(LogicalType::UBIGINT, d.bucket_counts);
 	row[OTLPMetricsHistogramSchema::COL_EXPLICIT_BOUNDS] = Value::LIST(LogicalType::DOUBLE, d.explicit_bounds);
-	row[OTLPMetricsHistogramSchema::COL_MIN] = Value::DOUBLE(d.min_value);
-	row[OTLPMetricsHistogramSchema::COL_MAX] = Value::DOUBLE(d.max_value);
+	if (d.min_value) {
+		row[OTLPMetricsHistogramSchema::COL_MIN] = Value::DOUBLE(*d.min_value);
+	} else {
+		row[OTLPMetricsHistogramSchema::COL_MIN] = Value();
+	}
+	if (d.max_value) {
+		row[OTLPMetricsHistogramSchema::COL_MAX] = Value::DOUBLE(*d.max_value);
+	} else {
+		row[OTLPMetricsHistogramSchema::COL_MAX] = Value();
+	}
 	return row;
 }
 
@@ -66,7 +82,11 @@ vector<Value> BuildMetricsExpHistogramRow(const MetricsExpHistogramData &d) {
 	row[OTLPMetricsExpHistogramSchema::COL_SCOPE_VERSION] = Value(d.scope_version);
 	row[OTLPMetricsExpHistogramSchema::COL_ATTRIBUTES] = d.attributes;
 	row[OTLPMetricsExpHistogramSchema::COL_COUNT] = Value::UBIGINT(d.count);
-	row[OTLPMetricsExpHistogramSchema::COL_SUM] = Value::DOUBLE(d.sum);
+	if (d.sum) {
+		row[OTLPMetricsExpHistogramSchema::COL_SUM] = Value::DOUBLE(*d.sum);
+	} else {
+		row[OTLPMetricsExpHistogramSchema::COL_SUM] = Value();
+	}
 	row[OTLPMetricsExpHistogramSchema::COL_SCALE] = Value::INTEGER(d.scale);
 	row[OTLPMetricsExpHistogramSchema::COL_ZERO_COUNT] = Value::UBIGINT(d.zero_count);
 	row[OTLPMetricsExpHistogramSchema::COL_POSITIVE_OFFSET] = Value::INTEGER(d.positive_offset);
@@ -75,8 +95,16 @@ vector<Value> BuildMetricsExpHistogramRow(const MetricsExpHistogramData &d) {
 	row[OTLPMetricsExpHistogramSchema::COL_NEGATIVE_OFFSET] = Value::INTEGER(d.negative_offset);
 	row[OTLPMetricsExpHistogramSchema::COL_NEGATIVE_BUCKET_COUNTS] =
 	    Value::LIST(LogicalType::UBIGINT, d.negative_bucket_counts);
-	row[OTLPMetricsExpHistogramSchema::COL_MIN] = Value::DOUBLE(d.min_value);
-	row[OTLPMetricsExpHistogramSchema::COL_MAX] = Value::DOUBLE(d.max_value);
+	if (d.min_value) {
+		row[OTLPMetricsExpHistogramSchema::COL_MIN] = Value::DOUBLE(*d.min_value);
+	} else {
+		row[OTLPMetricsExpHistogramSchema::COL_MIN] = Value();
+	}
+	if (d.max_value) {
+		row[OTLPMetricsExpHistogramSchema::COL_MAX] = Value::DOUBLE(*d.max_value);
+	} else {
+		row[OTLPMetricsExpHistogramSchema::COL_MAX] = Value();
+	}
 	return row;
 }
 
@@ -92,7 +120,11 @@ vector<Value> BuildMetricsSummaryRow(const MetricsSummaryData &d) {
 	row[OTLPMetricsSummarySchema::COL_SCOPE_VERSION] = Value(d.scope_version);
 	row[OTLPMetricsSummarySchema::COL_ATTRIBUTES] = d.attributes;
 	row[OTLPMetricsSummarySchema::COL_COUNT] = Value::UBIGINT(d.count);
-	row[OTLPMetricsSummarySchema::COL_SUM] = Value::DOUBLE(d.sum);
+	if (d.sum) {
+		row[OTLPMetricsSummarySchema::COL_SUM] = Value::DOUBLE(*d.sum);
+	} else {
+		row[OTLPMetricsSummarySchema::COL_SUM] = Value();
+	}
 	row[OTLPMetricsSummarySchema::COL_QUANTILE_VALUES] = Value::LIST(LogicalType::DOUBLE, d.quantile_values);
 	row[OTLPMetricsSummarySchema::COL_QUANTILE_QUANTILES] = Value::LIST(LogicalType::DOUBLE, d.quantile_quantiles);
 	return row;

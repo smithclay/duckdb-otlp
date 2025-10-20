@@ -25,3 +25,5 @@ SELECT CASE
        END;
 ----
 true
+
+# Metadata check ensures ColumnarRingBuffer appender updates chunk metadata

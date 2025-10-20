@@ -2,6 +2,7 @@
 
 #include "duckdb.hpp"
 #include "schema/otlp_metrics_schemas.hpp"
+#include <optional>
 
 namespace duckdb {
 
@@ -33,7 +34,7 @@ struct MetricsSumData {
 	string scope_version;
 	Value attributes; // MAP<VARCHAR,VARCHAR>
 	double value;
-	int32_t aggregation_temporality; // OTLP enum (0=UNSPECIFIED, 1=DELTA, 2=CUMULATIVE)
+	std::optional<int32_t> aggregation_temporality; // OTLP enum (0=UNSPECIFIED, 1=DELTA, 2=CUMULATIVE)
 	bool is_monotonic;
 };
 
@@ -51,11 +52,11 @@ struct MetricsHistogramData {
 	string scope_version;
 	Value attributes; // MAP<VARCHAR,VARCHAR>
 	uint64_t count;
-	double sum;
+	std::optional<double> sum;
 	vector<Value> bucket_counts;   // LIST<UBIGINT> (elements)
 	vector<Value> explicit_bounds; // LIST<DOUBLE> (elements)
-	double min_value;
-	double max_value;
+	std::optional<double> min_value;
+	std::optional<double> max_value;
 };
 
 vector<Value> BuildMetricsHistogramRow(const MetricsHistogramData &d);
@@ -72,15 +73,15 @@ struct MetricsExpHistogramData {
 	string scope_version;
 	Value attributes; // MAP<VARCHAR,VARCHAR>
 	uint64_t count;
-	double sum;
+	std::optional<double> sum;
 	int32_t scale;
 	uint64_t zero_count;
 	int32_t positive_offset;
 	vector<Value> positive_bucket_counts; // LIST<UBIGINT> (elements)
 	int32_t negative_offset;
 	vector<Value> negative_bucket_counts; // LIST<UBIGINT> (elements)
-	double min_value;
-	double max_value;
+	std::optional<double> min_value;
+	std::optional<double> max_value;
 };
 
 vector<Value> BuildMetricsExpHistogramRow(const MetricsExpHistogramData &d);
@@ -97,7 +98,7 @@ struct MetricsSummaryData {
 	string scope_version;
 	Value attributes; // MAP<VARCHAR,VARCHAR>
 	uint64_t count;
-	double sum;
+	std::optional<double> sum;
 	vector<Value> quantile_values;    // LIST<DOUBLE> (elements)
 	vector<Value> quantile_quantiles; // LIST<DOUBLE> (elements)
 };

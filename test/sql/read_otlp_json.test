@@ -117,6 +117,20 @@ SELECT COUNT(DISTINCT MetricType) FROM read_otlp_metrics('test/data/metrics_simp
 ----
 3
 
+# Aggregation temporality parsing supports enum strings and remains INTEGER typed
+query I
+SELECT AggregationTemporality
+FROM read_otlp_metrics('test/data/metrics_temporality_strings.jsonl')
+WHERE MetricType = 'sum';
+----
+1
+
+query I
+SELECT typeof(AggregationTemporality)
+FROM read_otlp_metrics('test/data/metrics_temporality_strings.jsonl');
+----
+INTEGER
+
 # Test metrics - verify we can filter by metric type
 query I
 SELECT COUNT(*) FROM read_otlp_metrics('test/data/metrics_simple.jsonl')
@@ -189,6 +203,28 @@ FROM read_otlp_metrics('test/data/metrics_all_types.jsonl'),
 WHERE MetricType = 'exponential_histogram';
 ----
 1
+
+# Metrics with missing optional numeric fields preserve NULLs
+query III
+SELECT Sum IS NULL, Min IS NULL, Max IS NULL
+FROM read_otlp_metrics('test/data/metrics_optional_fields.jsonl')
+WHERE MetricType = 'histogram';
+----
+true	true	true
+
+query III
+SELECT Sum IS NULL, Min IS NULL, Max IS NULL
+FROM read_otlp_metrics('test/data/metrics_optional_fields.jsonl')
+WHERE MetricType = 'exponential_histogram';
+----
+true	true	true
+
+query I
+SELECT Sum IS NULL
+FROM read_otlp_metrics('test/data/metrics_optional_fields.jsonl')
+WHERE MetricType = 'summary';
+----
+true
 
 # Extended metrics - summary quantiles are populated
 query I

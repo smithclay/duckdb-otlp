@@ -102,7 +102,9 @@ static void MetricsUnionScan(ClientContext &context, TableFunctionInput &data, D
 			    produced, src.chunk->data[OTLPMetricsSumSchema::COL_VALUE].GetValue(src_row));
 			// AggregationTemporality: cast to INTEGER if needed
 			auto v = src.chunk->data[OTLPMetricsSumSchema::COL_AGGREGATION_TEMPORALITY].GetValue(src_row);
-			if (v.type().id() == LogicalTypeId::INTEGER) {
+			if (v.IsNull()) {
+				output.data[OTLPMetricsUnionSchema::COL_AGGREGATION_TEMPORALITY].SetValue(produced, v);
+			} else if (v.type().id() == LogicalTypeId::INTEGER) {
 				output.data[OTLPMetricsUnionSchema::COL_AGGREGATION_TEMPORALITY].SetValue(produced, v);
 			} else {
 				// try parse int from string

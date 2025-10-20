@@ -372,18 +372,19 @@ idx_t OTLPProtobufParser::ParseMetricsToTypedRows(const char *data, size_t lengt
 						                                          : static_cast<double>(data_point.as_int());
 
 						// Build type-specific row using shared builder
-						MetricsSumData d {timestamp,
-						                  service_name,
-						                  metric_name,
-						                  metric_description,
-						                  metric_unit,
-						                  resource_attrs,
-						                  scope_name,
-						                  scope_version,
-						                  ConvertAttributesToMap(data_point.attributes()),
-						                  value,
-						                  static_cast<int32_t>(metric.sum().aggregation_temporality()),
-						                  metric.sum().is_monotonic()};
+						MetricsSumData d {
+						    timestamp,
+						    service_name,
+						    metric_name,
+						    metric_description,
+						    metric_unit,
+						    resource_attrs,
+						    scope_name,
+						    scope_version,
+						    ConvertAttributesToMap(data_point.attributes()),
+						    value,
+						    std::optional<int32_t>(static_cast<int32_t>(metric.sum().aggregation_temporality())),
+						    metric.sum().is_monotonic()};
 
 						// Transform to union schema for file reading
 						rows.push_back(TransformSumRow(BuildMetricsSumRow(d)));
@@ -407,21 +408,22 @@ idx_t OTLPProtobufParser::ParseMetricsToTypedRows(const char *data, size_t lengt
 						}
 
 						// Build type-specific row using shared builder
-						MetricsHistogramData d {timestamp,
-						                        service_name,
-						                        metric_name,
-						                        metric_description,
-						                        metric_unit,
-						                        resource_attrs,
-						                        scope_name,
-						                        scope_version,
-						                        ConvertAttributesToMap(data_point.attributes()),
-						                        data_point.count(),
-						                        data_point.has_sum() ? data_point.sum() : 0.0,
-						                        bucket_counts,
-						                        explicit_bounds,
-						                        data_point.has_min() ? data_point.min() : 0.0,
-						                        data_point.has_max() ? data_point.max() : 0.0};
+						MetricsHistogramData d {
+						    timestamp,
+						    service_name,
+						    metric_name,
+						    metric_description,
+						    metric_unit,
+						    resource_attrs,
+						    scope_name,
+						    scope_version,
+						    ConvertAttributesToMap(data_point.attributes()),
+						    data_point.count(),
+						    data_point.has_sum() ? std::optional<double>(data_point.sum()) : std::optional<double>(),
+						    bucket_counts,
+						    explicit_bounds,
+						    data_point.has_min() ? std::optional<double>(data_point.min()) : std::optional<double>(),
+						    data_point.has_max() ? std::optional<double>(data_point.max()) : std::optional<double>()};
 
 						// Transform to union schema for file reading
 						rows.push_back(TransformHistogramRow(BuildMetricsHistogramRow(d)));
@@ -449,25 +451,26 @@ idx_t OTLPProtobufParser::ParseMetricsToTypedRows(const char *data, size_t lengt
 						}
 
 						// Build type-specific row using shared builder
-						MetricsExpHistogramData d {timestamp,
-						                           service_name,
-						                           metric_name,
-						                           metric_description,
-						                           metric_unit,
-						                           resource_attrs,
-						                           scope_name,
-						                           scope_version,
-						                           ConvertAttributesToMap(data_point.attributes()),
-						                           data_point.count(),
-						                           data_point.has_sum() ? data_point.sum() : 0.0,
-						                           data_point.scale(),
-						                           data_point.zero_count(),
-						                           data_point.has_positive() ? data_point.positive().offset() : 0,
-						                           positive_bucket_counts,
-						                           data_point.has_negative() ? data_point.negative().offset() : 0,
-						                           negative_bucket_counts,
-						                           data_point.has_min() ? data_point.min() : 0.0,
-						                           data_point.has_max() ? data_point.max() : 0.0};
+						MetricsExpHistogramData d {
+						    timestamp,
+						    service_name,
+						    metric_name,
+						    metric_description,
+						    metric_unit,
+						    resource_attrs,
+						    scope_name,
+						    scope_version,
+						    ConvertAttributesToMap(data_point.attributes()),
+						    data_point.count(),
+						    data_point.has_sum() ? std::optional<double>(data_point.sum()) : std::optional<double>(),
+						    data_point.scale(),
+						    data_point.zero_count(),
+						    data_point.has_positive() ? data_point.positive().offset() : 0,
+						    positive_bucket_counts,
+						    data_point.has_negative() ? data_point.negative().offset() : 0,
+						    negative_bucket_counts,
+						    data_point.has_min() ? std::optional<double>(data_point.min()) : std::optional<double>(),
+						    data_point.has_max() ? std::optional<double>(data_point.max()) : std::optional<double>()};
 
 						// Transform to union schema for file reading
 						rows.push_back(TransformExpHistogramRow(BuildMetricsExpHistogramRow(d)));
@@ -487,11 +490,13 @@ idx_t OTLPProtobufParser::ParseMetricsToTypedRows(const char *data, size_t lengt
 						}
 
 						// Build type-specific row using shared builder
+						std::optional<double> sum_opt = data_point.sum();
+
 						MetricsSummaryData d {
-						    timestamp,          service_name,     metric_name,
-						    metric_description, metric_unit,      resource_attrs,
-						    scope_name,         scope_version,    ConvertAttributesToMap(data_point.attributes()),
-						    data_point.count(), data_point.sum(), quantile_values,
+						    timestamp,          service_name,  metric_name,
+						    metric_description, metric_unit,   resource_attrs,
+						    scope_name,         scope_version, ConvertAttributesToMap(data_point.attributes()),
+						    data_point.count(), sum_opt,       quantile_values,
 						    quantile_quantiles};
 
 						// Transform to union schema for file reading

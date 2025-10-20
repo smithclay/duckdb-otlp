@@ -339,12 +339,18 @@ void ColumnarRingBuffer::Appender::SetVarchar(idx_t col_idx, const string &val) 
 	auto &vec = buf_.current_chunk_->data[col_idx];
 	auto str = StringVector::AddString(vec, val);
 	FlatVector::GetData<string_t>(vec)[buf_.current_size_] = str;
+	if (col_idx == buf_.service_col_idx_) {
+		buf_.UpdateCurrentServiceFromString(val);
+	} else if (col_idx == buf_.metric_col_idx_) {
+		buf_.UpdateCurrentMetricFromString(val);
+	}
 }
 
 void ColumnarRingBuffer::Appender::SetValue(idx_t col_idx, const Value &val) {
 	EnsureSpace();
 	auto &vec = buf_.current_chunk_->data[col_idx];
 	vec.SetValue(buf_.current_size_, val);
+	buf_.UpdateCurrentServiceMetricFromValue(col_idx, val);
 }
 
 void ColumnarRingBuffer::Appender::CommitRow() {

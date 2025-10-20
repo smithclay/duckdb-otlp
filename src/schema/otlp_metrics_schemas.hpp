@@ -81,7 +81,7 @@ public:
 	static vector<LogicalType> GetColumnTypes() {
 		auto types = GetBaseColumnTypes();
 		types.push_back(LogicalType::DOUBLE);  // Value
-		types.push_back(LogicalType::VARCHAR); // AggregationTemporality
+		types.push_back(LogicalType::INTEGER); // AggregationTemporality
 		types.push_back(LogicalType::BOOLEAN); // IsMonotonic
 		return types;
 	}
