@@ -509,6 +509,55 @@ static void OTLPStatsScan(ClientContext &, TableFunctionInput &data, DataChunk &
 	gstate.done = true;
 }
 
+struct OTLPOptionsBindData : public TableFunctionData {};
+
+struct OTLPOptionsGlobalState : public GlobalTableFunctionState {
+	bool emitted = false;
+};
+
+static unique_ptr<FunctionData> OTLPOptionsBind(ClientContext &, TableFunctionBindInput &, vector<LogicalType> &types,
+                                                vector<string> &names) {
+	types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
+	names = {"option_name", "allowed_values", "default_value", "description"};
+	return make_uniq<OTLPOptionsBindData>();
+}
+
+static unique_ptr<GlobalTableFunctionState> OTLPOptionsInit(ClientContext &, TableFunctionInitInput &) {
+	return make_uniq<OTLPOptionsGlobalState>();
+}
+
+static void OTLPOptionsScan(ClientContext &, TableFunctionInput &data, DataChunk &output) {
+	auto &state = data.global_state->Cast<OTLPOptionsGlobalState>();
+	if (state.emitted) {
+		output.SetCardinality(0);
+		return;
+	}
+
+	output.SetCardinality(2);
+
+	for (idx_t col = 0; col < output.ColumnCount(); col++) {
+		output.data[col].SetVectorType(VectorType::FLAT_VECTOR);
+	}
+
+	const string option_names[] = {"on_error", "read_otlp_scan_stats"};
+	const string allowed_values[] = {"fail | skip | nullify", "SELECT * FROM read_otlp_scan_stats()"};
+	const string default_values[] = {"fail", "n/a"};
+	const string descriptions[] = {
+	    "Controls how read_otlp_* handles parse failures: fail (default), skip row, or emit NULL columns.",
+	    "Expose counters from the most recent read_otlp_* scan in the current connection."};
+
+	for (idx_t row = 0; row < 2; row++) {
+		FlatVector::GetData<string_t>(output.data[0])[row] = StringVector::AddString(output.data[0], option_names[row]);
+		FlatVector::GetData<string_t>(output.data[1])[row] =
+		    StringVector::AddString(output.data[1], allowed_values[row]);
+		FlatVector::GetData<string_t>(output.data[2])[row] =
+		    StringVector::AddString(output.data[2], default_values[row]);
+		FlatVector::GetData<string_t>(output.data[3])[row] = StringVector::AddString(output.data[3], descriptions[row]);
+	}
+
+	state.emitted = true;
+}
+
 static unique_ptr<FunctionData> BindTraces(ClientContext &context, TableFunctionBindInput &input,
                                            vector<LogicalType> &return_types, vector<string> &names) {
 	if (input.inputs.size() != 1) {
@@ -630,6 +679,12 @@ TableFunction ReadOTLPTableFunction::GetMetricsFunction() {
 TableFunction ReadOTLPTableFunction::GetStatsFunction() {
 	TableFunction func("read_otlp_scan_stats", {}, OTLPStatsScan, OTLPStatsBind, OTLPStatsInit);
 	func.name = "read_otlp_scan_stats";
+	return func;
+}
+
+TableFunction ReadOTLPTableFunction::GetOptionsFunction() {
+	TableFunction func("read_otlp_options", {}, OTLPOptionsScan, OTLPOptionsBind, OTLPOptionsInit);
+	func.name = "read_otlp_options";
 	return func;
 }
 

@@ -47,6 +47,7 @@ SELECT * FROM read_otlp_logs('https://example.com/logs.jsonl');
 - Supports JSON (`.json`, `.jsonl`) and protobuf (`.pb`) formats (auto-detected)
 - Works with local files, S3, HTTP, Azure, GCS
 - Same schema as attached tables
+- Named parameters: `on_error` (fail | skip | nullify) with stats via `read_otlp_scan_stats()`
 
 **Strongly-Typed Schemas**
 - All signals use strongly-typed columns (no JSON extraction required)
@@ -60,6 +61,7 @@ SELECT * FROM read_otlp_logs('https://example.com/logs.jsonl');
 - Protobuf and JSON file format support
 - Columnar ring buffers with concurrent reads and predicate pushdown
 - Utility functions: `duckspan()`, `duckspan_openssl_version()`
+- Helper introspection functions: `read_otlp_options()`, `read_otlp_scan_stats()`
 
 **WASM Builds** (browser/WebAssembly)
 - Built with `DUCKSPAN_DISABLE_GRPC` and `DUCKSPAN_DISABLE_PROTOBUF`
@@ -104,6 +106,23 @@ SELECT
 FROM live.otel_traces
 WHERE Duration > 1000000000  -- 1 second in nanoseconds
 ORDER BY Duration DESC LIMIT 10;
+```
+
+**read_otlp options** - Discover named parameters:
+```sql
+SELECT * FROM read_otlp_options();
+```
+
+**read_otlp on_error** - Skip malformed rows but keep the scan running:
+```sql
+SELECT *
+FROM read_otlp_traces('s3://otel-bucket/traces-*.jsonl', on_error='skip');
+```
+
+**read_otlp scan stats** - Inspect parse failures from the last scan in this connection:
+```sql
+SELECT *
+FROM read_otlp_scan_stats();
 ```
 
 **Logs** - Filter by severity:

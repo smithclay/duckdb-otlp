@@ -50,6 +50,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(ReadOTLPTableFunction::GetLogsFunction());
 	loader.RegisterFunction(ReadOTLPTableFunction::GetMetricsFunction());
 	loader.RegisterFunction(ReadOTLPTableFunction::GetStatsFunction());
+	loader.RegisterFunction(ReadOTLPTableFunction::GetOptionsFunction());
 #ifndef DUCKSPAN_DISABLE_GRPC
 	loader.RegisterFunction(GetOTLPMetricsUnionFunction());
 #endif

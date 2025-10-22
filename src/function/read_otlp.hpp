@@ -24,6 +24,7 @@ public:
 	static TableFunction GetLogsFunction();
 	static TableFunction GetMetricsFunction();
 	static TableFunction GetStatsFunction();
+	static TableFunction GetOptionsFunction();
 
 	//! Initialize scan state
 	static unique_ptr<GlobalTableFunctionState> Init(ClientContext &context, TableFunctionInitInput &input);
