@@ -12,6 +12,29 @@
 
 namespace duckdb {
 
+//! Context structs to reduce parameter passing through nested processing
+
+//! Resource-level context (service name, attributes)
+struct ResourceContext {
+	string service_name;
+	Value resource_attrs;
+};
+
+//! Scope-level context (includes resource context + scope info)
+struct ScopeContext {
+	ResourceContext resource;
+	string scope_name;
+	string scope_version;
+};
+
+//! Metric-level context (includes scope context + metric metadata)
+struct MetricContext {
+	ScopeContext scope;
+	string metric_name;
+	string metric_description;
+	string metric_unit;
+};
+
 //! Shared helper functions for parsing OTLP protobuf data
 //! Used by both otlp_receiver.cpp (gRPC) and protobuf_parser.cpp (file reading)
 
@@ -179,6 +202,23 @@ inline string AnyValueToJSONString(const opentelemetry::proto::common::v1::AnyVa
 		return out;
 	}
 	return "";
+}
+
+//! Helper: Populate base metric fields shared by all metric types
+//! Populates columns 0-7 (timestamp through scope_version) for all metric schemas
+//! Caller must still populate COL_ATTRIBUTES (index 8) and type-specific fields
+template <typename AppenderType>
+inline void PopulateBaseMetricFields(AppenderType &app, timestamp_t timestamp, const MetricContext &ctx) {
+	// All metric types share base columns 0-8
+	app.SetTimestampNS(0, timestamp);                   // COL_TIMESTAMP
+	app.SetVarchar(1, ctx.scope.resource.service_name); // COL_SERVICE_NAME
+	app.SetVarchar(2, ctx.metric_name);                 // COL_METRIC_NAME
+	app.SetVarchar(3, ctx.metric_description);          // COL_METRIC_DESCRIPTION
+	app.SetVarchar(4, ctx.metric_unit);                 // COL_METRIC_UNIT
+	app.SetValue(5, ctx.scope.resource.resource_attrs); // COL_RESOURCE_ATTRIBUTES
+	app.SetVarchar(6, ctx.scope.scope_name);            // COL_SCOPE_NAME
+	app.SetVarchar(7, ctx.scope.scope_version);         // COL_SCOPE_VERSION
+	// Note: COL_ATTRIBUTES (index 8) must be set by caller with data-point-specific attributes
 }
 
 } // namespace duckdb
