@@ -17,32 +17,14 @@
 #include "opentelemetry/proto/logs/v1/logs.pb.h"
 #include "opentelemetry/proto/common/v1/common.pb.h"
 #include "opentelemetry/proto/resource/v1/resource.pb.h"
+#include <google/protobuf/io/zero_copy_stream.h>
 
 namespace duckdb {
 
-OTLPProtobufParser::OTLPProtobufParser() : last_error("") {
-}
+namespace {
 
-OTLPProtobufParser::~OTLPProtobufParser() {
-}
-
-string OTLPProtobufParser::GetLastError() const {
-	return last_error;
-}
-
-//===--------------------------------------------------------------------===//
-// V2 Schema: Typed Row Parsing Methods
-//===--------------------------------------------------------------------===//
-
-idx_t OTLPProtobufParser::ParseTracesToTypedRows(const char *data, size_t length, vector<vector<Value>> &rows) {
-	last_error = "";
-
-	opentelemetry::proto::trace::v1::TracesData traces_data;
-	if (!traces_data.ParseFromArray(data, static_cast<int>(length))) {
-		last_error = "Failed to parse TracesData protobuf";
-		return 0;
-	}
-
+idx_t ConvertTracesMessage(const opentelemetry::proto::trace::v1::TracesData &traces_data,
+                           vector<vector<Value>> &rows) {
 	idx_t row_count = 0;
 
 	// Iterate through resource spans (using shared row builders)
@@ -72,7 +54,7 @@ idx_t OTLPProtobufParser::ParseTracesToTypedRows(const char *data, size_t length
 				d.scope_name = scope_name;
 				d.scope_version = scope_version;
 				d.span_attributes = ConvertAttributesToMap(span.attributes());
-				d.duration_ns = (int64_t)(span.end_time_unix_nano() - span.start_time_unix_nano());
+				d.duration_ns = ClampDuration(span.start_time_unix_nano(), span.end_time_unix_nano());
 				d.status_code = StatusCodeToString(span.status().code());
 				d.status_message = span.status().message();
 
@@ -100,15 +82,7 @@ idx_t OTLPProtobufParser::ParseTracesToTypedRows(const char *data, size_t length
 	return row_count;
 }
 
-idx_t OTLPProtobufParser::ParseLogsToTypedRows(const char *data, size_t length, vector<vector<Value>> &rows) {
-	last_error = "";
-
-	opentelemetry::proto::logs::v1::LogsData logs_data;
-	if (!logs_data.ParseFromArray(data, static_cast<int>(length))) {
-		last_error = "Failed to parse LogsData protobuf";
-		return 0;
-	}
-
+idx_t ConvertLogsMessage(const opentelemetry::proto::logs::v1::LogsData &logs_data, vector<vector<Value>> &rows) {
 	idx_t row_count = 0;
 
 	// Iterate through resource logs
@@ -152,15 +126,8 @@ idx_t OTLPProtobufParser::ParseLogsToTypedRows(const char *data, size_t length, 
 	return row_count;
 }
 
-idx_t OTLPProtobufParser::ParseMetricsToTypedRows(const char *data, size_t length, vector<vector<Value>> &rows) {
-	last_error = "";
-
-	opentelemetry::proto::metrics::v1::MetricsData metrics_data;
-	if (!metrics_data.ParseFromArray(data, static_cast<int>(length))) {
-		last_error = "Failed to parse MetricsData protobuf";
-		return 0;
-	}
-
+idx_t ConvertMetricsMessage(const opentelemetry::proto::metrics::v1::MetricsData &metrics_data,
+                            vector<vector<Value>> &rows) {
 	idx_t row_count = 0;
 
 	// Iterate through resource metrics
@@ -189,7 +156,6 @@ idx_t OTLPProtobufParser::ParseMetricsToTypedRows(const char *data, size_t lengt
 						double value = data_point.has_as_double() ? data_point.as_double()
 						                                          : static_cast<double>(data_point.as_int());
 
-						// Build type-specific row using shared builder
 						MetricsGaugeData d {timestamp,
 						                    service_name,
 						                    metric_name,
@@ -201,7 +167,6 @@ idx_t OTLPProtobufParser::ParseMetricsToTypedRows(const char *data, size_t lengt
 						                    ConvertAttributesToMap(data_point.attributes()),
 						                    value};
 
-						// Transform to union schema for file reading
 						rows.push_back(TransformGaugeRow(BuildMetricsGaugeRow(d)));
 						row_count++;
 					}
@@ -212,7 +177,6 @@ idx_t OTLPProtobufParser::ParseMetricsToTypedRows(const char *data, size_t lengt
 						double value = data_point.has_as_double() ? data_point.as_double()
 						                                          : static_cast<double>(data_point.as_int());
 
-						// Build type-specific row using shared builder
 						MetricsSumData d {
 						    timestamp,
 						    service_name,
@@ -227,28 +191,23 @@ idx_t OTLPProtobufParser::ParseMetricsToTypedRows(const char *data, size_t lengt
 						    std::optional<int32_t>(static_cast<int32_t>(metric.sum().aggregation_temporality())),
 						    metric.sum().is_monotonic()};
 
-						// Transform to union schema for file reading
 						rows.push_back(TransformSumRow(BuildMetricsSumRow(d)));
 						row_count++;
 					}
 				} else if (metric.has_histogram()) {
-					// Histogram metrics
 					for (const auto &data_point : metric.histogram().data_points()) {
 						auto timestamp = NanosToTimestamp(data_point.time_unix_nano());
 
-						// Convert bucket counts to vector<Value>
 						vector<Value> bucket_counts;
 						for (uint64_t count : data_point.bucket_counts()) {
 							bucket_counts.push_back(Value::UBIGINT(count));
 						}
 
-						// Convert explicit bounds to vector<Value>
 						vector<Value> explicit_bounds;
 						for (double bound : data_point.explicit_bounds()) {
 							explicit_bounds.push_back(Value::DOUBLE(bound));
 						}
 
-						// Build type-specific row using shared builder
 						MetricsHistogramData d {
 						    timestamp,
 						    service_name,
@@ -266,16 +225,13 @@ idx_t OTLPProtobufParser::ParseMetricsToTypedRows(const char *data, size_t lengt
 						    data_point.has_min() ? std::optional<double>(data_point.min()) : std::optional<double>(),
 						    data_point.has_max() ? std::optional<double>(data_point.max()) : std::optional<double>()};
 
-						// Transform to union schema for file reading
 						rows.push_back(TransformHistogramRow(BuildMetricsHistogramRow(d)));
 						row_count++;
 					}
 				} else if (metric.has_exponential_histogram()) {
-					// Exponential Histogram metrics
 					for (const auto &data_point : metric.exponential_histogram().data_points()) {
 						auto timestamp = NanosToTimestamp(data_point.time_unix_nano());
 
-						// Convert positive bucket counts to vector<Value>
 						vector<Value> positive_bucket_counts;
 						if (data_point.has_positive()) {
 							for (uint64_t count : data_point.positive().bucket_counts()) {
@@ -283,7 +239,6 @@ idx_t OTLPProtobufParser::ParseMetricsToTypedRows(const char *data, size_t lengt
 							}
 						}
 
-						// Convert negative bucket counts to vector<Value>
 						vector<Value> negative_bucket_counts;
 						if (data_point.has_negative()) {
 							for (uint64_t count : data_point.negative().bucket_counts()) {
@@ -291,7 +246,6 @@ idx_t OTLPProtobufParser::ParseMetricsToTypedRows(const char *data, size_t lengt
 							}
 						}
 
-						// Build type-specific row using shared builder
 						MetricsExpHistogramData d {
 						    timestamp,
 						    service_name,
@@ -313,16 +267,13 @@ idx_t OTLPProtobufParser::ParseMetricsToTypedRows(const char *data, size_t lengt
 						    data_point.has_min() ? std::optional<double>(data_point.min()) : std::optional<double>(),
 						    data_point.has_max() ? std::optional<double>(data_point.max()) : std::optional<double>()};
 
-						// Transform to union schema for file reading
 						rows.push_back(TransformExpHistogramRow(BuildMetricsExpHistogramRow(d)));
 						row_count++;
 					}
 				} else if (metric.has_summary()) {
-					// Summary metrics
 					for (const auto &data_point : metric.summary().data_points()) {
 						auto timestamp = NanosToTimestamp(data_point.time_unix_nano());
 
-						// Convert quantile values and quantiles to vector<Value>
 						vector<Value> quantile_values;
 						vector<Value> quantile_quantiles;
 						for (const auto &quantile : data_point.quantile_values()) {
@@ -330,7 +281,6 @@ idx_t OTLPProtobufParser::ParseMetricsToTypedRows(const char *data, size_t lengt
 							quantile_values.push_back(Value::DOUBLE(quantile.value()));
 						}
 
-						// Build type-specific row using shared builder
 						std::optional<double> sum_opt = data_point.sum();
 
 						MetricsSummaryData d {
@@ -340,7 +290,6 @@ idx_t OTLPProtobufParser::ParseMetricsToTypedRows(const char *data, size_t lengt
 						    data_point.count(), sum_opt,       quantile_values,
 						    quantile_quantiles};
 
-						// Transform to union schema for file reading
 						rows.push_back(TransformSummaryRow(BuildMetricsSummaryRow(d)));
 						row_count++;
 					}
@@ -350,6 +299,97 @@ idx_t OTLPProtobufParser::ParseMetricsToTypedRows(const char *data, size_t lengt
 	}
 
 	return row_count;
+}
+
+} // namespace
+
+OTLPProtobufParser::OTLPProtobufParser() : last_error("") {
+}
+
+OTLPProtobufParser::~OTLPProtobufParser() {
+}
+
+string OTLPProtobufParser::GetLastError() const {
+	return last_error;
+}
+
+//===--------------------------------------------------------------------===//
+// V2 Schema: Typed Row Parsing Methods
+//===--------------------------------------------------------------------===//
+
+idx_t OTLPProtobufParser::ParseTracesToTypedRows(const char *data, size_t length, vector<vector<Value>> &rows) {
+	last_error = "";
+
+	opentelemetry::proto::trace::v1::TracesData traces_data;
+	if (!traces_data.ParseFromArray(data, static_cast<int>(length))) {
+		last_error = "Failed to parse TracesData protobuf";
+		return 0;
+	}
+
+	return ConvertTracesMessage(traces_data, rows);
+}
+
+idx_t OTLPProtobufParser::ParseTracesToTypedRows(google::protobuf::io::ZeroCopyInputStream &stream,
+                                                 vector<vector<Value>> &rows) {
+	last_error = "";
+
+	opentelemetry::proto::trace::v1::TracesData traces_data;
+	if (!traces_data.ParseFromZeroCopyStream(&stream)) {
+		last_error = "Failed to parse TracesData protobuf";
+		return 0;
+	}
+
+	return ConvertTracesMessage(traces_data, rows);
+}
+
+idx_t OTLPProtobufParser::ParseLogsToTypedRows(const char *data, size_t length, vector<vector<Value>> &rows) {
+	last_error = "";
+
+	opentelemetry::proto::logs::v1::LogsData logs_data;
+	if (!logs_data.ParseFromArray(data, static_cast<int>(length))) {
+		last_error = "Failed to parse LogsData protobuf";
+		return 0;
+	}
+
+	return ConvertLogsMessage(logs_data, rows);
+}
+
+idx_t OTLPProtobufParser::ParseLogsToTypedRows(google::protobuf::io::ZeroCopyInputStream &stream,
+                                               vector<vector<Value>> &rows) {
+	last_error = "";
+
+	opentelemetry::proto::logs::v1::LogsData logs_data;
+	if (!logs_data.ParseFromZeroCopyStream(&stream)) {
+		last_error = "Failed to parse LogsData protobuf";
+		return 0;
+	}
+
+	return ConvertLogsMessage(logs_data, rows);
+}
+
+idx_t OTLPProtobufParser::ParseMetricsToTypedRows(const char *data, size_t length, vector<vector<Value>> &rows) {
+	last_error = "";
+
+	opentelemetry::proto::metrics::v1::MetricsData metrics_data;
+	if (!metrics_data.ParseFromArray(data, static_cast<int>(length))) {
+		last_error = "Failed to parse MetricsData protobuf";
+		return 0;
+	}
+
+	return ConvertMetricsMessage(metrics_data, rows);
+}
+
+idx_t OTLPProtobufParser::ParseMetricsToTypedRows(google::protobuf::io::ZeroCopyInputStream &stream,
+                                                  vector<vector<Value>> &rows) {
+	last_error = "";
+
+	opentelemetry::proto::metrics::v1::MetricsData metrics_data;
+	if (!metrics_data.ParseFromZeroCopyStream(&stream)) {
+		last_error = "Failed to parse MetricsData protobuf";
+		return 0;
+	}
+
+	return ConvertMetricsMessage(metrics_data, rows);
 }
 
 } // namespace duckdb

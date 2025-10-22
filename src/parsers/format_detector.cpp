@@ -1,6 +1,8 @@
 #include "parsers/format_detector.hpp"
 #include "duckdb/common/string_util.hpp"
 
+#include <cstring>
+
 // Try to parse as protobuf to detect signal type
 #include "opentelemetry/proto/trace/v1/trace.pb.h"
 #include "opentelemetry/proto/metrics/v1/metrics.pb.h"
@@ -9,19 +11,28 @@
 namespace duckdb {
 
 OTLPFormat FormatDetector::DetectFormat(const char *data, size_t len) {
-	if (len == 0) {
+	if (len == 0 || data == nullptr) {
 		return OTLPFormat::UNKNOWN;
 	}
 
-	// JSON detection: Look for opening brace or bracket
-	// Skip whitespace
+	const unsigned char *buffer = reinterpret_cast<const unsigned char *>(data);
+	size_t remaining = len;
+
+	// Strip UTF-8 BOM if present
+	const unsigned char utf8_bom[] = {0xEF, 0xBB, 0xBF};
+	if (remaining >= 3 && memcmp(buffer, utf8_bom, 3) == 0) {
+		buffer += 3;
+		remaining -= 3;
+	}
+
+	// Skip ASCII whitespace
 	size_t i = 0;
-	while (i < len && (data[i] == ' ' || data[i] == '\t' || data[i] == '\n' || data[i] == '\r')) {
+	while (i < remaining && StringUtil::CharacterIsSpace(static_cast<char>(buffer[i]))) {
 		i++;
 	}
 
-	if (i < len) {
-		char first_char = data[i];
+	if (i < remaining) {
+		char first_char = static_cast<char>(buffer[i]);
 		if (first_char == '{' || first_char == '[') {
 			return OTLPFormat::JSON;
 		}
@@ -34,9 +45,9 @@ OTLPFormat FormatDetector::DetectFormat(const char *data, size_t len) {
 	// First byte would be: (field_number << 3) | wire_type
 	// Field 1, wire type 2: (1 << 3) | 2 = 0x0A
 
-	if (len > 0) {
+	if (remaining > 0) {
 		// Check if first byte looks like a protobuf field tag
-		unsigned char first_byte = static_cast<unsigned char>(data[0]);
+		unsigned char first_byte = buffer[0];
 
 		// Common OTLP protobuf patterns:
 		// 0x0A = field 1, wire type 2 (length-delimited) - common for OTLP messages

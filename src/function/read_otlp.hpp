@@ -6,8 +6,15 @@
 #include "parsers/protobuf_parser.hpp"
 #include "parsers/format_detector.hpp"
 #include "schema/otlp_types.hpp"
+#include "duckdb/common/limits.hpp"
+#include "duckdb/common/types/data_chunk.hpp"
+#include <deque>
+#include <vector>
+#include <unordered_map>
 
 namespace duckdb {
+
+enum class ReadOTLPOnError : uint8_t { FAIL = 0, SKIP = 1, NULLIFY = 2 };
 
 //! read_otlp_*() table functions for reading OTLP files with strongly-typed schemas
 class ReadOTLPTableFunction {
@@ -28,35 +35,66 @@ public:
 struct ReadOTLPBindData : public TableFunctionData {
 	string pattern;           // Glob pattern or single file path
 	OTLPTableType table_type; // Detected table type for v2 schema
+	ReadOTLPOnError on_error;
 
-	explicit ReadOTLPBindData(string pattern_p, OTLPTableType type) : pattern(std::move(pattern_p)), table_type(type) {
+	explicit ReadOTLPBindData(string pattern_p, OTLPTableType type)
+	    : pattern(std::move(pattern_p)), table_type(type), on_error(ReadOTLPOnError::FAIL) {
 	}
 };
 
 //! Global state for reading OTLP files
 struct ReadOTLPGlobalState : public GlobalTableFunctionState {
-	unique_ptr<FileHandle> file_handle;
+	struct OutputColumnInfo {
+		column_t requested_id;
+		idx_t chunk_index;
+		bool is_row_id;
+	};
+
+	vector<string> files;
+	idx_t next_file;
+	OTLPTableType table_type;
+	vector<LogicalType> all_types;
+
+	unique_ptr<FileHandle> current_handle;
 	unique_ptr<OTLPJSONParser> json_parser;
 	unique_ptr<OTLPProtobufParser> protobuf_parser;
-	OTLPFormat format;
-	idx_t current_line;
-	bool finished;
-	string buffer;
-	idx_t buffer_offset;
-	idx_t skipped_lines;
-	bool warning_emitted;
 
-	// V2 schema: strongly-typed rows
-	vector<vector<Value>> rows;
-	idx_t current_row;
+	OTLPFormat current_format;
+	bool is_json_lines;
+	bool doc_consumed;
+	string current_path;
+
+	// JSONL reader state
+	string line_buffer;
+	idx_t buffer_offset;
+	idx_t current_line;
+	idx_t approx_line;
+
+	// Materialized chunks ready for scanning
+	std::deque<unique_ptr<DataChunk>> chunk_queue;
+	unique_ptr<DataChunk> active_chunk;
+
+	// Column projection metadata
+	vector<OutputColumnInfo> output_columns;
+	vector<column_t> chunk_column_ids;
+	vector<LogicalType> chunk_types;
+
+	// Row-id tracking
+	int64_t row_id_base;
+	idx_t error_records;
+	idx_t error_documents;
+	ReadOTLPOnError on_error;
+
+	bool finished;
 
 	ReadOTLPGlobalState()
-	    : format(OTLPFormat::UNKNOWN), current_line(0), finished(false), buffer_offset(0), skipped_lines(0),
-	      warning_emitted(false), current_row(0) {
+	    : next_file(0), table_type(OTLPTableType::TRACES), current_format(OTLPFormat::UNKNOWN), is_json_lines(false),
+	      doc_consumed(false), buffer_offset(0), current_line(0), approx_line(0), row_id_base(0), error_records(0),
+	      error_documents(0), on_error(ReadOTLPOnError::FAIL), finished(false) {
 	}
 
 	idx_t MaxThreads() const override {
-		return 1; // Single-threaded for Phase 2
+		return files.empty() ? 1 : MinValue<idx_t>(files.size(), 8);
 	}
 };
 

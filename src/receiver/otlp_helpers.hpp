@@ -50,9 +50,11 @@ inline Value ConvertAttributesToMap(
 				if (!first)
 					out += ",";
 				first = false;
-				out += '"' + subkv.key() + '"';
-				out += ":";
-				out += '"' + AnyValueToString(subkv.value()) + '"';
+				out.push_back('"');
+				out += EscapeJsonString(subkv.key());
+				out += "\":\"";
+				out += EscapeJsonString(AnyValueToString(subkv.value()));
+				out.push_back('"');
 			}
 			out += "}";
 			sval = std::move(out);
@@ -64,7 +66,9 @@ inline Value ConvertAttributesToMap(
 				if (!first)
 					out += ",";
 				first = false;
-				out += '"' + AnyValueToString(elem) + '"';
+				out.push_back('"');
+				out += EscapeJsonString(AnyValueToString(elem));
+				out.push_back('"');
 			}
 			out += "]";
 			sval = std::move(out);
@@ -151,9 +155,11 @@ inline string AnyValueToJSONString(const opentelemetry::proto::common::v1::AnyVa
 			if (!first)
 				out += ",";
 			first = false;
-			out += '"' + subkv.key() + '"';
-			out += ":";
-			out += '"' + AnyValueToString(subkv.value()) + '"';
+			out.push_back('"');
+			out += EscapeJsonString(subkv.key());
+			out += "\":\"";
+			out += EscapeJsonString(AnyValueToString(subkv.value()));
+			out.push_back('"');
 		}
 		out += "}";
 		return out;
@@ -165,7 +171,9 @@ inline string AnyValueToJSONString(const opentelemetry::proto::common::v1::AnyVa
 			if (!first)
 				out += ",";
 			first = false;
-			out += '"' + AnyValueToString(elem) + '"';
+			out.push_back('"');
+			out += EscapeJsonString(AnyValueToString(elem));
+			out.push_back('"');
 		}
 		out += "]";
 		return out;

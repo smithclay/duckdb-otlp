@@ -350,9 +350,11 @@ static string JSONAnyToString(duckdb_yyjson::yyjson_val *any_obj) {
 				if (!first)
 					out += ",";
 				first = false;
-				out += '"' + key + '"';
-				out += ":";
-				out += '"' + JSONAnyToString(v) + '"';
+				out.push_back('"');
+				out += EscapeJsonString(key);
+				out += "\":\"";
+				out += EscapeJsonString(JSONAnyToString(v));
+				out.push_back('"');
 			}
 		}
 		out += "}";
@@ -370,7 +372,9 @@ static string JSONAnyToString(duckdb_yyjson::yyjson_val *any_obj) {
 				if (!first)
 					out += ",";
 				first = false;
-				out += '"' + JSONAnyToString(item) + '"';
+				out.push_back('"');
+				out += EscapeJsonString(JSONAnyToString(item));
+				out.push_back('"');
 			}
 		}
 		out += "]";
@@ -468,7 +472,7 @@ bool OTLPJSONParser::ParseTracesToTypedRows(const string &json, vector<vector<Va
 				auto start_time = GetUint64Value(span, "startTimeUnixNano");
 				auto end_time = GetUint64Value(span, "endTimeUnixNano");
 				auto ts = NanosToTimestamp(start_time);
-				int64_t duration = (int64_t)(end_time - start_time);
+				int64_t duration = ClampDuration(start_time, end_time);
 
 				auto status = duckdb_yyjson::yyjson_obj_get(span, "status");
 				string status_code = GetStringValue(status, "code");
