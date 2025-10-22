@@ -41,13 +41,9 @@ set(PROTO_SOURCES
 
 # Core sources (minimal set for WASM)
 set(EXTENSION_SOURCES_JSON_ONLY
-    src/storage/duckspan_extension.cpp
-    src/catalog/otlp_schema.cpp
-    src/parsers/json_parser.cpp
-    src/function/read_otlp.cpp
-    src/receiver/row_builders_traces_logs.cpp
-    src/receiver/row_builders.cpp
-    src/receiver/row_builders_metrics.cpp)
+    src/storage/duckspan_extension.cpp src/parsers/json_parser.cpp
+    src/function/read_otlp.cpp src/receiver/row_builders_traces_logs.cpp
+    src/receiver/row_builders.cpp src/receiver/row_builders_metrics.cpp)
 
 # Protobuf sources (requires vcpkg, excluded for WASM)
 set(EXTENSION_SOURCES_PROTOBUF src/parsers/protobuf_parser.cpp
@@ -64,7 +60,6 @@ set(EXTENSION_SOURCES_GRPC
     src/storage/otlp_storage_extension.cpp
     src/receiver/otlp_receiver.cpp
     src/storage/otlp_transaction.cpp
-    src/catalog/schema_bridge.cpp
     ${PROTO_SOURCES})
 
 # Conditionally include sources based on platform

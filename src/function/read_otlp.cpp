@@ -13,6 +13,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/types/vector.hpp"
+#include "duckdb/common/value_operations/value_operations.hpp"
 #include "duckdb/function/table_function.hpp"
 
 #include <google/protobuf/io/zero_copy_stream_impl.h>
@@ -32,6 +33,19 @@ static constexpr idx_t JSON_SNIFF_BYTES = 8192;
 static constexpr idx_t STREAM_READ_BYTES = 64 * 1024;
 static constexpr int64_t MAX_JSON_DOC_BYTES = static_cast<int64_t>(100) * 1024 * 1024;
 static constexpr int64_t MAX_PROTO_BYTES = static_cast<int64_t>(100) * 1024 * 1024;
+
+struct OTLPScanStats {
+	idx_t error_records = 0;
+	idx_t error_documents = 0;
+};
+
+static mutex otlp_stats_mutex;
+static unordered_map<ClientContext *, OTLPScanStats> otlp_latest_stats;
+
+static void UpdateOTLPStats(ClientContext &context, const ReadOTLPGlobalState &state) {
+	lock_guard<mutex> lock(otlp_stats_mutex);
+	otlp_latest_stats[&context] = OTLPScanStats {state.error_records, state.error_documents};
+}
 
 static ReadOTLPOnError ParseOnErrorOption(named_parameter_map_t &named_parameters) {
 	const auto entry = named_parameters.find("on_error");
@@ -289,8 +303,8 @@ static void InitializeProjection(ReadOTLPGlobalState &state, const vector<column
 static vector<Value> MakeNullRow(const ReadOTLPGlobalState &state) {
 	vector<Value> row;
 	row.reserve(state.all_types.size());
-	for (size_t i = 0; i < state.all_types.size(); i++) {
-		row.emplace_back(Value());
+	for (auto &type : state.all_types) {
+		row.emplace_back(Value(type));
 	}
 	return row;
 }
@@ -330,7 +344,97 @@ static bool HandleParseErrorDocument(ReadOTLPGlobalState &state, const string &m
 	return HandleParseError(state, message, error, rows, true);
 }
 
+static bool RowPassesFilters(const ReadOTLPGlobalState &state, const vector<Value> &row) {
+	if (!state.filters) {
+		return true;
+	}
+	for (auto &entry : state.filters->filters) {
+		auto base_idx = entry.first;
+		if (base_idx >= row.size()) {
+			continue;
+		}
+		auto &filter = *entry.second;
+		const auto &val = row[base_idx];
+		switch (filter.filter_type) {
+		case TableFilterType::IS_NULL:
+			if (!val.IsNull()) {
+				return false;
+			}
+			break;
+		case TableFilterType::IS_NOT_NULL:
+			if (val.IsNull()) {
+				return false;
+			}
+			break;
+		case TableFilterType::CONSTANT_COMPARISON: {
+			auto &cf = filter.Cast<ConstantFilter>();
+			if (val.IsNull() || cf.constant.IsNull()) {
+				if (cf.comparison_type == ExpressionType::COMPARE_EQUAL ||
+				    cf.comparison_type == ExpressionType::COMPARE_NOT_DISTINCT_FROM) {
+					if (!(val.IsNull() && cf.constant.IsNull())) {
+						return false;
+					}
+				} else if (cf.comparison_type == ExpressionType::COMPARE_NOTEQUAL ||
+				           cf.comparison_type == ExpressionType::COMPARE_DISTINCT_FROM) {
+					if (val.IsNull() != cf.constant.IsNull()) {
+						continue;
+					}
+					return false;
+				}
+				continue;
+			}
+			bool match = true;
+			switch (cf.comparison_type) {
+			case ExpressionType::COMPARE_EQUAL:
+			case ExpressionType::COMPARE_NOT_DISTINCT_FROM:
+				match = ValueOperations::Equals(val, cf.constant);
+				break;
+			case ExpressionType::COMPARE_NOTEQUAL:
+			case ExpressionType::COMPARE_DISTINCT_FROM:
+				match = ValueOperations::NotEquals(val, cf.constant);
+				break;
+			case ExpressionType::COMPARE_GREATERTHAN:
+				match = ValueOperations::GreaterThan(val, cf.constant);
+				break;
+			case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
+				match = ValueOperations::GreaterThanEquals(val, cf.constant);
+				break;
+			case ExpressionType::COMPARE_LESSTHAN:
+				match = ValueOperations::LessThan(val, cf.constant);
+				break;
+			case ExpressionType::COMPARE_LESSTHANOREQUALTO:
+				match = ValueOperations::LessThanEquals(val, cf.constant);
+				break;
+			default:
+				match = true;
+				break;
+			}
+			if (!match) {
+				return false;
+			}
+			break;
+		}
+		default:
+			break;
+		}
+	}
+	return true;
+}
+
 static void EnqueueRows(ClientContext &context, ReadOTLPGlobalState &state, vector<vector<Value>> &&rows) {
+	if (rows.empty()) {
+		return;
+	}
+	if (state.filters && !state.filters->filters.empty()) {
+		vector<vector<Value>> filtered;
+		filtered.reserve(rows.size());
+		for (auto &row : rows) {
+			if (RowPassesFilters(state, row)) {
+				filtered.emplace_back(std::move(row));
+			}
+		}
+		rows = std::move(filtered);
+	}
 	if (rows.empty()) {
 		return;
 	}
@@ -355,6 +459,52 @@ static void EnqueueRows(ClientContext &context, ReadOTLPGlobalState &state, vect
 		state.chunk_queue.push_back(std::move(chunk));
 		position += emit_count;
 	}
+}
+
+struct OTLPStatsBindData : public TableFunctionData {
+	idx_t error_records;
+	idx_t error_documents;
+	bool emitted;
+	OTLPStatsBindData(idx_t records, idx_t documents)
+	    : error_records(records), error_documents(documents), emitted(false) {
+	}
+};
+
+static unique_ptr<FunctionData> OTLPStatsBind(ClientContext &context, TableFunctionBindInput &,
+                                              vector<LogicalType> &return_types, vector<string> &names) {
+	OTLPScanStats stats;
+	{
+		lock_guard<mutex> lock(otlp_stats_mutex);
+		auto it = otlp_latest_stats.find(&context);
+		if (it != otlp_latest_stats.end()) {
+			stats = it->second;
+		}
+	}
+	return_types = {LogicalType::BIGINT, LogicalType::BIGINT};
+	names = {"error_records", "error_documents"};
+	return make_uniq<OTLPStatsBindData>(stats.error_records, stats.error_documents);
+}
+
+struct OTLPStatsGlobalState : public GlobalTableFunctionState {
+	bool done;
+	OTLPStatsGlobalState() : done(false) {
+	}
+};
+
+static unique_ptr<GlobalTableFunctionState> OTLPStatsInit(ClientContext &, TableFunctionInitInput &) {
+	return make_uniq<OTLPStatsGlobalState>();
+}
+
+static void OTLPStatsScan(ClientContext &, TableFunctionInput &data, DataChunk &output) {
+	auto &bind = data.bind_data->Cast<OTLPStatsBindData>();
+	auto &gstate = data.global_state->Cast<OTLPStatsGlobalState>();
+	if (gstate.done) {
+		return;
+	}
+	output.SetCardinality(1);
+	output.data[0].SetValue(0, Value::BIGINT(bind.error_records));
+	output.data[1].SetValue(0, Value::BIGINT(bind.error_documents));
+	gstate.done = true;
 }
 
 static unique_ptr<FunctionData> BindTraces(ClientContext &context, TableFunctionBindInput &input,
@@ -455,7 +605,7 @@ TableFunction ReadOTLPTableFunction::GetTracesFunction() {
 	TableFunction func("read_otlp_traces", {LogicalType::VARCHAR}, Scan, BindTraces, Init);
 	func.name = "read_otlp_traces";
 	func.projection_pushdown = true;
-	func.filter_pushdown = false;
+	func.filter_pushdown = true;
 	return func;
 }
 
@@ -463,7 +613,7 @@ TableFunction ReadOTLPTableFunction::GetLogsFunction() {
 	TableFunction func("read_otlp_logs", {LogicalType::VARCHAR}, Scan, BindLogs, Init);
 	func.name = "read_otlp_logs";
 	func.projection_pushdown = true;
-	func.filter_pushdown = false;
+	func.filter_pushdown = true;
 	return func;
 }
 
@@ -471,7 +621,13 @@ TableFunction ReadOTLPTableFunction::GetMetricsFunction() {
 	TableFunction func("read_otlp_metrics", {LogicalType::VARCHAR}, Scan, BindMetrics, Init);
 	func.name = "read_otlp_metrics";
 	func.projection_pushdown = true;
-	func.filter_pushdown = false;
+	func.filter_pushdown = true;
+	return func;
+}
+
+TableFunction ReadOTLPTableFunction::GetStatsFunction() {
+	TableFunction func("read_otlp_scan_stats", {}, OTLPStatsScan, OTLPStatsBind, OTLPStatsInit);
+	func.name = "read_otlp_scan_stats";
 	return func;
 }
 
@@ -483,6 +639,16 @@ unique_ptr<GlobalTableFunctionState> ReadOTLPTableFunction::Init(ClientContext &
 	state->all_types = GetColumnTypesForTable(state->table_type);
 	state->on_error = bind_data.on_error;
 	InitializeProjection(*state, input.column_ids);
+	if (input.filters) {
+		state->filters = make_uniq<TableFilterSet>();
+		for (auto &entry : input.filters->filters) {
+			column_t base_idx = entry.first;
+			if (!input.column_ids.empty() && entry.first < input.column_ids.size()) {
+				base_idx = input.column_ids[entry.first];
+			}
+			state->filters->filters.emplace(base_idx, entry.second->Copy());
+		}
+	}
 
 	auto &fs = FileSystem::GetFileSystem(context);
 	auto matches = fs.GlobFiles(bind_data.pattern, context, FileGlobOptions::DISALLOW_EMPTY);
@@ -504,6 +670,10 @@ void ReadOTLPTableFunction::Scan(ClientContext &context, TableFunctionInput &dat
 	output.SetCardinality(0);
 
 	if (state.finished) {
+		if (!state.stats_reported) {
+			UpdateOTLPStats(context, state);
+			state.stats_reported = true;
+		}
 		return;
 	}
 

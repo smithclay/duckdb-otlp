@@ -1,7 +1,6 @@
 #include "storage/otlp_storage_extension.hpp"
 #include "storage/otlp_storage_info.hpp"
 #include "receiver/otlp_receiver.hpp"
-#include "catalog/otlp_schema.hpp"
 #include "catalog/otlp_catalog.hpp"
 #include "storage/otlp_transaction.hpp"
 #include "duckdb/main/attached_database.hpp"

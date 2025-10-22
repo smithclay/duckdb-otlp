@@ -23,6 +23,7 @@ public:
 	static TableFunction GetTracesFunction();
 	static TableFunction GetLogsFunction();
 	static TableFunction GetMetricsFunction();
+	static TableFunction GetStatsFunction();
 
 	//! Initialize scan state
 	static unique_ptr<GlobalTableFunctionState> Init(ClientContext &context, TableFunctionInitInput &input);
@@ -78,19 +79,21 @@ struct ReadOTLPGlobalState : public GlobalTableFunctionState {
 	vector<OutputColumnInfo> output_columns;
 	vector<column_t> chunk_column_ids;
 	vector<LogicalType> chunk_types;
+	unique_ptr<TableFilterSet> filters;
 
 	// Row-id tracking
 	int64_t row_id_base;
 	idx_t error_records;
 	idx_t error_documents;
 	ReadOTLPOnError on_error;
+	bool stats_reported;
 
 	bool finished;
 
 	ReadOTLPGlobalState()
 	    : next_file(0), table_type(OTLPTableType::TRACES), current_format(OTLPFormat::UNKNOWN), is_json_lines(false),
 	      doc_consumed(false), buffer_offset(0), current_line(0), approx_line(0), row_id_base(0), error_records(0),
-	      error_documents(0), on_error(ReadOTLPOnError::FAIL), finished(false) {
+	      error_documents(0), on_error(ReadOTLPOnError::FAIL), stats_reported(false), finished(false) {
 	}
 
 	idx_t MaxThreads() const override {
