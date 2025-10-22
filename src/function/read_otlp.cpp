@@ -139,6 +139,7 @@ static bool DetectJsonLinesFromSample(string sample) {
 	if (sample.empty()) {
 		return false;
 	}
+	OTLPJSONParser parser;
 	StringUtil::Trim(sample);
 	if (sample.empty()) {
 		return false;
@@ -152,7 +153,8 @@ static bool DetectJsonLinesFromSample(string sample) {
 		string line = sample.substr(position, length);
 		StringUtil::Trim(line);
 		if (!line.empty()) {
-			if (line.front() == '{' || line.front() == '[') {
+			if ((line.front() == '{' || line.front() == '[') && parser.IsValidOTLPJSON(line) &&
+			    parser.DetectSignalType(line) != OTLPJSONParser::SignalType::UNKNOWN) {
 				objects_on_separate_lines++;
 			}
 		}

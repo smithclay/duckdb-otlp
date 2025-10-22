@@ -100,6 +100,17 @@ WHERE SeverityText IN ('INFO', 'WARN', 'ERROR');
 ----
 3
 
+# Test logs - JSON document files (multi-line)
+query I
+SELECT COUNT(*) FROM read_otlp_logs('test/data/logs_document.json');
+----
+1
+
+query TT
+SELECT ServiceName, Body FROM read_otlp_logs('test/data/logs_document.json');
+----
+my.service	Example log record
+
 #
 # Metrics Tests
 #
