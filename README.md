@@ -28,6 +28,7 @@ FROM read_otlp_traces('traces.jsonl');
 - Supports JSON (`.json`, `.jsonl`) and protobuf (`.pb`) formats (auto-detected)
 - Works with local files, S3, HTTP, Azure, GCS
 - Consistent schema across traces, logs, and metrics table functions
+- Helper table functions: `read_otlp_metrics_{gauge,sum,histogram,exp_histogram,summary}()` for direct access to specific metric shapes
 - Named parameters: `on_error` (fail | skip | nullify) with stats via `read_otlp_scan_stats()`
 
 **Strongly-Typed Schemas**
@@ -109,6 +110,19 @@ WHERE MetricName LIKE 'system.cpu%'
 GROUP BY ServiceName, MetricName
 ORDER BY avg_value DESC;
 ```
+
+**Metrics Helpers** - Retrieve typed metric tables without manual filtering:
+```sql
+SELECT *
+FROM read_otlp_metrics_gauge('metrics.jsonl')
+WHERE MetricName = 'system.memory.usage';
+
+SELECT Timestamp, Count, BucketCounts
+FROM read_otlp_metrics_histogram('metrics.jsonl')
+WHERE ServiceName = 'api';
+```
+
+See `docs/metrics_helpers.md` for more cookbook-style examples.
 
 ### Persisting Data
 

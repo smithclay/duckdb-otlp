@@ -12,6 +12,7 @@
 #include <deque>
 #include <vector>
 #include <unordered_map>
+#include <optional>
 
 namespace duckdb {
 
@@ -24,6 +25,11 @@ public:
 	static TableFunction GetTracesFunction();
 	static TableFunction GetLogsFunction();
 	static TableFunction GetMetricsFunction();
+	static TableFunction GetMetricsGaugeFunction();
+	static TableFunction GetMetricsSumFunction();
+	static TableFunction GetMetricsHistogramFunction();
+	static TableFunction GetMetricsExpHistogramFunction();
+	static TableFunction GetMetricsSummaryFunction();
 	static TableFunction GetStatsFunction();
 	static TableFunction GetOptionsFunction();
 
@@ -39,9 +45,10 @@ struct ReadOTLPBindData : public TableFunctionData {
 	string pattern;           // Glob pattern or single file path
 	OTLPTableType table_type; // Detected table type for v2 schema
 	ReadOTLPOnError on_error;
+	std::optional<OTLPMetricType> metric_filter;
 
 	explicit ReadOTLPBindData(string pattern_p, OTLPTableType type)
-	    : pattern(std::move(pattern_p)), table_type(type), on_error(ReadOTLPOnError::FAIL) {
+	    : pattern(std::move(pattern_p)), table_type(type), on_error(ReadOTLPOnError::FAIL), metric_filter() {
 	}
 };
 
@@ -67,6 +74,7 @@ struct ReadOTLPGlobalState : public GlobalTableFunctionState {
 	std::atomic<idx_t> error_documents {0};
 	std::atomic<idx_t> active_workers {0};
 	std::atomic<bool> stats_reported {false};
+	std::optional<OTLPMetricType> metric_filter;
 
 	ReadOTLPGlobalState() : table_type(OTLPTableType::TRACES), on_error(ReadOTLPOnError::FAIL) {
 	}

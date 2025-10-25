@@ -66,6 +66,7 @@ Duckspan now ships purely as a **table-function extension**. It exposes strongly
 - **Protobuf Parser (`parsers/protobuf_parser.cpp/hpp`)**: wraps generated OTLP protobuf stubs and uses shared row-builder helpers to produce DuckDB vectors.
 - **Row Builders (`receiver/row_builders*.cpp`)**: convert OTLP message structures into vectors that match the ClickHouse-compatible schemas.
 - **Schema Definitions (`src/schema/*.hpp`)**: centralized column layouts for traces, logs, and metrics (including the union schema used by `read_otlp_metrics`).
+- **Metrics helper table functions**: `read_otlp_metrics_{gauge,sum,histogram,exp_histogram,summary}` call the union reader internally and project typed schemas for each metric shape.
 
 ### Data Flow
 

@@ -15,7 +15,8 @@ enum class OTLPTableType : uint8_t {
 	METRICS_SUM = 3,
 	METRICS_HISTOGRAM = 4,
 	METRICS_EXP_HISTOGRAM = 5,
-	METRICS_SUMMARY = 6
+	METRICS_SUMMARY = 6,
+	METRICS_UNION = 7
 };
 
 //! Metric data types from OTLP spec
@@ -45,6 +46,8 @@ inline string TableTypeToString(OTLPTableType type) {
 		return "otel_metrics_exp_histogram";
 	case OTLPTableType::METRICS_SUMMARY:
 		return "otel_metrics_summary";
+	case OTLPTableType::METRICS_UNION:
+		return "otel_metrics_union";
 	default:
 		throw InternalException("Invalid OTLP table type");
 	}
@@ -80,6 +83,10 @@ inline optional_ptr<OTLPTableType> StringToTableType(const string &name) {
 	}
 	if (name == "otel_metrics_summary") {
 		return &metrics_summary_type;
+	}
+	if (name == "otel_metrics_union") {
+		static OTLPTableType metrics_union_type = OTLPTableType::METRICS_UNION;
+		return &metrics_union_type;
 	}
 	return nullptr;
 }

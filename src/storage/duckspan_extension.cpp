@@ -23,6 +23,11 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(ReadOTLPTableFunction::GetTracesFunction());
 	loader.RegisterFunction(ReadOTLPTableFunction::GetLogsFunction());
 	loader.RegisterFunction(ReadOTLPTableFunction::GetMetricsFunction());
+	loader.RegisterFunction(ReadOTLPTableFunction::GetMetricsGaugeFunction());
+	loader.RegisterFunction(ReadOTLPTableFunction::GetMetricsSumFunction());
+	loader.RegisterFunction(ReadOTLPTableFunction::GetMetricsHistogramFunction());
+	loader.RegisterFunction(ReadOTLPTableFunction::GetMetricsExpHistogramFunction());
+	loader.RegisterFunction(ReadOTLPTableFunction::GetMetricsSummaryFunction());
 	loader.RegisterFunction(ReadOTLPTableFunction::GetStatsFunction());
 	loader.RegisterFunction(ReadOTLPTableFunction::GetOptionsFunction());
 

@@ -235,12 +235,28 @@ static const vector<LogicalType> &GetColumnTypesForTable(OTLPTableType table_typ
 		static const vector<LogicalType> types = OTLPLogsSchema::GetColumnTypes();
 		return types;
 	}
-	case OTLPTableType::METRICS_GAUGE:
-	case OTLPTableType::METRICS_SUM:
-	case OTLPTableType::METRICS_HISTOGRAM:
-	case OTLPTableType::METRICS_EXP_HISTOGRAM:
-	case OTLPTableType::METRICS_SUMMARY: {
+	case OTLPTableType::METRICS_UNION: {
 		static const vector<LogicalType> types = OTLPMetricsUnionSchema::GetColumnTypes();
+		return types;
+	}
+	case OTLPTableType::METRICS_GAUGE: {
+		static const vector<LogicalType> types = OTLPMetricsGaugeSchema::GetColumnTypes();
+		return types;
+	}
+	case OTLPTableType::METRICS_SUM: {
+		static const vector<LogicalType> types = OTLPMetricsSumSchema::GetColumnTypes();
+		return types;
+	}
+	case OTLPTableType::METRICS_HISTOGRAM: {
+		static const vector<LogicalType> types = OTLPMetricsHistogramSchema::GetColumnTypes();
+		return types;
+	}
+	case OTLPTableType::METRICS_EXP_HISTOGRAM: {
+		static const vector<LogicalType> types = OTLPMetricsExpHistogramSchema::GetColumnTypes();
+		return types;
+	}
+	case OTLPTableType::METRICS_SUMMARY: {
+		static const vector<LogicalType> types = OTLPMetricsSummarySchema::GetColumnTypes();
 		return types;
 	}
 	default:
@@ -433,6 +449,108 @@ static bool RowPassesFilters(const TableFilterSet *filters, const vector<Value> 
 	return true;
 }
 
+static std::optional<OTLPMetricType> MetricTypeFromString(const string &metric_type) {
+	if (metric_type == "gauge") {
+		return OTLPMetricType::GAUGE;
+	}
+	if (metric_type == "sum") {
+		return OTLPMetricType::SUM;
+	}
+	if (metric_type == "histogram") {
+		return OTLPMetricType::HISTOGRAM;
+	}
+	if (metric_type == "exp_histogram") {
+		return OTLPMetricType::EXPONENTIAL_HISTOGRAM;
+	}
+	if (metric_type == "summary") {
+		return OTLPMetricType::SUMMARY;
+	}
+	return std::nullopt;
+}
+
+static bool RowMatchesMetricFilter(const vector<Value> &row, OTLPMetricType filter) {
+	if (row.size() <= OTLPMetricsUnionSchema::COL_METRIC_TYPE) {
+		return false;
+	}
+	const auto &metric_val = row[OTLPMetricsUnionSchema::COL_METRIC_TYPE];
+	if (metric_val.IsNull()) {
+		return false;
+	}
+	auto metric_opt = MetricTypeFromString(metric_val.ToString());
+	return metric_opt && *metric_opt == filter;
+}
+
+static vector<Value> ProjectMetricRow(OTLPMetricType filter, const vector<Value> &row) {
+	switch (filter) {
+	case OTLPMetricType::GAUGE: {
+		vector<Value> result;
+		result.reserve(OTLPMetricsGaugeSchema::COLUMN_COUNT);
+		for (idx_t idx = 0; idx < OTLPMetricsBaseSchema::BASE_COLUMN_COUNT; idx++) {
+			result.emplace_back(row[idx]);
+		}
+		result.emplace_back(row[OTLPMetricsUnionSchema::COL_VALUE]);
+		return result;
+	}
+	case OTLPMetricType::SUM: {
+		vector<Value> result;
+		result.reserve(OTLPMetricsSumSchema::COLUMN_COUNT);
+		for (idx_t idx = 0; idx < OTLPMetricsBaseSchema::BASE_COLUMN_COUNT; idx++) {
+			result.emplace_back(row[idx]);
+		}
+		result.emplace_back(row[OTLPMetricsUnionSchema::COL_VALUE]);
+		result.emplace_back(row[OTLPMetricsUnionSchema::COL_AGGREGATION_TEMPORALITY]);
+		result.emplace_back(row[OTLPMetricsUnionSchema::COL_IS_MONOTONIC]);
+		return result;
+	}
+	case OTLPMetricType::HISTOGRAM: {
+		vector<Value> result;
+		result.reserve(OTLPMetricsHistogramSchema::COLUMN_COUNT);
+		for (idx_t idx = 0; idx < OTLPMetricsBaseSchema::BASE_COLUMN_COUNT; idx++) {
+			result.emplace_back(row[idx]);
+		}
+		result.emplace_back(row[OTLPMetricsUnionSchema::COL_COUNT]);
+		result.emplace_back(row[OTLPMetricsUnionSchema::COL_SUM]);
+		result.emplace_back(row[OTLPMetricsUnionSchema::COL_BUCKET_COUNTS]);
+		result.emplace_back(row[OTLPMetricsUnionSchema::COL_EXPLICIT_BOUNDS]);
+		result.emplace_back(row[OTLPMetricsUnionSchema::COL_MIN]);
+		result.emplace_back(row[OTLPMetricsUnionSchema::COL_MAX]);
+		return result;
+	}
+	case OTLPMetricType::EXPONENTIAL_HISTOGRAM: {
+		vector<Value> result;
+		result.reserve(OTLPMetricsExpHistogramSchema::COLUMN_COUNT);
+		for (idx_t idx = 0; idx < OTLPMetricsBaseSchema::BASE_COLUMN_COUNT; idx++) {
+			result.emplace_back(row[idx]);
+		}
+		result.emplace_back(row[OTLPMetricsUnionSchema::COL_COUNT]);
+		result.emplace_back(row[OTLPMetricsUnionSchema::COL_SUM]);
+		result.emplace_back(row[OTLPMetricsUnionSchema::COL_SCALE]);
+		result.emplace_back(row[OTLPMetricsUnionSchema::COL_ZERO_COUNT]);
+		result.emplace_back(row[OTLPMetricsUnionSchema::COL_POSITIVE_OFFSET]);
+		result.emplace_back(row[OTLPMetricsUnionSchema::COL_POSITIVE_BUCKET_COUNTS]);
+		result.emplace_back(row[OTLPMetricsUnionSchema::COL_NEGATIVE_OFFSET]);
+		result.emplace_back(row[OTLPMetricsUnionSchema::COL_NEGATIVE_BUCKET_COUNTS]);
+		result.emplace_back(row[OTLPMetricsUnionSchema::COL_MIN]);
+		result.emplace_back(row[OTLPMetricsUnionSchema::COL_MAX]);
+		return result;
+	}
+	case OTLPMetricType::SUMMARY: {
+		vector<Value> result;
+		result.reserve(OTLPMetricsSummarySchema::COLUMN_COUNT);
+		for (idx_t idx = 0; idx < OTLPMetricsBaseSchema::BASE_COLUMN_COUNT; idx++) {
+			result.emplace_back(row[idx]);
+		}
+		result.emplace_back(row[OTLPMetricsUnionSchema::COL_COUNT]);
+		result.emplace_back(row[OTLPMetricsUnionSchema::COL_SUM]);
+		result.emplace_back(row[OTLPMetricsUnionSchema::COL_QUANTILE_VALUES]);
+		result.emplace_back(row[OTLPMetricsUnionSchema::COL_QUANTILE_QUANTILES]);
+		return result;
+	}
+	default:
+		throw InternalException("Unsupported metric filter for projection");
+	}
+}
+
 static void FinishCurrentFile(ReadOTLPGlobalState &gstate, ReadOTLPLocalState &lstate) {
 	if (lstate.current_handle) {
 		lstate.current_handle.reset();
@@ -532,23 +650,33 @@ static void EnqueueRows(ClientContext &context, ReadOTLPGlobalState &gstate, Rea
 	if (rows.empty()) {
 		return;
 	}
-	if (gstate.filters && !gstate.filters->filters.empty()) {
-		vector<vector<Value>> filtered;
-		filtered.reserve(rows.size());
+	vector<vector<Value>> filtered_rows;
+	filtered_rows.reserve(rows.size());
+	if (gstate.metric_filter) {
 		for (auto &row : rows) {
-			if (RowPassesFilters(gstate.filters.get(), row)) {
-				filtered.emplace_back(std::move(row));
+			if (!RowMatchesMetricFilter(row, *gstate.metric_filter)) {
+				continue;
+			}
+			auto projected = ProjectMetricRow(*gstate.metric_filter, row);
+			if (!gstate.filters || RowPassesFilters(gstate.filters.get(), projected)) {
+				filtered_rows.emplace_back(std::move(projected));
 			}
 		}
-		rows = std::move(filtered);
+	} else {
+		for (auto &row : rows) {
+			if (!gstate.filters || RowPassesFilters(gstate.filters.get(), row)) {
+				filtered_rows.emplace_back(std::move(row));
+			}
+		}
 	}
-	if (rows.empty()) {
+	if (filtered_rows.empty()) {
 		return;
 	}
+	auto &processed_rows = filtered_rows;
 	auto &allocator = Allocator::Get(context);
 	idx_t position = 0;
-	while (position < rows.size()) {
-		idx_t emit_count = MinValue<idx_t>(STANDARD_VECTOR_SIZE, rows.size() - position);
+	while (position < processed_rows.size()) {
+		idx_t emit_count = MinValue<idx_t>(STANDARD_VECTOR_SIZE, processed_rows.size() - position);
 		auto chunk = make_uniq<DataChunk>();
 		chunk->Initialize(allocator, gstate.chunk_types);
 		for (idx_t col_idx = 0; col_idx < gstate.chunk_column_ids.size(); col_idx++) {
@@ -556,7 +684,7 @@ static void EnqueueRows(ClientContext &context, ReadOTLPGlobalState &gstate, Rea
 			vec.SetVectorType(VectorType::FLAT_VECTOR);
 		}
 		for (idx_t row_idx = 0; row_idx < emit_count; row_idx++) {
-			auto &row = rows[position + row_idx];
+			auto &row = processed_rows[position + row_idx];
 			for (idx_t col_idx = 0; col_idx < gstate.chunk_column_ids.size(); col_idx++) {
 				auto source_idx = gstate.chunk_column_ids[col_idx];
 				chunk->data[col_idx].SetValue(row_idx, row[source_idx]);
@@ -697,8 +825,78 @@ static unique_ptr<FunctionData> BindMetrics(ClientContext &context, TableFunctio
 	auto file_path = input.inputs[0].ToString();
 	return_types = OTLPMetricsUnionSchema::GetColumnTypes();
 	names = OTLPMetricsUnionSchema::GetColumnNames();
+	auto bind = make_uniq<ReadOTLPBindData>(file_path, OTLPTableType::METRICS_UNION);
+	bind->on_error = ParseOnErrorOption(input.named_parameters);
+	return bind;
+}
+
+static unique_ptr<FunctionData> BindMetricsGauge(ClientContext &context, TableFunctionBindInput &input,
+                                                 vector<LogicalType> &return_types, vector<string> &names) {
+	if (input.inputs.size() != 1) {
+		throw BinderException("read_otlp_metrics_gauge requires exactly one argument (file path)");
+	}
+	auto file_path = input.inputs[0].ToString();
+	return_types = OTLPMetricsGaugeSchema::GetColumnTypes();
+	names = OTLPMetricsGaugeSchema::GetColumnNames();
 	auto bind = make_uniq<ReadOTLPBindData>(file_path, OTLPTableType::METRICS_GAUGE);
 	bind->on_error = ParseOnErrorOption(input.named_parameters);
+	bind->metric_filter = OTLPMetricType::GAUGE;
+	return bind;
+}
+
+static unique_ptr<FunctionData> BindMetricsSum(ClientContext &context, TableFunctionBindInput &input,
+                                               vector<LogicalType> &return_types, vector<string> &names) {
+	if (input.inputs.size() != 1) {
+		throw BinderException("read_otlp_metrics_sum requires exactly one argument (file path)");
+	}
+	auto file_path = input.inputs[0].ToString();
+	return_types = OTLPMetricsSumSchema::GetColumnTypes();
+	names = OTLPMetricsSumSchema::GetColumnNames();
+	auto bind = make_uniq<ReadOTLPBindData>(file_path, OTLPTableType::METRICS_SUM);
+	bind->on_error = ParseOnErrorOption(input.named_parameters);
+	bind->metric_filter = OTLPMetricType::SUM;
+	return bind;
+}
+
+static unique_ptr<FunctionData> BindMetricsHistogram(ClientContext &context, TableFunctionBindInput &input,
+                                                     vector<LogicalType> &return_types, vector<string> &names) {
+	if (input.inputs.size() != 1) {
+		throw BinderException("read_otlp_metrics_histogram requires exactly one argument (file path)");
+	}
+	auto file_path = input.inputs[0].ToString();
+	return_types = OTLPMetricsHistogramSchema::GetColumnTypes();
+	names = OTLPMetricsHistogramSchema::GetColumnNames();
+	auto bind = make_uniq<ReadOTLPBindData>(file_path, OTLPTableType::METRICS_HISTOGRAM);
+	bind->on_error = ParseOnErrorOption(input.named_parameters);
+	bind->metric_filter = OTLPMetricType::HISTOGRAM;
+	return bind;
+}
+
+static unique_ptr<FunctionData> BindMetricsExpHistogram(ClientContext &context, TableFunctionBindInput &input,
+                                                        vector<LogicalType> &return_types, vector<string> &names) {
+	if (input.inputs.size() != 1) {
+		throw BinderException("read_otlp_metrics_exp_histogram requires exactly one argument (file path)");
+	}
+	auto file_path = input.inputs[0].ToString();
+	return_types = OTLPMetricsExpHistogramSchema::GetColumnTypes();
+	names = OTLPMetricsExpHistogramSchema::GetColumnNames();
+	auto bind = make_uniq<ReadOTLPBindData>(file_path, OTLPTableType::METRICS_EXP_HISTOGRAM);
+	bind->on_error = ParseOnErrorOption(input.named_parameters);
+	bind->metric_filter = OTLPMetricType::EXPONENTIAL_HISTOGRAM;
+	return bind;
+}
+
+static unique_ptr<FunctionData> BindMetricsSummary(ClientContext &context, TableFunctionBindInput &input,
+                                                   vector<LogicalType> &return_types, vector<string> &names) {
+	if (input.inputs.size() != 1) {
+		throw BinderException("read_otlp_metrics_summary requires exactly one argument (file path)");
+	}
+	auto file_path = input.inputs[0].ToString();
+	return_types = OTLPMetricsSummarySchema::GetColumnTypes();
+	names = OTLPMetricsSummarySchema::GetColumnNames();
+	auto bind = make_uniq<ReadOTLPBindData>(file_path, OTLPTableType::METRICS_SUMMARY);
+	bind->on_error = ParseOnErrorOption(input.named_parameters);
+	bind->metric_filter = OTLPMetricType::SUMMARY;
 	return bind;
 }
 
@@ -737,6 +935,56 @@ TableFunction ReadOTLPTableFunction::GetMetricsFunction() {
 	return func;
 }
 
+TableFunction ReadOTLPTableFunction::GetMetricsGaugeFunction() {
+	TableFunction func("read_otlp_metrics_gauge", {LogicalType::VARCHAR}, Scan, BindMetricsGauge, Init);
+	func.name = "read_otlp_metrics_gauge";
+	func.init_local = InitLocal;
+	func.projection_pushdown = true;
+	func.filter_pushdown = true;
+	func.named_parameters["on_error"] = LogicalType::VARCHAR;
+	return func;
+}
+
+TableFunction ReadOTLPTableFunction::GetMetricsSumFunction() {
+	TableFunction func("read_otlp_metrics_sum", {LogicalType::VARCHAR}, Scan, BindMetricsSum, Init);
+	func.name = "read_otlp_metrics_sum";
+	func.init_local = InitLocal;
+	func.projection_pushdown = true;
+	func.filter_pushdown = true;
+	func.named_parameters["on_error"] = LogicalType::VARCHAR;
+	return func;
+}
+
+TableFunction ReadOTLPTableFunction::GetMetricsHistogramFunction() {
+	TableFunction func("read_otlp_metrics_histogram", {LogicalType::VARCHAR}, Scan, BindMetricsHistogram, Init);
+	func.name = "read_otlp_metrics_histogram";
+	func.init_local = InitLocal;
+	func.projection_pushdown = true;
+	func.filter_pushdown = true;
+	func.named_parameters["on_error"] = LogicalType::VARCHAR;
+	return func;
+}
+
+TableFunction ReadOTLPTableFunction::GetMetricsExpHistogramFunction() {
+	TableFunction func("read_otlp_metrics_exp_histogram", {LogicalType::VARCHAR}, Scan, BindMetricsExpHistogram, Init);
+	func.name = "read_otlp_metrics_exp_histogram";
+	func.init_local = InitLocal;
+	func.projection_pushdown = true;
+	func.filter_pushdown = true;
+	func.named_parameters["on_error"] = LogicalType::VARCHAR;
+	return func;
+}
+
+TableFunction ReadOTLPTableFunction::GetMetricsSummaryFunction() {
+	TableFunction func("read_otlp_metrics_summary", {LogicalType::VARCHAR}, Scan, BindMetricsSummary, Init);
+	func.name = "read_otlp_metrics_summary";
+	func.init_local = InitLocal;
+	func.projection_pushdown = true;
+	func.filter_pushdown = true;
+	func.named_parameters["on_error"] = LogicalType::VARCHAR;
+	return func;
+}
+
 TableFunction ReadOTLPTableFunction::GetStatsFunction() {
 	TableFunction func("read_otlp_scan_stats", {}, OTLPStatsScan, OTLPStatsBind, OTLPStatsInit);
 	func.name = "read_otlp_scan_stats";
@@ -762,6 +1010,7 @@ unique_ptr<GlobalTableFunctionState> ReadOTLPTableFunction::Init(ClientContext &
 	state->error_documents.store(0);
 	state->active_workers.store(0);
 	state->stats_reported.store(false);
+	state->metric_filter = bind_data.metric_filter;
 	InitializeProjection(*state, input.column_ids);
 	if (input.filters) {
 		state->filters = make_shared_ptr<TableFilterSet>();
@@ -839,7 +1088,12 @@ void ReadOTLPTableFunction::Scan(ClientContext &context, TableFunctionInput &dat
 				case OTLPTableType::LOGS:
 					success = lstate.json_parser->ParseLogsToTypedRows(line, parsed_rows);
 					break;
+				case OTLPTableType::METRICS_UNION:
 				case OTLPTableType::METRICS_GAUGE:
+				case OTLPTableType::METRICS_SUM:
+				case OTLPTableType::METRICS_HISTOGRAM:
+				case OTLPTableType::METRICS_EXP_HISTOGRAM:
+				case OTLPTableType::METRICS_SUMMARY:
 					success = lstate.json_parser->ParseMetricsToTypedRows(line, parsed_rows);
 					break;
 				default:
@@ -872,7 +1126,12 @@ void ReadOTLPTableFunction::Scan(ClientContext &context, TableFunctionInput &dat
 			case OTLPTableType::LOGS:
 				success = lstate.json_parser->ParseLogsToTypedRows(contents, parsed_rows);
 				break;
+			case OTLPTableType::METRICS_UNION:
 			case OTLPTableType::METRICS_GAUGE:
+			case OTLPTableType::METRICS_SUM:
+			case OTLPTableType::METRICS_HISTOGRAM:
+			case OTLPTableType::METRICS_EXP_HISTOGRAM:
+			case OTLPTableType::METRICS_SUMMARY:
 				success = lstate.json_parser->ParseMetricsToTypedRows(contents, parsed_rows);
 				break;
 			default:
@@ -910,7 +1169,12 @@ void ReadOTLPTableFunction::Scan(ClientContext &context, TableFunctionInput &dat
 			case OTLPTableType::LOGS:
 				row_count = lstate.protobuf_parser->ParseLogsToTypedRows(adaptor, parsed_rows);
 				break;
+			case OTLPTableType::METRICS_UNION:
 			case OTLPTableType::METRICS_GAUGE:
+			case OTLPTableType::METRICS_SUM:
+			case OTLPTableType::METRICS_HISTOGRAM:
+			case OTLPTableType::METRICS_EXP_HISTOGRAM:
+			case OTLPTableType::METRICS_SUMMARY:
 				row_count = lstate.protobuf_parser->ParseMetricsToTypedRows(adaptor, parsed_rows);
 				break;
 			default:
