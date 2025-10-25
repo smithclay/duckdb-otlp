@@ -1,0 +1,213 @@
+# name: test/sql/schema_bridge.test
+# description: Test materializing OTLP file readers into permanent tables
+# group: [sql]
+
+require duckspan
+
+#
+# Test 1: Copy specific metric shapes from read_otlp_metrics()
+#
+
+statement ok
+CREATE TABLE archive_gauge_from_file AS
+SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
+       ResourceAttributes, ScopeName, ScopeVersion, Attributes, Value
+FROM read_otlp_metrics('test/data/metrics_simple.jsonl')
+WHERE MetricType = 'gauge';
+
+query I
+SELECT COUNT(*) FROM archive_gauge_from_file;
+----
+1
+
+query I
+SELECT CAST(Value AS BIGINT) FROM archive_gauge_from_file;
+----
+524288000
+
+statement ok
+CREATE TABLE archive_sum_from_file AS
+SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
+       ResourceAttributes, ScopeName, ScopeVersion, Attributes,
+       Value, AggregationTemporality, IsMonotonic
+FROM read_otlp_metrics('test/data/metrics_simple.jsonl')
+WHERE MetricType = 'sum';
+
+query I
+SELECT COUNT(*) FROM archive_sum_from_file;
+----
+1
+
+query I
+SELECT IsMonotonic FROM archive_sum_from_file;
+----
+1
+
+statement ok
+CREATE TABLE archive_histogram_from_file AS
+SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
+       ResourceAttributes, ScopeName, ScopeVersion, Attributes,
+       Count, Sum, BucketCounts, ExplicitBounds, Min, Max
+FROM read_otlp_metrics('test/data/metrics_simple.jsonl')
+WHERE MetricType = 'histogram';
+
+query I
+SELECT COUNT(*) FROM archive_histogram_from_file;
+----
+1
+
+query I
+SELECT array_length(BucketCounts) FROM archive_histogram_from_file;
+----
+5
+
+#
+# Test 2: Bulk transfer of all metric types from extended sample
+#
+
+statement ok
+CREATE TABLE all_gauge_metrics AS
+SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
+       ResourceAttributes, ScopeName, ScopeVersion, Attributes, Value
+FROM read_otlp_metrics('test/data/metrics_all_types.jsonl')
+WHERE MetricType = 'gauge';
+
+statement ok
+CREATE TABLE all_sum_metrics AS
+SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
+       ResourceAttributes, ScopeName, ScopeVersion, Attributes,
+       Value, AggregationTemporality, IsMonotonic
+FROM read_otlp_metrics('test/data/metrics_all_types.jsonl')
+WHERE MetricType = 'sum';
+
+statement ok
+CREATE TABLE all_histogram_metrics AS
+SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
+       ResourceAttributes, ScopeName, ScopeVersion, Attributes,
+       Count, Sum, BucketCounts, ExplicitBounds, Min, Max
+FROM read_otlp_metrics('test/data/metrics_all_types.jsonl')
+WHERE MetricType = 'histogram';
+
+statement ok
+CREATE TABLE all_exp_histogram_metrics AS
+SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
+       ResourceAttributes, ScopeName, ScopeVersion, Attributes,
+       Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts,
+       NegativeOffset, NegativeBucketCounts, Min, Max
+FROM read_otlp_metrics('test/data/metrics_all_types.jsonl')
+WHERE MetricType = 'exponential_histogram';
+
+statement ok
+CREATE TABLE all_summary_metrics AS
+SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
+       ResourceAttributes, ScopeName, ScopeVersion, Attributes,
+       Count, Sum, QuantileValues, QuantileQuantiles
+FROM read_otlp_metrics('test/data/metrics_all_types.jsonl')
+WHERE MetricType = 'summary';
+
+query I
+SELECT COUNT(*) FROM all_gauge_metrics;
+----
+1
+
+query I
+SELECT COUNT(*) FROM all_sum_metrics;
+----
+1
+
+query I
+SELECT COUNT(*) FROM all_histogram_metrics;
+----
+1
+
+query I
+SELECT COUNT(*) FROM all_exp_histogram_metrics;
+----
+1
+
+query I
+SELECT COUNT(*) FROM all_summary_metrics;
+----
+1
+
+#
+# Test 3: View-based pivot from union schema
+#
+
+statement ok
+CREATE VIEW metrics_union AS
+SELECT * FROM read_otlp_metrics('test/data/metrics_simple.jsonl');
+
+statement ok
+CREATE TABLE gauge_from_view AS
+SELECT Timestamp, ServiceName, MetricName, Value
+FROM metrics_union WHERE MetricType = 'gauge';
+
+query I
+SELECT COUNT(*) FROM gauge_from_view;
+----
+1
+
+statement ok
+DROP VIEW metrics_union;
+
+#
+# Test 4: Logs and traces table materialization
+#
+
+statement ok
+CREATE TABLE logs_table AS
+SELECT Timestamp, SeverityText, Body
+FROM read_otlp_logs('test/data/logs_simple.jsonl');
+
+query I
+SELECT COUNT(*) FROM logs_table;
+----
+3
+
+statement ok
+CREATE TABLE traces_table AS
+SELECT Timestamp, SpanName, ServiceName, Duration
+FROM read_otlp_traces('test/data/traces_simple.jsonl');
+
+query I
+SELECT COUNT(*) FROM traces_table;
+----
+3
+
+#
+# Cleanup
+#
+
+statement ok
+DROP TABLE archive_gauge_from_file;
+
+statement ok
+DROP TABLE archive_sum_from_file;
+
+statement ok
+DROP TABLE archive_histogram_from_file;
+
+statement ok
+DROP TABLE all_gauge_metrics;
+
+statement ok
+DROP TABLE all_sum_metrics;
+
+statement ok
+DROP TABLE all_histogram_metrics;
+
+statement ok
+DROP TABLE all_exp_histogram_metrics;
+
+statement ok
+DROP TABLE all_summary_metrics;
+
+statement ok
+DROP TABLE gauge_from_view;
+
+statement ok
+DROP TABLE logs_table;
+
+statement ok
+DROP TABLE traces_table;

@@ -1,0 +1,50 @@
+# name: test/sql/read_otlp_on_error.test
+# description: Verify read_otlp on_error modes, stats helper, and options table function
+# group: [duckspan]
+
+require duckspan
+
+# Default behaviour should fail on malformed input
+statement error
+SELECT COUNT(*) FROM read_otlp_traces('test/data/malformed.jsonl');
+----
+Failed to parse OTLP JSON data in file 'test/data/malformed.jsonl' on line (approx) 1: Missing resourceSpans array
+
+# Skip mode should drop bad rows and report error counters
+query I
+SELECT COUNT(*) FROM read_otlp_traces('test/data/malformed.jsonl', on_error='skip');
+----
+1
+
+query I
+SELECT COUNT(*) FROM read_otlp_scan_stats();
+----
+1
+
+# Nullify mode should emit NULL rows for failures while preserving valid rows
+query II
+SELECT
+    COUNT(*) FILTER (WHERE TraceId IS NULL),
+    COUNT(*) FILTER (WHERE TraceId IS NOT NULL)
+FROM read_otlp_traces('test/data/malformed.jsonl', on_error='nullify');
+----
+3	1
+
+query II
+SELECT error_records, error_documents FROM read_otlp_scan_stats();
+----
+3	0
+
+# read_otlp_options() surfaces discoverable metadata for table functions
+query I
+SELECT COUNT(*) FROM read_otlp_options();
+----
+2
+
+query TT
+SELECT option_name, default_value
+FROM read_otlp_options()
+ORDER BY option_name;
+----
+on_error	fail
+read_otlp_scan_stats	n/a

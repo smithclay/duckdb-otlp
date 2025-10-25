@@ -17,7 +17,8 @@ SELECT duckspan('Sam');
 ----
 Duckspan Sam 🐥
 
+# Verify helper table functions are registered
 query I
-SELECT duckspan_openssl_version('Michael') ILIKE 'Duckspan Michael, my linked OpenSSL version is OpenSSL%';
+SELECT COUNT(*) > 0 FROM duckdb_functions() WHERE function_name LIKE 'read_otlp_%';
 ----
 true
