@@ -17,13 +17,8 @@ SELECT duckspan('Sam');
 ----
 Duckspan Sam 🐥
 
+# Verify helper table functions are registered
 query I
-SELECT CASE
-           WHEN EXISTS (SELECT 1 FROM duckdb_functions() WHERE function_name = 'duckspan_openssl_version')
-           THEN duckspan_openssl_version('Michael') ILIKE 'Duckspan Michael, my linked OpenSSL version is OpenSSL%'
-           ELSE true
-       END;
+SELECT COUNT(*) > 0 FROM duckdb_functions() WHERE function_name LIKE 'read_otlp_%';
 ----
 true
-
-# Metadata check ensures ColumnarRingBuffer appender updates chunk metadata

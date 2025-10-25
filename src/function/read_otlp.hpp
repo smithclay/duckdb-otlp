@@ -8,6 +8,7 @@
 #include "schema/otlp_types.hpp"
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
+#include <atomic>
 #include <deque>
 #include <vector>
 #include <unordered_map>
@@ -53,52 +54,48 @@ struct ReadOTLPGlobalState : public GlobalTableFunctionState {
 	};
 
 	vector<string> files;
-	idx_t next_file;
+	std::atomic<idx_t> next_file {0};
 	OTLPTableType table_type;
 	vector<LogicalType> all_types;
-
-	unique_ptr<FileHandle> current_handle;
-	unique_ptr<OTLPJSONParser> json_parser;
-	unique_ptr<OTLPProtobufParser> protobuf_parser;
-
-	OTLPFormat current_format;
-	bool is_json_lines;
-	bool doc_consumed;
-	string current_path;
-
-	// JSONL reader state
-	string line_buffer;
-	idx_t buffer_offset;
-	idx_t current_line;
-	idx_t approx_line;
-
-	// Materialized chunks ready for scanning
-	std::deque<unique_ptr<DataChunk>> chunk_queue;
-	unique_ptr<DataChunk> active_chunk;
-
-	// Column projection metadata
 	vector<OutputColumnInfo> output_columns;
 	vector<column_t> chunk_column_ids;
 	vector<LogicalType> chunk_types;
-	unique_ptr<TableFilterSet> filters;
-
-	// Row-id tracking
-	int64_t row_id_base;
-	idx_t error_records;
-	idx_t error_documents;
+	shared_ptr<TableFilterSet> filters;
 	ReadOTLPOnError on_error;
-	bool stats_reported;
+	std::atomic<int64_t> next_row_id {0};
+	std::atomic<idx_t> error_records {0};
+	std::atomic<idx_t> error_documents {0};
+	std::atomic<idx_t> active_workers {0};
+	std::atomic<bool> stats_reported {false};
 
-	bool finished;
-
-	ReadOTLPGlobalState()
-	    : next_file(0), table_type(OTLPTableType::TRACES), current_format(OTLPFormat::UNKNOWN), is_json_lines(false),
-	      doc_consumed(false), buffer_offset(0), current_line(0), approx_line(0), row_id_base(0), error_records(0),
-	      error_documents(0), on_error(ReadOTLPOnError::FAIL), stats_reported(false), finished(false) {
+	ReadOTLPGlobalState() : table_type(OTLPTableType::TRACES), on_error(ReadOTLPOnError::FAIL) {
 	}
 
 	idx_t MaxThreads() const override {
 		return files.empty() ? 1 : MinValue<idx_t>(files.size(), 8);
+	}
+};
+
+struct ReadOTLPLocalState : public LocalTableFunctionState {
+	unique_ptr<FileHandle> current_handle;
+	unique_ptr<OTLPJSONParser> json_parser;
+	unique_ptr<OTLPProtobufParser> protobuf_parser;
+	OTLPFormat current_format;
+	bool is_json_lines;
+	bool doc_consumed;
+	string current_path;
+	string line_buffer;
+	idx_t buffer_offset;
+	idx_t current_line;
+	idx_t approx_line;
+	std::deque<unique_ptr<DataChunk>> chunk_queue;
+	unique_ptr<DataChunk> active_chunk;
+	bool reported_completion;
+	ClientContext *context;
+
+	ReadOTLPLocalState()
+	    : current_format(OTLPFormat::UNKNOWN), is_json_lines(false), doc_consumed(false), buffer_offset(0),
+	      current_line(0), approx_line(0), reported_completion(false), context(nullptr) {
 	}
 };
 

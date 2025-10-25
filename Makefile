@@ -4,12 +4,6 @@ PROJ_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 EXT_NAME=duckspan
 EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 
-# Run end-to-end OTLP export integration test
-.PHONY: test-otlp-export
-test-otlp-export:
-	@echo "Running OTLP export integration test..."
-	uv run test/python/test_otlp_export.py
-
 # Include the Makefile from extension-ci-tools
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 

@@ -1,174 +1,13 @@
 # name: test/sql/schema_bridge.test
-# description: Test data transfer patterns between file reading and ATTACH modes
+# description: Test materializing OTLP file readers into permanent tables
 # group: [sql]
 
 require duckspan
 
 #
-# Test 1: ATTACH → Permanent Table (Archive Pattern)
+# Test 1: Copy specific metric shapes from read_otlp_metrics()
 #
 
-# Setup: Create ATTACH database
-statement ok
-ATTACH 'otlp:localhost:4325' AS live (TYPE otlp);
-
-# Verify ATTACH created all 5 metric tables + 1 union view
-query I
-SELECT COUNT(*) FROM duckdb_tables()
-WHERE database_name = 'live'
-AND schema_name = 'main'
-AND table_name LIKE 'otel_metrics_%';
-----
-5
-
-# Verify gauge table schema
-query I
-SELECT COUNT(*) FROM information_schema.columns
-WHERE table_catalog = 'live'
-AND table_schema = 'main'
-AND table_name = 'otel_metrics_gauge';
-----
-10
-
-# Verify sum table schema
-query I
-SELECT COUNT(*) FROM information_schema.columns
-WHERE table_catalog = 'live'
-AND table_schema = 'main'
-AND table_name = 'otel_metrics_sum';
-----
-12
-
-# Verify histogram table schema
-query I
-SELECT COUNT(*) FROM information_schema.columns
-WHERE table_catalog = 'live'
-AND table_schema = 'main'
-AND table_name = 'otel_metrics_histogram';
-----
-15
-
-# Union function can be referenced (even if empty)
-statement ok
-SELECT 1 FROM otlp_metrics_union('live') LIMIT 0;
-
-#
-# Test 2: Archive ATTACH Tables to Permanent Tables
-#
-
-# Create archive table from ATTACH gauge metrics (will be empty - no live data sent)
-statement ok
-CREATE TABLE archived_gauge AS
-SELECT * FROM live.otel_metrics_gauge;
-
-# Verify archive table exists with correct schema
-query I
-SELECT COUNT(*) FROM information_schema.columns
-WHERE table_name = 'archived_gauge';
-----
-10
-
-# Verify it's empty (no live data sent)
-query I
-SELECT COUNT(*) FROM archived_gauge;
-----
-0
-
-# Create archive table from ATTACH sum metrics
-statement ok
-CREATE TABLE archived_sum AS
-SELECT * FROM live.otel_metrics_sum;
-
-# Verify sum archive has correct schema (12 columns)
-query I
-SELECT COUNT(*) FROM information_schema.columns
-WHERE table_name = 'archived_sum';
-----
-12
-
-# Create archive table from ATTACH histogram metrics
-statement ok
-CREATE TABLE archived_histogram AS
-SELECT * FROM live.otel_metrics_histogram;
-
-# Verify histogram archive has correct schema (15 columns)
-query I
-SELECT COUNT(*) FROM information_schema.columns
-WHERE table_name = 'archived_histogram';
-----
-15
-
-#
-# Test 3: Combining Live and Archived Data Pattern
-#
-
-# Test UNION ALL of live (ATTACH) and archived (permanent table)
-query I
-SELECT COUNT(*) FROM (
-    SELECT 'live' as source, * FROM live.otel_metrics_gauge
-    UNION ALL
-    SELECT 'archived' as source, * FROM archived_gauge
-);
-----
-0
-
-# Verify schema compatibility for UNION ALL (should not error)
-statement ok
-SELECT * FROM (
-    SELECT 'live' as source, * FROM live.otel_metrics_gauge
-    UNION ALL
-    SELECT 'archived' as source, * FROM archived_gauge
-) LIMIT 1;
-
-#
-# Test 4: Verify Table Schemas Match ClickHouse Schema
-#
-
-# Check gauge table has expected columns in correct order
-query III
-SELECT
-    column_name,
-    ordinal_position,
-    data_type
-FROM information_schema.columns
-WHERE table_catalog = 'live'
-AND table_schema = 'main'
-AND table_name = 'otel_metrics_gauge'
-AND column_name IN ('Timestamp', 'ServiceName', 'Value')
-ORDER BY ordinal_position;
-----
-Timestamp	1	TIMESTAMP_NS
-ServiceName	2	VARCHAR
-Value	10	DOUBLE
-
-# Check sum table has type-specific columns
-query I
-SELECT COUNT(*)
-FROM information_schema.columns
-WHERE table_catalog = 'live'
-AND table_schema = 'main'
-AND table_name = 'otel_metrics_sum'
-AND column_name IN ('AggregationTemporality', 'IsMonotonic');
-----
-2
-
-# Check histogram table has type-specific columns
-query I
-SELECT COUNT(*)
-FROM information_schema.columns
-WHERE table_catalog = 'live'
-AND table_schema = 'main'
-AND table_name = 'otel_metrics_histogram'
-AND column_name IN ('Count', 'Sum', 'BucketCounts', 'ExplicitBounds');
-----
-4
-
-#
-# Test 5: File → Archive Table Transfer (Union Schema → Typed Tables)
-#
-# ATTACH tables are read-only (only accept data via gRPC), so we transfer to archive tables instead
-
-# Transfer gauge metrics from file to permanent table
 statement ok
 CREATE TABLE archive_gauge_from_file AS
 SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
@@ -176,19 +15,16 @@ SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
 FROM read_otlp_metrics('test/data/metrics_simple.jsonl')
 WHERE MetricType = 'gauge';
 
-# Verify gauge metric was transferred
 query I
 SELECT COUNT(*) FROM archive_gauge_from_file;
 ----
 1
 
-# Verify gauge metric value
 query I
 SELECT CAST(Value AS BIGINT) FROM archive_gauge_from_file;
 ----
 524288000
 
-# Transfer sum metrics from file to permanent table
 statement ok
 CREATE TABLE archive_sum_from_file AS
 SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
@@ -197,13 +33,16 @@ SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
 FROM read_otlp_metrics('test/data/metrics_simple.jsonl')
 WHERE MetricType = 'sum';
 
-# Verify sum metric was transferred
 query I
 SELECT COUNT(*) FROM archive_sum_from_file;
 ----
 1
 
-# Transfer histogram metrics from file to permanent table
+query I
+SELECT IsMonotonic FROM archive_sum_from_file;
+----
+1
+
 statement ok
 CREATE TABLE archive_histogram_from_file AS
 SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
@@ -212,13 +51,20 @@ SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
 FROM read_otlp_metrics('test/data/metrics_simple.jsonl')
 WHERE MetricType = 'histogram';
 
-# Verify histogram metric was transferred
 query I
 SELECT COUNT(*) FROM archive_histogram_from_file;
 ----
 1
 
-# Test bulk transfer of all metric types from extended test file
+query I
+SELECT array_length(BucketCounts) FROM archive_histogram_from_file;
+----
+5
+
+#
+# Test 2: Bulk transfer of all metric types from extended sample
+#
+
 statement ok
 CREATE TABLE all_gauge_metrics AS
 SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
@@ -259,7 +105,6 @@ SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
 FROM read_otlp_metrics('test/data/metrics_all_types.jsonl')
 WHERE MetricType = 'summary';
 
-# Verify all metric types were transferred (1 each from metrics_all_types.jsonl)
 query I
 SELECT COUNT(*) FROM all_gauge_metrics;
 ----
@@ -286,22 +131,54 @@ SELECT COUNT(*) FROM all_summary_metrics;
 1
 
 #
-# Test 6: ATTACH Union View (Typed → Union Schema)
+# Test 3: View-based pivot from union schema
 #
 
-# ATTACH tables are empty (no live gRPC data), but union view should work
-query I
-SELECT COUNT(*) FROM otlp_metrics_union('live');
-----
-0
-
-# Verify union view structure works (even with no data)
 statement ok
-SELECT Timestamp, ServiceName, MetricName, MetricType, Value
-FROM otlp_metrics_union('live')
-LIMIT 0;
+CREATE VIEW metrics_union AS
+SELECT * FROM read_otlp_metrics('test/data/metrics_simple.jsonl');
 
-# Cleanup file-based archive tables
+statement ok
+CREATE TABLE gauge_from_view AS
+SELECT Timestamp, ServiceName, MetricName, Value
+FROM metrics_union WHERE MetricType = 'gauge';
+
+query I
+SELECT COUNT(*) FROM gauge_from_view;
+----
+1
+
+statement ok
+DROP VIEW metrics_union;
+
+#
+# Test 4: Logs and traces table materialization
+#
+
+statement ok
+CREATE TABLE logs_table AS
+SELECT Timestamp, SeverityText, Body
+FROM read_otlp_logs('test/data/logs_simple.jsonl');
+
+query I
+SELECT COUNT(*) FROM logs_table;
+----
+3
+
+statement ok
+CREATE TABLE traces_table AS
+SELECT Timestamp, SpanName, ServiceName, Duration
+FROM read_otlp_traces('test/data/traces_simple.jsonl');
+
+query I
+SELECT COUNT(*) FROM traces_table;
+----
+3
+
+#
+# Cleanup
+#
+
 statement ok
 DROP TABLE archive_gauge_from_file;
 
@@ -326,16 +203,11 @@ DROP TABLE all_exp_histogram_metrics;
 statement ok
 DROP TABLE all_summary_metrics;
 
-# Cleanup: Detach database
 statement ok
-DETACH live;
-
-# Cleanup: Drop archive tables
-statement ok
-DROP TABLE archived_gauge;
+DROP TABLE gauge_from_view;
 
 statement ok
-DROP TABLE archived_sum;
+DROP TABLE logs_table;
 
 statement ok
-DROP TABLE archived_histogram;
+DROP TABLE traces_table;

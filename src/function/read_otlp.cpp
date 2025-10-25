@@ -40,11 +40,19 @@ struct OTLPScanStats {
 };
 
 static mutex otlp_stats_mutex;
-static unordered_map<ClientContext *, OTLPScanStats> otlp_latest_stats;
+static unordered_map<connection_t, OTLPScanStats> otlp_latest_stats;
+
+static connection_t GetStatsKey(ClientContext &context) {
+	auto connection_id = context.GetConnectionId();
+	if (connection_id != DConstants::INVALID_INDEX) {
+		return connection_id;
+	}
+	return static_cast<connection_t>(reinterpret_cast<uintptr_t>(&context));
+}
 
 static void UpdateOTLPStats(ClientContext &context, const ReadOTLPGlobalState &state) {
 	lock_guard<mutex> lock(otlp_stats_mutex);
-	otlp_latest_stats[&context] = OTLPScanStats {state.error_records, state.error_documents};
+	otlp_latest_stats[GetStatsKey(context)] = OTLPScanStats {state.error_records.load(), state.error_documents.load()};
 }
 
 static ReadOTLPOnError ParseOnErrorOption(named_parameter_map_t &named_parameters) {
@@ -121,7 +129,7 @@ static string ReadEntireFile(FileHandle &handle, const string &path, int64_t lim
 	return contents;
 }
 
-static void ResetFileState(ReadOTLPGlobalState &state) {
+static void ResetLocalFileState(ReadOTLPLocalState &state) {
 	state.current_handle.reset();
 	state.current_format = OTLPFormat::UNKNOWN;
 	state.is_json_lines = false;
@@ -311,14 +319,16 @@ static vector<Value> MakeNullRow(const ReadOTLPGlobalState &state) {
 	return row;
 }
 
-static bool HandleParseError(ReadOTLPGlobalState &state, const string &message, const string &error,
-                             vector<vector<Value>> &rows, bool is_document) {
+static bool HandleParseError(ClientContext &context, ReadOTLPGlobalState &gstate, ReadOTLPLocalState &lstate,
+                             const string &message, const string &error, vector<vector<Value>> &rows,
+                             bool is_document) {
 	if (is_document) {
-		state.error_documents++;
+		gstate.error_documents.fetch_add(1);
 	} else {
-		state.error_records++;
+		gstate.error_records.fetch_add(1);
 	}
-	switch (state.on_error) {
+	UpdateOTLPStats(context, gstate);
+	switch (gstate.on_error) {
 	case ReadOTLPOnError::FAIL: {
 		string full_message = message;
 		if (!error.empty()) {
@@ -329,28 +339,28 @@ static bool HandleParseError(ReadOTLPGlobalState &state, const string &message, 
 	case ReadOTLPOnError::SKIP:
 		return false;
 	case ReadOTLPOnError::NULLIFY:
-		rows.emplace_back(MakeNullRow(state));
+		rows.emplace_back(MakeNullRow(gstate));
 		return true;
 	default:
 		throw InternalException("Unhandled on_error mode");
 	}
 }
 
-static bool HandleParseErrorRecord(ReadOTLPGlobalState &state, const string &message, const string &error,
-                                   vector<vector<Value>> &rows) {
-	return HandleParseError(state, message, error, rows, false);
+static bool HandleParseErrorRecord(ClientContext &context, ReadOTLPGlobalState &gstate, ReadOTLPLocalState &lstate,
+                                   const string &message, const string &error, vector<vector<Value>> &rows) {
+	return HandleParseError(context, gstate, lstate, message, error, rows, false);
 }
 
-static bool HandleParseErrorDocument(ReadOTLPGlobalState &state, const string &message, const string &error,
-                                     vector<vector<Value>> &rows) {
-	return HandleParseError(state, message, error, rows, true);
+static bool HandleParseErrorDocument(ClientContext &context, ReadOTLPGlobalState &gstate, ReadOTLPLocalState &lstate,
+                                     const string &message, const string &error, vector<vector<Value>> &rows) {
+	return HandleParseError(context, gstate, lstate, message, error, rows, true);
 }
 
-static bool RowPassesFilters(const ReadOTLPGlobalState &state, const vector<Value> &row) {
-	if (!state.filters) {
+static bool RowPassesFilters(const TableFilterSet *filters, const vector<Value> &row) {
+	if (!filters) {
 		return true;
 	}
-	for (auto &entry : state.filters->filters) {
+	for (auto &entry : filters->filters) {
 		auto base_idx = entry.first;
 		if (base_idx >= row.size()) {
 			continue;
@@ -423,15 +433,110 @@ static bool RowPassesFilters(const ReadOTLPGlobalState &state, const vector<Valu
 	return true;
 }
 
-static void EnqueueRows(ClientContext &context, ReadOTLPGlobalState &state, vector<vector<Value>> &&rows) {
+static void FinishCurrentFile(ReadOTLPGlobalState &gstate, ReadOTLPLocalState &lstate) {
+	if (lstate.current_handle) {
+		lstate.current_handle.reset();
+		gstate.active_workers.fetch_sub(1);
+	}
+	lstate.current_format = OTLPFormat::UNKNOWN;
+	lstate.is_json_lines = false;
+	lstate.doc_consumed = false;
+	lstate.current_path.clear();
+	lstate.line_buffer.clear();
+	lstate.buffer_offset = 0;
+	lstate.current_line = 0;
+	lstate.approx_line = 0;
+}
+
+static bool EmitChunk(ClientContext &context, ReadOTLPGlobalState &gstate, ReadOTLPLocalState &lstate,
+                      DataChunk &output) {
+	while (!lstate.chunk_queue.empty()) {
+		auto chunk = std::move(lstate.chunk_queue.front());
+		lstate.chunk_queue.pop_front();
+		if (!chunk || chunk->size() == 0) {
+			continue;
+		}
+		idx_t emit_count = chunk->size();
+		for (idx_t col_idx = 0; col_idx < gstate.output_columns.size(); col_idx++) {
+			auto &info = gstate.output_columns[col_idx];
+			auto &vec = output.data[col_idx];
+			if (info.is_row_id) {
+				vec.SetVectorType(VectorType::FLAT_VECTOR);
+				auto data = FlatVector::GetData<int64_t>(vec);
+				auto base = gstate.next_row_id.fetch_add(emit_count);
+				for (idx_t i = 0; i < emit_count; i++) {
+					data[i] = base + static_cast<int64_t>(i);
+				}
+			} else {
+				vec.Reference(chunk->data[info.chunk_index]);
+			}
+		}
+		output.SetCardinality(emit_count);
+		lstate.active_chunk = std::move(chunk);
+		return true;
+	}
+	lstate.active_chunk.reset();
+	output.SetCardinality(0);
+	return false;
+}
+
+static bool AcquireNextFile(ClientContext &context, ReadOTLPGlobalState &gstate, ReadOTLPLocalState &lstate) {
+	auto &fs = FileSystem::GetFileSystem(context);
+	while (true) {
+		auto file_idx = gstate.next_file.fetch_add(1);
+		if (file_idx >= gstate.files.size()) {
+			return false;
+		}
+		const auto &path = gstate.files[file_idx];
+		ResetLocalFileState(lstate);
+		lstate.current_path = path;
+		auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
+		auto sample = ReadSample(*handle, JSON_SNIFF_BYTES);
+		auto format = FormatDetector::DetectFormat(sample.data(), sample.size());
+		if (format == OTLPFormat::UNKNOWN) {
+			handle.reset();
+			throw IOException("Unable to detect OTLP format (expected JSON or Protobuf) in file: %s", path.c_str());
+		}
+		bool json_lines = false;
+		if (format == OTLPFormat::JSON) {
+			json_lines = DetectJsonLinesFromSample(sample);
+			auto lower_path = StringUtil::Lower(path);
+			if (!json_lines &&
+			    (StringUtil::EndsWith(lower_path, ".jsonl") || StringUtil::EndsWith(lower_path, ".ndjson"))) {
+				json_lines = true;
+			}
+			if (!lstate.json_parser) {
+				lstate.json_parser = make_uniq<OTLPJSONParser>();
+			}
+		} else {
+			if (!lstate.protobuf_parser) {
+				lstate.protobuf_parser = make_uniq<OTLPProtobufParser>();
+			}
+		}
+		if (handle->CanSeek()) {
+			handle->Seek(0);
+		} else {
+			handle.reset();
+			handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
+		}
+		lstate.current_handle = std::move(handle);
+		lstate.current_format = format;
+		lstate.is_json_lines = json_lines;
+		gstate.active_workers.fetch_add(1);
+		return true;
+	}
+}
+
+static void EnqueueRows(ClientContext &context, ReadOTLPGlobalState &gstate, ReadOTLPLocalState &lstate,
+                        vector<vector<Value>> &&rows) {
 	if (rows.empty()) {
 		return;
 	}
-	if (state.filters && !state.filters->filters.empty()) {
+	if (gstate.filters && !gstate.filters->filters.empty()) {
 		vector<vector<Value>> filtered;
 		filtered.reserve(rows.size());
 		for (auto &row : rows) {
-			if (RowPassesFilters(state, row)) {
+			if (RowPassesFilters(gstate.filters.get(), row)) {
 				filtered.emplace_back(std::move(row));
 			}
 		}
@@ -445,20 +550,20 @@ static void EnqueueRows(ClientContext &context, ReadOTLPGlobalState &state, vect
 	while (position < rows.size()) {
 		idx_t emit_count = MinValue<idx_t>(STANDARD_VECTOR_SIZE, rows.size() - position);
 		auto chunk = make_uniq<DataChunk>();
-		chunk->Initialize(allocator, state.chunk_types);
-		for (idx_t col_idx = 0; col_idx < state.chunk_column_ids.size(); col_idx++) {
+		chunk->Initialize(allocator, gstate.chunk_types);
+		for (idx_t col_idx = 0; col_idx < gstate.chunk_column_ids.size(); col_idx++) {
 			auto &vec = chunk->data[col_idx];
 			vec.SetVectorType(VectorType::FLAT_VECTOR);
 		}
 		for (idx_t row_idx = 0; row_idx < emit_count; row_idx++) {
 			auto &row = rows[position + row_idx];
-			for (idx_t col_idx = 0; col_idx < state.chunk_column_ids.size(); col_idx++) {
-				auto source_idx = state.chunk_column_ids[col_idx];
+			for (idx_t col_idx = 0; col_idx < gstate.chunk_column_ids.size(); col_idx++) {
+				auto source_idx = gstate.chunk_column_ids[col_idx];
 				chunk->data[col_idx].SetValue(row_idx, row[source_idx]);
 			}
 		}
 		chunk->SetCardinality(emit_count);
-		state.chunk_queue.push_back(std::move(chunk));
+		lstate.chunk_queue.push_back(std::move(chunk));
 		position += emit_count;
 	}
 }
@@ -477,7 +582,7 @@ static unique_ptr<FunctionData> OTLPStatsBind(ClientContext &context, TableFunct
 	OTLPScanStats stats;
 	{
 		lock_guard<mutex> lock(otlp_stats_mutex);
-		auto it = otlp_latest_stats.find(&context);
+		auto it = otlp_latest_stats.find(GetStatsKey(context));
 		if (it != otlp_latest_stats.end()) {
 			stats = it->second;
 		}
@@ -597,82 +702,38 @@ static unique_ptr<FunctionData> BindMetrics(ClientContext &context, TableFunctio
 	return bind;
 }
 
-static void OpenNextFile(ClientContext &context, ReadOTLPGlobalState &state) {
-	if (state.next_file >= state.files.size()) {
-		state.finished = true;
-		return;
-	}
-	auto &fs = FileSystem::GetFileSystem(context);
-	for (; state.next_file < state.files.size(); state.next_file++) {
-		const auto &path = state.files[state.next_file];
-		ResetFileState(state);
-		state.current_path = path;
-
-		auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
-		auto sample = ReadSample(*handle, JSON_SNIFF_BYTES);
-		state.current_format = FormatDetector::DetectFormat(sample.data(), sample.size());
-
-		if (state.current_format == OTLPFormat::UNKNOWN) {
-			handle.reset();
-			throw IOException("Unable to detect OTLP format (expected JSON or Protobuf) in file: %s", path.c_str());
-		}
-
-		bool json_lines = false;
-		if (state.current_format == OTLPFormat::JSON) {
-			json_lines = DetectJsonLinesFromSample(sample);
-			auto lower_path = StringUtil::Lower(path);
-			if (!json_lines &&
-			    (StringUtil::EndsWith(lower_path, ".jsonl") || StringUtil::EndsWith(lower_path, ".ndjson"))) {
-				json_lines = true;
-			}
-			if (!state.json_parser) {
-				state.json_parser = make_uniq<OTLPJSONParser>();
-			}
-		} else {
-			if (!state.protobuf_parser) {
-				state.protobuf_parser = make_uniq<OTLPProtobufParser>();
-			}
-		}
-
-		if (handle->CanSeek()) {
-			handle->Seek(0);
-		} else {
-			// reopen to get fresh stream
-			handle.reset();
-			handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
-		}
-
-		state.current_handle = std::move(handle);
-		state.is_json_lines = json_lines;
-		state.next_file++;
-		return;
-	}
-	state.finished = true;
-}
-
 } // namespace
+
+static unique_ptr<LocalTableFunctionState> InitLocal(ExecutionContext &, TableFunctionInitInput &,
+                                                     GlobalTableFunctionState *);
 
 TableFunction ReadOTLPTableFunction::GetTracesFunction() {
 	TableFunction func("read_otlp_traces", {LogicalType::VARCHAR}, Scan, BindTraces, Init);
 	func.name = "read_otlp_traces";
+	func.init_local = InitLocal;
 	func.projection_pushdown = true;
 	func.filter_pushdown = true;
+	func.named_parameters["on_error"] = LogicalType::VARCHAR;
 	return func;
 }
 
 TableFunction ReadOTLPTableFunction::GetLogsFunction() {
 	TableFunction func("read_otlp_logs", {LogicalType::VARCHAR}, Scan, BindLogs, Init);
 	func.name = "read_otlp_logs";
+	func.init_local = InitLocal;
 	func.projection_pushdown = true;
 	func.filter_pushdown = true;
+	func.named_parameters["on_error"] = LogicalType::VARCHAR;
 	return func;
 }
 
 TableFunction ReadOTLPTableFunction::GetMetricsFunction() {
 	TableFunction func("read_otlp_metrics", {LogicalType::VARCHAR}, Scan, BindMetrics, Init);
 	func.name = "read_otlp_metrics";
+	func.init_local = InitLocal;
 	func.projection_pushdown = true;
 	func.filter_pushdown = true;
+	func.named_parameters["on_error"] = LogicalType::VARCHAR;
 	return func;
 }
 
@@ -695,9 +756,15 @@ unique_ptr<GlobalTableFunctionState> ReadOTLPTableFunction::Init(ClientContext &
 	state->table_type = bind_data.table_type;
 	state->all_types = GetColumnTypesForTable(state->table_type);
 	state->on_error = bind_data.on_error;
+	state->next_file.store(0);
+	state->next_row_id.store(0);
+	state->error_records.store(0);
+	state->error_documents.store(0);
+	state->active_workers.store(0);
+	state->stats_reported.store(false);
 	InitializeProjection(*state, input.column_ids);
 	if (input.filters) {
-		state->filters = make_uniq<TableFilterSet>();
+		state->filters = make_shared_ptr<TableFilterSet>();
 		for (auto &entry : input.filters->filters) {
 			column_t base_idx = entry.first;
 			if (!input.column_ids.empty() && entry.first < input.column_ids.size()) {
@@ -720,93 +787,70 @@ unique_ptr<GlobalTableFunctionState> ReadOTLPTableFunction::Init(ClientContext &
 	return state;
 }
 
-void ReadOTLPTableFunction::Scan(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
-	auto &state = data.global_state->Cast<ReadOTLPGlobalState>();
+static unique_ptr<LocalTableFunctionState> InitLocal(ExecutionContext &, TableFunctionInitInput &,
+                                                     GlobalTableFunctionState *) {
+	return make_uniq<ReadOTLPLocalState>();
+}
 
-	state.active_chunk.reset();
+void ReadOTLPTableFunction::Scan(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
+	auto &gstate = data.global_state->Cast<ReadOTLPGlobalState>();
+	auto &lstate = data.local_state->Cast<ReadOTLPLocalState>();
+	lstate.context = &context;
+	lstate.active_chunk.reset();
 	output.SetCardinality(0);
 
-	if (state.finished) {
-		if (!state.stats_reported) {
-			UpdateOTLPStats(context, state);
-			state.stats_reported = true;
-		}
-		return;
-	}
-
 	while (true) {
-		if (!state.chunk_queue.empty()) {
-			auto chunk = std::move(state.chunk_queue.front());
-			state.chunk_queue.pop_front();
-			if (!chunk || chunk->size() == 0) {
-				continue;
-			}
-
-			auto emit_count = chunk->size();
-			for (idx_t col_idx = 0; col_idx < state.output_columns.size(); col_idx++) {
-				auto &info = state.output_columns[col_idx];
-				auto &vec = output.data[col_idx];
-				if (info.is_row_id) {
-					vec.SetVectorType(VectorType::FLAT_VECTOR);
-					for (idx_t i = 0; i < emit_count; i++) {
-						vec.SetValue(i, Value::BIGINT(state.row_id_base + i));
-					}
-				} else {
-					vec.Reference(chunk->data[info.chunk_index]);
-				}
-			}
-
-			output.SetCardinality(emit_count);
-			state.row_id_base += emit_count;
-			state.active_chunk = std::move(chunk);
+		if (EmitChunk(context, gstate, lstate, output)) {
 			return;
 		}
 
-		if (!state.current_handle) {
-			if (state.next_file >= state.files.size()) {
-				state.finished = true;
+		if (!lstate.current_handle) {
+			if (!AcquireNextFile(context, gstate, lstate)) {
+				if (!lstate.reported_completion) {
+					if (gstate.active_workers.load() == 0 && !gstate.stats_reported.exchange(true)) {
+						UpdateOTLPStats(context, gstate);
+					}
+					lstate.reported_completion = true;
+				}
 				return;
 			}
-			OpenNextFile(context, state);
-			if (state.finished) {
-				return;
-			}
+			lstate.reported_completion = false;
 			continue;
 		}
 
-		if (state.current_format == OTLPFormat::JSON) {
-			if (state.is_json_lines) {
+		if (lstate.current_format == OTLPFormat::JSON) {
+			if (lstate.is_json_lines) {
 				string line;
-				if (!ReadLine(*state.current_handle, state.line_buffer, state.buffer_offset, line)) {
-					state.current_handle.reset();
+				if (!ReadLine(*lstate.current_handle, lstate.line_buffer, lstate.buffer_offset, line)) {
+					FinishCurrentFile(gstate, lstate);
 					continue;
 				}
-				state.approx_line++;
+				lstate.approx_line++;
 				StringUtil::Trim(line);
 				if (line.empty()) {
 					continue;
 				}
 				vector<vector<Value>> parsed_rows;
 				bool success = false;
-				switch (state.table_type) {
+				switch (gstate.table_type) {
 				case OTLPTableType::TRACES:
-					success = state.json_parser->ParseTracesToTypedRows(line, parsed_rows);
+					success = lstate.json_parser->ParseTracesToTypedRows(line, parsed_rows);
 					break;
 				case OTLPTableType::LOGS:
-					success = state.json_parser->ParseLogsToTypedRows(line, parsed_rows);
+					success = lstate.json_parser->ParseLogsToTypedRows(line, parsed_rows);
 					break;
 				case OTLPTableType::METRICS_GAUGE:
-					success = state.json_parser->ParseMetricsToTypedRows(line, parsed_rows);
+					success = lstate.json_parser->ParseMetricsToTypedRows(line, parsed_rows);
 					break;
 				default:
 					throw IOException("Unsupported table type for JSON parsing");
 				}
 				if (!success) {
-					auto error = state.json_parser->GetLastError();
+					auto error = lstate.json_parser->GetLastError();
 					if (!HandleParseErrorRecord(
-					        state,
+					        context, gstate, lstate,
 					        StringUtil::Format("Failed to parse OTLP JSON data in file '%s' on line (approx) %llu",
-					                           state.current_path.c_str(), static_cast<long long>(state.approx_line)),
+					                           lstate.current_path.c_str(), static_cast<long long>(lstate.approx_line)),
 					        error, parsed_rows)) {
 						continue;
 					}
@@ -814,102 +858,88 @@ void ReadOTLPTableFunction::Scan(ClientContext &context, TableFunctionInput &dat
 				if (parsed_rows.empty()) {
 					continue;
 				}
-				EnqueueRows(context, state, std::move(parsed_rows));
+				EnqueueRows(context, gstate, lstate, std::move(parsed_rows));
 				continue;
 			}
 
-			if (state.doc_consumed) {
-				state.current_handle.reset();
-				continue;
-			}
-			auto contents = ReadEntireFile(*state.current_handle, state.current_path, MAX_JSON_DOC_BYTES);
+			auto contents = ReadEntireFile(*lstate.current_handle, lstate.current_path, MAX_JSON_DOC_BYTES);
 			vector<vector<Value>> parsed_rows;
 			bool success = false;
-			switch (state.table_type) {
+			switch (gstate.table_type) {
 			case OTLPTableType::TRACES:
-				success = state.json_parser->ParseTracesToTypedRows(contents, parsed_rows);
+				success = lstate.json_parser->ParseTracesToTypedRows(contents, parsed_rows);
 				break;
 			case OTLPTableType::LOGS:
-				success = state.json_parser->ParseLogsToTypedRows(contents, parsed_rows);
+				success = lstate.json_parser->ParseLogsToTypedRows(contents, parsed_rows);
 				break;
 			case OTLPTableType::METRICS_GAUGE:
-				success = state.json_parser->ParseMetricsToTypedRows(contents, parsed_rows);
+				success = lstate.json_parser->ParseMetricsToTypedRows(contents, parsed_rows);
 				break;
 			default:
 				throw IOException("Unsupported table type for JSON parsing");
 			}
 			if (!success || parsed_rows.empty()) {
-				auto error = success ? string("Produced no rows") : state.json_parser->GetLastError();
+				auto error = success ? string("Produced no rows") : lstate.json_parser->GetLastError();
 				if (!HandleParseErrorDocument(
-				        state,
-				        StringUtil::Format("Failed to parse OTLP JSON data in file '%s'", state.current_path.c_str()),
+				        context, gstate, lstate,
+				        StringUtil::Format("Failed to parse OTLP JSON data in file '%s'", lstate.current_path.c_str()),
 				        error, parsed_rows)) {
-					state.doc_consumed = true;
-					state.current_handle.reset();
+					FinishCurrentFile(gstate, lstate);
 					continue;
 				}
 			}
 			if (parsed_rows.empty()) {
-				state.doc_consumed = true;
-				state.current_handle.reset();
+				FinishCurrentFile(gstate, lstate);
 				continue;
 			}
-			EnqueueRows(context, state, std::move(parsed_rows));
-			state.doc_consumed = true;
-			state.current_handle.reset();
+			EnqueueRows(context, gstate, lstate, std::move(parsed_rows));
+			FinishCurrentFile(gstate, lstate);
 			continue;
 		}
 
-		if (state.current_format == OTLPFormat::PROTOBUF) {
-			if (state.doc_consumed) {
-				state.current_handle.reset();
-				continue;
-			}
+		if (lstate.current_format == OTLPFormat::PROTOBUF) {
 			vector<vector<Value>> parsed_rows;
-			FileHandleCopyingInputStream proto_stream(*state.current_handle, MAX_PROTO_BYTES);
+			FileHandleCopyingInputStream proto_stream(*lstate.current_handle, MAX_PROTO_BYTES);
 			google::protobuf::io::CopyingInputStreamAdaptor adaptor(&proto_stream);
 			adaptor.SetOwnsCopyingStream(false);
 			idx_t row_count = 0;
-			switch (state.table_type) {
+			switch (gstate.table_type) {
 			case OTLPTableType::TRACES:
-				row_count = state.protobuf_parser->ParseTracesToTypedRows(adaptor, parsed_rows);
+				row_count = lstate.protobuf_parser->ParseTracesToTypedRows(adaptor, parsed_rows);
 				break;
 			case OTLPTableType::LOGS:
-				row_count = state.protobuf_parser->ParseLogsToTypedRows(adaptor, parsed_rows);
+				row_count = lstate.protobuf_parser->ParseLogsToTypedRows(adaptor, parsed_rows);
 				break;
 			case OTLPTableType::METRICS_GAUGE:
-				row_count = state.protobuf_parser->ParseMetricsToTypedRows(adaptor, parsed_rows);
+				row_count = lstate.protobuf_parser->ParseMetricsToTypedRows(adaptor, parsed_rows);
 				break;
 			default:
 				throw IOException("Unsupported table type for protobuf parsing");
 			}
 			if (row_count == 0 || parsed_rows.empty()) {
-				auto error = state.protobuf_parser->GetLastError();
+				auto error = lstate.protobuf_parser->GetLastError();
 				if (error.empty() && proto_stream.BytesRead() >= MAX_PROTO_BYTES) {
 					error = StringUtil::Format("Protobuf file exceeds maximum supported size of %lld bytes",
 					                           static_cast<long long>(MAX_PROTO_BYTES));
 				}
-				if (!HandleParseErrorDocument(state,
+				if (!HandleParseErrorDocument(context, gstate, lstate,
 				                              StringUtil::Format("Failed to parse OTLP protobuf data in file '%s'",
-				                                                 state.current_path.c_str()),
+				                                                 lstate.current_path.c_str()),
 				                              error, parsed_rows)) {
-					state.doc_consumed = true;
-					state.current_handle.reset();
+					FinishCurrentFile(gstate, lstate);
 					continue;
 				}
 			}
 			if (parsed_rows.empty()) {
-				state.doc_consumed = true;
-				state.current_handle.reset();
+				FinishCurrentFile(gstate, lstate);
 				continue;
 			}
-			EnqueueRows(context, state, std::move(parsed_rows));
-			state.doc_consumed = true;
-			state.current_handle.reset();
+			EnqueueRows(context, gstate, lstate, std::move(parsed_rows));
+			FinishCurrentFile(gstate, lstate);
 			continue;
 		}
 
-		throw IOException("Unsupported OTLP format detected for file '%s'", state.current_path.c_str());
+		throw IOException("Unsupported OTLP format detected for file '%s'", lstate.current_path.c_str());
 	}
 }
 

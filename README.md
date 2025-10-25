@@ -1,6 +1,6 @@
 # duckspan
 
-Query OpenTelemetry data with SQL. Attach OTLP streams as DuckDB databases, read OTLP files with strongly-typed schemas. Compatible with [Clickhouse OpenTelemetry tables](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/clickhouseexporter/README.md).
+Query OpenTelemetry data with SQL using strongly-typed OTLP file readers. Compatible with [Clickhouse OpenTelemetry tables](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/clickhouseexporter/README.md).
 
 ## Quick Start
 
@@ -10,43 +10,24 @@ Everything is packaged inside of a duckdb extension. Below are sql statements ru
 -- Load extension
 LOAD duckspan;
 
--- Attach live OTLP stream (start gRPC receiver on port 4317, buffer in memory)
-ATTACH 'otlp:localhost:4317' AS live (TYPE otlp);
-
--- Query accumulated telemetry with strongly-typed columns
-SELECT TraceId, SpanName, ServiceName, Duration FROM live.otel_traces;
-SELECT MetricName, Value FROM live.otel_metrics_gauge;
-SELECT SeverityText, Body, ServiceName FROM live.otel_logs;
-
--- Stop receiver
-DETACH live;
-
 -- Read OTLP files (JSON or protobuf, auto-detected)
 SELECT * FROM read_otlp_traces('traces.jsonl');
 SELECT * FROM read_otlp_metrics('s3://bucket/metrics/*.pb');
 SELECT * FROM read_otlp_logs('https://example.com/logs.jsonl');
+
+-- Persist telemetry
+CREATE TABLE traces AS
+SELECT TraceId, SpanName, ServiceName, Duration
+FROM read_otlp_traces('traces.jsonl');
 ```
 
 ## Features
-
-**Live OTLP Streams** (native builds only)
-- `ATTACH` creates a gRPC receiver on specified port
-- Auto-creates ClickHouse-compatible tables (7 tables total):
-  - `otel_traces` - 22 strongly-typed columns
-  - `otel_logs` - 15 strongly-typed columns
-  - `otel_metrics_gauge` - 10 columns for gauge metrics
-  - `otel_metrics_sum` - 12 columns for sum/counter metrics
-  - `otel_metrics_histogram` - 15 columns for histogram metrics
-  - `otel_metrics_exp_histogram` - 19 columns for exponential histogram metrics
-  - `otel_metrics_summary` - 13 columns for summary metrics
-- OpenTelemetry SDKs send data → DuckDB accumulates it
-- `DETACH` stops receiver and removes database
 
 **File Reading**
 - Specialized table functions for each signal type
 - Supports JSON (`.json`, `.jsonl`) and protobuf (`.pb`) formats (auto-detected)
 - Works with local files, S3, HTTP, Azure, GCS
-- Same schema as attached tables
+- Consistent schema across traces, logs, and metrics table functions
 - Named parameters: `on_error` (fail | skip | nullify) with stats via `read_otlp_scan_stats()`
 
 **Strongly-Typed Schemas**
@@ -57,53 +38,31 @@ SELECT * FROM read_otlp_logs('https://example.com/logs.jsonl');
 ## Platform Support
 
 **Native Builds** (desktop/server)
-- Full feature set including `ATTACH` with gRPC receiver
-- Protobuf and JSON file format support
-- Columnar ring buffers with concurrent reads and predicate pushdown
-- Utility functions: `duckspan()`, `duckspan_openssl_version()`
-- Helper introspection functions: `read_otlp_options()`, `read_otlp_scan_stats()`
+- JSON and protobuf file format support
+- Table functions: `read_otlp_traces`, `read_otlp_logs`, `read_otlp_metrics`
+- Helper table functions: `read_otlp_options()`, `read_otlp_scan_stats()`
+- Scalar helper: `duckspan('name')`
 
 **WASM Builds** (browser/WebAssembly)
-- Built with `DUCKSPAN_DISABLE_GRPC` and `DUCKSPAN_DISABLE_PROTOBUF`
-- Lightweight JSON-only reader for restricted environments
-- Available functionality:
-  - `read_otlp_traces(path_or_url)`
-  - `read_otlp_logs(path_or_url)`
-  - `read_otlp_metrics(path_or_url)`
-- Limitations:
-  - No `ATTACH` support (no background networking in browser contexts)
-  - JSON/JSONL files only (protobuf not supported)
-  - No `otlp_metrics_union` table function
+- Same feature set as native builds (JSON + protobuf file formats)
+- Ship the same table functions: `read_otlp_traces`, `read_otlp_logs`, `read_otlp_metrics`
+- Helper table functions available (`read_otlp_options()`, `read_otlp_scan_stats()`)
 
 ## Usage
 
-### ATTACH/DETACH
-
-```sql
--- Start receiver on port 4317
-ATTACH 'otlp:localhost:4317' AS live (TYPE otlp);
-
--- Multiple simultaneous streams
-ATTACH 'otlp:localhost:4318' AS app2 (TYPE otlp);
-
--- Tune in-memory retention (default ~25k rows per table)
-ATTACH 'otlp:localhost:4317' AS live_big (TYPE otlp, BUFFER_SIZE 50000);
-
--- Cleanup
-DETACH live;
-DETACH app2;
-```
-
 ### Query Examples
 
-**Traces** - Find slow requests:
+**Traces** - Find slow requests from an input file:
 ```sql
+WITH traces AS (
+    SELECT * FROM read_otlp_traces('traces.jsonl')
+)
 SELECT
     ServiceName,
     SpanName,
     Duration / 1000000 as duration_ms,
     StatusCode
-FROM live.otel_traces
+FROM traces
 WHERE Duration > 1000000000  -- 1 second in nanoseconds
 ORDER BY Duration DESC LIMIT 10;
 ```
@@ -125,60 +84,54 @@ SELECT *
 FROM read_otlp_scan_stats();
 ```
 
-**Logs** - Filter by severity:
+**Logs** - Filter by severity while reading from S3:
 ```sql
 SELECT
     Timestamp,
     ServiceName,
     SeverityText,
     Body
-FROM live.otel_logs
+FROM read_otlp_logs('s3://otel-bucket/logs-*.jsonl')
 WHERE SeverityText IN ('ERROR', 'FATAL')
 ORDER BY Timestamp DESC;
 ```
 
-**Metrics** - Query gauges:
+**Metrics** - Query gauges and aggregate CPU usage:
 ```sql
-SELECT
-    Timestamp,
-    ServiceName,
-    MetricName,
-    Value
-FROM live.otel_metrics_gauge
-WHERE MetricName = 'system.memory.usage'
-ORDER BY Timestamp DESC;
+WITH metrics AS (
+    SELECT *
+    FROM read_otlp_metrics('metrics.pb')
+    WHERE MetricType = 'gauge'
+)
+SELECT ServiceName, MetricName, AVG(Value) AS avg_value
+FROM metrics
+WHERE MetricName LIKE 'system.cpu%'
+GROUP BY ServiceName, MetricName
+ORDER BY avg_value DESC;
 ```
 
 ### Persisting Data
 
 ```sql
--- Archive live data to permanent tables
-CREATE TABLE archive_traces AS SELECT * FROM live.otel_traces;
-CREATE TABLE archive_logs AS SELECT * FROM live.otel_logs;
-CREATE TABLE archive_metrics AS SELECT * FROM live.otel_metrics_gauge;
+CREATE TABLE traces AS
+SELECT TraceId, SpanName, ServiceName, Duration
+FROM read_otlp_traces('traces.jsonl');
 
--- Export to files
-COPY (SELECT * FROM live.otel_traces) TO 'traces.parquet';
-COPY (SELECT * FROM live.otel_logs) TO 'logs.csv';
+CREATE TABLE logs AS
+SELECT Timestamp, ServiceName, SeverityText, Body
+FROM read_otlp_logs('logs.jsonl');
+
+CREATE TABLE metrics_gauge AS
+SELECT Timestamp, ServiceName, MetricName, Value
+FROM read_otlp_metrics('metrics.pb')
+WHERE MetricType = 'gauge';
 ```
 
 ### Transferring Metrics Between Union and Typed Schemas
 
-**File Reading**: `read_otlp_metrics()` returns a union schema (27 columns) with a `MetricType` discriminator column containing all metric types.
-
-**ATTACH Mode**: Creates 5 separate typed tables, one for each metric type. Tables are read-only (only accept data via gRPC).
-
-**Loading files into permanent tables** - Transfer metrics from files into typed archive tables:
+`read_otlp_metrics()` returns a union schema (27 columns) with a `MetricType` discriminator column containing all metric types. You can project that union into typed tables or views:
 
 ```sql
--- Load gauge metrics from file
-CREATE TABLE archive_gauge AS
-SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
-       ResourceAttributes, ScopeName, ScopeVersion, Attributes, Value
-FROM read_otlp_metrics('metrics.jsonl')
-WHERE MetricType = 'gauge';
-
--- Load sum metrics
 CREATE TABLE archive_sum AS
 SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
        ResourceAttributes, ScopeName, ScopeVersion, Attributes,
@@ -186,45 +139,12 @@ SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
 FROM read_otlp_metrics('metrics.jsonl')
 WHERE MetricType = 'sum';
 
--- Load histogram metrics
 CREATE TABLE archive_histogram AS
 SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
        ResourceAttributes, ScopeName, ScopeVersion, Attributes,
        Count, Sum, BucketCounts, ExplicitBounds, Min, Max
 FROM read_otlp_metrics('metrics.jsonl')
 WHERE MetricType = 'histogram';
-
--- Load exponential histogram metrics
-CREATE TABLE archive_exp_histogram AS
-SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
-       ResourceAttributes, ScopeName, ScopeVersion, Attributes,
-       Count, Sum, Scale, ZeroCount, PositiveOffset, PositiveBucketCounts,
-       NegativeOffset, NegativeBucketCounts, Min, Max
-FROM read_otlp_metrics('metrics.jsonl')
-WHERE MetricType = 'exponential_histogram';
-
--- Load summary metrics
-CREATE TABLE archive_summary AS
-SELECT Timestamp, ServiceName, MetricName, MetricDescription, MetricUnit,
-       ResourceAttributes, ScopeName, ScopeVersion, Attributes,
-       Count, Sum, QuantileValues, QuantileQuantiles
-FROM read_otlp_metrics('metrics.jsonl')
-WHERE MetricType = 'summary';
-```
-
-**Querying ATTACH as union** - View all metric types together using `otlp_metrics_union()`:
-
-```sql
--- Query all metric types across live stream
-SELECT * FROM otlp_metrics_union('live')
-WHERE ServiceName = 'my-service'
-ORDER BY Timestamp DESC;
-
--- Filter union view by metric type
-SELECT MetricName, Value
-FROM otlp_metrics_union('live')
-WHERE MetricType = 'gauge'
-  AND MetricName LIKE 'cpu%';
 ```
 
 ## Schemas
@@ -316,32 +236,19 @@ make format-fix
 
 ## Architecture
 
-- **Extension Type**: Storage extension registered for `TYPE otlp`
-- **ATTACH Handler**: Parses connection string, starts gRPC server, creates strongly-typed tables
-- **gRPC Receiver**: Implements OTLP collector service endpoints (traces/metrics/logs)
+- **Extension Type**: Table functions that stream OTLP files into DuckDB
+- **Parsing Pipeline**: Format detector → JSON or protobuf parser → typed row builders
 - **Table Functions**: `read_otlp_traces()`, `read_otlp_logs()`, `read_otlp_metrics()` with format auto-detection
 - **Schema**: ClickHouse-compatible strongly-typed columns (no JSON extraction required)
 
 ### Dependencies (via VCPKG)
-- gRPC (OTLP receiver)
-- Protobuf (wire format)
-- OpenSSL (gRPC dependency)
+- Protobuf (binary OTLP parsing, optional for JSON-only environments)
 
 ## Limitations
 
-**Data Retention**: Attached streams accumulate data in memory indefinitely. Manual cleanup required:
-
-```sql
--- Option 1: Periodic DELETE
-DELETE FROM live.otel_traces WHERE Timestamp < NOW() - INTERVAL 1 HOUR;
-
--- Option 2: Periodic persist-and-detach
-CREATE TABLE archive AS SELECT * FROM live.otel_traces;
-DETACH live;
-ATTACH 'otlp:localhost:4317' AS live (TYPE otlp);
-```
-
-Future versions may add automatic TTL or persistent backing.
+- File readers operate in batch mode; there is no live gRPC ingestion
+- Protobuf support depends on native builds with the protobuf runtime available
+- Large protobuf blobs are materialized per file; chunked streaming beyond DuckDB's scan size is not implemented yet
 
 ## References
 

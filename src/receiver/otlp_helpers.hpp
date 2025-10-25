@@ -35,8 +35,7 @@ struct MetricContext {
 	string metric_unit;
 };
 
-//! Shared helper functions for parsing OTLP protobuf data
-//! Used by both otlp_receiver.cpp (gRPC) and protobuf_parser.cpp (file reading)
+//! Shared helper functions for parsing OTLP protobuf data used by the file readers
 
 // Forward declaration used by ConvertAttributesToMap
 inline string AnyValueToString(const opentelemetry::proto::common::v1::AnyValue &any_value);

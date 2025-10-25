@@ -1,6 +1,5 @@
 {
         "dependencies": [
-                "grpc",
                 "protobuf"
         ],
         "vcpkg-configuration": {

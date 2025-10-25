@@ -1,6 +1,6 @@
 extension:
   name: duckspan
-  description: Query OpenTelemetry data with SQL - OTLP streams and files with ClickHouse-compatible schemas
+  description: Query OpenTelemetry data with SQL using OTLP file readers and ClickHouse-compatible schemas
   version: 0.1.0
   language: C++
   build: cmake
@@ -18,31 +18,22 @@ docs:
     -- Load the extension
     LOAD duckspan;
 
-    -- Attach live OTLP stream (starts gRPC receiver on port 4317)
-    ATTACH 'otlp:localhost:4317' AS live (TYPE otlp);
-
-    -- Query traces with strongly-typed columns
+    -- Read OTLP traces from a JSON file
     SELECT TraceId, SpanName, ServiceName, Duration
-    FROM live.otel_traces
+    FROM read_otlp_traces('traces.jsonl')
     WHERE Duration > 1000000000
     LIMIT 10;
 
-    -- Query metrics by type
+    -- Project metrics from a protobuf export
     SELECT Timestamp, ServiceName, MetricName, Value
-    FROM live.otel_metrics_gauge
+    FROM read_otlp_metrics('s3://bucket/metrics/*.pb')
+    WHERE MetricType = 'gauge'
     ORDER BY Timestamp DESC;
 
-    -- Query logs with severity filtering
+    -- Filter logs by severity while reading from S3
     SELECT Timestamp, SeverityText, Body, ServiceName
-    FROM live.otel_logs
+    FROM read_otlp_logs('s3://bucket/logs-*.jsonl')
     WHERE SeverityText = 'ERROR';
-
-    -- Read OTLP files (JSON or protobuf, auto-detected)
-    SELECT * FROM read_otlp_traces('traces.jsonl');
-    SELECT * FROM read_otlp_metrics('s3://bucket/metrics/*.pb');
-
-    -- Stop receiver and cleanup
-    DETACH live;
 
   extended_description: |
     # duckspan - OpenTelemetry for DuckDB
@@ -51,20 +42,10 @@ docs:
 
     ## Features
 
-    **Live OTLP Streams**
-    - `ATTACH 'otlp:host:port'` creates a gRPC receiver for OpenTelemetry Protocol data
-    - Auto-creates 7 ClickHouse-compatible tables per attached database:
-      - `otel_traces` - 22 strongly-typed columns for distributed traces
-      - `otel_logs` - 15 columns for structured logs
-      - `otel_metrics_gauge`, `otel_metrics_sum`, `otel_metrics_histogram`, `otel_metrics_exp_histogram`, `otel_metrics_summary` - 5 separate tables for different metric types
-    - OpenTelemetry SDKs send data via gRPC → DuckDB accumulates it in memory
-    - `DETACH` stops receiver and removes the database
-
-    **File Reading**
-    - Three table functions: `read_otlp_traces()`, `read_otlp_logs()`, `read_otlp_metrics()`
+    **OTLP File Reading**
+    - Table functions: `read_otlp_traces()`, `read_otlp_logs()`, `read_otlp_metrics()`
     - Auto-detects JSON (`.json`, `.jsonl`) and protobuf (`.pb`) formats
-    - Works with DuckDB's file systems: local, S3, HTTP, Azure, GCS
-    - Same strongly-typed schema as attached tables
+    - Works with DuckDB file systems: local, S3, HTTP, Azure, GCS
 
     **Strongly-Typed Schemas**
     - No JSON extraction required - all fields are proper DuckDB columns
@@ -72,26 +53,30 @@ docs:
     - Compatible with OpenTelemetry ClickHouse exporter schema
     - Efficient filtering and aggregation on typed columns
 
+    **Metric Union Schema**
+    - `read_otlp_metrics()` returns a 27-column union with `MetricType`
+    - Simple `CREATE TABLE AS SELECT ... WHERE MetricType = 'gauge'` patterns split the union into typed tables
+
     ## Use Cases
 
-    - **Observability Analysis**: Query traces, logs, and metrics with SQL
-    - **OTLP File Processing**: Read and analyze OTLP export files
+    - **Observability Analysis**: Query traces, logs, and metrics from exported OTLP data
+    - **OTLP File Processing**: Read and analyze OTLP exports from collectors or SDKs
     - **Data Pipeline Testing**: Validate telemetry data before shipping to production
     - **Local Development**: Collect and inspect OpenTelemetry data during development
     - **Data Transformation**: Export to Parquet, CSV, or other DuckDB-supported formats
 
     ## Architecture
 
-    - **Storage Extension**: Registered for `TYPE otlp`, handles ATTACH/DETACH lifecycle
-    - **gRPC Receiver**: Implements OpenTelemetry Collector Protocol endpoints
-    - **In-Memory Buffers**: Ring buffers store data with FIFO eviction
-    - **Format Detection**: Automatic JSON vs protobuf detection for file reading
+    - **Table Functions**: `read_otlp_*` emit typed `DataChunk`s for traces, logs, and metrics
+    - **Format Detection**: Sniffs the stream and dispatches to JSON or protobuf parsers
+    - **Row Builders**: Shared conversion helpers produce ClickHouse-compatible column layouts
+    - **Protobuf Stubs**: Generated OTLP message classes ship in `src/generated/`
 
     ## Limitations
 
-    - Data is stored in memory only (no persistent storage)
-    - Manual cleanup required via `DELETE` or periodic `DETACH`/re-`ATTACH`
-    - One gRPC receiver per port (one ATTACH per unique port)
+    - Live gRPC ingestion has been removed; the extension focuses on file workloads
+    - Protobuf parsing requires the protobuf runtime on every target (native and WASM)
+    - Large protobuf files are processed batch-by-batch; continuous streaming is not yet supported
 
     ## References
 
