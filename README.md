@@ -163,33 +163,14 @@ WHERE MetricType = 'histogram';
 
 ## Schemas
 
-All tables use strongly-typed columns compatible with the OpenTelemetry ClickHouse exporter schema:
+All table functions use strongly-typed columns compatible with the [OpenTelemetry ClickHouse exporter schema](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/clickhouseexporter):
 
-**Traces Table** - 22 columns including:
-- `TraceId`, `SpanId`, `ParentSpanId` - Trace identifiers
-- `SpanName`, `SpanKind` - Span metadata
-- `ServiceName` - Extracted from resource attributes
-- `Duration` - Calculated from start/end timestamps
-- `StatusCode`, `StatusMessage` - Span status
-- `ResourceAttributes`, `Attributes` - Key-value maps
-- `Events`, `Links` - Nested structured data
+- **Traces** (`read_otlp_traces()`) - 22 columns with trace identifiers, span metadata, resource attributes, events, and links
+- **Logs** (`read_otlp_logs()`) - 15 columns with timestamps, severity levels, log bodies, and trace correlation
+- **Metrics** (`read_otlp_metrics()`) - Union schema with 27 columns covering all 5 metric types (gauge, sum, histogram, exponential histogram, summary)
+- **Typed Metrics Helpers** - Dedicated functions (`read_otlp_metrics_{gauge,sum,histogram,exp_histogram,summary}()`) that return only relevant columns for each metric type
 
-**Logs Table** - 15 columns including:
-- `Timestamp`, `ObservedTimestamp` - Temporal data
-- `SeverityText`, `SeverityNumber` - Log level
-- `Body` - Log message content
-- `ServiceName` - Extracted from resource attributes
-- `TraceId`, `SpanId` - Trace correlation
-- `ResourceAttributes`, `Attributes` - Key-value maps
-
-**Metrics Tables** - 5 separate tables by type:
-- `otel_metrics_gauge` - 10 columns for gauge metrics
-- `otel_metrics_sum` - 12 columns for sum/counter metrics
-- `otel_metrics_histogram` - 15 columns for histogram metrics
-- `otel_metrics_exp_histogram` - 19 columns for exponential histograms
-- `otel_metrics_summary` - 13 columns for summary metrics
-
-All metric tables share common base columns: `Timestamp`, `ServiceName`, `MetricName`, `MetricDescription`, `MetricUnit`, `ResourceAttributes`, `ScopeName`, `ScopeVersion`, `Attributes`, plus type-specific fields like `Value`, `Count`, `Sum`, `BucketCounts`, etc.
+For detailed schema information including all column names, types, and descriptions, see [docs/SCHEMA.md](docs/SCHEMA.md).
 
 ## Building
 
