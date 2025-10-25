@@ -2,7 +2,7 @@
 # description: Test read_otlp_*() table functions with JSON files (v2 schema)
 # group: [sql]
 
-require duckspan
+require otlp
 
 # Test that all three table functions exist
 query I

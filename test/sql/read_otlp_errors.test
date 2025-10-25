@@ -2,7 +2,7 @@
 # description: Test error handling in read_otlp_*() functions
 # group: [sql]
 
-require duckspan
+require otlp
 
 # Test nonexistent file - should error
 statement error

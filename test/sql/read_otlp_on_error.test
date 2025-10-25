@@ -2,7 +2,7 @@
 # description: Verify read_otlp on_error modes, stats helper, and options table function
 # group: [duckspan]
 
-require duckspan
+require otlp
 
 # Default behaviour should fail on malformed input
 statement error

@@ -4,7 +4,7 @@
 
 namespace duckdb {
 
-class DuckspanExtension : public Extension {
+class OtlpExtension : public Extension {
 public:
 	void Load(ExtensionLoader &db) override;
 	std::string Name() override;

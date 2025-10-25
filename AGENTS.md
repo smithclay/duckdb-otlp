@@ -24,7 +24,7 @@ GEN=ninja make debug
 # Build outputs:
 # - ./build/release/duckdb - DuckDB shell with extension loaded
 # - ./build/release/test/unittest - Test runner
-# - ./build/release/extension/duckspan/duckspan.duckdb_extension - Loadable extension
+# - ./build/release/extension/otlp/otlp.duckdb_extension - Loadable extension
 ```
 
 ### Testing

@@ -1,6 +1,6 @@
 #define DUCKDB_EXTENSION_MAIN
 
-#include "storage/duckspan_extension.hpp"
+#include "storage/otlp_extension.hpp"
 #include "duckdb.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/function/table_function.hpp"
@@ -10,10 +10,10 @@
 
 namespace duckdb {
 
-inline void DuckspanScalarFun(DataChunk &args, ExpressionState &state, Vector &result) {
+inline void OtlpScalarFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &name_vector = args.data[0];
 	UnaryExecutor::Execute<string_t, string_t>(name_vector, result, args.size(), [&](string_t name) {
-		return StringVector::AddString(result, "Duckspan " + name.GetString() + " 🐥");
+		return StringVector::AddString(result, "OTLP " + name.GetString() + " 🐥");
 	});
 }
 
@@ -32,21 +32,20 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(ReadOTLPTableFunction::GetOptionsFunction());
 
 	// Register a scalar function (from template, keeping for now)
-	auto duckspan_scalar_function =
-	    ScalarFunction("duckspan", {LogicalType::VARCHAR}, LogicalType::VARCHAR, DuckspanScalarFun);
-	loader.RegisterFunction(duckspan_scalar_function);
+	auto otlp_scalar_function = ScalarFunction("otlp", {LogicalType::VARCHAR}, LogicalType::VARCHAR, OtlpScalarFun);
+	loader.RegisterFunction(otlp_scalar_function);
 }
 
-void DuckspanExtension::Load(ExtensionLoader &loader) {
+void OtlpExtension::Load(ExtensionLoader &loader) {
 	LoadInternal(loader);
 }
-std::string DuckspanExtension::Name() {
-	return "duckspan";
+std::string OtlpExtension::Name() {
+	return "otlp";
 }
 
-std::string DuckspanExtension::Version() const {
-#ifdef EXT_VERSION_DUCKSPAN
-	return EXT_VERSION_DUCKSPAN;
+std::string OtlpExtension::Version() const {
+#ifdef EXT_VERSION_OTLP
+	return EXT_VERSION_OTLP;
 #else
 	return "";
 #endif
@@ -56,7 +55,7 @@ std::string DuckspanExtension::Version() const {
 
 extern "C" {
 
-DUCKDB_CPP_EXTENSION_ENTRY(duckspan, loader) {
+DUCKDB_CPP_EXTENSION_ENTRY(otlp, loader) {
 	duckdb::LoadInternal(loader);
 }
 }

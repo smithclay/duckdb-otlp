@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.5)
 
 # Set extension name here
-set(TARGET_NAME duckspan)
+set(TARGET_NAME otlp)
 
 # Find dependencies
 find_package(Protobuf)
@@ -27,7 +27,7 @@ set(PROTO_SOURCES
     src/generated/opentelemetry/proto/logs/v1/logs.pb.cc)
 
 set(EXTENSION_SOURCES
-    src/storage/duckspan_extension.cpp
+    src/storage/otlp_extension.cpp
     src/parsers/json_parser.cpp
     src/parsers/protobuf_parser.cpp
     src/parsers/format_detector.cpp
@@ -47,8 +47,7 @@ target_include_directories(${LOADABLE_EXTENSION_NAME}
                            PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/generated)
 
 if(NOT Protobuf_FOUND)
-  message(
-    FATAL_ERROR "Protobuf library is required to build duckspan extension")
+  message(FATAL_ERROR "Protobuf library is required to build otlp extension")
 endif()
 
 target_link_libraries(${EXTENSION_NAME} protobuf::libprotobuf)

@@ -8,7 +8,7 @@
 # functionality. The warning states: "String field 'opentelemetry.proto.trace.v1.Span.name'
 # contains invalid UTF-8 data" but the data is valid ASCII/UTF-8.
 
-require duckspan
+require otlp
 
 #
 # Traces Tests
