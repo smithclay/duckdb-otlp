@@ -13,8 +13,6 @@ concurrency:
 
 jobs:
   duckdb-stable-build:
-    # disabled to not consume all my gh action credits
-    if: false
     name: Build extension binaries
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.4.0
     with:
