@@ -19,6 +19,7 @@ jobs:
       duckdb_version: v1.4.0
       ci_tools_version: v1.4.0
       extension_name: otlp
+      vcpkg_commit: 35c82bb582adab830e1d14f9c4100d251b30aff4
 
   code-quality-check:
     name: Code Quality Check
