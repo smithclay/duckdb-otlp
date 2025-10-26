@@ -1,5 +1,5 @@
 extension:
-  name: duckspan
+  name: otlp
   description: Query OpenTelemetry data with SQL using OTLP file readers and ClickHouse-compatible schemas
   version: 0.1.0
   language: C++
@@ -10,13 +10,13 @@ extension:
     - smithclay
 
 repo:
-  github: smithclay/quackspan
+  github: smithclay/duckdb-otlp
   ref: 552ddb1a6680eafd8ac3151e1ae3da4e0bfaa643
 
 docs:
   hello_world: |
     -- Load the extension
-    LOAD duckspan;
+    LOAD otlp;
 
     -- Read OTLP traces from a JSON file
     SELECT TraceId, SpanName, ServiceName, Duration
@@ -36,7 +36,7 @@ docs:
     WHERE SeverityText = 'ERROR';
 
   extended_description: |
-    # duckspan - OpenTelemetry for DuckDB
+    # OpenTelemetry for DuckDB
 
     Query OpenTelemetry data with SQL using ClickHouse-compatible strongly-typed schemas.
 

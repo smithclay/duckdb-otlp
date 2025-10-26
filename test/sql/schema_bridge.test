@@ -2,7 +2,7 @@
 # description: Test materializing OTLP file readers into permanent tables
 # group: [sql]
 
-require duckspan
+require otlp
 
 #
 # Test 1: Copy specific metric shapes from read_otlp_metrics()

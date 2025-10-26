@@ -2,7 +2,7 @@
 # description: verify read_otlp_metrics_* helper macros
 # group: [duckspan]
 
-require duckspan
+require otlp
 
 # Gauge helper
 query I

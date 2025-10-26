@@ -1,21 +1,21 @@
-# name: test/sql/duckspan.test
-# description: test duckspan extension
+# name: test/sql/otlp.test
+# description: test otlp extension
 # group: [sql]
 
 # Before we load the extension, this will fail
 statement error
-SELECT duckspan('Sam');
+SELECT otlp('Sam');
 ----
-Catalog Error: Scalar Function with name duckspan does not exist!
+Catalog Error: Scalar Function with name otlp does not exist!
 
 # Require statement will ensure this test is run with this extension loaded
-require duckspan
+require otlp
 
 # Confirm the extension works
 query I
-SELECT duckspan('Sam');
+SELECT otlp('Sam');
 ----
-Duckspan Sam 🐥
+OTLP Sam 🐥
 
 # Verify helper table functions are registered
 query I
