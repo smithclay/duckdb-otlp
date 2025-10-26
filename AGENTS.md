@@ -27,6 +27,23 @@ GEN=ninja make debug
 # - ./build/release/extension/otlp/otlp.duckdb_extension - Loadable extension
 ```
 
+### Building for WebAssembly
+```bash
+# Build WASM with exception handling support (recommended for demo)
+make wasm_eh
+
+# Build MVP WASM (minimal features)
+make wasm_mvp
+
+# Build WASM with threads support
+make wasm_threads
+
+# Build output:
+# - ./build/wasm_eh/extension/otlp/otlp.duckdb_extension.wasm
+```
+
+**Note**: WASM builds currently support JSON format only. Protobuf parsing requires native builds.
+
 ### Testing
 ```bash
 # Run SQL logic tests
@@ -124,6 +141,13 @@ src/
 test/
 ├── sql/               # SQLLogicTests (primary test format)
 └── data/              # Test data (OTLP JSON/protobuf files)
+
+demo/
+├── index.html         # Browser-based demo application
+├── app.js             # DuckDB-WASM integration code
+├── style.css          # Demo styling
+├── otlp.duckdb_extension.wasm  # WASM build of extension
+└── samples/           # Sample OTLP JSONL files for testing
 ```
 
 ## Testing Notes
@@ -135,5 +159,6 @@ test/
 ## Known Limitations
 
 - Live OTLP ingestion via gRPC has been removed; only file-based workloads are supported.
-- Protobuf parsing requires linking against the protobuf runtime on every platform (including WASM).
+- **WASM builds support JSON format only**. Protobuf parsing is only available in native builds.
+- Protobuf parsing requires linking against the protobuf runtime (available in native builds).
 - The metrics table function emits a union schema; consumers must project out the desired metric shapes manually when creating persistent tables.

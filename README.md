@@ -1,6 +1,6 @@
 # DuckDB OpenTelemetry (OTLP) Extension
 
-Query OpenTelemetry traces, logs, and metrics with SQL. Works with OTLP file exports from any OpenTelemetry Collector.
+Query OpenTelemetry traces, logs, and metrics with SQL. Works with OTLP file exports from any OpenTelemetry Collector, uses a row-based schema inspired by the [Clickhouse OpenTelemetry exporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/clickhouseexporter/README.md).
 
 ```sql
 -- Install from DuckDB community extensions
@@ -31,14 +31,25 @@ LIMIT 5;
 
 ## What you can do
 
-✅ **Analyze production telemetry** - Query OTLP file exports with familiar SQL syntax
-✅ **Archive to your data lake** - Convert OpenTelemetry data to Parquet with schemas intact
-✅ **Debug faster** - Filter logs by severity, find slow traces, aggregate metrics
-✅ **Integrate with data tools** - Use DuckDB's ecosystem (MotherDuck, Jupyter, DBT, etc.)
+- **Analyze production telemetry** - Query OTLP file exports with familiar SQL syntax
+- **Archive to your data lake** - Convert OpenTelemetry data to Parquet with schemas intact
+- **Debug faster** - Filter logs by severity, find slow traces, aggregate metrics
+- **Integrate with data tools** - Use DuckDB's ecosystem (MotherDuck, Jupyter, DBT, etc.)
 
 ## Get started in 3 minutes
 
 **[→ Quick Start Guide](docs/get-started.md)** - Install, load sample data, run your first query
+
+## Try it in your browser
+
+**[→ Interactive Demo](smithclay.github.io/duckdb-otlp/)** - Query OTLP data directly in your browser using DuckDB-WASM
+
+The browser demo lets you:
+- Load sample OTLP traces, logs, and metrics
+- Run SQL queries without installing anything
+- Upload your own JSONL files for analysis
+
+**Note:** The WASM demo supports JSON format only. For protobuf support, install the native extension.
 
 ## Common use cases
 
@@ -139,11 +150,12 @@ SELECT * FROM read_otlp_options();
 
 **Features**
 
-- **Automatic format detection** - Works with JSON, JSONL, and protobuf OTLP files
+- **Automatic format detection** - Works with JSON, JSONL, and protobuf OTLP files (protobuf requires native extension)
 - **DuckDB file systems** - Read from local files, S3, HTTP(S), Azure Blob, GCS
 - **Error handling & safeguards** - `on_error` (fail/skip/nullify) plus `max_document_bytes` (per-file size cap)
 - **ClickHouse compatible** - Matches OpenTelemetry ClickHouse exporter schema
 - **Scan diagnostics** - Review parser stats with `read_otlp_scan_stats()`
+- **Browser support** - Run queries in-browser with DuckDB-WASM (JSON only)
 
 ## Installation
 
@@ -167,6 +179,8 @@ See **[CONTRIBUTING.md](CONTRIBUTING.md)** for build instructions.
 ⚙️  **Setup** - Installation, collector configuration, sample data
 
 ## How it works
+
+Generally speaking: the idea is you load files created using the OpenTelemetry Collector file exporter.
 
 ```
 OpenTelemetry     File         DuckDB OTLP          SQL
