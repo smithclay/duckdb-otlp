@@ -1,0 +1,214 @@
+# name: test/sql/read_otlp_edge_cases.test
+# description: test edge cases for OTLP readers (NULL values, empty files, minimal records)
+# group: [sql]
+
+require otlp
+
+### NULL and Missing Value Handling ###
+
+# Test traces with minimal required fields only
+query I
+SELECT COUNT(*)
+FROM read_otlp_traces('test/data/traces_nulls.jsonl');
+----
+3
+
+# Test traces with empty/NULL parent span
+query I
+SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_nulls.jsonl')
+WHERE ParentSpanId = '';
+----
+3
+
+# Test traces with empty resource attributes
+query I
+SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_nulls.jsonl')
+WHERE cardinality(ResourceAttributes) = 0;
+----
+3
+
+# Test traces with empty scope name
+query I
+SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_nulls.jsonl')
+WHERE ScopeName = '';
+----
+3
+
+# Test traces with no attributes
+query I
+SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_nulls.jsonl')
+WHERE cardinality(SpanAttributes) = 0;
+----
+3
+
+# Test traces with no events
+query I
+SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_nulls.jsonl')
+WHERE length("Events.Name") = 0;
+----
+3
+
+# Test traces with no links
+query I
+SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_nulls.jsonl')
+WHERE length("Links.TraceId") = 0;
+----
+3
+
+# Test logs with minimal fields
+query I
+SELECT COUNT(*)
+FROM read_otlp_logs('test/data/logs_nulls.jsonl');
+----
+3
+
+# Test logs with empty trace context
+query I
+SELECT COUNT(*) FROM read_otlp_logs('test/data/logs_nulls.jsonl')
+WHERE TraceId = '' AND SpanId = '';
+----
+3
+
+# Test logs with NULL severity
+query I
+SELECT COUNT(*) FROM read_otlp_logs('test/data/logs_nulls.jsonl')
+WHERE SeverityNumber = 0;
+----
+1
+
+# Test logs with empty body
+query I
+SELECT COUNT(*) FROM read_otlp_logs('test/data/logs_nulls.jsonl')
+WHERE Body = '';
+----
+1
+
+# Test metrics with minimal gauge data
+query II
+SELECT MetricType, COUNT(*)
+FROM read_otlp_metrics('test/data/metrics_nulls.jsonl')
+WHERE MetricName = 'minimal_gauge'
+GROUP BY MetricType;
+----
+gauge	1
+
+# Test metrics with no attributes
+query I
+SELECT COUNT(*) FROM read_otlp_metrics('test/data/metrics_nulls.jsonl')
+WHERE cardinality(Attributes) = 0;
+----
+3
+
+# Test histogram with empty buckets
+query III
+SELECT MetricName, COUNT(*), SUM(Count)
+FROM read_otlp_metrics('test/data/metrics_nulls.jsonl')
+WHERE MetricType = 'histogram'
+GROUP BY MetricName;
+----
+empty_histogram	1	0
+
+### Empty and Whitespace Files ###
+
+# Test empty file handling (format detection fails before on_error logic)
+statement error
+SELECT * FROM read_otlp_traces('test/data/empty.jsonl');
+----
+Unable to detect OTLP format
+
+# Test whitespace-only file handling (format detection fails)
+statement error
+SELECT * FROM read_otlp_traces('test/data/whitespace.jsonl');
+----
+Unable to detect OTLP format
+
+### Large Attribute Maps ###
+
+# Test traces with 100 attributes (50 resource + 50 span)
+query II
+SELECT
+    cardinality(ResourceAttributes) as resource_count,
+    cardinality(SpanAttributes) as span_count
+FROM read_otlp_traces('test/data/traces_large_attrs.jsonl');
+----
+50	50
+
+# Test attribute access with large maps
+query I
+SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_large_attrs.jsonl')
+WHERE ResourceAttributes['attr_0'] = 'value_0'
+  AND SpanAttributes['attr_50'] = 'value_50';
+----
+1
+
+### Deep Nesting ###
+
+# Test traces with 20 events
+query II
+SELECT SpanName, length("Events.Name") as event_count
+FROM read_otlp_traces('test/data/traces_deep_nesting.jsonl');
+----
+deep_nested_span	20
+
+# Test traces with 10 links
+query II
+SELECT SpanName, length("Links.TraceId") as link_count
+FROM read_otlp_traces('test/data/traces_deep_nesting.jsonl');
+----
+deep_nested_span	10
+
+# Test event attributes in deeply nested structure
+query I
+SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_deep_nesting.jsonl')
+WHERE length("Events.Name") = 20
+  AND length("Links.TraceId") = 10;
+----
+1
+
+### Single Record Files ###
+
+# Test single trace record
+query I
+SELECT COUNT(*) FROM read_otlp_traces('test/data/single_trace.jsonl');
+----
+1
+
+# Verify single trace content
+query II
+SELECT TraceId, SpanName
+FROM read_otlp_traces('test/data/single_trace.jsonl');
+----
+00000000000000000000000000000001	single_span
+
+### Typed Metrics with NULL Values ###
+
+# Test gauge helper with minimal data
+query I
+SELECT COUNT(*) FROM read_otlp_metrics_gauge('test/data/metrics_nulls.jsonl');
+----
+1
+
+# Test sum helper with no attributes
+query I
+SELECT COUNT(*) FROM read_otlp_metrics_sum('test/data/metrics_nulls.jsonl')
+WHERE cardinality(Attributes) = 0;
+----
+1
+
+# Test histogram helper with empty buckets
+query II
+SELECT MetricName, Count
+FROM read_otlp_metrics_histogram('test/data/metrics_nulls.jsonl');
+----
+empty_histogram	0
+
+### Error Statistics Tracking ###
+
+# Verify no errors on valid NULL/minimal data
+statement ok
+SELECT * FROM read_otlp_traces('test/data/traces_nulls.jsonl');
+
+query I
+SELECT error_records FROM read_otlp_scan_stats() WHERE error_records = 0;
+----
+0

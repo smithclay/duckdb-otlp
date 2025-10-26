@@ -16,7 +16,9 @@
 #include "duckdb/common/value_operations/value_operations.hpp"
 #include "duckdb/function/table_function.hpp"
 
+#ifndef __EMSCRIPTEN__
 #include <google/protobuf/io/zero_copy_stream_impl.h>
+#endif
 
 #include <cstring>
 #include <vector>
@@ -199,6 +201,7 @@ static bool DetectJsonLinesFromSample(string sample) {
 	return objects_on_separate_lines >= 2;
 }
 
+#ifndef __EMSCRIPTEN__
 class FileHandleCopyingInputStream : public google::protobuf::io::CopyingInputStream {
 public:
 	FileHandleCopyingInputStream(FileHandle &handle, int64_t byte_limit_p)
@@ -243,6 +246,7 @@ private:
 	int64_t byte_limit;
 	int64_t bytes_read;
 };
+#endif
 
 static const vector<LogicalType> &GetColumnTypesForTable(OTLPTableType table_type) {
 	switch (table_type) {
@@ -675,11 +679,14 @@ static bool AcquireNextFile(ClientContext &context, ReadOTLPGlobalState &gstate,
 			if (!lstate.json_parser) {
 				lstate.json_parser = make_uniq<OTLPJSONParser>();
 			}
-		} else {
+		}
+#ifndef __EMSCRIPTEN__
+		else {
 			if (!lstate.protobuf_parser) {
 				lstate.protobuf_parser = make_uniq<OTLPProtobufParser>();
 			}
 		}
+#endif
 		if (handle->CanSeek()) {
 			handle->Seek(0);
 		} else {
@@ -1226,6 +1233,7 @@ void ReadOTLPTableFunction::Scan(ClientContext &context, TableFunctionInput &dat
 			continue;
 		}
 
+#ifndef __EMSCRIPTEN__
 		if (lstate.current_format == OTLPFormat::PROTOBUF) {
 			vector<vector<Value>> parsed_rows;
 			FileHandleCopyingInputStream proto_stream(*lstate.current_handle, gstate.max_document_bytes);
@@ -1274,6 +1282,7 @@ void ReadOTLPTableFunction::Scan(ClientContext &context, TableFunctionInput &dat
 			continue;
 		}
 
+#endif
 		throw IOException("Unsupported OTLP format detected for file '%s'", lstate.current_path.c_str());
 	}
 }

@@ -12,11 +12,52 @@
 #include <deque>
 #include <vector>
 #include <unordered_map>
-#include <optional>
 
 namespace duckdb {
 
 enum class ReadOTLPOnError : uint8_t { FAIL = 0, SKIP = 1, NULLIFY = 2 };
+
+//! Simple optional-like wrapper for compatibility with WASM builds (no C++17)
+template <typename T>
+struct Optional {
+	T value;
+	bool has_value;
+
+	Optional() : value(T()), has_value(false) {
+	}
+	explicit Optional(const T &val) : value(val), has_value(true) {
+	}
+
+	// Assignment operator
+	Optional &operator=(const T &val) {
+		value = val;
+		has_value = true;
+		return *this;
+	}
+
+	// Bool conversion operator (implicit for use in if statements)
+	operator bool() const {
+		return has_value;
+	}
+
+	// Dereference operator
+	const T &operator*() const {
+		return value;
+	}
+	T &operator*() {
+		return value;
+	}
+
+	bool HasValue() const {
+		return has_value;
+	}
+	const T &Value() const {
+		return value;
+	}
+	T &Value() {
+		return value;
+	}
+};
 
 static constexpr int64_t READ_OTLP_DEFAULT_MAX_DOCUMENT_BYTES = static_cast<int64_t>(100) * 1024 * 1024;
 
@@ -47,7 +88,7 @@ struct ReadOTLPBindData : public TableFunctionData {
 	string pattern;           // Glob pattern or single file path
 	OTLPTableType table_type; // Detected table type for v2 schema
 	ReadOTLPOnError on_error;
-	std::optional<OTLPMetricType> metric_filter;
+	Optional<OTLPMetricType> metric_filter;
 	int64_t max_document_bytes;
 
 	explicit ReadOTLPBindData(string pattern_p, OTLPTableType type)
@@ -78,7 +119,7 @@ struct ReadOTLPGlobalState : public GlobalTableFunctionState {
 	std::atomic<idx_t> error_documents {0};
 	std::atomic<idx_t> active_workers {0};
 	std::atomic<bool> stats_reported {false};
-	std::optional<OTLPMetricType> metric_filter;
+	Optional<OTLPMetricType> metric_filter;
 	int64_t max_document_bytes;
 
 	ReadOTLPGlobalState()
