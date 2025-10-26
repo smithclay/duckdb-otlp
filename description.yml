@@ -5,7 +5,7 @@ extension:
   language: C++
   build: cmake
   license: MIT
-  excluded_platforms: "wasm_mvp;wasm_eh;wasm_threads"
+  excluded_platforms: ""
   maintainers:
     - smithclay
 
@@ -24,9 +24,9 @@ docs:
     WHERE Duration > 1000000000
     LIMIT 10;
 
-    -- Project metrics from a protobuf export
+    -- Read metrics from JSON (works in native and WASM)
     SELECT Timestamp, ServiceName, MetricName, Value
-    FROM read_otlp_metrics('s3://bucket/metrics/*.pb')
+    FROM read_otlp_metrics('metrics.jsonl')
     WHERE MetricType = 'gauge'
     ORDER BY Timestamp DESC;
 
@@ -34,6 +34,9 @@ docs:
     SELECT Timestamp, SeverityText, Body, ServiceName
     FROM read_otlp_logs('s3://bucket/logs-*.jsonl')
     WHERE SeverityText = 'ERROR';
+
+    -- Read protobuf format (native builds only)
+    SELECT * FROM read_otlp_traces('traces.pb') LIMIT 10;
 
   extended_description: |
     # OpenTelemetry for DuckDB
@@ -44,8 +47,9 @@ docs:
 
     **OTLP File Reading**
     - Table functions: `read_otlp_traces()`, `read_otlp_logs()`, `read_otlp_metrics()`
-    - Auto-detects JSON (`.json`, `.jsonl`) and protobuf (`.pb`) formats
+    - Auto-detects JSON (`.json`, `.jsonl`) and protobuf (`.pb`) formats (protobuf requires native extension)
     - Works with DuckDB file systems: local, S3, HTTP, Azure, GCS
+    - Browser support via DuckDB-WASM (JSON format only)
 
     **Strongly-Typed Schemas**
     - No JSON extraction required - all fields are proper DuckDB columns
@@ -75,7 +79,7 @@ docs:
     ## Limitations
 
     - Live gRPC ingestion has been removed; the extension focuses on file workloads
-    - Protobuf parsing requires the protobuf runtime on every target (native and WASM)
+    - **WASM builds support JSON format only**; protobuf parsing requires native builds with the protobuf runtime
     - Large protobuf files are processed batch-by-batch; continuous streaming is not yet supported
 
     ## References
