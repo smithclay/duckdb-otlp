@@ -76,6 +76,52 @@ FROM read_otlp_metrics_gauge('metrics/*.jsonl');
 
 **[→ See more examples in the Guides](docs/guides/)**
 
+## Configuration Options
+
+### Error Handling
+
+Control how the extension handles malformed or invalid OTLP data:
+
+```sql
+-- Default: fail on parse errors
+SELECT * FROM read_otlp_traces('traces.jsonl');
+
+-- Skip invalid records and continue processing
+SELECT * FROM read_otlp_traces('traces.jsonl', on_error := 'skip');
+
+-- Emit NULL rows for invalid records (preserves row count)
+SELECT * FROM read_otlp_traces('traces.jsonl', on_error := 'nullify');
+
+-- Check error statistics after scan
+SELECT * FROM read_otlp_scan_stats();
+```
+
+### Size Limits
+
+Individual JSON/Protobuf documents are limited to **100 MB by default** to prevent memory exhaustion:
+
+```sql
+-- Use default 100MB limit
+SELECT * FROM read_otlp_traces('traces.jsonl');
+
+-- Override for larger documents (value in bytes)
+SELECT * FROM read_otlp_traces('huge_traces.jsonl', max_document_bytes := 500000000);
+
+-- Combine with error handling
+SELECT * FROM read_otlp_metrics('metrics.pb',
+                                max_document_bytes := 200000000,
+                                on_error := 'skip');
+```
+
+**Note**: This limit applies to individual documents in JSONL files, or entire protobuf files. It does not limit total file size for streaming JSONL.
+
+### Discover All Options
+
+```sql
+-- View all available configuration options
+SELECT * FROM read_otlp_options();
+```
+
 ## What's inside
 
 **Table Functions**
@@ -95,7 +141,7 @@ FROM read_otlp_metrics_gauge('metrics/*.jsonl');
 
 - **Automatic format detection** - Works with JSON, JSONL, and protobuf OTLP files
 - **DuckDB file systems** - Read from local files, S3, HTTP(S), Azure Blob, GCS
-- **Error handling** - `on_error` parameter controls behavior (fail/skip/nullify)
+- **Error handling & safeguards** - `on_error` (fail/skip/nullify) plus `max_document_bytes` (per-file size cap)
 - **ClickHouse compatible** - Matches OpenTelemetry ClickHouse exporter schema
 - **Scan diagnostics** - Review parser stats with `read_otlp_scan_stats()`
 

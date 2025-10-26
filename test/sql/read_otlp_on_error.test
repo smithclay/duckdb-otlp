@@ -35,16 +35,60 @@ SELECT error_records, error_documents FROM read_otlp_scan_stats();
 ----
 3	0
 
+query I
+SELECT COUNT(*) FROM read_otlp_metrics('test/data/malformed.jsonl', on_error='nullify');
+----
+4
+
+query I
+SELECT COUNT(*) FROM read_otlp_metrics_gauge('test/data/malformed.jsonl', on_error='nullify');
+----
+4
+
+query I
+SELECT COUNT(*) FROM read_otlp_metrics_sum('test/data/malformed.jsonl', on_error='nullify');
+----
+4
+
+query I
+SELECT COUNT(*) FROM read_otlp_metrics_histogram('test/data/malformed.jsonl', on_error='nullify');
+----
+4
+
+query I
+SELECT COUNT(*) FROM read_otlp_metrics_exp_histogram('test/data/malformed.jsonl', on_error='nullify');
+----
+4
+
+query I
+SELECT COUNT(*) FROM read_otlp_metrics_summary('test/data/malformed.jsonl', on_error='nullify');
+----
+4
+
+query II
+SELECT error_records, error_documents FROM read_otlp_scan_stats();
+----
+4	0
+
 # read_otlp_options() surfaces discoverable metadata for table functions
 query I
 SELECT COUNT(*) FROM read_otlp_options();
 ----
-2
+3
 
 query TT
 SELECT option_name, default_value
 FROM read_otlp_options()
 ORDER BY option_name;
 ----
+max_document_bytes	104857600
 on_error	fail
 read_otlp_scan_stats	n/a
+
+statement ok
+SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_simple.jsonl', max_document_bytes := 1024);
+
+statement error
+SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_simple.jsonl', max_document_bytes := 0);
+----
+read_otlp max_document_bytes must be greater than 0

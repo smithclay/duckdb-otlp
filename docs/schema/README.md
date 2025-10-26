@@ -102,7 +102,7 @@ FROM read_otlp_metrics_gauge('otel-export/telemetry.jsonl', on_error := 'skip');
 
 ## Diagnostics
 
-Use `read_otlp_options()` to enumerate available named parameters and defaults. Inspect `read_otlp_scan_stats()` after a scan to review parse errors, skipped rows, and format detection details.
+Use `read_otlp_options()` to enumerate available named parameters and defaults (e.g., `on_error`, `max_document_bytes`). Inspect `read_otlp_scan_stats()` after a scan to review parse errors, skipped rows, and format detection details.
 
 ---
 

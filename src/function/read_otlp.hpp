@@ -18,6 +18,8 @@ namespace duckdb {
 
 enum class ReadOTLPOnError : uint8_t { FAIL = 0, SKIP = 1, NULLIFY = 2 };
 
+static constexpr int64_t READ_OTLP_DEFAULT_MAX_DOCUMENT_BYTES = static_cast<int64_t>(100) * 1024 * 1024;
+
 //! read_otlp_*() table functions for reading OTLP files with strongly-typed schemas
 class ReadOTLPTableFunction {
 public:
@@ -46,9 +48,11 @@ struct ReadOTLPBindData : public TableFunctionData {
 	OTLPTableType table_type; // Detected table type for v2 schema
 	ReadOTLPOnError on_error;
 	std::optional<OTLPMetricType> metric_filter;
+	int64_t max_document_bytes;
 
 	explicit ReadOTLPBindData(string pattern_p, OTLPTableType type)
-	    : pattern(std::move(pattern_p)), table_type(type), on_error(ReadOTLPOnError::FAIL), metric_filter() {
+	    : pattern(std::move(pattern_p)), table_type(type), on_error(ReadOTLPOnError::FAIL), metric_filter(),
+	      max_document_bytes(READ_OTLP_DEFAULT_MAX_DOCUMENT_BYTES) {
 	}
 };
 
@@ -75,8 +79,11 @@ struct ReadOTLPGlobalState : public GlobalTableFunctionState {
 	std::atomic<idx_t> active_workers {0};
 	std::atomic<bool> stats_reported {false};
 	std::optional<OTLPMetricType> metric_filter;
+	int64_t max_document_bytes;
 
-	ReadOTLPGlobalState() : table_type(OTLPTableType::TRACES), on_error(ReadOTLPOnError::FAIL) {
+	ReadOTLPGlobalState()
+	    : table_type(OTLPTableType::TRACES), on_error(ReadOTLPOnError::FAIL),
+	      max_document_bytes(READ_OTLP_DEFAULT_MAX_DOCUMENT_BYTES) {
 	}
 
 	idx_t MaxThreads() const override {

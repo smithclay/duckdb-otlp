@@ -2,6 +2,7 @@
 #include "duckdb/common/string_util.hpp"
 
 #include <cstring>
+#include <limits>
 
 // Try to parse as protobuf to detect signal type
 #include "opentelemetry/proto/trace/v1/trace.pb.h"
@@ -65,6 +66,9 @@ OTLPFormat FormatDetector::DetectFormat(const char *data, size_t len) {
 FormatDetector::SignalType FormatDetector::DetectProtobufSignalType(const char *data, size_t len) {
 	// Try parsing as each type
 	// ParseFromArray expects int, so we safely cast from size_t
+	if (len > static_cast<size_t>(std::numeric_limits<int>::max())) {
+		return SignalType::UNKNOWN;
+	}
 	int size = static_cast<int>(len);
 
 	opentelemetry::proto::trace::v1::TracesData traces_data;

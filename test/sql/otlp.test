@@ -2,23 +2,34 @@
 # description: test otlp extension
 # group: [sql]
 
-# Before we load the extension, this will fail
-statement error
-SELECT otlp('Sam');
-----
-Catalog Error: Scalar Function with name otlp does not exist!
-
 # Require statement will ensure this test is run with this extension loaded
 require otlp
 
-# Confirm the extension works
-query I
-SELECT otlp('Sam');
-----
-OTLP Sam 🐥
-
-# Verify helper table functions are registered
+# Verify read_otlp_* table functions are registered
 query I
 SELECT COUNT(*) > 0 FROM duckdb_functions() WHERE function_name LIKE 'read_otlp_%';
 ----
 true
+
+# Verify specific table functions exist
+query I
+SELECT COUNT(*) FROM duckdb_functions()
+WHERE function_name IN ('read_otlp_traces', 'read_otlp_logs', 'read_otlp_metrics');
+----
+3
+
+# Verify helper functions for typed metrics exist
+query I
+SELECT COUNT(*) FROM duckdb_functions()
+WHERE function_name IN ('read_otlp_metrics_gauge', 'read_otlp_metrics_sum',
+                        'read_otlp_metrics_histogram', 'read_otlp_metrics_exp_histogram',
+                        'read_otlp_metrics_summary');
+----
+5
+
+# Verify utility functions exist
+query I
+SELECT COUNT(*) FROM duckdb_functions()
+WHERE function_name IN ('read_otlp_scan_stats', 'read_otlp_options');
+----
+2

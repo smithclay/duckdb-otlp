@@ -31,8 +31,8 @@ namespace {
 
 static constexpr idx_t JSON_SNIFF_BYTES = 8192;
 static constexpr idx_t STREAM_READ_BYTES = 64 * 1024;
-static constexpr int64_t MAX_JSON_DOC_BYTES = static_cast<int64_t>(100) * 1024 * 1024;
-static constexpr int64_t MAX_PROTO_BYTES = static_cast<int64_t>(100) * 1024 * 1024;
+static constexpr int64_t DEFAULT_MAX_DOCUMENT_BYTES = READ_OTLP_DEFAULT_MAX_DOCUMENT_BYTES;
+static constexpr idx_t MAX_QUEUED_CHUNKS = 256;
 
 struct OTLPScanStats {
 	idx_t error_records = 0;
@@ -75,6 +75,25 @@ static ReadOTLPOnError ParseOnErrorOption(named_parameter_map_t &named_parameter
 		return ReadOTLPOnError::NULLIFY;
 	}
 	throw BinderException("read_otlp on_error must be one of 'fail', 'skip', or 'nullify'");
+}
+
+static int64_t ParseMaxDocumentBytes(named_parameter_map_t &named_parameters) {
+	const auto entry = named_parameters.find("max_document_bytes");
+	if (entry == named_parameters.end()) {
+		return DEFAULT_MAX_DOCUMENT_BYTES;
+	}
+	const auto &value = entry->second;
+	if (value.IsNull()) {
+		return DEFAULT_MAX_DOCUMENT_BYTES;
+	}
+	if (value.type().id() != LogicalTypeId::BIGINT) {
+		throw BinderException("read_otlp max_document_bytes must be a BIGINT");
+	}
+	auto limit = value.GetValue<int64_t>();
+	if (limit <= 0) {
+		throw BinderException("read_otlp max_document_bytes must be greater than 0");
+	}
+	return limit;
 }
 
 static bool ReadLine(FileHandle &file_handle, string &buffer, idx_t &buffer_offset, string &line) {
@@ -326,7 +345,20 @@ static void InitializeProjection(ReadOTLPGlobalState &state, const vector<column
 	}
 }
 
+// Forward declaration needed by MakeNullRow
+static string MetricTypeToString(OTLPMetricType filter);
+
 static vector<Value> MakeNullRow(const ReadOTLPGlobalState &state) {
+	if (state.metric_filter) {
+		const auto &union_types = OTLPMetricsUnionSchema::GetColumnTypes();
+		vector<Value> row;
+		row.reserve(union_types.size());
+		for (auto &type : union_types) {
+			row.emplace_back(Value(type));
+		}
+		row[OTLPMetricsUnionSchema::COL_METRIC_TYPE] = Value(MetricTypeToString(*state.metric_filter));
+		return row;
+	}
 	vector<Value> row;
 	row.reserve(state.all_types.size());
 	for (auto &type : state.all_types) {
@@ -459,13 +491,30 @@ static std::optional<OTLPMetricType> MetricTypeFromString(const string &metric_t
 	if (metric_type == "histogram") {
 		return OTLPMetricType::HISTOGRAM;
 	}
-	if (metric_type == "exp_histogram") {
+	if (metric_type == "exp_histogram" || metric_type == "exponential_histogram") {
 		return OTLPMetricType::EXPONENTIAL_HISTOGRAM;
 	}
 	if (metric_type == "summary") {
 		return OTLPMetricType::SUMMARY;
 	}
 	return std::nullopt;
+}
+
+static string MetricTypeToString(OTLPMetricType filter) {
+	switch (filter) {
+	case OTLPMetricType::GAUGE:
+		return "gauge";
+	case OTLPMetricType::SUM:
+		return "sum";
+	case OTLPMetricType::HISTOGRAM:
+		return "histogram";
+	case OTLPMetricType::EXPONENTIAL_HISTOGRAM:
+		return "exponential_histogram";
+	case OTLPMetricType::SUMMARY:
+		return "summary";
+	default:
+		throw InternalException("Unhandled metric filter");
+	}
 }
 
 static bool RowMatchesMetricFilter(const vector<Value> &row, OTLPMetricType filter) {
@@ -691,6 +740,9 @@ static void EnqueueRows(ClientContext &context, ReadOTLPGlobalState &gstate, Rea
 			}
 		}
 		chunk->SetCardinality(emit_count);
+		if (lstate.chunk_queue.size() >= MAX_QUEUED_CHUNKS) {
+			throw IOException("OTLP chunk queue overflow - input produced too many buffered chunks");
+		}
 		lstate.chunk_queue.push_back(std::move(chunk));
 		position += emit_count;
 	}
@@ -766,20 +818,21 @@ static void OTLPOptionsScan(ClientContext &, TableFunctionInput &data, DataChunk
 		return;
 	}
 
-	output.SetCardinality(2);
+	output.SetCardinality(3);
 
 	for (idx_t col = 0; col < output.ColumnCount(); col++) {
 		output.data[col].SetVectorType(VectorType::FLAT_VECTOR);
 	}
 
-	const string option_names[] = {"on_error", "read_otlp_scan_stats"};
-	const string allowed_values[] = {"fail | skip | nullify", "SELECT * FROM read_otlp_scan_stats()"};
-	const string default_values[] = {"fail", "n/a"};
+	const string option_names[] = {"on_error", "max_document_bytes", "read_otlp_scan_stats"};
+	const string allowed_values[] = {"fail | skip | nullify", "> 0", "SELECT * FROM read_otlp_scan_stats()"};
+	const string default_values[] = {"fail", std::to_string(READ_OTLP_DEFAULT_MAX_DOCUMENT_BYTES), "n/a"};
 	const string descriptions[] = {
 	    "Controls how read_otlp_* handles parse failures: fail (default), skip row, or emit NULL columns.",
+	    "Maximum bytes buffered per file for JSON or protobuf documents before aborting (default 100 MB).",
 	    "Expose counters from the most recent read_otlp_* scan in the current connection."};
 
-	for (idx_t row = 0; row < 2; row++) {
+	for (idx_t row = 0; row < 3; row++) {
 		FlatVector::GetData<string_t>(output.data[0])[row] = StringVector::AddString(output.data[0], option_names[row]);
 		FlatVector::GetData<string_t>(output.data[1])[row] =
 		    StringVector::AddString(output.data[1], allowed_values[row]);
@@ -801,6 +854,7 @@ static unique_ptr<FunctionData> BindTraces(ClientContext &context, TableFunction
 	names = OTLPTracesSchema::GetColumnNames();
 	auto bind = make_uniq<ReadOTLPBindData>(file_path, OTLPTableType::TRACES);
 	bind->on_error = ParseOnErrorOption(input.named_parameters);
+	bind->max_document_bytes = ParseMaxDocumentBytes(input.named_parameters);
 	return bind;
 }
 
@@ -814,6 +868,7 @@ static unique_ptr<FunctionData> BindLogs(ClientContext &context, TableFunctionBi
 	names = OTLPLogsSchema::GetColumnNames();
 	auto bind = make_uniq<ReadOTLPBindData>(file_path, OTLPTableType::LOGS);
 	bind->on_error = ParseOnErrorOption(input.named_parameters);
+	bind->max_document_bytes = ParseMaxDocumentBytes(input.named_parameters);
 	return bind;
 }
 
@@ -827,6 +882,7 @@ static unique_ptr<FunctionData> BindMetrics(ClientContext &context, TableFunctio
 	names = OTLPMetricsUnionSchema::GetColumnNames();
 	auto bind = make_uniq<ReadOTLPBindData>(file_path, OTLPTableType::METRICS_UNION);
 	bind->on_error = ParseOnErrorOption(input.named_parameters);
+	bind->max_document_bytes = ParseMaxDocumentBytes(input.named_parameters);
 	return bind;
 }
 
@@ -840,6 +896,7 @@ static unique_ptr<FunctionData> BindMetricsGauge(ClientContext &context, TableFu
 	names = OTLPMetricsGaugeSchema::GetColumnNames();
 	auto bind = make_uniq<ReadOTLPBindData>(file_path, OTLPTableType::METRICS_GAUGE);
 	bind->on_error = ParseOnErrorOption(input.named_parameters);
+	bind->max_document_bytes = ParseMaxDocumentBytes(input.named_parameters);
 	bind->metric_filter = OTLPMetricType::GAUGE;
 	return bind;
 }
@@ -854,6 +911,7 @@ static unique_ptr<FunctionData> BindMetricsSum(ClientContext &context, TableFunc
 	names = OTLPMetricsSumSchema::GetColumnNames();
 	auto bind = make_uniq<ReadOTLPBindData>(file_path, OTLPTableType::METRICS_SUM);
 	bind->on_error = ParseOnErrorOption(input.named_parameters);
+	bind->max_document_bytes = ParseMaxDocumentBytes(input.named_parameters);
 	bind->metric_filter = OTLPMetricType::SUM;
 	return bind;
 }
@@ -868,6 +926,7 @@ static unique_ptr<FunctionData> BindMetricsHistogram(ClientContext &context, Tab
 	names = OTLPMetricsHistogramSchema::GetColumnNames();
 	auto bind = make_uniq<ReadOTLPBindData>(file_path, OTLPTableType::METRICS_HISTOGRAM);
 	bind->on_error = ParseOnErrorOption(input.named_parameters);
+	bind->max_document_bytes = ParseMaxDocumentBytes(input.named_parameters);
 	bind->metric_filter = OTLPMetricType::HISTOGRAM;
 	return bind;
 }
@@ -882,6 +941,7 @@ static unique_ptr<FunctionData> BindMetricsExpHistogram(ClientContext &context, 
 	names = OTLPMetricsExpHistogramSchema::GetColumnNames();
 	auto bind = make_uniq<ReadOTLPBindData>(file_path, OTLPTableType::METRICS_EXP_HISTOGRAM);
 	bind->on_error = ParseOnErrorOption(input.named_parameters);
+	bind->max_document_bytes = ParseMaxDocumentBytes(input.named_parameters);
 	bind->metric_filter = OTLPMetricType::EXPONENTIAL_HISTOGRAM;
 	return bind;
 }
@@ -896,6 +956,7 @@ static unique_ptr<FunctionData> BindMetricsSummary(ClientContext &context, Table
 	names = OTLPMetricsSummarySchema::GetColumnNames();
 	auto bind = make_uniq<ReadOTLPBindData>(file_path, OTLPTableType::METRICS_SUMMARY);
 	bind->on_error = ParseOnErrorOption(input.named_parameters);
+	bind->max_document_bytes = ParseMaxDocumentBytes(input.named_parameters);
 	bind->metric_filter = OTLPMetricType::SUMMARY;
 	return bind;
 }
@@ -912,6 +973,7 @@ TableFunction ReadOTLPTableFunction::GetTracesFunction() {
 	func.projection_pushdown = true;
 	func.filter_pushdown = true;
 	func.named_parameters["on_error"] = LogicalType::VARCHAR;
+	func.named_parameters["max_document_bytes"] = LogicalType::BIGINT;
 	return func;
 }
 
@@ -922,6 +984,7 @@ TableFunction ReadOTLPTableFunction::GetLogsFunction() {
 	func.projection_pushdown = true;
 	func.filter_pushdown = true;
 	func.named_parameters["on_error"] = LogicalType::VARCHAR;
+	func.named_parameters["max_document_bytes"] = LogicalType::BIGINT;
 	return func;
 }
 
@@ -932,6 +995,7 @@ TableFunction ReadOTLPTableFunction::GetMetricsFunction() {
 	func.projection_pushdown = true;
 	func.filter_pushdown = true;
 	func.named_parameters["on_error"] = LogicalType::VARCHAR;
+	func.named_parameters["max_document_bytes"] = LogicalType::BIGINT;
 	return func;
 }
 
@@ -942,6 +1006,7 @@ TableFunction ReadOTLPTableFunction::GetMetricsGaugeFunction() {
 	func.projection_pushdown = true;
 	func.filter_pushdown = true;
 	func.named_parameters["on_error"] = LogicalType::VARCHAR;
+	func.named_parameters["max_document_bytes"] = LogicalType::BIGINT;
 	return func;
 }
 
@@ -952,6 +1017,7 @@ TableFunction ReadOTLPTableFunction::GetMetricsSumFunction() {
 	func.projection_pushdown = true;
 	func.filter_pushdown = true;
 	func.named_parameters["on_error"] = LogicalType::VARCHAR;
+	func.named_parameters["max_document_bytes"] = LogicalType::BIGINT;
 	return func;
 }
 
@@ -962,6 +1028,7 @@ TableFunction ReadOTLPTableFunction::GetMetricsHistogramFunction() {
 	func.projection_pushdown = true;
 	func.filter_pushdown = true;
 	func.named_parameters["on_error"] = LogicalType::VARCHAR;
+	func.named_parameters["max_document_bytes"] = LogicalType::BIGINT;
 	return func;
 }
 
@@ -972,6 +1039,7 @@ TableFunction ReadOTLPTableFunction::GetMetricsExpHistogramFunction() {
 	func.projection_pushdown = true;
 	func.filter_pushdown = true;
 	func.named_parameters["on_error"] = LogicalType::VARCHAR;
+	func.named_parameters["max_document_bytes"] = LogicalType::BIGINT;
 	return func;
 }
 
@@ -982,6 +1050,7 @@ TableFunction ReadOTLPTableFunction::GetMetricsSummaryFunction() {
 	func.projection_pushdown = true;
 	func.filter_pushdown = true;
 	func.named_parameters["on_error"] = LogicalType::VARCHAR;
+	func.named_parameters["max_document_bytes"] = LogicalType::BIGINT;
 	return func;
 }
 
@@ -1011,6 +1080,7 @@ unique_ptr<GlobalTableFunctionState> ReadOTLPTableFunction::Init(ClientContext &
 	state->active_workers.store(0);
 	state->stats_reported.store(false);
 	state->metric_filter = bind_data.metric_filter;
+	state->max_document_bytes = bind_data.max_document_bytes;
 	InitializeProjection(*state, input.column_ids);
 	if (input.filters) {
 		state->filters = make_shared_ptr<TableFilterSet>();
@@ -1116,7 +1186,7 @@ void ReadOTLPTableFunction::Scan(ClientContext &context, TableFunctionInput &dat
 				continue;
 			}
 
-			auto contents = ReadEntireFile(*lstate.current_handle, lstate.current_path, MAX_JSON_DOC_BYTES);
+			auto contents = ReadEntireFile(*lstate.current_handle, lstate.current_path, gstate.max_document_bytes);
 			vector<vector<Value>> parsed_rows;
 			bool success = false;
 			switch (gstate.table_type) {
@@ -1158,7 +1228,7 @@ void ReadOTLPTableFunction::Scan(ClientContext &context, TableFunctionInput &dat
 
 		if (lstate.current_format == OTLPFormat::PROTOBUF) {
 			vector<vector<Value>> parsed_rows;
-			FileHandleCopyingInputStream proto_stream(*lstate.current_handle, MAX_PROTO_BYTES);
+			FileHandleCopyingInputStream proto_stream(*lstate.current_handle, gstate.max_document_bytes);
 			google::protobuf::io::CopyingInputStreamAdaptor adaptor(&proto_stream);
 			adaptor.SetOwnsCopyingStream(false);
 			idx_t row_count = 0;
@@ -1182,9 +1252,10 @@ void ReadOTLPTableFunction::Scan(ClientContext &context, TableFunctionInput &dat
 			}
 			if (row_count == 0 || parsed_rows.empty()) {
 				auto error = lstate.protobuf_parser->GetLastError();
-				if (error.empty() && proto_stream.BytesRead() >= MAX_PROTO_BYTES) {
+				if (error.empty() && gstate.max_document_bytes > 0 &&
+				    proto_stream.BytesRead() >= gstate.max_document_bytes) {
 					error = StringUtil::Format("Protobuf file exceeds maximum supported size of %lld bytes",
-					                           static_cast<long long>(MAX_PROTO_BYTES));
+					                           static_cast<long long>(gstate.max_document_bytes));
 				}
 				if (!HandleParseErrorDocument(context, gstate, lstate,
 				                              StringUtil::Format("Failed to parse OTLP protobuf data in file '%s'",
