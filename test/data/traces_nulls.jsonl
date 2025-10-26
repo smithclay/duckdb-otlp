@@ -1,0 +1,3 @@
+{"resourceSpans": [{"scopeSpans": [{"spans": [{"traceId": "00000000000000000000000000000001", "spanId": "0000000000000001", "name": "minimal_span"}]}]}]}
+{"resourceSpans": [{"resource": {}, "scopeSpans": [{"scope": {}, "spans": [{"traceId": "00000000000000000000000000000002", "spanId": "0000000000000002", "name": "empty_metadata", "kind": 0, "startTimeUnixNano": "0", "endTimeUnixNano": "0", "attributes": [], "events": [], "links": []}]}]}]}
+{"resourceSpans": [{"scopeSpans": [{"spans": [{"traceId": "00000000000000000000000000000003", "spanId": "0000000000000003", "name": "no_parent", "parentSpanId": ""}]}]}]}
