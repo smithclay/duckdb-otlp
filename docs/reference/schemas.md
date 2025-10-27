@@ -72,7 +72,7 @@ FROM read_otlp_metrics('otel-export/telemetry.jsonl')
 WHERE MetricType = 'sum';
 ```
 
-See the [cookbook](../cookbook/README.md#build-typed-metrics-tables) for more recipes.
+See the [cookbook](../guides/cookbook.md#build-typed-metrics-tables) for more recipes.
 
 ## Metric helper functions
 
@@ -106,4 +106,4 @@ Use `read_otlp_options()` to enumerate available named parameters and defaults (
 
 ---
 
-Looking for end-to-end workflows? Head back to the [cookbook](../cookbook/README.md). Need help generating telemetry? The [quickstart](../quickstart/README.md) covers the OpenTelemetry Collector setup.
+Looking for end-to-end workflows? Head back to the [cookbook](../guides/cookbook.md). Need help generating telemetry? The [collector setup guide](../setup/collector.md) covers the OpenTelemetry Collector setup.
