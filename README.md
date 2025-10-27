@@ -85,7 +85,7 @@ SELECT Timestamp, ServiceName, MetricName, Value
 FROM read_otlp_metrics_gauge('metrics/*.jsonl');
 ```
 
-**[→ See more examples in the Guides](docs/guides/)**
+**[→ See more examples in the Cookbook](docs/guides/cookbook.md)**
 
 ## Configuration Options
 
@@ -205,7 +205,7 @@ All table functions emit strongly-typed columns (no JSON extraction required):
 - **Logs**: 15 columns - severity, body, trace correlation, attributes
 - **Metrics**: 27 columns (union schema) or typed helpers for each metric shape
 
-**[→ Schema Reference](docs/reference/)**
+**[→ Schema Reference](docs/reference/schemas.md)**
 
 ## Need help?
 

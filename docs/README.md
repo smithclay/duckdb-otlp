@@ -31,6 +31,7 @@ Task-based tutorials with real-world examples:
 - **[Exporting to Parquet](guides/exporting-to-parquet.md)** - Archive telemetry for long-term storage
 - **[Building Dashboards](guides/building-dashboards.md)** - Create custom metrics dashboards and visualizations
 - **[Error Handling](guides/error-handling.md)** - Handle malformed data with `on_error` and scan diagnostics
+- **[Cookbook](guides/cookbook.md)** - Common recipes and patterns
 
 ## 📖 Reference
 
@@ -51,6 +52,7 @@ Detailed technical documentation:
 
 - **[Type System](reference/type-system.md)** - DuckDB type mappings, conversions, gotchas
 - **[Performance Tips](reference/performance.md)** - Optimize queries and scans
+- **[Schemas](reference/schemas.md)** - Complete schema reference for traces, logs, and metrics
 
 ## ⚙️ Setup
 
@@ -70,13 +72,13 @@ Installation and configuration:
 
 **I want to...**
 
-- **Get sample OTLP data** → See [OTel Collector Demo Exports](guides/otel-collector-demo-exports.md)
+- **Get sample OTLP data** → See [Sample Data](setup/sample-data.md) or [OTel Collector Demo Exports](guides/otel-collector-demo-exports.md)
 - **Query trace spans** → See [Analyzing Traces](guides/analyzing-traces.md)
 - **Filter logs by severity** → See [Filtering Logs](guides/filtering-logs.md)
 - **Export to Parquet** → See [Exporting to Parquet](guides/exporting-to-parquet.md)
 - **Build metrics tables** → See [Working with Metrics](guides/working-with-metrics.md)
 - **Handle parsing errors** → See [Error Handling](guides/error-handling.md)
-- **Understand schemas** → See [Reference](reference/)
+- **Understand schemas** → See [Schema Reference](reference/schemas.md)
 
 ## ❓ Need Help?
 
