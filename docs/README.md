@@ -16,6 +16,10 @@ Welcome to the DuckDB OTLP Extension documentation. Find what you need:
 
 Task-based tutorials with real-world examples:
 
+### Getting Telemetry Data
+
+- **[OTel Collector Demo Exports](guides/otel-collector-demo-exports.md)** - Export OTLP files from the OpenTelemetry demo
+
 ### Analyzing Data
 
 - **[Analyzing Traces](guides/analyzing-traces.md)** - Find slow requests, trace bottlenecks, analyze service dependencies
@@ -66,13 +70,13 @@ Installation and configuration:
 
 **I want to...**
 
+- **Get sample OTLP data** → See [OTel Collector Demo Exports](guides/otel-collector-demo-exports.md)
 - **Query trace spans** → See [Analyzing Traces](guides/analyzing-traces.md)
 - **Filter logs by severity** → See [Filtering Logs](guides/filtering-logs.md)
 - **Export to Parquet** → See [Exporting to Parquet](guides/exporting-to-parquet.md)
 - **Build metrics tables** → See [Working with Metrics](guides/working-with-metrics.md)
 - **Handle parsing errors** → See [Error Handling](guides/error-handling.md)
 - **Understand schemas** → See [Reference](reference/)
-- **Set up the collector** → See [OpenTelemetry Collector](setup/collector.md)
 
 ## ❓ Need Help?
 

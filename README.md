@@ -42,7 +42,7 @@ LIMIT 5;
 
 ## Try it in your browser
 
-**[→ Interactive Demo](smithclay.github.io/duckdb-otlp/)** - Query OTLP data directly in your browser using DuckDB-WASM
+**[→ Interactive Demo](https://smithclay.github.io/duckdb-otlp/)** - Query OTLP data directly in your browser using DuckDB-WASM
 
 The browser demo lets you:
 - Load sample OTLP traces, logs, and metrics
