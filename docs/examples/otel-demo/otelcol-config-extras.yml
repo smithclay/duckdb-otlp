@@ -1,0 +1,103 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# extra settings to be merged into OpenTelemetry Collector configuration
+# do not delete this file
+#
+# USAGE:
+# Copy this file to src/otelcollector/otelcol-config-extras.yml in the
+# opentelemetry-demo repository to enable file exports for JSON and protobuf.
+#
+# Then add a volume mount in docker-compose.yml:
+#   otelcol:
+#     volumes:
+#       - ./exports:/export
+#
+# See: https://github.com/open-telemetry/opentelemetry-demo
+
+## Example configuration for sending data to your own OTLP HTTP backend
+## Note: the spanmetrics exporter must be included in the exporters array
+## if overriding the traces pipeline.
+##
+#  exporters:
+#    otlphttp/example:
+#      endpoint: <your-endpoint-url>
+#
+#  service:
+#    pipelines:
+#      traces:
+#        exporters: [spanmetrics, otlphttp/example]
+
+# File exporters for persistent storage in JSON and protobuf formats
+exporters:
+  file/json-traces:
+    path: /export/json/traces.jsonl
+    format: json
+    rotation:
+      max_megabytes: 128
+      max_days: 7
+      max_backups: 100
+      localtime: true
+    flush_interval: 1s
+
+  file/json-metrics:
+    path: /export/json/metrics.jsonl
+    format: json
+    rotation:
+      max_megabytes: 128
+      max_days: 7
+      max_backups: 100
+      localtime: true
+    flush_interval: 1s
+
+  file/json-logs:
+    path: /export/json/logs.jsonl
+    format: json
+    rotation:
+      max_megabytes: 128
+      max_days: 7
+      max_backups: 100
+      localtime: true
+    flush_interval: 1s
+
+  file/proto-traces:
+    path: /export/proto/traces.proto
+    format: proto
+    rotation:
+      max_megabytes: 128
+      max_days: 7
+      max_backups: 100
+      localtime: true
+    flush_interval: 1s
+
+  file/proto-metrics:
+    path: /export/proto/metrics.proto
+    format: proto
+    rotation:
+      max_megabytes: 128
+      max_days: 7
+      max_backups: 100
+      localtime: true
+    flush_interval: 1s
+
+  file/proto-logs:
+    path: /export/proto/logs.proto
+    format: proto
+    rotation:
+      max_megabytes: 128
+      max_days: 7
+      max_backups: 100
+      localtime: true
+    flush_interval: 1s
+
+service:
+  pipelines:
+    traces:
+      # Keep existing exporters and add file exporters
+      exporters: [otlp, debug, spanmetrics, file/json-traces, file/proto-traces]
+    metrics:
+      # Keep existing exporters and add file exporters
+      exporters: [otlphttp/prometheus, debug, file/json-metrics, file/proto-metrics]
+    logs:
+      # Keep existing exporters and add file exporters
+      exporters: [opensearch, debug, file/json-logs, file/proto-logs]
