@@ -11,7 +11,7 @@ extension:
 
 repo:
   github: smithclay/duckdb-otlp
-  ref: 552ddb1a6680eafd8ac3151e1ae3da4e0bfaa643
+  ref: 78c9430f5767889348d62b3333b96817567298b8
 
 docs:
   hello_world: |
