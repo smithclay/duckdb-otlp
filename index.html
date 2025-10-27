@@ -1,98 +1,85 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DuckDB OTLP Extension Demo</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
     <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/ace-builds@1.32.0/src-min-noconflict/ace.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/ace-builds@1.32.0/src-min-noconflict/mode-sql.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/ace-builds@1.32.0/src-min-noconflict/theme-chrome.js"></script>
 </head>
 <body>
-    <div class="container">
-        <header>
+    <main class="container">
+        <hgroup>
             <h1>DuckDB OTLP Extension Demo</h1>
             <p>Query OpenTelemetry data with SQL in your browser</p>
-            <p class="note"><strong>Note:</strong> This WebAssembly demo supports JSON format only. For protobuf support, use the native DuckDB extension.</p>
-            <a href="https://github.com/smithclay/duckdb-otlp" target="_blank" class="github-link">
-                View on GitHub
-            </a>
-        </header>
+        </hgroup>
 
-        <main>
-            <!-- Status Section -->
-            <div id="status" class="status hidden">
-                <span id="status-text">Initializing...</span>
-            </div>
+        <article id="status" class="hidden">
+            <span id="status-text">Initializing...</span>
+        </article>
 
-            <!-- Data Source Section -->
-            <section class="card">
-                <h2>1. Select Data Source</h2>
-                <div class="data-source">
-                    <div class="source-option">
-                        <label for="sample-select">Sample Files:</label>
-                        <select id="sample-select">
-                            <option value="">-- Select a sample file --</option>
-                            <option value="samples/traces_simple.jsonl">Traces (JSONL)</option>
-                            <option value="samples/metrics_simple.jsonl">Metrics (JSONL)</option>
-                            <option value="samples/logs_simple.jsonl">Logs (JSONL)</option>
-                        </select>
-                        <button id="load-sample" disabled>Load Sample</button>
-                    </div>
-                    <div class="divider">OR</div>
-                    <div class="source-option">
-                        <label for="file-upload">Upload Your OTLP File:</label>
-                        <input type="file" id="file-upload" accept=".jsonl,.json,.pb" disabled>
-                    </div>
-                </div>
-                <div id="loaded-file" class="loaded-file hidden">
+        <article>
+            <h2>1. Data Available</h2>
+            <p><small>Sample files are preloaded and ready to query:</small></p>
+            <ul>
+                <li><code>traces.jsonl</code> - OpenTelemetry trace spans</li>
+                <li><code>logs.jsonl</code> - OpenTelemetry log records</li>
+                <li><code>metrics.jsonl</code> - OpenTelemetry metrics (gauge, sum, histogram)</li>
+            </ul>
+            <details>
+                <summary>Upload Your Own OTLP File (Optional)</summary>
+                <input type="file" id="file-upload" accept=".jsonl,.json" disabled>
+                <small>Note: Only JSON/JSONL format is supported in the browser demo</small>
+                <div id="loaded-file" class="hidden">
                     <strong>Loaded:</strong> <span id="loaded-file-name"></span>
                 </div>
-            </section>
+            </details>
+        </article>
 
-            <!-- SQL Editor Section -->
-            <section class="card">
-                <h2>2. Write Your Query</h2>
-                <div class="query-examples">
-                    <label>Quick Examples:</label>
-                    <div class="example-buttons">
-                        <button class="example-btn" data-query="SELECT * FROM read_otlp_traces('data') LIMIT 10;">Traces: List all spans</button>
-                        <button class="example-btn" data-query="SELECT SpanName, Duration, StatusCode FROM read_otlp_traces('data') ORDER BY Duration DESC LIMIT 10;">Traces: Slowest spans</button>
-                        <button class="example-btn" data-query="SELECT MetricType, MetricName, COUNT(*) as count FROM read_otlp_metrics('data') GROUP BY MetricType, MetricName ORDER BY count DESC;">Metrics: Count by type</button>
-                        <button class="example-btn" data-query="SELECT SeverityText, COUNT(*) as count FROM read_otlp_logs('data') GROUP BY SeverityText ORDER BY count DESC;">Logs: Count by severity</button>
-                    </div>
-                </div>
-                <textarea id="sql-editor" placeholder="SELECT * FROM read_otlp_traces('data') LIMIT 10;" rows="6" disabled></textarea>
-                <button id="run-query" disabled>Run Query</button>
-            </section>
+        <article>
+            <h2>2. Write Your Query</h2>
+            <p><small>Quick Examples:</small></p>
+            <div role="group">
+                <button class="example-btn secondary" data-query="SELECT * FROM read_otlp_traces('traces.jsonl') LIMIT 10;">Traces: List all spans</button>
+                <button class="example-btn secondary" data-query="SELECT SpanName, Duration, StatusCode FROM read_otlp_traces('traces.jsonl') ORDER BY Duration DESC LIMIT 10;">Traces: Slowest spans</button>
+                <button class="example-btn secondary" data-query="SELECT MetricType, MetricName, COUNT(*) as count FROM read_otlp_metrics('metrics.jsonl') GROUP BY MetricType, MetricName ORDER BY count DESC;">Metrics: Count by type</button>
+                <button class="example-btn secondary" data-query="SELECT SeverityText, COUNT(*) as count FROM read_otlp_logs('logs.jsonl') GROUP BY SeverityText ORDER BY count DESC;">Logs: Count by severity</button>
+            </div>
+            <div id="sql-editor"></div>
+            <button id="run-query" disabled>Run Query</button>
+        </article>
 
-            <!-- Results Section -->
-            <section class="card">
-                <h2>3. Results</h2>
-                <div id="results-container">
-                    <div id="results-placeholder" class="results-placeholder">
-                        <p>Query results will appear here</p>
-                    </div>
-                    <div id="results-table-container" class="hidden">
-                        <div id="results-info"></div>
-                        <div class="table-wrapper">
-                            <table id="results-table">
-                                <thead></thead>
-                                <tbody></tbody>
-                            </table>
-                        </div>
-                    </div>
-                    <div id="results-error" class="error-message hidden"></div>
-                </div>
-            </section>
-        </main>
+        <article>
+            <h2>3. Results</h2>
+            <div id="results-placeholder">
+                <p><em>Query results will appear here</em></p>
+            </div>
+            <div id="results-table-container" class="hidden">
+                <p><small id="results-info"></small></p>
+                <figure>
+                    <table id="results-table" role="grid">
+                        <thead></thead>
+                        <tbody></tbody>
+                    </table>
+                </figure>
+            </div>
+            <div id="results-error" class="hidden"></div>
+        </article>
 
         <footer>
             <p>
-                Built with <a href="https://duckdb.org" target="_blank">DuckDB</a> and
-                <a href="https://opentelemetry.io" target="_blank">OpenTelemetry</a>
+                <small>
+                    Built with <a href="https://duckdb.org" target="_blank">DuckDB</a> and
+                    <a href="https://opentelemetry.io" target="_blank">OpenTelemetry</a>
+                    • <a href="https://github.com/smithclay/duckdb-otlp" target="_blank">View on GitHub</a>
+                </small>
             </p>
-            <p class="note">All processing happens client-side in your browser</p>
+            <p><small>All processing happens client-side in your browser</small></p>
         </footer>
-    </div>
+    </main>
 
     <script type="module" src="app.js"></script>
 </body>

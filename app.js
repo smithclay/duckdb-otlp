@@ -4,16 +4,15 @@ import * as duckdb from 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@latest
 let db = null;
 let conn = null;
 let currentFileName = null;
+let sqlEditor = null; // Ace editor instance
 
 // UI Elements
 const statusEl = document.getElementById('status');
 const statusText = document.getElementById('status-text');
-const sampleSelect = document.getElementById('sample-select');
-const loadSampleBtn = document.getElementById('load-sample');
 const fileUpload = document.getElementById('file-upload');
 const loadedFileEl = document.getElementById('loaded-file');
 const loadedFileNameEl = document.getElementById('loaded-file-name');
-const sqlEditor = document.getElementById('sql-editor');
+const sqlEditorEl = document.getElementById('sql-editor');
 const runQueryBtn = document.getElementById('run-query');
 const exampleBtns = document.querySelectorAll('.example-btn');
 const resultsPlaceholder = document.getElementById('results-placeholder');
@@ -71,15 +70,20 @@ async function initDuckDB() {
 
             await conn.query(`LOAD "${extensionUrl}";`);
 
-            showStatus('Ready! Load a JSON file to get started.', 'success');
+            showStatus('Loading sample data...', 'loading');
         } catch (extErr) {
             console.error('Extension loading error:', extErr);
             showStatus(`Extension failed to load: ${extErr.message}`, 'error');
             return;
         }
 
+        // Preload sample files
+        await preloadSampleFiles();
+
         // Enable UI
-        enableUI();
+        await enableUI();
+
+        showStatus('Ready! Sample data loaded - try the example queries below.', 'success');
 
     } catch (err) {
         console.error('DuckDB initialization error:', err);
@@ -98,42 +102,71 @@ function showStatus(message, type = 'loading') {
     }
 }
 
-// Enable UI elements
-function enableUI() {
-    sampleSelect.disabled = false;
-    loadSampleBtn.disabled = false;
-    fileUpload.disabled = false;
-    sqlEditor.disabled = false;
-    document.querySelectorAll('.example-btn').forEach(btn => btn.disabled = false);
-}
-
-// Load sample file
-async function loadSample() {
-    const samplePath = sampleSelect.value;
-    if (!samplePath) return;
+// Preload sample files into DuckDB
+async function preloadSampleFiles() {
+    const sampleFiles = [
+        { path: 'samples/traces_simple.jsonl', name: 'traces.jsonl' },
+        { path: 'samples/logs_simple.jsonl', name: 'logs.jsonl' },
+        { path: 'samples/metrics_simple.jsonl', name: 'metrics.jsonl' }
+    ];
 
     try {
-        showStatus('Loading sample file...', 'loading');
-
-        const response = await fetch(samplePath);
-        if (!response.ok) throw new Error(`Failed to fetch ${samplePath}`);
-
-        const arrayBuffer = await response.arrayBuffer();
-        const fileName = samplePath.split('/').pop();
-
-        await loadDataIntoDatabase(arrayBuffer, fileName);
-
-        currentFileName = fileName;
-        loadedFileNameEl.textContent = fileName;
-        loadedFileEl.classList.remove('hidden');
-        runQueryBtn.disabled = false;
-
-        showStatus(`Loaded ${fileName}`, 'success');
-
+        for (const file of sampleFiles) {
+            const response = await fetch(file.path);
+            if (!response.ok) {
+                console.warn(`Failed to load ${file.path}`);
+                continue;
+            }
+            const arrayBuffer = await response.arrayBuffer();
+            const uint8Array = new Uint8Array(arrayBuffer);
+            await db.registerFileBuffer(file.name, uint8Array);
+            console.log(`Registered ${file.name}`);
+        }
     } catch (err) {
-        console.error('Error loading sample:', err);
-        showStatus(`Error loading sample: ${err.message}`, 'error');
+        console.error('Error preloading samples:', err);
+        // Don't fail the whole app if samples fail to load
     }
+}
+
+// Initialize Ace SQL editor
+async function initSQLEditor() {
+    // Wait for Ace to be available
+    while (!window.ace) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+    }
+
+    sqlEditor = ace.edit(sqlEditorEl, {
+        mode: "ace/mode/sql",
+        theme: "ace/theme/chrome",
+        value: "SELECT * FROM read_otlp_traces('traces.jsonl') LIMIT 10;",
+        minLines: 8,
+        maxLines: 20,
+        fontSize: 14,
+        showPrintMargin: false,
+        highlightActiveLine: true,
+        enableBasicAutocompletion: true,
+        enableLiveAutocompletion: false,
+        wrap: true
+    });
+
+    // Add Ctrl/Cmd+Enter keyboard shortcut to run query
+    sqlEditor.commands.addCommand({
+        name: 'runQuery',
+        bindKey: { win: 'Ctrl-Enter', mac: 'Command-Enter' },
+        exec: function(editor) {
+            runQuery();
+        }
+    });
+}
+
+// Enable UI elements
+async function enableUI() {
+    fileUpload.disabled = false;
+    runQueryBtn.disabled = false; // Enable immediately since samples are preloaded
+    document.querySelectorAll('.example-btn').forEach(btn => btn.disabled = false);
+
+    // Initialize SQL editor (wait for CodeMirror to load)
+    await initSQLEditor();
 }
 
 // Load uploaded file
@@ -145,14 +178,16 @@ async function handleFileUpload(event) {
         showStatus(`Loading ${file.name}...`, 'loading');
 
         const arrayBuffer = await file.arrayBuffer();
-        await loadDataIntoDatabase(arrayBuffer, file.name);
+        const uint8Array = new Uint8Array(arrayBuffer);
+
+        // Register file as 'userdata' in DuckDB's virtual filesystem
+        await db.registerFileBuffer('userdata', uint8Array);
 
         currentFileName = file.name;
-        loadedFileNameEl.textContent = file.name;
+        loadedFileNameEl.textContent = `${file.name} (available as 'userdata')`;
         loadedFileEl.classList.remove('hidden');
-        runQueryBtn.disabled = false;
 
-        showStatus(`Loaded ${file.name}`, 'success');
+        showStatus(`Loaded ${file.name} - query it with read_otlp_*('userdata')`, 'success');
 
     } catch (err) {
         console.error('Error loading file:', err);
@@ -160,17 +195,9 @@ async function handleFileUpload(event) {
     }
 }
 
-// Load data into DuckDB's virtual filesystem
-async function loadDataIntoDatabase(arrayBuffer, fileName) {
-    const uint8Array = new Uint8Array(arrayBuffer);
-
-    // Register file in DuckDB's virtual filesystem
-    await db.registerFileBuffer('data', uint8Array);
-}
-
 // Run SQL query
 async function runQuery() {
-    const query = sqlEditor.value.trim();
+    const query = sqlEditor.getValue().trim();
     if (!query) {
         showStatus('Please enter a SQL query', 'error');
         return;
@@ -263,11 +290,12 @@ function escapeHtml(text) {
 
 // Set example query in editor
 function setExampleQuery(query) {
-    sqlEditor.value = query;
+    if (sqlEditor) {
+        sqlEditor.setValue(query, -1); // -1 moves cursor to end
+    }
 }
 
 // Event listeners
-loadSampleBtn.addEventListener('click', loadSample);
 fileUpload.addEventListener('change', handleFileUpload);
 runQueryBtn.addEventListener('click', runQuery);
 
@@ -276,14 +304,6 @@ exampleBtns.forEach(btn => {
         const query = btn.getAttribute('data-query');
         setExampleQuery(query);
     });
-});
-
-// Allow Ctrl+Enter / Cmd+Enter to run query
-sqlEditor.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-        e.preventDefault();
-        runQuery();
-    }
 });
 
 // Initialize on page load
