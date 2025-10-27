@@ -661,7 +661,7 @@ static bool AcquireNextFile(ClientContext &context, ReadOTLPGlobalState &gstate,
 		const auto &path = gstate.files[file_idx];
 		ResetLocalFileState(lstate);
 		lstate.current_path = path;
-		auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
+		auto handle = fs.OpenFile(path, FileOpenFlags(FileOpenFlags::FILE_FLAGS_READ));
 		auto sample = ReadSample(*handle, JSON_SNIFF_BYTES);
 		auto format = FormatDetector::DetectFormat(sample.data(), sample.size());
 		if (format == OTLPFormat::UNKNOWN) {
@@ -691,7 +691,7 @@ static bool AcquireNextFile(ClientContext &context, ReadOTLPGlobalState &gstate,
 			handle->Seek(0);
 		} else {
 			handle.reset();
-			handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
+			handle = fs.OpenFile(path, FileOpenFlags(FileOpenFlags::FILE_FLAGS_READ));
 		}
 		lstate.current_handle = std::move(handle);
 		lstate.current_format = format;
