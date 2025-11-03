@@ -29,6 +29,8 @@ LIMIT 5;
 └─────────────────────────────────┴──────────────────┴──────────────┘
 ```
 
+> Want to _stream_ OTLP data directly to duckdb / Parquet in cloud storage? Check out https://github.com/smithclay/otlp2parquet
+
 ## What you can do
 
 - **Analyze production telemetry** - Query OTLP file exports with familiar SQL syntax
