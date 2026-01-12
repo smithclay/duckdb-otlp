@@ -396,6 +396,24 @@ static void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema
 // Scan Function
 // ============================================================================
 
+// Scan function that combines gauge and sum metrics
+static void ReadOTLPMetricsUnionScan(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
+	auto &bind_data = data.bind_data->CastNoConst<ReadOTLPRustBindData>();
+	auto &gstate = data.global_state->Cast<ReadOTLPRustGlobalState>();
+	auto &lstate = data.local_state->Cast<ReadOTLPRustLocalState>();
+	auto &fs = FileSystem::GetFileSystem(context);
+
+	// Suppress unused variable warnings for now
+	(void)bind_data;
+	(void)gstate;
+	(void)lstate;
+	(void)fs;
+
+	// For now, just throw - we'll implement full union later
+	// TODO: Alternate between gauge and sum, add metric_type column
+	throw NotImplementedException("Union metrics scan not yet implemented");
+}
+
 static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
 	auto &bind_data = data.bind_data->CastNoConst<ReadOTLPRustBindData>();
 	auto &gstate = data.global_state->Cast<ReadOTLPRustGlobalState>();
@@ -519,6 +537,13 @@ void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
 	sum_func.projection_pushdown = false;
 	sum_func.filter_pushdown = false;
 	loader.RegisterFunction(sum_func);
+
+	// Union metrics (gauge + sum combined)
+	TableFunction metrics_func("read_otlp_metrics_rust", {LogicalType::VARCHAR}, ReadOTLPMetricsUnionScan,
+	                           ReadOTLPMetricsRustBind, ReadOTLPRustInitGlobal, ReadOTLPRustInitLocal);
+	metrics_func.projection_pushdown = false;
+	metrics_func.filter_pushdown = false;
+	loader.RegisterFunction(metrics_func);
 }
 
 } // namespace duckdb
