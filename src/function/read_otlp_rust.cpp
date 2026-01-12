@@ -1,8 +1,8 @@
 /**
  * @file read_otlp_rust.cpp
- * @brief DuckDB table function using Rust otlp2records backend
+ * @brief DuckDB table functions using Rust otlp2records backend
  *
- * This file implements read_otlp_logs_rust, read_otlp_traces_rust, etc.
+ * This file implements read_otlp_logs, read_otlp_traces, etc.
  * table functions that use the Rust otlp2records library for parsing.
  *
  * Requires: -DOTLP_USE_RUST=ON at build time
@@ -235,7 +235,7 @@ static unique_ptr<FunctionData> ReadOTLPMetricsUnsupportedBind(ClientContext &co
                                                                vector<LogicalType> &return_types, vector<string> &names,
                                                                const string &metric_type) {
 	throw NotImplementedException("%s metrics not yet supported. "
-	                              "Use read_otlp_metrics_gauge_rust() or read_otlp_metrics_sum_rust() instead.",
+	                              "Use read_otlp_metrics_gauge() or read_otlp_metrics_sum() instead.",
 	                              metric_type);
 }
 
@@ -544,51 +544,51 @@ static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, D
 // ============================================================================
 
 void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
-	// read_otlp_logs_rust
-	TableFunction logs_func("read_otlp_logs_rust", {LogicalType::VARCHAR}, ReadOTLPRustScan, ReadOTLPLogsRustBind,
+	// read_otlp_logs
+	TableFunction logs_func("read_otlp_logs", {LogicalType::VARCHAR}, ReadOTLPRustScan, ReadOTLPLogsRustBind,
 	                        ReadOTLPRustInitGlobal, ReadOTLPRustInitLocal);
 	logs_func.projection_pushdown = false;
 	logs_func.filter_pushdown = false;
 	loader.RegisterFunction(logs_func);
 
-	// read_otlp_traces_rust
-	TableFunction traces_func("read_otlp_traces_rust", {LogicalType::VARCHAR}, ReadOTLPRustScan, ReadOTLPTracesRustBind,
+	// read_otlp_traces
+	TableFunction traces_func("read_otlp_traces", {LogicalType::VARCHAR}, ReadOTLPRustScan, ReadOTLPTracesRustBind,
 	                          ReadOTLPRustInitGlobal, ReadOTLPRustInitLocal);
 	traces_func.projection_pushdown = false;
 	traces_func.filter_pushdown = false;
 	loader.RegisterFunction(traces_func);
 
-	// read_otlp_metrics_gauge_rust
-	TableFunction gauge_func("read_otlp_metrics_gauge_rust", {LogicalType::VARCHAR}, ReadOTLPRustScan,
+	// read_otlp_metrics_gauge
+	TableFunction gauge_func("read_otlp_metrics_gauge", {LogicalType::VARCHAR}, ReadOTLPRustScan,
 	                         ReadOTLPMetricsGaugeRustBind, ReadOTLPRustInitGlobal, ReadOTLPRustInitLocal);
 	gauge_func.projection_pushdown = false;
 	gauge_func.filter_pushdown = false;
 	loader.RegisterFunction(gauge_func);
 
-	// read_otlp_metrics_sum_rust
-	TableFunction sum_func("read_otlp_metrics_sum_rust", {LogicalType::VARCHAR}, ReadOTLPRustScan,
+	// read_otlp_metrics_sum
+	TableFunction sum_func("read_otlp_metrics_sum", {LogicalType::VARCHAR}, ReadOTLPRustScan,
 	                       ReadOTLPMetricsSumRustBind, ReadOTLPRustInitGlobal, ReadOTLPRustInitLocal);
 	sum_func.projection_pushdown = false;
 	sum_func.filter_pushdown = false;
 	loader.RegisterFunction(sum_func);
 
 	// Union metrics (gauge + sum combined)
-	TableFunction metrics_func("read_otlp_metrics_rust", {LogicalType::VARCHAR}, ReadOTLPMetricsUnionScan,
+	TableFunction metrics_func("read_otlp_metrics", {LogicalType::VARCHAR}, ReadOTLPMetricsUnionScan,
 	                           ReadOTLPMetricsRustBind, ReadOTLPRustInitGlobal, ReadOTLPRustInitLocal);
 	metrics_func.projection_pushdown = false;
 	metrics_func.filter_pushdown = false;
 	loader.RegisterFunction(metrics_func);
 
 	// Unsupported metric types (throw on bind)
-	TableFunction histogram_func("read_otlp_metrics_histogram_rust", {LogicalType::VARCHAR},
-	                             ReadOTLPMetricsUnsupportedScan, ReadOTLPMetricsHistogramRustBind);
+	TableFunction histogram_func("read_otlp_metrics_histogram", {LogicalType::VARCHAR}, ReadOTLPMetricsUnsupportedScan,
+	                             ReadOTLPMetricsHistogramRustBind);
 	loader.RegisterFunction(histogram_func);
 
-	TableFunction exp_histogram_func("read_otlp_metrics_exp_histogram_rust", {LogicalType::VARCHAR},
+	TableFunction exp_histogram_func("read_otlp_metrics_exp_histogram", {LogicalType::VARCHAR},
 	                                 ReadOTLPMetricsUnsupportedScan, ReadOTLPMetricsExpHistogramRustBind);
 	loader.RegisterFunction(exp_histogram_func);
 
-	TableFunction summary_func("read_otlp_metrics_summary_rust", {LogicalType::VARCHAR}, ReadOTLPMetricsUnsupportedScan,
+	TableFunction summary_func("read_otlp_metrics_summary", {LogicalType::VARCHAR}, ReadOTLPMetricsUnsupportedScan,
 	                           ReadOTLPMetricsSummaryRustBind);
 	loader.RegisterFunction(summary_func);
 }

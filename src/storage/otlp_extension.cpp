@@ -7,9 +7,24 @@
 // OTLP functionality
 #include "function/read_otlp.hpp"
 
+// Rust backend (when enabled)
+#ifdef OTLP_RUST_BACKEND
+namespace duckdb {
+void RegisterReadOTLPRustFunctions(ExtensionLoader &loader);
+}
+#endif
+
 namespace duckdb {
 
 static void LoadInternal(ExtensionLoader &loader) {
+#ifdef OTLP_RUST_BACKEND
+	// Register Rust-backed table functions (replaces C++ implementations)
+	RegisterReadOTLPRustFunctions(loader);
+
+	// Keep utility functions from C++ (stats and options)
+	loader.RegisterFunction(ReadOTLPTableFunction::GetStatsFunction());
+	loader.RegisterFunction(ReadOTLPTableFunction::GetOptionsFunction());
+#else
 	// Register OTLP table function (available in all builds including WASM)
 	// Register read_otlp_* table functions
 	loader.RegisterFunction(ReadOTLPTableFunction::GetTracesFunction());
@@ -22,6 +37,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(ReadOTLPTableFunction::GetMetricsSummaryFunction());
 	loader.RegisterFunction(ReadOTLPTableFunction::GetStatsFunction());
 	loader.RegisterFunction(ReadOTLPTableFunction::GetOptionsFunction());
+#endif
 }
 
 void OtlpExtension::Load(ExtensionLoader &loader) {
