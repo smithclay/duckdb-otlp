@@ -64,3 +64,9 @@ statement error
 SELECT * FROM read_otlp_metrics_summary('test/data/metrics_simple.jsonl');
 ----
 Summary metrics not yet supported
+
+# Test union metrics function throws NotImplementedException with valid file
+statement error
+SELECT * FROM read_otlp_metrics('test/data/metrics_simple.jsonl');
+----
+Union metrics scan not yet implemented
