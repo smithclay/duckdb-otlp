@@ -1,10 +1,10 @@
-# Duckspan Cookbook
+# Cookbook
 
 Common, copy-paste-ready recipes for working with OTLP exports in DuckDB. Start with the [collector setup guide](../setup/collector.md) if you need to generate data using the OpenTelemetry Collector file exporter.
 
 ## Export telemetry to Parquet (and read it back)
 
-Persisting telemetry to Parquet keeps files compact while preserving Duckspan’s column types.
+Persisting telemetry to Parquet keeps files compact while preserving column types.
 
 ```sql
 -- 1. Load the extension
@@ -17,9 +17,9 @@ COPY (
 ) TO 'warehouse/daily_traces.parquet' (FORMAT PARQUET);
 
 -- 3. Re-open the Parquet file later (no extension load required)
-SELECT TraceId, SpanName, Duration
+SELECT trace_id, span_name, duration
 FROM read_parquet('warehouse/daily_traces.parquet')
-WHERE Duration >= 1000000000;
+WHERE duration >= 1000000000;
 ```
 
 Tips:
@@ -28,73 +28,56 @@ Tips:
 
 ## Build typed metrics tables
 
-Turn the metrics union schema into tables that match each metric shape.
+Create persistent tables from metric data:
 
 ```sql
 LOAD otlp;
 
 CREATE TABLE metrics_gauge AS
-SELECT Timestamp, ServiceName, MetricName, Value
-FROM read_otlp_metrics('otel-export/telemetry.jsonl')
-WHERE MetricType = 'gauge';
-
-CREATE TABLE metrics_histogram AS
-SELECT Timestamp, ServiceName, MetricName,
-       Count, Sum, BucketCounts, ExplicitBounds
-FROM read_otlp_metrics('otel-export/telemetry.jsonl')
-WHERE MetricType = 'histogram';
-```
-
-Prefer the helper scans when you only need one metric type:
-
-```sql
-INSERT INTO metrics_gauge
-SELECT *
+SELECT timestamp, service_name, metric_name, value
 FROM read_otlp_metrics_gauge('otel-export/telemetry.jsonl');
+
+CREATE TABLE metrics_sum AS
+SELECT timestamp, service_name, metric_name, value, aggregation_temporality, is_monotonic
+FROM read_otlp_metrics_sum('otel-export/telemetry.jsonl');
 ```
 
-Refer to the [schema reference](../reference/schemas.md#metrics-read_otlp_metrics) for every column available on the union and helper functions.
-
-## Filter noisy telemetry during ingest
-
-Use the `on_error` named parameter to continue scanning when malformed rows appear.
-
-```sql
-SELECT *
-FROM read_otlp_logs('s3://otel-bucket/logs/*.jsonl', on_error := 'skip')
-WHERE SeverityText IN ('ERROR', 'FATAL');
-```
-
-Retrieve parse diagnostics for the current connection:
-
-```sql
-SELECT * FROM read_otlp_scan_stats();
-```
+Refer to the [schema reference](../reference/schemas.md#metrics) for all available columns.
 
 ## Analyze traces across files
 
-Grep across entire directories or object-store prefixes using globs and DuckDB predicates.
+Query across entire directories or object-store prefixes using globs and DuckDB predicates.
 
 ```sql
-SELECT ServiceName,
+SELECT service_name,
        COUNT(*) AS span_count,
-       AVG(Duration) / 1000000 AS avg_duration_ms
+       AVG(duration) / 1000000 AS avg_duration_ms
 FROM read_otlp_traces('s3://otel-archive/2024/05/*.pb')
-WHERE SpanKind = 'SERVER'
-GROUP BY ServiceName
+WHERE span_kind = 2  -- SERVER
+GROUP BY service_name
 ORDER BY span_count DESC;
 ```
 
-## Discover available options
-
-Check which named parameters the extension supports without leaving DuckDB:
+## Filter logs by severity
 
 ```sql
-SELECT *
-FROM read_otlp_options();
+SELECT timestamp, service_name, body
+FROM read_otlp_logs('app-logs/*.jsonl')
+WHERE severity_text IN ('ERROR', 'FATAL')
+ORDER BY timestamp DESC;
 ```
 
-Each option is documented alongside its default value and whether it supports automatic filter pushdown.
+## Join traces to logs
+
+Correlate log records with their parent traces:
+
+```sql
+SELECT t.span_name, l.body, l.severity_text
+FROM read_otlp_traces('traces/*.jsonl') t
+JOIN read_otlp_logs('logs/*.jsonl') l
+  ON t.trace_id = l.trace_id
+WHERE l.severity_text = 'ERROR';
+```
 
 ---
 

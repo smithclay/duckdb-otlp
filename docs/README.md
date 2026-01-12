@@ -28,9 +28,6 @@ Task-based tutorials with real-world examples:
 
 ### Data Management
 
-- **[Exporting to Parquet](guides/exporting-to-parquet.md)** - Archive telemetry for long-term storage
-- **[Building Dashboards](guides/building-dashboards.md)** - Create custom metrics dashboards and visualizations
-- **[Error Handling](guides/error-handling.md)** - Handle malformed data with `on_error` and scan diagnostics
 - **[Cookbook](guides/cookbook.md)** - Common recipes and patterns
 
 ## 📖 Reference
@@ -39,20 +36,8 @@ Detailed technical documentation:
 
 ### API
 
-- **[Table Functions](reference/api.md)** - Function signatures, parameters, return types
-- **[Error Handling](reference/error-handling.md)** - `on_error` modes and `read_otlp_scan_stats()`
-
-### Schemas
-
-- **[Traces Schema](reference/traces-schema.md)** - 22 columns for trace spans
-- **[Logs Schema](reference/logs-schema.md)** - 15 columns for log records
-- **[Metrics Schema](reference/metrics-schema.md)** - Union schema and typed helpers
-
-### Advanced
-
-- **[Type System](reference/type-system.md)** - DuckDB type mappings, conversions, gotchas
-- **[Performance Tips](reference/performance.md)** - Optimize queries and scans
-- **[Schemas](reference/schemas.md)** - Complete schema reference for traces, logs, and metrics
+- **[Table Functions](reference/api.md)** - Function signatures and parameters
+- **[Schemas](reference/schemas.md)** - Complete schema reference for traces (25 columns), logs (15 columns), and metrics (16-18 columns)
 
 ## ⚙️ Setup
 
@@ -72,12 +57,11 @@ Installation and configuration:
 
 **I want to...**
 
-- **Get sample OTLP data** → See [Sample Data](setup/sample-data.md) or [OTel Collector Demo Exports](guides/otel-collector-demo-exports.md)
-- **Query trace spans** → See [Analyzing Traces](guides/analyzing-traces.md)
-- **Filter logs by severity** → See [Filtering Logs](guides/filtering-logs.md)
-- **Export to Parquet** → See [Exporting to Parquet](guides/exporting-to-parquet.md)
-- **Build metrics tables** → See [Working with Metrics](guides/working-with-metrics.md)
-- **Handle parsing errors** → See [Error Handling](guides/error-handling.md)
+- **Get sample OTLP data** → See [Sample Data](setup/sample-data.md)
+- **Query trace spans** → See [Cookbook](guides/cookbook.md)
+- **Filter logs by severity** → See [Cookbook](guides/cookbook.md)
+- **Export to Parquet** → See [Cookbook](guides/cookbook.md)
+- **Build metrics tables** → See [Cookbook](guides/cookbook.md)
 - **Understand schemas** → See [Schema Reference](reference/schemas.md)
 
 ## ❓ Need Help?

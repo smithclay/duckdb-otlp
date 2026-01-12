@@ -9,9 +9,8 @@ The DuckDB OTLP extension is a **table-function extension** that exposes strongl
 ## Extension Type
 
 The extension provides:
-- Table functions: `read_otlp_traces`, `read_otlp_logs`, `read_otlp_metrics`
-- Metrics helper functions: `read_otlp_metrics_{gauge,sum,histogram,exp_histogram,summary}`
-- Diagnostic functions: `read_otlp_scan_stats`, `read_otlp_options`
+- Table functions: `read_otlp_traces`, `read_otlp_logs`
+- Metrics functions: `read_otlp_metrics_gauge`, `read_otlp_metrics_sum`
 
 ## How It Works
 
@@ -70,7 +69,7 @@ Centralized column layouts for traces, logs, and metrics, including the union sc
 ## Data Flow
 
 ```
-User: SELECT * FROM read_otlp_metrics('metrics.pb')
+User: SELECT * FROM read_otlp_metrics_gauge('metrics.pb')
   ↓
 FormatDetector::DetectFormat()
   ↓
@@ -83,28 +82,14 @@ DuckDB emits DataChunks with strongly-typed columns
 
 ## Key Design Decisions
 
-### ClickHouse-Compatible Schema
+### Schema Design
 
-The table functions emit the OpenTelemetry ClickHouse exporter schema:
+The table functions emit schemas inspired by the OpenTelemetry ClickHouse exporter, with all column names in `snake_case`:
 
-- **Traces**: 22 columns covering identifiers, scope metadata, resource attributes, events, links, and computed duration
+- **Traces**: 25 columns covering identifiers, scope metadata, resource attributes, events, links, and computed duration
 - **Logs**: 15 columns with severity, body, resource/scope maps, and trace correlation fields
-- **Metrics**: Union schema (27 columns) containing a `MetricType` discriminator plus all type-specific payloads
-
-This compatibility ensures users can migrate between ClickHouse and DuckDB, or use both systems with the same data.
-
-### Union Table Strategy
-
-Instead of creating separate tables for each metric type, `read_otlp_metrics` returns a union schema. Users can split this into typed archive tables with simple SQL:
-
-```sql
-CREATE TABLE metrics_gauge AS
-SELECT *
-FROM read_otlp_metrics('otel-export/telemetry.jsonl')
-WHERE MetricType = 'gauge';
-```
-
-The helper functions (`read_otlp_metrics_{gauge,sum,histogram,exp_histogram,summary}`) call the union reader internally and project typed schemas for convenience.
+- **Metrics (gauge)**: 16 columns with timestamp, service info, metric metadata, and value
+- **Metrics (sum)**: 18 columns (gauge columns plus aggregation temporality and is_monotonic)
 
 ### Streaming Architecture
 
@@ -159,7 +144,8 @@ Python dependencies (via `uv`):
 - Live OTLP ingestion via gRPC has been removed; only file-based workloads are supported
 - **WASM builds support JSON format only**. Protobuf parsing is only available in native builds
 - Protobuf parsing requires linking against the protobuf runtime (available in native builds)
-- The metrics table function emits a union schema; consumers must project out the desired metric shapes manually when creating persistent tables
+- Histogram, exponential histogram, and summary metrics are not yet supported
+- The union metrics function (`read_otlp_metrics`) is not yet implemented
 
 ## Building
 
