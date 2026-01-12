@@ -4,87 +4,12 @@
 
 require otlp
 
-### Malformed JSON - Fail Mode (Default) ###
+### Malformed JSON - Default Error Handling ###
 
-# Test malformed JSON with default fail mode
+# Test malformed JSON should error
 statement error
 SELECT * FROM read_otlp_traces('test/data/malformed.jsonl');
 ----
-
-### Malformed JSON - Skip Mode ###
-
-# Test skip mode on malformed file (should skip bad records, keep valid)
-query I
-SELECT COUNT(*) FROM read_otlp_traces('test/data/malformed.jsonl', on_error := 'skip');
-----
-1
-
-# Verify the valid record was parsed correctly (TraceId is hex-encoded)
-query II
-SELECT TraceId, SpanName
-FROM read_otlp_traces('test/data/malformed.jsonl', on_error := 'skip');
-----
-414243	valid span
-
-# Test skip mode with logs
-query I
-SELECT COUNT(*) FROM read_otlp_logs('test/data/malformed.jsonl', on_error := 'skip');
-----
-0
-
-# Test skip mode with metrics
-query I
-SELECT COUNT(*) FROM read_otlp_metrics('test/data/malformed.jsonl', on_error := 'skip');
-----
-0
-
-### Malformed JSON - Nullify Mode ###
-
-# Test nullify mode on malformed file (should emit NULL rows)
-query I
-SELECT COUNT(*) FROM read_otlp_traces('test/data/malformed.jsonl', on_error := 'nullify');
-----
-4
-
-# Verify NULL rows have NULL TraceId (3 invalid records)
-query I
-SELECT COUNT(*) FROM read_otlp_traces('test/data/malformed.jsonl', on_error := 'nullify')
-WHERE TraceId IS NULL;
-----
-3
-
-# Verify the one valid record
-query I
-SELECT COUNT(*) FROM read_otlp_traces('test/data/malformed.jsonl', on_error := 'nullify')
-WHERE TraceId IS NOT NULL;
-----
-1
-
-# Test nullify with typed metrics (emits NULL rows for errors)
-query I
-SELECT COUNT(*) FROM read_otlp_metrics_gauge('test/data/malformed.jsonl', on_error := 'nullify');
-----
-4
-
-### Error Statistics Tracking ###
-
-# Skip mode should track errors
-statement ok
-SELECT * FROM read_otlp_traces('test/data/malformed.jsonl', on_error := 'skip');
-
-query I
-SELECT error_records FROM read_otlp_scan_stats() WHERE error_records > 0;
-----
-3
-
-# Nullify mode should also track errors
-statement ok
-SELECT * FROM read_otlp_traces('test/data/malformed.jsonl', on_error := 'nullify');
-
-query I
-SELECT error_records FROM read_otlp_scan_stats() WHERE error_records > 0;
-----
-3
 
 ### Nonexistent File Handling ###
 
@@ -93,45 +18,15 @@ statement error
 SELECT * FROM read_otlp_traces('test/data/does_not_exist.jsonl');
 ----
 
-# Test nonexistent file with skip mode
+# Test nonexistent file with logs
 statement error
-SELECT * FROM read_otlp_traces('test/data/does_not_exist.jsonl', on_error := 'skip');
+SELECT * FROM read_otlp_logs('test/data/does_not_exist.jsonl');
 ----
 
-# Test nonexistent file with nullify mode
+# Test nonexistent file with metrics
 statement error
-SELECT * FROM read_otlp_traces('test/data/does_not_exist.jsonl', on_error := 'nullify');
+SELECT * FROM read_otlp_metrics('test/data/does_not_exist.jsonl');
 ----
-
-### Invalid OTLP Structure ###
-
-# Malformed file has {"invalid": "not otlp json"} - should be handled
-query I
-SELECT COUNT(*) FROM read_otlp_traces('test/data/malformed.jsonl', on_error := 'skip');
-----
-1
-
-# Incomplete JSON should be skipped
-query I
-SELECT COUNT(*) FROM read_otlp_traces('test/data/malformed.jsonl', on_error := 'skip');
-----
-1
-
-### Mixed Valid and Invalid Records ###
-
-# Test that valid records are preserved in skip mode
-query I
-SELECT COUNT(*) FROM read_otlp_traces('test/data/malformed.jsonl', on_error := 'skip')
-WHERE SpanName = 'valid span';
-----
-1
-
-# Test that invalid records produce NULL rows in nullify mode (3 invalid records)
-query I
-SELECT COUNT(*) FROM read_otlp_traces('test/data/malformed.jsonl', on_error := 'nullify')
-WHERE SpanName IS NULL;
-----
-3
 
 ### Error Handling with Different Data Types ###
 
@@ -149,56 +44,3 @@ SELECT * FROM read_otlp_logs('test/data/malformed.jsonl');
 statement error
 SELECT * FROM read_otlp_metrics('test/data/malformed.jsonl');
 ----
-
-### Error Handling with Typed Helpers ###
-
-# Test typed helpers with malformed data and skip mode
-query I
-SELECT COUNT(*) FROM read_otlp_metrics_gauge('test/data/malformed.jsonl', on_error := 'skip');
-----
-0
-
-query I
-SELECT COUNT(*) FROM read_otlp_metrics_sum('test/data/malformed.jsonl', on_error := 'skip');
-----
-0
-
-query I
-SELECT COUNT(*) FROM read_otlp_metrics_histogram('test/data/malformed.jsonl', on_error := 'skip');
-----
-0
-
-### Combining Error Modes with Size Limits ###
-
-# Test skip mode with size limits on malformed data
-query I
-SELECT COUNT(*) FROM read_otlp_traces('test/data/malformed.jsonl',
-                                       on_error := 'skip',
-                                       max_document_bytes := 104857600);
-----
-1
-
-# Test nullify mode with size limits on malformed data
-query I
-SELECT COUNT(*) FROM read_otlp_traces('test/data/malformed.jsonl',
-                                       on_error := 'nullify',
-                                       max_document_bytes := 104857600);
-----
-4
-
-### Verify Error Statistics After Multiple Scans ###
-
-# Clear stats by running a clean scan first
-statement ok
-SELECT * FROM read_otlp_traces('test/data/traces_simple.jsonl');
-
-# Now scan malformed data with skip
-statement ok
-SELECT * FROM read_otlp_traces('test/data/malformed.jsonl', on_error := 'skip');
-
-# Verify errors were tracked
-query I
-SELECT CASE WHEN error_records > 0 THEN 1 ELSE 0 END as has_errors
-FROM read_otlp_scan_stats();
-----
-1

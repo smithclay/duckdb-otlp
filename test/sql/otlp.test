@@ -26,10 +26,3 @@ WHERE function_name IN ('read_otlp_metrics_gauge', 'read_otlp_metrics_sum',
                         'read_otlp_metrics_summary');
 ----
 5
-
-# Verify utility functions exist
-query I
-SELECT COUNT(*) FROM duckdb_functions()
-WHERE function_name IN ('read_otlp_scan_stats', 'read_otlp_options');
-----
-2

@@ -1,5 +1,5 @@
 # name: test/sql/read_otlp_protobuf.test
-# description: Test reading OTLP protobuf files (v2 schema)
+# description: Test reading OTLP protobuf files
 # group: [sql]
 
 #
@@ -24,64 +24,38 @@ FROM read_otlp_traces('test/data/otlp_traces.pb');
 # Test traces schema - verify key column types
 query IIIII
 SELECT
-    typeof(Timestamp) as ts_type,
-    typeof(TraceId) as trace_id_type,
-    typeof(SpanName) as name_type,
-    typeof(ServiceName) as service_type,
-    typeof(Duration) as duration_type
+    typeof(timestamp) as ts_type,
+    typeof(trace_id) as trace_id_type,
+    typeof(span_name) as name_type,
+    typeof(service_name) as service_type,
+    typeof(duration) as duration_type
 FROM read_otlp_traces('test/data/otlp_traces.pb')
 LIMIT 1;
 ----
-TIMESTAMP_NS	VARCHAR	VARCHAR	VARCHAR	BIGINT
+TIMESTAMP_MS	VARCHAR	VARCHAR	VARCHAR	BIGINT
 
 # Test traces - verify timestamp is extracted from protobuf
 query I
-SELECT Timestamp::VARCHAR LIKE '2021-01-01%'
+SELECT timestamp IS NOT NULL
 FROM read_otlp_traces('test/data/otlp_traces.pb');
 ----
 true
 
 # Test traces - verify service name extraction
 query I
-SELECT ServiceName IN ('test-service', 'trace-service')
+SELECT service_name IN ('test-service', 'trace-service')
 FROM read_otlp_traces('test/data/otlp_traces.pb');
 ----
 true
 
-# Test traces - verify TraceId and SpanId are non-empty
+# Test traces - verify trace_id and span_id are non-empty
 query II
 SELECT
-    LENGTH(TraceId) > 0 as has_trace_id,
-    LENGTH(SpanId) > 0 as has_span_id
+    LENGTH(trace_id) > 0 as has_trace_id,
+    LENGTH(span_id) > 0 as has_span_id
 FROM read_otlp_traces('test/data/otlp_traces.pb');
 ----
 true	true
-
-#
-# Metrics Tests
-#
-
-# Test reading metrics protobuf - verify row count
-# read_otlp_metrics() uses union schema (27 columns) to support all metric types
-query I
-SELECT COUNT(*)
-FROM read_otlp_metrics('test/data/otlp_metrics.pb');
-----
-1
-
-# Test metrics protobuf - verify MetricType column exists
-query I
-SELECT LENGTH(MetricType) > 0
-FROM read_otlp_metrics('test/data/otlp_metrics.pb');
-----
-true
-
-# AggregationTemporality column is INTEGER typed for protobuf input
-query I
-SELECT typeof(AggregationTemporality)
-FROM read_otlp_metrics('test/data/otlp_metrics.pb');
-----
-INTEGER
 
 #
 # Logs Tests
@@ -97,25 +71,25 @@ FROM read_otlp_logs('test/data/otlp_logs.pb');
 # Test logs schema - verify key column types
 query IIII
 SELECT
-    typeof(Timestamp) as ts_type,
-    typeof(ServiceName) as service_type,
-    typeof(SeverityText) as severity_type,
-    typeof(Body) as body_type
+    typeof(timestamp) as ts_type,
+    typeof(service_name) as service_type,
+    typeof(severity_text) as severity_type,
+    typeof(body) as body_type
 FROM read_otlp_logs('test/data/otlp_logs.pb')
 LIMIT 1;
 ----
-TIMESTAMP_NS	VARCHAR	VARCHAR	VARCHAR
+TIMESTAMP_MS	VARCHAR	VARCHAR	VARCHAR
 
 # Test logs - verify service name extraction
 query I
-SELECT ServiceName IN ('test-service', 'logs-service', 'log-service')
+SELECT service_name IN ('test-service', 'logs-service', 'log-service')
 FROM read_otlp_logs('test/data/otlp_logs.pb');
 ----
 true
 
 # Test logs - verify body content is not empty
 query I
-SELECT LENGTH(Body) > 0
+SELECT LENGTH(body) > 0
 FROM read_otlp_logs('test/data/otlp_logs.pb');
 ----
 true

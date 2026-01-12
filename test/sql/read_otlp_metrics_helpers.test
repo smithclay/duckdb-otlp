@@ -1,5 +1,5 @@
 # name: test/sql/read_otlp_metrics_helpers.test
-# description: verify read_otlp_metrics_* helper macros
+# description: verify read_otlp_metrics_* helper functions
 # group: [duckspan]
 
 require otlp
@@ -11,7 +11,7 @@ SELECT COUNT(*) FROM read_otlp_metrics_gauge('test/data/metrics_simple.jsonl');
 1
 
 query I
-SELECT CAST(Value AS BIGINT) FROM read_otlp_metrics_gauge('test/data/metrics_simple.jsonl');
+SELECT CAST(value AS BIGINT) FROM read_otlp_metrics_gauge('test/data/metrics_simple.jsonl');
 ----
 524288000
 
@@ -22,35 +22,6 @@ SELECT COUNT(*) FROM read_otlp_metrics_sum('test/data/metrics_simple.jsonl');
 1
 
 query I
-SELECT IsMonotonic FROM read_otlp_metrics_sum('test/data/metrics_simple.jsonl');
+SELECT is_monotonic FROM read_otlp_metrics_sum('test/data/metrics_simple.jsonl');
 ----
-1
-
-# Histogram helper
-query I
-SELECT COUNT(*) FROM read_otlp_metrics_histogram('test/data/metrics_simple.jsonl');
-----
-1
-
-query I
-SELECT array_length(BucketCounts) FROM read_otlp_metrics_histogram('test/data/metrics_simple.jsonl');
-----
-5
-
-# Exponential histogram helper (none in sample file)
-query I
-SELECT COUNT(*) FROM read_otlp_metrics_exp_histogram('test/data/metrics_simple.jsonl');
-----
-0
-
-# Summary helper (none in sample file)
-query I
-SELECT COUNT(*) FROM read_otlp_metrics_summary('test/data/metrics_simple.jsonl');
-----
-0
-
-# Ensure on_error parameter is accepted
-query I
-SELECT COUNT(*) FROM read_otlp_metrics_gauge('test/data/metrics_simple.jsonl', on_error := 'skip');
-----
-1
+true

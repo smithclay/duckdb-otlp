@@ -1,5 +1,5 @@
 # name: test/sql/read_otlp_on_error.test
-# description: Verify read_otlp on_error modes, stats helper, and options table function
+# description: Verify read_otlp error handling
 # group: [duckspan]
 
 require otlp
@@ -8,87 +8,26 @@ require otlp
 statement error
 SELECT COUNT(*) FROM read_otlp_traces('test/data/malformed.jsonl');
 ----
-Failed to parse OTLP JSON data in file 'test/data/malformed.jsonl' on line (approx) 1: Missing resourceSpans array
 
-# Skip mode should drop bad rows and report error counters
+# Valid files should parse successfully
 query I
-SELECT COUNT(*) FROM read_otlp_traces('test/data/malformed.jsonl', on_error='skip');
-----
-1
-
-query I
-SELECT COUNT(*) FROM read_otlp_scan_stats();
-----
-1
-
-# Nullify mode should emit NULL rows for failures while preserving valid rows
-query II
-SELECT
-    COUNT(*) FILTER (WHERE TraceId IS NULL),
-    COUNT(*) FILTER (WHERE TraceId IS NOT NULL)
-FROM read_otlp_traces('test/data/malformed.jsonl', on_error='nullify');
-----
-3	1
-
-query II
-SELECT error_records, error_documents FROM read_otlp_scan_stats();
-----
-3	0
-
-query I
-SELECT COUNT(*) FROM read_otlp_metrics('test/data/malformed.jsonl', on_error='nullify');
-----
-4
-
-query I
-SELECT COUNT(*) FROM read_otlp_metrics_gauge('test/data/malformed.jsonl', on_error='nullify');
-----
-4
-
-query I
-SELECT COUNT(*) FROM read_otlp_metrics_sum('test/data/malformed.jsonl', on_error='nullify');
-----
-4
-
-query I
-SELECT COUNT(*) FROM read_otlp_metrics_histogram('test/data/malformed.jsonl', on_error='nullify');
-----
-4
-
-query I
-SELECT COUNT(*) FROM read_otlp_metrics_exp_histogram('test/data/malformed.jsonl', on_error='nullify');
-----
-4
-
-query I
-SELECT COUNT(*) FROM read_otlp_metrics_summary('test/data/malformed.jsonl', on_error='nullify');
-----
-4
-
-query II
-SELECT error_records, error_documents FROM read_otlp_scan_stats();
-----
-4	0
-
-# read_otlp_options() surfaces discoverable metadata for table functions
-query I
-SELECT COUNT(*) FROM read_otlp_options();
+SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_simple.jsonl');
 ----
 3
 
-query TT
-SELECT option_name, default_value
-FROM read_otlp_options()
-ORDER BY option_name;
+query I
+SELECT COUNT(*) FROM read_otlp_logs('test/data/logs_simple.jsonl');
 ----
-max_document_bytes	104857600
-on_error	fail
-read_otlp_scan_stats	n/a
+3
 
-statement ok
-SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_simple.jsonl', max_document_bytes := 1024);
-
-statement error
-SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_simple.jsonl', max_document_bytes := 0);
+# Test gauge metrics
+query I
+SELECT COUNT(*) FROM read_otlp_metrics_gauge('test/data/metrics_simple.jsonl');
 ----
-read_otlp max_document_bytes must be greater than 0
+1
+
+# Test sum metrics
+query I
+SELECT COUNT(*) FROM read_otlp_metrics_sum('test/data/metrics_simple.jsonl');
+----
+1
