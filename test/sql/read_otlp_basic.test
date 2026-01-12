@@ -1,0 +1,50 @@
+# name: test/sql/read_otlp_basic.test
+# description: Test read_otlp_* table functions (basic backend tests)
+# group: [otlp]
+
+require otlp
+
+# Test read_otlp_logs with JSON data
+statement ok
+SELECT * FROM read_otlp_logs('test/data/logs_simple.jsonl') LIMIT 1;
+
+# Test schema is correct for logs
+query I
+SELECT COUNT(*) FROM (
+    SELECT column_name FROM (DESCRIBE SELECT * FROM read_otlp_logs('test/data/logs_simple.jsonl'))
+) WHERE column_name IN ('timestamp', 'service_name', 'severity_number', 'body');
+----
+4
+
+# Test read_otlp_traces with JSON data
+statement ok
+SELECT * FROM read_otlp_traces('test/data/traces_simple.jsonl') LIMIT 1;
+
+# Test schema is correct for traces
+query I
+SELECT COUNT(*) FROM (
+    SELECT column_name FROM (DESCRIBE SELECT * FROM read_otlp_traces('test/data/traces_simple.jsonl'))
+) WHERE column_name IN ('timestamp', 'trace_id', 'span_id', 'span_name', 'service_name');
+----
+5
+
+# Test read_otlp_metrics_gauge with JSON data
+statement ok
+SELECT * FROM read_otlp_metrics_gauge('test/data/metrics_simple.jsonl') LIMIT 1;
+
+# Test read_otlp_metrics_sum with JSON data
+statement ok
+SELECT * FROM read_otlp_metrics_sum('test/data/metrics_simple.jsonl') LIMIT 1;
+
+# Test with protobuf data
+statement ok
+SELECT * FROM read_otlp_logs('test/data/otlp_logs.pb') LIMIT 1;
+
+statement ok
+SELECT * FROM read_otlp_traces('test/data/otlp_traces.pb') LIMIT 1;
+
+# Test empty results (metrics that don't match type)
+query I
+SELECT COUNT(*) FROM read_otlp_metrics_gauge('test/data/logs_simple.jsonl');
+----
+0
