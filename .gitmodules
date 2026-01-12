@@ -6,3 +6,7 @@
 	path = extension-ci-tools
 	url = https://github.com/duckdb/extension-ci-tools
 	branch = main
+[submodule "external/otlp2records"]
+	path = external/otlp2records
+	url = https://github.com/smithclay/otlp2records.git
+	branch = ffi
