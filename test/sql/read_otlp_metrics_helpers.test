@@ -1,6 +1,6 @@
 # name: test/sql/read_otlp_metrics_helpers.test
 # description: verify read_otlp_metrics_* helper functions
-# group: [duckspan]
+# group: [sql]
 
 require otlp
 

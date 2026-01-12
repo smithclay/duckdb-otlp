@@ -1,6 +1,6 @@
 # name: test/sql/read_otlp_on_error.test
 # description: Verify read_otlp error handling
-# group: [duckspan]
+# group: [sql]
 
 require otlp
 

@@ -237,17 +237,13 @@ def generate_metrics_with_nulls() -> List[Dict[str, Any]]:
 def generate_large_attributes() -> List[Dict[str, Any]]:
     """Generate records with large attribute maps."""
     # 100 attributes
-    large_attrs = [
-        {"key": f"attr_{i}", "value": {"stringValue": f"value_{i}"}} for i in range(100)
-    ]
+    large_attrs = [{"key": f"attr_{i}", "value": {"stringValue": f"value_{i}"}} for i in range(100)]
 
     return [
         {
             "resourceSpans": [
                 {
-                    "resource": {
-                        "attributes": large_attrs[:50]  # 50 resource attributes
-                    },
+                    "resource": {"attributes": large_attrs[:50]},  # 50 resource attributes
                     "scopeSpans": [
                         {
                             "spans": [
@@ -255,9 +251,7 @@ def generate_large_attributes() -> List[Dict[str, Any]]:
                                     "traceId": "00000000000000000000000000000100",
                                     "spanId": "0000000000000100",
                                     "name": "large_attrs_span",
-                                    "attributes": large_attrs[
-                                        50:
-                                    ],  # 50 span attributes
+                                    "attributes": large_attrs[50:],  # 50 span attributes
                                 }
                             ]
                         }
@@ -275,10 +269,7 @@ def generate_deep_nesting() -> List[Dict[str, Any]]:
         {
             "timeUnixNano": f"164000000{i:010d}",
             "name": f"event_{i}",
-            "attributes": [
-                {"key": f"event_attr_{j}", "value": {"stringValue": f"val_{j}"}}
-                for j in range(10)
-            ],
+            "attributes": [{"key": f"event_attr_{j}", "value": {"stringValue": f"val_{j}"}} for j in range(10)],
         }
         for i in range(20)
     ]

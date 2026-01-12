@@ -1,6 +1,6 @@
 # name: test/sql/read_otlp_basic.test
 # description: Test read_otlp_* table functions (basic backend tests)
-# group: [otlp]
+# group: [sql]
 
 require otlp
 
