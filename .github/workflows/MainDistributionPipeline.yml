@@ -28,6 +28,7 @@ jobs:
       ci_tools_version: v1.4.2
       extension_name: otlp
       extra_toolchains: rust
+      exclude_archs: linux_amd64_musl
 
   code-quality-check:
     name: Code Quality Check
