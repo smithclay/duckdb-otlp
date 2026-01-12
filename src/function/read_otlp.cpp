@@ -46,42 +46,55 @@ static LogicalType ArrowFormatToDuckDBType(const char *format) {
 	}
 
 	// Integer types
-	if (fmt == "l")
+	if (fmt == "l") {
 		return LogicalType::BIGINT;
-	if (fmt == "i")
+	}
+	if (fmt == "i") {
 		return LogicalType::INTEGER;
-	if (fmt == "s")
+	}
+	if (fmt == "s") {
 		return LogicalType::SMALLINT;
-	if (fmt == "c")
+	}
+	if (fmt == "c") {
 		return LogicalType::TINYINT;
+	}
 
 	// Unsigned integer types
-	if (fmt == "L")
+	if (fmt == "L") {
 		return LogicalType::UBIGINT;
-	if (fmt == "I")
+	}
+	if (fmt == "I") {
 		return LogicalType::UINTEGER;
-	if (fmt == "S")
+	}
+	if (fmt == "S") {
 		return LogicalType::USMALLINT;
-	if (fmt == "C")
+	}
+	if (fmt == "C") {
 		return LogicalType::UTINYINT;
+	}
 
 	// Float types
-	if (fmt == "g")
+	if (fmt == "g") {
 		return LogicalType::DOUBLE;
-	if (fmt == "f")
+	}
+	if (fmt == "f") {
 		return LogicalType::FLOAT;
+	}
 
 	// Boolean
-	if (fmt == "b")
+	if (fmt == "b") {
 		return LogicalType::BOOLEAN;
+	}
 
 	// String types
-	if (fmt == "u" || fmt == "U")
+	if (fmt == "u" || fmt == "U") {
 		return LogicalType::VARCHAR;
+	}
 
 	// Binary
-	if (fmt == "z" || fmt == "Z")
+	if (fmt == "z" || fmt == "Z") {
 		return LogicalType::BLOB;
+	}
 
 	// Default to VARCHAR for unknown types (including complex types)
 	return LogicalType::VARCHAR;
@@ -109,7 +122,7 @@ struct ReadOTLPRustBindData : public TableFunctionData {
 	bool schema_initialized = false;
 	bool is_union_metrics = false;
 
-	~ReadOTLPRustBindData() {
+	~ReadOTLPRustBindData() override {
 		if (schema_initialized && arrow_schema.release) {
 			arrow_schema.release(&arrow_schema);
 		}
@@ -141,7 +154,7 @@ struct ReadOTLPRustLocalState : public LocalTableFunctionState {
 	bool stream_active = false;
 	string file_buffer;
 
-	~ReadOTLPRustLocalState() {
+	~ReadOTLPRustLocalState() override {
 		if (stream_active && current_stream.release) {
 			current_stream.release(&current_stream);
 		}
@@ -188,10 +201,10 @@ static unique_ptr<FunctionData> ReadOTLPRustBind(ClientContext &context, TableFu
 	for (int64_t i = 0; i < schema.n_children; i++) {
 		auto child = schema.children[i];
 		if (!child) {
-			throw IOException("Invalid Arrow schema: child %lld is null", (long long)i);
+			throw IOException("Invalid Arrow schema: child %lld is null", static_cast<int64_t>(i));
 		}
 		if (!child->name) {
-			throw IOException("Invalid Arrow schema: child %lld has null name", (long long)i);
+			throw IOException("Invalid Arrow schema: child %lld has null name", static_cast<int64_t>(i));
 		}
 		names.push_back(child->name);
 		return_types.push_back(ArrowFormatToDuckDBType(child->format));
@@ -322,7 +335,8 @@ static void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema
 		// UTF-8 string array
 		// Buffer 0: validity, Buffer 1: offsets (int32), Buffer 2: data
 		if (array.n_buffers < 3) {
-			throw IOException("Invalid Arrow utf8 array: expected 3 buffers, got %lld", (long long)array.n_buffers);
+			throw IOException("Invalid Arrow utf8 array: expected 3 buffers, got %lld",
+			                  static_cast<int64_t>(array.n_buffers));
 		}
 
 		const int32_t *offsets = static_cast<const int32_t *>(array.buffers[1]);
@@ -352,7 +366,7 @@ static void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema
 		// Buffer 0: validity, Buffer 1: offsets (int64), Buffer 2: data
 		if (array.n_buffers < 3) {
 			throw IOException("Invalid Arrow large_utf8 array: expected 3 buffers, got %lld",
-			                  (long long)array.n_buffers);
+			                  static_cast<int64_t>(array.n_buffers));
 		}
 
 		const int64_t *offsets = static_cast<const int64_t *>(array.buffers[1]);
@@ -381,7 +395,7 @@ static void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema
 		// INT64
 		if (array.n_buffers < 2) {
 			throw IOException("Invalid Arrow int64 array: expected at least 2 buffers, got %lld",
-			                  (long long)array.n_buffers);
+			                  static_cast<int64_t>(array.n_buffers));
 		}
 		const int64_t *values = static_cast<const int64_t *>(array.buffers[1]);
 		auto *output_data = FlatVector::GetData<int64_t>(output);
@@ -398,7 +412,7 @@ static void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema
 		// INT32
 		if (array.n_buffers < 2) {
 			throw IOException("Invalid Arrow int32 array: expected at least 2 buffers, got %lld",
-			                  (long long)array.n_buffers);
+			                  static_cast<int64_t>(array.n_buffers));
 		}
 		const int32_t *values = static_cast<const int32_t *>(array.buffers[1]);
 		auto *output_data = FlatVector::GetData<int32_t>(output);
@@ -417,7 +431,7 @@ static void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema
 		// DOUBLE
 		if (array.n_buffers < 2) {
 			throw IOException("Invalid Arrow double array: expected at least 2 buffers, got %lld",
-			                  (long long)array.n_buffers);
+			                  static_cast<int64_t>(array.n_buffers));
 		}
 		const double *values = static_cast<const double *>(array.buffers[1]);
 		auto *output_data = FlatVector::GetData<double>(output);
@@ -435,7 +449,7 @@ static void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema
 	else if (fmt == "b") {
 		if (array.n_buffers < 2) {
 			throw IOException("Invalid Arrow boolean array: expected at least 2 buffers, got %lld",
-			                  (long long)array.n_buffers);
+			                  static_cast<int64_t>(array.n_buffers));
 		}
 		const uint8_t *values = static_cast<const uint8_t *>(array.buffers[1]);
 		auto *output_data = FlatVector::GetData<bool>(output);
@@ -457,7 +471,7 @@ static void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema
 	else if (fmt.substr(0, 3) == "tsm" || fmt.substr(0, 3) == "tsu" || fmt.substr(0, 3) == "tsn") {
 		if (array.n_buffers < 2) {
 			throw IOException("Invalid Arrow timestamp array: expected at least 2 buffers, got %lld",
-			                  (long long)array.n_buffers);
+			                  static_cast<int64_t>(array.n_buffers));
 		}
 		// Timestamps are stored as int64
 		const int64_t *values = static_cast<const int64_t *>(array.buffers[1]);
@@ -542,11 +556,11 @@ static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, D
 							ArrowSchema *col_schema = bind_data.arrow_schema.children[col_idx];
 							if (!col_array) {
 								throw IOException("Invalid Arrow batch: column %llu array is null",
-								                  (unsigned long long)col_idx);
+								                  static_cast<uint64_t>(col_idx));
 							}
 							if (!col_schema) {
 								throw IOException("Invalid Arrow batch: column %llu schema is null",
-								                  (unsigned long long)col_idx);
+								                  static_cast<uint64_t>(col_idx));
 							}
 							CopyArrowToDuckDB(*col_array, *col_schema, output.data[col_idx], row_count);
 						}
@@ -582,15 +596,17 @@ static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, D
 		auto file_size = handle->GetFileSize();
 
 		// Limit file size to 100MB for safety
-		if (file_size > 100 * 1024 * 1024) {
-			throw IOException("File %s is too large (%llu bytes). Maximum supported size is 100MB.", path, file_size);
+		constexpr idx_t MAX_FILE_SIZE = 100ULL * 1024ULL * 1024ULL;
+		if (file_size > MAX_FILE_SIZE) {
+			throw IOException("File %s is too large (%llu bytes). Maximum supported size is 100MB.", path,
+			                  static_cast<uint64_t>(file_size));
 		}
 
 		lstate.file_buffer.resize(file_size);
 		auto bytes_read = handle->Read(lstate.file_buffer.data(), file_size);
-		if (bytes_read != (idx_t)file_size) {
+		if (bytes_read != static_cast<idx_t>(file_size)) {
 			throw IOException("Short read on file %s: expected %lld bytes, got %llu", path.c_str(),
-			                  (long long)file_size, (unsigned long long)bytes_read);
+			                  static_cast<int64_t>(file_size), static_cast<uint64_t>(bytes_read));
 		}
 
 		// Push to Rust parser
