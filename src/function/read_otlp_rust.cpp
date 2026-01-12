@@ -230,6 +230,40 @@ static unique_ptr<FunctionData> ReadOTLPMetricsRustBind(ClientContext &context, 
 	return result;
 }
 
+// Unsupported metric types - throw on bind with clear error message
+static unique_ptr<FunctionData> ReadOTLPMetricsUnsupportedBind(ClientContext &context, TableFunctionBindInput &input,
+                                                               vector<LogicalType> &return_types, vector<string> &names,
+                                                               const string &metric_type) {
+	throw NotImplementedException("%s metrics not yet supported. "
+	                              "Use read_otlp_metrics_gauge_rust() or read_otlp_metrics_sum_rust() instead.",
+	                              metric_type);
+}
+
+static unique_ptr<FunctionData> ReadOTLPMetricsHistogramRustBind(ClientContext &context, TableFunctionBindInput &input,
+                                                                 vector<LogicalType> &return_types,
+                                                                 vector<string> &names) {
+	return ReadOTLPMetricsUnsupportedBind(context, input, return_types, names, "Histogram");
+}
+
+static unique_ptr<FunctionData> ReadOTLPMetricsExpHistogramRustBind(ClientContext &context,
+                                                                    TableFunctionBindInput &input,
+                                                                    vector<LogicalType> &return_types,
+                                                                    vector<string> &names) {
+	return ReadOTLPMetricsUnsupportedBind(context, input, return_types, names, "Exponential histogram");
+}
+
+static unique_ptr<FunctionData> ReadOTLPMetricsSummaryRustBind(ClientContext &context, TableFunctionBindInput &input,
+                                                               vector<LogicalType> &return_types,
+                                                               vector<string> &names) {
+	return ReadOTLPMetricsUnsupportedBind(context, input, return_types, names, "Summary");
+}
+
+// Dummy scan - never called since bind throws
+static void ReadOTLPMetricsUnsupportedScan(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
+	// Never reached - bind throws
+	output.SetCardinality(0);
+}
+
 // ============================================================================
 // Init Functions
 // ============================================================================
@@ -544,6 +578,19 @@ void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
 	metrics_func.projection_pushdown = false;
 	metrics_func.filter_pushdown = false;
 	loader.RegisterFunction(metrics_func);
+
+	// Unsupported metric types (throw on bind)
+	TableFunction histogram_func("read_otlp_metrics_histogram_rust", {LogicalType::VARCHAR},
+	                             ReadOTLPMetricsUnsupportedScan, ReadOTLPMetricsHistogramRustBind);
+	loader.RegisterFunction(histogram_func);
+
+	TableFunction exp_histogram_func("read_otlp_metrics_exp_histogram_rust", {LogicalType::VARCHAR},
+	                                 ReadOTLPMetricsUnsupportedScan, ReadOTLPMetricsExpHistogramRustBind);
+	loader.RegisterFunction(exp_histogram_func);
+
+	TableFunction summary_func("read_otlp_metrics_summary_rust", {LogicalType::VARCHAR}, ReadOTLPMetricsUnsupportedScan,
+	                           ReadOTLPMetricsSummaryRustBind);
+	loader.RegisterFunction(summary_func);
 }
 
 } // namespace duckdb
