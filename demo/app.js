@@ -27,14 +27,15 @@ async function initDuckDB() {
         showStatus('Initializing DuckDB WASM...', 'loading');
 
         // Select bundle based on browser capabilities
+        // Note: Extension built with Emscripten 3.1.73, duckdb-wasm 1.32.0 uses 3.1.71
         const bundle = await duckdb.selectBundle({
             mvp: {
-                mainModule: 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.31.0/dist/duckdb-mvp.wasm',
-                mainWorker: 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.31.0/dist/duckdb-browser-mvp.worker.js',
+                mainModule: 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/dist/duckdb-mvp.wasm',
+                mainWorker: 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/dist/duckdb-browser-mvp.worker.js',
             },
             eh: {
-                mainModule: 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.31.0/dist/duckdb-eh.wasm',
-                mainWorker: 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.31.0/dist/duckdb-browser-eh.worker.js',
+                mainModule: 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/dist/duckdb-eh.wasm',
+                mainWorker: 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/dist/duckdb-browser-eh.worker.js',
             },
         });
 
