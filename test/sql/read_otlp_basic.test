@@ -49,16 +49,12 @@ SELECT COUNT(*) FROM read_otlp_metrics_gauge('test/data/logs_simple.jsonl');
 ----
 0
 
-# Test unsupported metric types throw clear errors
-statement error
+# Test histogram metrics now works (returns 0 rows for gauge-only data)
+statement ok
 SELECT * FROM read_otlp_metrics_histogram('test/data/metrics_simple.jsonl');
-----
-Histogram metrics not yet supported
 
-statement error
+statement ok
 SELECT * FROM read_otlp_metrics_exp_histogram('test/data/metrics_simple.jsonl');
-----
-Exponential histogram metrics not yet supported
 
 statement error
 SELECT * FROM read_otlp_metrics_summary('test/data/metrics_simple.jsonl');

@@ -79,6 +79,8 @@ The extension ships as a **table-function extension** using a Rust backend (`otl
 - `read_otlp_logs` - 15 columns for log records
 - `read_otlp_metrics_gauge` - 16 columns for gauge metrics
 - `read_otlp_metrics_sum` - 18 columns for sum/counter metrics
+- `read_otlp_metrics_histogram` - 22 columns for standard histogram metrics
+- `read_otlp_metrics_exp_histogram` - 27 columns for exponential histogram metrics
 
 Column names use `snake_case` (e.g., `trace_id`, `span_name`, `service_name`).
 
@@ -160,5 +162,5 @@ demo/
 - Live OTLP ingestion via gRPC has been removed; only file-based workloads are supported
 - **WASM builds support JSON format only**. Protobuf parsing is only available in native builds
 - Protobuf parsing requires linking against the protobuf runtime (available in native builds)
-- Histogram, exponential histogram, and summary metrics are not yet supported
+- Summary metrics are not yet supported
 - The union metrics function (`read_otlp_metrics`) is not yet implemented

@@ -8,8 +8,10 @@ The extension emits strongly-typed tables inspired by the [OpenTelemetry ClickHo
 | `read_otlp_logs` | 15 | Log records with severity, body, resource attributes, and trace correlation |
 | `read_otlp_metrics_gauge` | 16 | Gauge metrics with value and metadata |
 | `read_otlp_metrics_sum` | 18 | Sum/counter metrics with aggregation temporality |
+| `read_otlp_metrics_exp_histogram` | 27 | Exponential histogram metrics with bucket data |
+| `read_otlp_metrics_histogram` | 22 | Standard histogram metrics with explicit bucket bounds |
 
-> **Note**: `read_otlp_metrics` (union schema), `read_otlp_metrics_histogram`, `read_otlp_metrics_exp_histogram`, and `read_otlp_metrics_summary` are not yet implemented. Use the gauge and sum helpers for now.
+> **Note**: `read_otlp_metrics` (union schema) and `read_otlp_metrics_summary` are not yet implemented.
 
 ## Traces (`read_otlp_traces`)
 
@@ -103,6 +105,69 @@ Each span is emitted once, even if multiple files are scanned. Use standard Duck
 
 All gauge columns are included, plus the two sum-specific columns above.
 
+### Histogram Metrics (`read_otlp_metrics_histogram`)
+
+22 columns total:
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `timestamp` | TIMESTAMP_MS | Data point timestamp |
+| `start_timestamp` | BIGINT | Start time (nanoseconds since epoch) |
+| `metric_name` | VARCHAR | Metric name |
+| `metric_description` | VARCHAR | Metric description |
+| `metric_unit` | VARCHAR | Metric unit |
+| `count` | BIGINT | Total count of observations |
+| `sum` | DOUBLE | Sum of all observations (optional) |
+| `min` | DOUBLE | Minimum observed value (optional) |
+| `max` | DOUBLE | Maximum observed value (optional) |
+| `bucket_counts` | VARCHAR | Bucket counts as JSON array of integers |
+| `explicit_bounds` | VARCHAR | Explicit bucket boundaries as JSON array of floats |
+| `service_name` | VARCHAR | Service name from resource attributes |
+| `service_namespace` | VARCHAR | Service namespace from resource attributes |
+| `service_instance_id` | VARCHAR | Service instance ID from resource attributes |
+| `resource_attributes` | VARCHAR | Resource attributes as JSON string |
+| `scope_name` | VARCHAR | Instrumentation scope name |
+| `scope_version` | VARCHAR | Instrumentation scope version |
+| `scope_attributes` | VARCHAR | Scope attributes as JSON string |
+| `metric_attributes` | VARCHAR | Data point attributes as JSON string |
+| `flags` | INTEGER | Data point flags |
+| `exemplars_json` | VARCHAR | Exemplars as JSON array |
+| `aggregation_temporality` | INTEGER | Aggregation temporality (1=delta, 2=cumulative) |
+
+### Exponential Histogram Metrics (`read_otlp_metrics_exp_histogram`)
+
+27 columns total:
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `timestamp` | TIMESTAMP_MS | Data point timestamp |
+| `start_timestamp` | BIGINT | Start time (nanoseconds since epoch) |
+| `metric_name` | VARCHAR | Metric name |
+| `metric_description` | VARCHAR | Metric description |
+| `metric_unit` | VARCHAR | Metric unit |
+| `count` | BIGINT | Total count of observations |
+| `sum` | DOUBLE | Sum of all observations (optional) |
+| `min` | DOUBLE | Minimum observed value (optional) |
+| `max` | DOUBLE | Maximum observed value (optional) |
+| `scale` | INTEGER | Scale factor for bucket boundaries |
+| `zero_count` | BIGINT | Count of observations at zero |
+| `zero_threshold` | DOUBLE | Boundary for zero bucket (optional) |
+| `positive_offset` | INTEGER | Starting index for positive buckets |
+| `positive_bucket_counts` | VARCHAR | Positive bucket counts as JSON array |
+| `negative_offset` | INTEGER | Starting index for negative buckets |
+| `negative_bucket_counts` | VARCHAR | Negative bucket counts as JSON array |
+| `service_name` | VARCHAR | Service name from resource attributes |
+| `service_namespace` | VARCHAR | Service namespace from resource attributes |
+| `service_instance_id` | VARCHAR | Service instance ID from resource attributes |
+| `resource_attributes` | VARCHAR | Resource attributes as JSON string |
+| `scope_name` | VARCHAR | Instrumentation scope name |
+| `scope_version` | VARCHAR | Instrumentation scope version |
+| `scope_attributes` | VARCHAR | Scope attributes as JSON string |
+| `metric_attributes` | VARCHAR | Data point attributes as JSON string |
+| `flags` | INTEGER | Data point flags |
+| `exemplars_json` | VARCHAR | Exemplars as JSON array |
+| `aggregation_temporality` | INTEGER | Aggregation temporality (1=delta, 2=cumulative) |
+
 ### Creating typed archive tables
 
 ```sql
@@ -111,6 +176,12 @@ SELECT * FROM read_otlp_metrics_gauge('otel-export/telemetry.jsonl');
 
 CREATE TABLE archive_sum AS
 SELECT * FROM read_otlp_metrics_sum('otel-export/telemetry.jsonl');
+
+CREATE TABLE archive_histogram AS
+SELECT * FROM read_otlp_metrics_histogram('otel-export/telemetry.jsonl');
+
+CREATE TABLE archive_exp_histogram AS
+SELECT * FROM read_otlp_metrics_exp_histogram('otel-export/telemetry.jsonl');
 ```
 
 See the [cookbook](../guides/cookbook.md) for more recipes.

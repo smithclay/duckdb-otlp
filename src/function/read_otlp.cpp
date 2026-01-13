@@ -264,14 +264,14 @@ static unique_ptr<FunctionData> ReadOTLPMetricsUnsupportedBind(ClientContext &co
 static unique_ptr<FunctionData> ReadOTLPMetricsHistogramRustBind(ClientContext &context, TableFunctionBindInput &input,
                                                                  vector<LogicalType> &return_types,
                                                                  vector<string> &names) {
-	return ReadOTLPMetricsUnsupportedBind(context, input, return_types, names, "Histogram");
+	return ReadOTLPRustBind(context, input, return_types, names, OTLP_SIGNAL_METRICS_HISTOGRAM);
 }
 
 static unique_ptr<FunctionData> ReadOTLPMetricsExpHistogramRustBind(ClientContext &context,
                                                                     TableFunctionBindInput &input,
                                                                     vector<LogicalType> &return_types,
                                                                     vector<string> &names) {
-	return ReadOTLPMetricsUnsupportedBind(context, input, return_types, names, "Exponential histogram");
+	return ReadOTLPRustBind(context, input, return_types, names, OTLP_SIGNAL_METRICS_EXP_HISTOGRAM);
 }
 
 static unique_ptr<FunctionData> ReadOTLPMetricsSummaryRustBind(ClientContext &context, TableFunctionBindInput &input,
@@ -669,14 +669,20 @@ void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
 	metrics_func.filter_pushdown = false;
 	loader.RegisterFunction(metrics_func);
 
-	// Unsupported metric types (throw on bind)
-	TableFunction histogram_func("read_otlp_metrics_histogram", {LogicalType::VARCHAR}, ReadOTLPMetricsUnsupportedScan,
-	                             ReadOTLPMetricsHistogramRustBind);
-	loader.RegisterFunction(histogram_func);
-
-	TableFunction exp_histogram_func("read_otlp_metrics_exp_histogram", {LogicalType::VARCHAR},
-	                                 ReadOTLPMetricsUnsupportedScan, ReadOTLPMetricsExpHistogramRustBind);
+	// read_otlp_metrics_exp_histogram
+	TableFunction exp_histogram_func("read_otlp_metrics_exp_histogram", {LogicalType::VARCHAR}, ReadOTLPRustScan,
+	                                 ReadOTLPMetricsExpHistogramRustBind, ReadOTLPRustInitGlobal,
+	                                 ReadOTLPRustInitLocal);
+	exp_histogram_func.projection_pushdown = false;
+	exp_histogram_func.filter_pushdown = false;
 	loader.RegisterFunction(exp_histogram_func);
+
+	// read_otlp_metrics_histogram
+	TableFunction histogram_func("read_otlp_metrics_histogram", {LogicalType::VARCHAR}, ReadOTLPRustScan,
+	                             ReadOTLPMetricsHistogramRustBind, ReadOTLPRustInitGlobal, ReadOTLPRustInitLocal);
+	histogram_func.projection_pushdown = false;
+	histogram_func.filter_pushdown = false;
+	loader.RegisterFunction(histogram_func);
 
 	TableFunction summary_func("read_otlp_metrics_summary", {LogicalType::VARCHAR}, ReadOTLPMetricsUnsupportedScan,
 	                           ReadOTLPMetricsSummaryRustBind);
