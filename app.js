@@ -27,14 +27,15 @@ async function initDuckDB() {
         showStatus('Initializing DuckDB WASM...', 'loading');
 
         // Select bundle based on browser capabilities
+        // Note: Extension built with Emscripten 3.1.73, duckdb-wasm 1.32.0 uses 3.1.71
         const bundle = await duckdb.selectBundle({
             mvp: {
-                mainModule: 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.31.0/dist/duckdb-mvp.wasm',
-                mainWorker: 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.31.0/dist/duckdb-browser-mvp.worker.js',
+                mainModule: 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/dist/duckdb-mvp.wasm',
+                mainWorker: 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/dist/duckdb-browser-mvp.worker.js',
             },
             eh: {
-                mainModule: 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.31.0/dist/duckdb-eh.wasm',
-                mainWorker: 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.31.0/dist/duckdb-browser-eh.worker.js',
+                mainModule: 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/dist/duckdb-eh.wasm',
+                mainWorker: 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/dist/duckdb-browser-eh.worker.js',
             },
         });
 
@@ -107,20 +108,27 @@ async function preloadSampleFiles() {
     const sampleFiles = [
         { path: 'samples/traces_simple.jsonl', name: 'traces.jsonl' },
         { path: 'samples/logs_simple.jsonl', name: 'logs.jsonl' },
-        { path: 'samples/metrics_simple.jsonl', name: 'metrics.jsonl' }
+        { path: 'samples/metrics_simple.jsonl', name: 'metrics.jsonl' },
+        { path: 'samples/traces.pb', name: 'traces.pb' },
+        { path: 'samples/logs.pb', name: 'logs.pb' },
+        { path: 'samples/metrics.pb', name: 'metrics.pb' }
     ];
 
     try {
         for (const file of sampleFiles) {
-            const response = await fetch(file.path);
-            if (!response.ok) {
-                console.warn(`Failed to load ${file.path}`);
-                continue;
+            try {
+                const response = await fetch(file.path);
+                if (!response.ok) {
+                    console.warn(`Failed to load ${file.path}: ${response.status} ${response.statusText}`);
+                    continue;
+                }
+                const arrayBuffer = await response.arrayBuffer();
+                const uint8Array = new Uint8Array(arrayBuffer);
+                await db.registerFileBuffer(file.name, uint8Array);
+                console.log(`Registered ${file.name} (${uint8Array.length} bytes)`);
+            } catch (fileErr) {
+                console.warn(`Error loading ${file.path}:`, fileErr);
             }
-            const arrayBuffer = await response.arrayBuffer();
-            const uint8Array = new Uint8Array(arrayBuffer);
-            await db.registerFileBuffer(file.name, uint8Array);
-            console.log(`Registered ${file.name}`);
         }
     } catch (err) {
         console.error('Error preloading samples:', err);
