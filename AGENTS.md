@@ -42,7 +42,7 @@ make wasm_threads
 # - ./build/wasm_eh/extension/otlp/otlp.duckdb_extension.wasm
 ```
 
-**Note**: WASM builds currently support JSON format only. Protobuf parsing requires native builds.
+**Note**: WASM builds support both JSON and Protobuf formats.
 
 ### Testing
 ```bash
@@ -137,7 +137,7 @@ src/
 ├── receiver/          # Shared row builders and OTLP helpers
 ├── schema/            # Column layout helpers
 ├── generated/         # Protobuf message stubs (DO NOT EDIT)
-└── wasm/              # Stubs for JSON-only builds
+└── wasm/              # WASM-specific build configuration
 
 test/
 ├── sql/               # SQLLogicTests (primary test format)
@@ -148,7 +148,7 @@ demo/
 ├── app.js             # DuckDB-WASM integration code
 ├── style.css          # Demo styling
 ├── otlp.duckdb_extension.wasm  # WASM build of extension
-└── samples/           # Sample OTLP JSONL files for testing
+└── samples/           # Sample OTLP files (JSON and Protobuf)
 ```
 
 ## Testing Notes
@@ -160,7 +160,5 @@ demo/
 ## Known Limitations
 
 - Live OTLP ingestion via gRPC has been removed; only file-based workloads are supported
-- **WASM builds support JSON format only**. Protobuf parsing is only available in native builds
-- Protobuf parsing requires linking against the protobuf runtime (available in native builds)
 - Summary metrics are not yet supported
 - The union metrics function (`read_otlp_metrics`) is not yet implemented

@@ -108,20 +108,27 @@ async function preloadSampleFiles() {
     const sampleFiles = [
         { path: 'samples/traces_simple.jsonl', name: 'traces.jsonl' },
         { path: 'samples/logs_simple.jsonl', name: 'logs.jsonl' },
-        { path: 'samples/metrics_simple.jsonl', name: 'metrics.jsonl' }
+        { path: 'samples/metrics_simple.jsonl', name: 'metrics.jsonl' },
+        { path: 'samples/traces.pb', name: 'traces.pb' },
+        { path: 'samples/logs.pb', name: 'logs.pb' },
+        { path: 'samples/metrics.pb', name: 'metrics.pb' }
     ];
 
     try {
         for (const file of sampleFiles) {
-            const response = await fetch(file.path);
-            if (!response.ok) {
-                console.warn(`Failed to load ${file.path}`);
-                continue;
+            try {
+                const response = await fetch(file.path);
+                if (!response.ok) {
+                    console.warn(`Failed to load ${file.path}: ${response.status} ${response.statusText}`);
+                    continue;
+                }
+                const arrayBuffer = await response.arrayBuffer();
+                const uint8Array = new Uint8Array(arrayBuffer);
+                await db.registerFileBuffer(file.name, uint8Array);
+                console.log(`Registered ${file.name} (${uint8Array.length} bytes)`);
+            } catch (fileErr) {
+                console.warn(`Error loading ${file.path}:`, fileErr);
             }
-            const arrayBuffer = await response.arrayBuffer();
-            const uint8Array = new Uint8Array(arrayBuffer);
-            await db.registerFileBuffer(file.name, uint8Array);
-            console.log(`Registered ${file.name}`);
         }
     } catch (err) {
         console.error('Error preloading samples:', err);
