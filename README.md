@@ -9,19 +9,19 @@ LOAD otlp;
 
 -- Query slow traces
 SELECT
-    TraceId,
-    SpanName,
-    Duration / 1000000 AS duration_ms
+    trace_id,
+    span_name,
+    duration / 1000000 AS duration_ms
 FROM read_otlp_traces('traces.jsonl')
-WHERE Duration > 1000000000  -- over 1 second
-ORDER BY Duration DESC
+WHERE duration > 1000000000  -- over 1 second
+ORDER BY duration DESC
 LIMIT 5;
 ```
 
 **Output:**
 ```
 ┌─────────────────────────────────┬──────────────────┬──────────────┐
-│            TraceId              │    SpanName      │ duration_ms  │
+│            trace_id             │    span_name     │ duration_ms  │
 ├─────────────────────────────────┼──────────────────┼──────────────┤
 │ 7a3f92e8b4c1d6f0a9e2...         │ POST /checkout   │    1523.4    │
 │ 8b1e45c9f2a7d3e6b0f1...         │ GET /search      │    1205.7    │
@@ -57,11 +57,11 @@ The browser demo lets you:
 
 ### Find slow requests
 ```sql
-SELECT SpanName, AVG(Duration) / 1000000 AS avg_ms
+SELECT span_name, AVG(duration) / 1000000 AS avg_ms
 FROM read_otlp_traces('prod-traces/*.jsonl')
-WHERE SpanKind = 'SERVER'
-GROUP BY SpanName
-HAVING AVG(Duration) > 1000000000
+WHERE span_kind = 2  -- SERVER
+GROUP BY span_name
+HAVING AVG(duration) > 1000000000
 ORDER BY avg_ms DESC;
 ```
 
@@ -74,66 +74,24 @@ COPY (
 
 ### Filter logs by severity
 ```sql
-SELECT Timestamp, ServiceName, Body
+SELECT timestamp, service_name, body
 FROM read_otlp_logs('app-logs/*.jsonl')
-WHERE SeverityText IN ('ERROR', 'FATAL')
-ORDER BY Timestamp DESC;
+WHERE severity_text IN ('ERROR', 'FATAL')
+ORDER BY timestamp DESC;
 ```
 
 ### Build metrics dashboards
 ```sql
 CREATE TABLE metrics_gauge AS
-SELECT Timestamp, ServiceName, MetricName, Value
+SELECT timestamp, service_name, metric_name, value
 FROM read_otlp_metrics_gauge('metrics/*.jsonl');
 ```
 
 **[→ See more examples in the Cookbook](docs/guides/cookbook.md)**
 
-## Configuration Options
+## Limits
 
-### Error Handling
-
-Control how the extension handles malformed or invalid OTLP data:
-
-```sql
--- Default: fail on parse errors
-SELECT * FROM read_otlp_traces('traces.jsonl');
-
--- Skip invalid records and continue processing
-SELECT * FROM read_otlp_traces('traces.jsonl', on_error := 'skip');
-
--- Emit NULL rows for invalid records (preserves row count)
-SELECT * FROM read_otlp_traces('traces.jsonl', on_error := 'nullify');
-
--- Check error statistics after scan
-SELECT * FROM read_otlp_scan_stats();
-```
-
-### Size Limits
-
-Individual JSON/Protobuf documents are limited to **100 MB by default** to prevent memory exhaustion:
-
-```sql
--- Use default 100MB limit
-SELECT * FROM read_otlp_traces('traces.jsonl');
-
--- Override for larger documents (value in bytes)
-SELECT * FROM read_otlp_traces('huge_traces.jsonl', max_document_bytes := 500000000);
-
--- Combine with error handling
-SELECT * FROM read_otlp_metrics('metrics.pb',
-                                max_document_bytes := 200000000,
-                                on_error := 'skip');
-```
-
-**Note**: This limit applies to individual documents in JSONL files, or entire protobuf files. It does not limit total file size for streaming JSONL.
-
-### Discover All Options
-
-```sql
--- View all available configuration options
-SELECT * FROM read_otlp_options();
-```
+Individual files are limited to **100 MB** to prevent memory exhaustion. This applies to entire protobuf files or individual documents in JSONL files.
 
 ## What's inside
 
@@ -141,12 +99,10 @@ SELECT * FROM read_otlp_options();
 
 | Function | What it does |
 |----------|-------------|
-| `read_otlp_traces(path, ...)` | Stream trace spans with identifiers, attributes, events, and links |
-| `read_otlp_logs(path, ...)` | Read log records with severity, body, and trace correlation |
-| `read_otlp_metrics(path, ...)` | Query metrics (gauge, sum, histogram, exponential histogram, summary) |
-| `read_otlp_metrics_gauge(path, ...)` | Typed helper for gauge metrics |
-| `read_otlp_metrics_sum(path, ...)` | Typed helper for sum/counter metrics |
-| `read_otlp_metrics_histogram(path, ...)` | Typed helper for histogram metrics |
+| `read_otlp_traces(path)` | Stream trace spans (25 columns) with identifiers, attributes, events, and links |
+| `read_otlp_logs(path)` | Read log records (15 columns) with severity, body, and trace correlation |
+| `read_otlp_metrics_gauge(path)` | Read gauge metrics (16 columns) |
+| `read_otlp_metrics_sum(path)` | Read sum/counter metrics (18 columns) with aggregation temporality |
 
 **[→ Full API Reference](docs/reference/api.md)**
 
@@ -154,9 +110,7 @@ SELECT * FROM read_otlp_options();
 
 - **Automatic format detection** - Works with JSON, JSONL, and protobuf OTLP files (protobuf requires native extension)
 - **DuckDB file systems** - Read from local files, S3, HTTP(S), Azure Blob, GCS
-- **Error handling & safeguards** - `on_error` (fail/skip/nullify) plus `max_document_bytes` (per-file size cap)
-- **ClickHouse compatible** - Matches OpenTelemetry ClickHouse exporter schema
-- **Scan diagnostics** - Review parser stats with `read_otlp_scan_stats()`
+- **ClickHouse-inspired schema** - Row-based schema inspired by OpenTelemetry ClickHouse exporter
 - **Browser support** - Run queries in-browser with DuckDB-WASM (JSON only)
 
 ## Installation
@@ -201,11 +155,11 @@ The extension reads OTLP files (JSON or protobuf), detects the format automatica
 
 ## Schemas
 
-All table functions emit strongly-typed columns (no JSON extraction required):
+All table functions emit strongly-typed columns with `snake_case` naming:
 
-- **Traces**: 22 columns - identifiers, timestamps, attributes, events, links
+- **Traces**: 25 columns - identifiers, timestamps, attributes, events, links
 - **Logs**: 15 columns - severity, body, trace correlation, attributes
-- **Metrics**: 27 columns (union schema) or typed helpers for each metric shape
+- **Metrics**: 16-18 columns depending on metric type (gauge, sum)
 
 **[→ Schema Reference](docs/reference/schemas.md)**
 

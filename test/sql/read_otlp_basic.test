@@ -1,0 +1,68 @@
+# name: test/sql/read_otlp_basic.test
+# description: Test read_otlp_* table functions (basic backend tests)
+# group: [sql]
+
+require otlp
+
+# Test read_otlp_logs with JSON data
+statement ok
+SELECT * FROM read_otlp_logs('test/data/logs_simple.jsonl') LIMIT 1;
+
+# Test schema is correct for logs
+query I
+SELECT COUNT(*) FROM (
+    SELECT column_name FROM (DESCRIBE SELECT * FROM read_otlp_logs('test/data/logs_simple.jsonl'))
+) WHERE column_name IN ('timestamp', 'service_name', 'severity_number', 'body');
+----
+4
+
+# Test read_otlp_traces with JSON data
+statement ok
+SELECT * FROM read_otlp_traces('test/data/traces_simple.jsonl') LIMIT 1;
+
+# Test schema is correct for traces
+query I
+SELECT COUNT(*) FROM (
+    SELECT column_name FROM (DESCRIBE SELECT * FROM read_otlp_traces('test/data/traces_simple.jsonl'))
+) WHERE column_name IN ('timestamp', 'trace_id', 'span_id', 'span_name', 'service_name');
+----
+5
+
+# Test read_otlp_metrics_gauge with JSON data
+statement ok
+SELECT * FROM read_otlp_metrics_gauge('test/data/metrics_simple.jsonl') LIMIT 1;
+
+# Test read_otlp_metrics_sum with JSON data
+statement ok
+SELECT * FROM read_otlp_metrics_sum('test/data/metrics_simple.jsonl') LIMIT 1;
+
+# Test with protobuf data
+statement ok
+SELECT * FROM read_otlp_logs('test/data/otlp_logs.pb') LIMIT 1;
+
+statement ok
+SELECT * FROM read_otlp_traces('test/data/otlp_traces.pb') LIMIT 1;
+
+# Test empty results (metrics that don't match type)
+query I
+SELECT COUNT(*) FROM read_otlp_metrics_gauge('test/data/logs_simple.jsonl');
+----
+0
+
+# Test histogram metrics now works (returns 0 rows for gauge-only data)
+statement ok
+SELECT * FROM read_otlp_metrics_histogram('test/data/metrics_simple.jsonl');
+
+statement ok
+SELECT * FROM read_otlp_metrics_exp_histogram('test/data/metrics_simple.jsonl');
+
+statement error
+SELECT * FROM read_otlp_metrics_summary('test/data/metrics_simple.jsonl');
+----
+Summary metrics not yet supported
+
+# Test union metrics function throws NotImplementedException with valid file
+statement error
+SELECT * FROM read_otlp_metrics('test/data/metrics_simple.jsonl');
+----
+Union metrics scan not yet implemented

@@ -42,7 +42,7 @@ make wasm_threads
 # - ./build/wasm_eh/extension/otlp/otlp.duckdb_extension.wasm
 ```
 
-**Note**: WASM builds currently support JSON format only. Protobuf parsing requires native builds.
+**Note**: WASM builds support both JSON and Protobuf formats.
 
 ### Testing
 ```bash
@@ -74,29 +74,32 @@ uvx --from pre-commit pre-commit run --all-files
 ## Architecture
 
 ### Extension Type
-Duckspan now ships purely as a **table-function extension**. It exposes strongly-typed readers for OTLP telemetry files (`read_otlp_traces`, `read_otlp_logs`, `read_otlp_metrics`), with optional helpers for scan statistics and option discovery.
+The extension ships as a **table-function extension** using a Rust backend (`otlp2records`) via FFI. It exposes:
+- `read_otlp_traces` - 25 columns for trace spans
+- `read_otlp_logs` - 15 columns for log records
+- `read_otlp_metrics_gauge` - 16 columns for gauge metrics
+- `read_otlp_metrics_sum` - 18 columns for sum/counter metrics
+- `read_otlp_metrics_histogram` - 22 columns for standard histogram metrics
+- `read_otlp_metrics_exp_histogram` - 27 columns for exponential histogram metrics
+
+Column names use `snake_case` (e.g., `trace_id`, `span_name`, `service_name`).
 
 ### Core Components
 
-- **Format Detector (`format_detector.cpp/hpp`)**: sniffs the first bytes of a file/stream to decide between JSON and protobuf payloads.
-- **JSON Parser (`json_parser.cpp/hpp`)**: streaming newline-delimited JSON parser that emits typed rows.
-- **Protobuf Parser (`parsers/protobuf_parser.cpp/hpp`)**: wraps generated OTLP protobuf stubs and uses shared row-builder helpers to produce DuckDB vectors.
-- **Row Builders (`receiver/row_builders*.cpp`)**: convert OTLP message structures into vectors that match the ClickHouse-compatible schemas.
-- **Schema Definitions (`src/schema/*.hpp`)**: centralized column layouts for traces, logs, and metrics (including the union schema used by `read_otlp_metrics`).
-- **Metrics helper table functions**: `read_otlp_metrics_{gauge,sum,histogram,exp_histogram,summary}` call the union reader internally and project typed schemas for each metric shape.
+- **Rust Backend (`external/otlp2records`)**: Rust library that parses OTLP JSON and protobuf, returns Arrow arrays via C Data Interface
+- **FFI Bridge (`src/function/read_otlp.cpp`)**: Converts Arrow arrays from Rust to DuckDB DataChunks
+- **Format Detection**: Automatic detection of JSON vs protobuf formats
 
 ### Data Flow
 
 ```
-User: SELECT * FROM read_otlp_metrics('metrics.pb')
+User: SELECT * FROM read_otlp_metrics_gauge('metrics.pb')
   ↓
-FormatDetector::DetectFormat()
+Rust: otlp2records parses file
   ↓
-Choose JSON parser or protobuf parser
+Arrow C Data Interface
   ↓
-Parsers populate typed row builders
-  ↓
-DuckDB emits DataChunks with strongly-typed columns
+DuckDB: Convert Arrow to DataChunks
 ```
 
 ### Generated Code
@@ -105,15 +108,13 @@ The `src/generated/` directory contains protobuf message stubs generated from Op
 
 ## Key Design Decisions
 
-### ClickHouse-Compatible Schema
-The table functions continue to emit the OpenTelemetry ClickHouse exporter schema:
+### Schema Design
+The table functions emit schemas inspired by the OpenTelemetry ClickHouse exporter, with all column names in `snake_case`:
 
-- **Traces**: 22 columns covering identifiers, scope metadata, resource attributes, events, links, and computed duration.
-- **Logs**: 15 columns with severity, body, resource/scope maps, and trace correlation fields.
-- **Metrics**: `read_otlp_metrics` returns a union schema (27 columns) containing a `MetricType` discriminator plus all type-specific payloads (gauge, sum, histogram, exponential histogram, summary). Helpers in `schema/otlp_metrics_schemas.hpp` define the typed projections.
-
-### Union Table Strategy
-Instead of creating separate DuckDB tables, metric data stays in a single union-shaped table function result. Users can split this into typed archive tables with simple `CREATE TABLE AS SELECT ... WHERE MetricType = 'gauge'` patterns (see `test/sql/schema_bridge.test`).
+- **Traces**: 25 columns covering identifiers, scope metadata, resource attributes, events, links, and computed duration
+- **Logs**: 15 columns with severity, body, resource/scope maps, and trace correlation fields
+- **Metrics (gauge)**: 16 columns with timestamp, service info, metric metadata, and value
+- **Metrics (sum)**: 18 columns (gauge columns plus aggregation_temporality and is_monotonic)
 
 ## Dependencies
 
@@ -136,7 +137,7 @@ src/
 ├── receiver/          # Shared row builders and OTLP helpers
 ├── schema/            # Column layout helpers
 ├── generated/         # Protobuf message stubs (DO NOT EDIT)
-└── wasm/              # Stubs for JSON-only builds
+└── wasm/              # WASM-specific build configuration
 
 test/
 ├── sql/               # SQLLogicTests (primary test format)
@@ -147,7 +148,7 @@ demo/
 ├── app.js             # DuckDB-WASM integration code
 ├── style.css          # Demo styling
 ├── otlp.duckdb_extension.wasm  # WASM build of extension
-└── samples/           # Sample OTLP JSONL files for testing
+└── samples/           # Sample OTLP files (JSON and Protobuf)
 ```
 
 ## Testing Notes
@@ -158,7 +159,6 @@ demo/
 
 ## Known Limitations
 
-- Live OTLP ingestion via gRPC has been removed; only file-based workloads are supported.
-- **WASM builds support JSON format only**. Protobuf parsing is only available in native builds.
-- Protobuf parsing requires linking against the protobuf runtime (available in native builds).
-- The metrics table function emits a union schema; consumers must project out the desired metric shapes manually when creating persistent tables.
+- Live OTLP ingestion via gRPC has been removed; only file-based workloads are supported
+- Summary metrics are not yet supported
+- The union metrics function (`read_otlp_metrics`) is not yet implemented

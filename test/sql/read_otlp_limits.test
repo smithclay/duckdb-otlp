@@ -1,170 +1,70 @@
 # name: test/sql/read_otlp_limits.test
-# description: test size limits and max_document_bytes parameter
+# description: test file handling and basic limits
 # group: [sql]
 
 require otlp
 
-### Default Size Limits (100 MB) ###
+### Basic File Reading ###
 
-# Test normal file within default limits
+# Test normal file
 query I
 SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_simple.jsonl');
 ----
 3
 
-# Test large attributes file (within limits)
+# Test large attributes file
 query I
 SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_large_attrs.jsonl');
 ----
 1
 
-# Test deep nesting file (within limits)
+# Test deep nesting file
 query I
 SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_deep_nesting.jsonl');
 ----
 1
 
-### max_document_bytes Parameter ###
+### Logs and Metrics ###
 
-# Test with explicit default value (100 MB)
+# Test logs
 query I
-SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_simple.jsonl',
-                                       max_document_bytes := 104857600);
+SELECT COUNT(*) FROM read_otlp_logs('test/data/logs_simple.jsonl');
 ----
 3
 
-# Test with very small limit (should handle small files)
+# Test gauge metrics
 query I
-SELECT COUNT(*) FROM read_otlp_traces('test/data/single_trace.jsonl',
-                                       max_document_bytes := 1024);
+SELECT COUNT(*) FROM read_otlp_metrics_gauge('test/data/metrics_simple.jsonl');
 ----
 1
 
-# Test with larger limit (500 MB)
+# Test sum metrics
 query I
-SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_simple.jsonl',
-                                       max_document_bytes := 524288000);
-----
-3
-
-# Test max_document_bytes with logs
-query I
-SELECT COUNT(*) FROM read_otlp_logs('test/data/logs_simple.jsonl',
-                                     max_document_bytes := 104857600);
-----
-3
-
-# Test max_document_bytes with metrics
-query I
-SELECT COUNT(*) FROM read_otlp_metrics('test/data/metrics_simple.jsonl',
-                                        max_document_bytes := 104857600);
-----
-3
-
-### Combining max_document_bytes with on_error ###
-
-# Test max_document_bytes with skip mode
-query I
-SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_simple.jsonl',
-                                       max_document_bytes := 104857600,
-                                       on_error := 'skip');
-----
-3
-
-# Test max_document_bytes with nullify mode
-query I
-SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_simple.jsonl',
-                                       max_document_bytes := 104857600,
-                                       on_error := 'nullify');
-----
-3
-
-# Test max_document_bytes with typed metrics helper
-query I
-SELECT COUNT(*) FROM read_otlp_metrics_gauge('test/data/metrics_simple.jsonl',
-                                              max_document_bytes := 104857600);
+SELECT COUNT(*) FROM read_otlp_metrics_sum('test/data/metrics_simple.jsonl');
 ----
 1
 
 ### Boundary Conditions ###
 
-# Test zero count (empty buckets)
-query II
-SELECT MetricName, Count
-FROM read_otlp_metrics_histogram('test/data/metrics_nulls.jsonl')
-WHERE MetricName = 'empty_histogram';
-----
-empty_histogram	0
-
-# Test zero duration (all nulls traces have no duration)
+# Test zero duration (nulls traces have no duration)
 query I
 SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_nulls.jsonl')
-WHERE Duration = 0;
+WHERE duration = 0;
 ----
 3
 
-### Large Collection Sizes ###
+### Multiple Files with Glob Patterns ###
 
-# Test file with 100 attributes (stress test attribute parsing)
+# Test glob pattern with traces
 query I
-SELECT
-    cardinality(ResourceAttributes) + cardinality(SpanAttributes) as total_attrs
-FROM read_otlp_traces('test/data/traces_large_attrs.jsonl');
-----
-100
-
-# Test file with 20 events (stress test array parsing)
-query I
-SELECT length("Events.Name") FROM read_otlp_traces('test/data/traces_deep_nesting.jsonl');
-----
-20
-
-# Test file with 10 links (stress test array parsing)
-query I
-SELECT length("Links.TraceId") FROM read_otlp_traces('test/data/traces_deep_nesting.jsonl');
-----
-10
-
-### Verify Options Discovery ###
-
-# Verify max_document_bytes is listed in options
-query I
-SELECT COUNT(*) FROM read_otlp_options()
-WHERE option_name = 'max_document_bytes';
-----
-1
-
-# Verify on_error is listed in options
-query I
-SELECT COUNT(*) FROM read_otlp_options()
-WHERE option_name = 'on_error';
-----
-1
-
-### Multiple Files with Size Limits ###
-
-# Test glob pattern with size limits
-query I
-SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_*.jsonl',
-                                       max_document_bytes := 104857600);
+SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_*.jsonl');
 ----
 8
 
-# Test multiple typed files with limits
+### Edge Case: Single Minimal Record ###
+
+# Test single trace record
 query I
-SELECT COUNT(*) FROM read_otlp_metrics('test/data/metrics_*.jsonl',
-                                        max_document_bytes := 104857600);
-----
-15
-
-### Edge Case: Very Small Limits ###
-
-# Note: These tests verify the extension handles small limits gracefully
-# Small files should work with small limits
-
-# Test single minimal record with 1KB limit
-query I
-SELECT COUNT(*) FROM read_otlp_traces('test/data/single_trace.jsonl',
-                                       max_document_bytes := 1024);
+SELECT COUNT(*) FROM read_otlp_traces('test/data/single_trace.jsonl');
 ----
 1

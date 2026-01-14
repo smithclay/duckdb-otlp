@@ -1,10 +1,10 @@
 # name: test/sql/read_otlp_json.test
-# description: Test read_otlp_*() table functions with JSON files (v2 schema)
+# description: Test read_otlp_*() table functions with JSON files
 # group: [sql]
 
 require otlp
 
-# Test that all three table functions exist
+# Test that table functions exist
 query I
 SELECT COUNT(*) FROM duckdb_functions() WHERE function_name IN ('read_otlp_traces', 'read_otlp_logs', 'read_otlp_metrics');
 ----
@@ -23,22 +23,22 @@ SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_simple.jsonl');
 # Test traces schema - verify key column types
 query IIIII
 SELECT
-    typeof(Timestamp) as ts_type,
-    typeof(TraceId) as trace_id_type,
-    typeof(SpanId) as span_id_type,
-    typeof(ServiceName) as service_type,
-    typeof(Duration) as duration_type
+    typeof(timestamp) as ts_type,
+    typeof(trace_id) as trace_id_type,
+    typeof(span_id) as span_id_type,
+    typeof(service_name) as service_type,
+    typeof(duration) as duration_type
 FROM read_otlp_traces('test/data/traces_simple.jsonl')
 LIMIT 1;
 ----
-TIMESTAMP_NS	VARCHAR	VARCHAR	VARCHAR	BIGINT
+TIMESTAMP_MS	VARCHAR	VARCHAR	VARCHAR	BIGINT
 
 # Test traces content - verify specific values
 query III
 SELECT
-    LENGTH(TraceId) > 0 as has_trace_id,
-    LENGTH(SpanId) > 0 as has_span_id,
-    ServiceName = 'test-service' as correct_service
+    LENGTH(trace_id) > 0 as has_trace_id,
+    LENGTH(span_id) > 0 as has_span_id,
+    service_name = 'test-service' as correct_service
 FROM read_otlp_traces('test/data/traces_simple.jsonl')
 LIMIT 1;
 ----
@@ -48,7 +48,7 @@ true	true	true
 query I
 SELECT COUNT(*)
 FROM read_otlp_traces('test/data/traces_simple.jsonl')
-WHERE SpanName LIKE '%users%';
+WHERE span_name LIKE '%users%';
 ----
 2
 
@@ -56,7 +56,7 @@ WHERE SpanName LIKE '%users%';
 query I
 SELECT COUNT(*)
 FROM read_otlp_traces('test/data/traces_simple.jsonl')
-WHERE Duration > 0;
+WHERE duration > 0;
 ----
 3
 
@@ -73,20 +73,20 @@ SELECT COUNT(*) FROM read_otlp_logs('test/data/logs_simple.jsonl');
 # Test logs schema - verify key column types
 query IIII
 SELECT
-    typeof(Timestamp) as ts_type,
-    typeof(ServiceName) as service_type,
-    typeof(SeverityText) as severity_type,
-    typeof(Body) as body_type
+    typeof(timestamp) as ts_type,
+    typeof(service_name) as service_type,
+    typeof(severity_text) as severity_type,
+    typeof(body) as body_type
 FROM read_otlp_logs('test/data/logs_simple.jsonl')
 LIMIT 1;
 ----
-TIMESTAMP_NS	VARCHAR	VARCHAR	VARCHAR
+TIMESTAMP_MS	VARCHAR	VARCHAR	VARCHAR
 
 # Test logs content - verify specific values
 query II
 SELECT
-    ServiceName = 'test-service' as correct_service,
-    LENGTH(Body) > 0 as has_body
+    service_name = 'test-service' as correct_service,
+    LENGTH(body) > 0 as has_body
 FROM read_otlp_logs('test/data/logs_simple.jsonl')
 LIMIT 1;
 ----
@@ -96,7 +96,7 @@ true	true
 query I
 SELECT COUNT(*)
 FROM read_otlp_logs('test/data/logs_simple.jsonl')
-WHERE SeverityText IN ('INFO', 'WARN', 'ERROR');
+WHERE severity_text IN ('INFO', 'WARN', 'ERROR');
 ----
 3
 
@@ -107,142 +107,54 @@ SELECT COUNT(*) FROM read_otlp_logs('test/data/logs_document.json');
 1
 
 query TT
-SELECT ServiceName, Body FROM read_otlp_logs('test/data/logs_document.json');
+SELECT service_name, body FROM read_otlp_logs('test/data/logs_document.json');
 ----
 my.service	Example log record
 
 #
-# Metrics Tests
+# Gauge Metrics Tests
 #
 
-# Test reading metrics - verify row count (3 metrics: sum, gauge, histogram)
-# read_otlp_metrics() uses union schema (27 columns) to support all metric types
+# Test reading gauge metrics
 query I
-SELECT COUNT(*) FROM read_otlp_metrics('test/data/metrics_simple.jsonl');
-----
-3
-
-# Test metrics union schema - verify MetricType discriminator column
-query I
-SELECT COUNT(DISTINCT MetricType) FROM read_otlp_metrics('test/data/metrics_simple.jsonl');
-----
-3
-
-# Aggregation temporality parsing supports enum strings and remains INTEGER typed
-query I
-SELECT AggregationTemporality
-FROM read_otlp_metrics('test/data/metrics_temporality_strings.jsonl')
-WHERE MetricType = 'sum';
+SELECT COUNT(*) FROM read_otlp_metrics_gauge('test/data/metrics_simple.jsonl');
 ----
 1
 
+# Test gauge metric value
 query I
-SELECT typeof(AggregationTemporality)
-FROM read_otlp_metrics('test/data/metrics_temporality_strings.jsonl');
+SELECT CAST(value AS BIGINT)
+FROM read_otlp_metrics_gauge('test/data/metrics_simple.jsonl');
 ----
-INTEGER
+524288000
 
-# Test metrics - verify we can filter by metric type
+#
+# Sum Metrics Tests
+#
+
+# Test reading sum metrics
 query I
-SELECT COUNT(*) FROM read_otlp_metrics('test/data/metrics_simple.jsonl')
-WHERE MetricType = 'gauge';
+SELECT COUNT(*) FROM read_otlp_metrics_sum('test/data/metrics_simple.jsonl');
 ----
 1
 
-# Test metrics - verify sum metric retains integer values
+# Test sum metric value
 query I
-SELECT CAST(Value AS BIGINT)
-FROM read_otlp_metrics('test/data/metrics_simple.jsonl')
-WHERE MetricType = 'sum';
+SELECT CAST(value AS BIGINT)
+FROM read_otlp_metrics_sum('test/data/metrics_simple.jsonl');
 ----
 42
 
-# Test metrics - histogram bucket counts and bounds are populated
+# Test aggregation temporality is INTEGER typed
 query I
-SELECT
-    SUM(bucket_val)::BIGINT
-FROM read_otlp_metrics('test/data/metrics_simple.jsonl'),
-     UNNEST(BucketCounts) AS buckets(bucket_val)
-WHERE MetricType = 'histogram';
+SELECT typeof(aggregation_temporality)
+FROM read_otlp_metrics_sum('test/data/metrics_simple.jsonl');
 ----
-100
+INTEGER
 
+# Test is_monotonic is BOOLEAN typed
 query I
-SELECT
-    MAX(bound_val)
-FROM read_otlp_metrics('test/data/metrics_simple.jsonl'),
-     UNNEST(ExplicitBounds) AS bounds(bound_val)
-WHERE MetricType = 'histogram';
+SELECT typeof(is_monotonic)
+FROM read_otlp_metrics_sum('test/data/metrics_simple.jsonl');
 ----
-500.0
-
-# Extended metrics: all metric types including negative sums and quantiles
-query I
-SELECT COUNT(*) FROM read_otlp_metrics('test/data/metrics_all_types.jsonl');
-----
-5
-
-# Extended metrics - verify metric type coverage
-query I
-SELECT COUNT(DISTINCT MetricType) FROM read_otlp_metrics('test/data/metrics_all_types.jsonl');
-----
-5
-
-# Extended metrics - negative sum value parses correctly
-query I
-SELECT CAST(Value AS BIGINT)
-FROM read_otlp_metrics('test/data/metrics_all_types.jsonl')
-WHERE MetricType = 'sum';
-----
--7
-
-# Extended metrics - exponential histogram buckets are captured
-query I
-SELECT
-    SUM(positive_val)::BIGINT
-FROM read_otlp_metrics('test/data/metrics_all_types.jsonl'),
-     UNNEST(PositiveBucketCounts) AS buckets(positive_val)
-WHERE MetricType = 'exponential_histogram';
-----
-9
-
-query I
-SELECT
-    SUM(negative_val)::BIGINT
-FROM read_otlp_metrics('test/data/metrics_all_types.jsonl'),
-     UNNEST(NegativeBucketCounts) AS buckets(negative_val)
-WHERE MetricType = 'exponential_histogram';
-----
-1
-
-# Metrics with missing optional numeric fields preserve NULLs
-query III
-SELECT Sum IS NULL, Min IS NULL, Max IS NULL
-FROM read_otlp_metrics('test/data/metrics_optional_fields.jsonl')
-WHERE MetricType = 'histogram';
-----
-true	true	true
-
-query III
-SELECT Sum IS NULL, Min IS NULL, Max IS NULL
-FROM read_otlp_metrics('test/data/metrics_optional_fields.jsonl')
-WHERE MetricType = 'exponential_histogram';
-----
-true	true	true
-
-query I
-SELECT Sum IS NULL
-FROM read_otlp_metrics('test/data/metrics_optional_fields.jsonl')
-WHERE MetricType = 'summary';
-----
-true
-
-# Extended metrics - summary quantiles are populated
-query I
-SELECT
-    COUNT(*)
-FROM read_otlp_metrics('test/data/metrics_all_types.jsonl'),
-     UNNEST(QuantileValues) AS quantiles(quantile_val)
-WHERE MetricType = 'summary';
-----
-2
+BOOLEAN

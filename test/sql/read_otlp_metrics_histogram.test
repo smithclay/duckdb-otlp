@@ -1,0 +1,77 @@
+# name: test/sql/read_otlp_metrics_histogram.test
+# description: verify read_otlp_metrics_histogram table function
+# group: [sql]
+
+require otlp
+
+# Test basic query and row count
+query I
+SELECT COUNT(*) FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
+----
+1
+
+# Test metric name
+query I
+SELECT metric_name FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
+----
+latency.hist
+
+# Test metric description
+query I
+SELECT metric_description FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
+----
+Latency
+
+# Test metric_unit
+query I
+SELECT metric_unit FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
+----
+ms
+
+# Test count value
+query I
+SELECT count FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
+----
+50
+
+# Test sum value
+query R
+SELECT sum FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
+----
+250.0
+
+# Test bucket_counts (JSON array)
+query I
+SELECT bucket_counts FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
+----
+[5,10,15,12,8]
+
+# Test explicit_bounds (JSON array)
+query I
+SELECT explicit_bounds FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
+----
+[5.0,10.0,20.0,50.0]
+
+# Test service_name extraction
+query I
+SELECT service_name FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
+----
+test-service
+
+# Test metric_attributes
+query I
+SELECT metric_attributes FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
+----
+{"endpoint":"/health"}
+
+# Test result for metrics_simple.jsonl (contains http.server.duration histogram)
+query I
+SELECT COUNT(*) FROM read_otlp_metrics_histogram('test/data/metrics_simple.jsonl');
+----
+1
+
+# Test empty result for logs data
+query I
+SELECT COUNT(*) FROM read_otlp_metrics_histogram('test/data/logs_simple.jsonl');
+----
+0
