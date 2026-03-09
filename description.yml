@@ -1,19 +1,18 @@
 extension:
   name: otlp
   description: Read OpenTelemetry metrics, logs and traces from JSON or protobuf with a ClickHouse-inspired schema
-  version: 0.3.0
+  version: 0.4.0
   language: C++
   build: cmake
   license: MIT
-  # needed for protobuf
-  vcpkg_commit: 35c82bb582adab830e1d14f9c4100d251b30aff4
-  excluded_platforms: ""
+  excluded_platforms: "wasm_mvp;wasm_threads;linux_amd64_musl"
+  requires_toolchains: rust
   maintainers:
     - smithclay
 
 repo:
   github: smithclay/duckdb-otlp
-  ref: 37754c54f7fa371dcfec2b1312dd88c2def2c061
+  ref: v0.4.0
 
 docs:
   hello_world: |
@@ -26,7 +25,7 @@ docs:
     WHERE duration > 1000000000
     LIMIT 10;
 
-    -- Read gauge metrics
+    -- Read gauge metrics from JSON (works in native and WASM)
     SELECT timestamp, service_name, metric_name, value
     FROM read_otlp_metrics_gauge('metrics.jsonl')
     ORDER BY timestamp DESC;
@@ -36,7 +35,7 @@ docs:
     FROM read_otlp_logs('s3://bucket/logs-*.jsonl')
     WHERE severity_text = 'ERROR';
 
-    -- Read protobuf format
+    -- Read protobuf format (native builds only)
     SELECT * FROM read_otlp_traces('traces.pb') LIMIT 10;
 
   extended_description: |
@@ -48,20 +47,16 @@ docs:
     ## Features
 
     **OTLP File Reading**
-    - Table functions: `read_otlp_traces()`, `read_otlp_logs()`, `read_otlp_metrics_*()`
-    - Auto-detects JSON (`.json`, `.jsonl`) and protobuf (`.pb`) formats
+    - Table functions: `read_otlp_traces()`, `read_otlp_logs()`, `read_otlp_metrics_gauge()`, `read_otlp_metrics_sum()`, `read_otlp_metrics_histogram()`, `read_otlp_metrics_exp_histogram()`
+    - Auto-detects JSON (`.json`, `.jsonl`) and protobuf (`.pb`) formats (protobuf requires native extension)
     - Works with DuckDB file systems: local, S3, HTTP, Azure, GCS
-    - Browser support via DuckDB-WASM (JSON and protobuf)
+    - Browser support via DuckDB-WASM (JSON format only)
 
     **Strongly-Typed Schemas**
     - No JSON extraction required - all fields are proper DuckDB columns
     - Direct access: `service_name`, `trace_id`, `duration`, `value`, etc.
     - Compatible with OpenTelemetry ClickHouse exporter schema
     - Efficient filtering and aggregation on typed columns
-
-    **Metric Type Functions**
-    - Separate functions for each metric type: `read_otlp_metrics_gauge()`, `read_otlp_metrics_sum()`, `read_otlp_metrics_histogram()`, `read_otlp_metrics_exp_histogram()`
-    - Each function returns a strongly-typed schema specific to that metric type
 
     ## Use Cases
 
@@ -71,15 +66,9 @@ docs:
     - **Local Development**: Collect and inspect OpenTelemetry data during development
     - **Data Transformation**: Export to Parquet, CSV, or other DuckDB-supported formats
 
-    ## Architecture
-
-    - **Table Functions**: `read_otlp_*` emit typed `DataChunk`s for traces, logs, and metrics
-    - **Format Detection**: Sniffs the stream and dispatches to JSON or protobuf parsers
-    - **Row Builders**: Shared conversion helpers produce ClickHouse-compatible column layouts
-    - **Protobuf Stubs**: Generated OTLP message classes ship in `src/generated/`
-
     ## Limitations
 
+    - **WASM builds support JSON format only**; protobuf parsing requires native builds with the protobuf runtime
     - Large protobuf files are processed batch-by-batch; continuous streaming is not yet supported
 
     ## References
