@@ -178,7 +178,10 @@ static unique_ptr<FunctionData> ReadOTLPRustBind(ClientContext &context, TableFu
 
 	// Glob files via DuckDB FS
 	auto &fs = FileSystem::GetFileSystem(context);
-	auto matches = fs.GlobFiles(file_pattern, FileGlobOptions::DISALLOW_EMPTY);
+	auto matches = fs.Glob(file_pattern);
+	if (matches.empty()) {
+		throw IOException("No files found that match the pattern \"%s\"", file_pattern);
+	}
 	for (auto &match : matches) {
 		result->files.emplace_back(match.path);
 	}
