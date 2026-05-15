@@ -52,7 +52,7 @@ wasm_link:
 		cmake -DABI_TYPE=CPP \
 			-DEXTENSION=build/wasm_eh/extension/otlp/otlp.duckdb_extension.wasm \
 			-DPLATFORM_FILE=build/wasm_eh/duckdb_platform_out \
-			-DVERSION_FIELD="v1.4.3" \
+			-DVERSION_FIELD="v1.5.2" \
 			-DEXTENSION_VERSION="v0.1.0" \
 			-DNULL_FILE=duckdb/scripts/null.txt \
 			-P duckdb/scripts/append_metadata.cmake; \
