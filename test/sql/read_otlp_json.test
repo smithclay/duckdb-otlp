@@ -31,7 +31,7 @@ SELECT
 FROM read_otlp_traces('test/data/traces_simple.jsonl')
 LIMIT 1;
 ----
-TIMESTAMP_MS	VARCHAR	VARCHAR	VARCHAR	BIGINT
+TIMESTAMP	VARCHAR	VARCHAR	VARCHAR	BIGINT
 
 # Test traces content - verify specific values
 query III
@@ -80,7 +80,7 @@ SELECT
 FROM read_otlp_logs('test/data/logs_simple.jsonl')
 LIMIT 1;
 ----
-TIMESTAMP_MS	VARCHAR	VARCHAR	VARCHAR
+TIMESTAMP	VARCHAR	VARCHAR	VARCHAR
 
 # Test logs content - verify specific values
 query II

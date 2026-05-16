@@ -32,7 +32,7 @@ SELECT
 FROM read_otlp_traces('test/data/otlp_traces.pb')
 LIMIT 1;
 ----
-TIMESTAMP_MS	VARCHAR	VARCHAR	VARCHAR	BIGINT
+TIMESTAMP	VARCHAR	VARCHAR	VARCHAR	BIGINT
 
 # Test traces - verify timestamp is extracted from protobuf
 query I
@@ -78,7 +78,7 @@ SELECT
 FROM read_otlp_logs('test/data/otlp_logs.pb')
 LIMIT 1;
 ----
-TIMESTAMP_MS	VARCHAR	VARCHAR	VARCHAR
+TIMESTAMP	VARCHAR	VARCHAR	VARCHAR
 
 # Test logs - verify service name extraction
 query I

@@ -3,6 +3,7 @@ PROJ_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 # Configuration of extension
 EXT_NAME=otlp
 EXT_CONFIG=${PROJ_DIR}extension_config.cmake
+OTLP2RECORDS_TONIC_COMPAT_VERSION ?= 0.14.5
 
 # Include the Makefile from extension-ci-tools
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
@@ -19,6 +20,8 @@ OTLP_FFI_EXPORTS := _otlp_parser_create,_otlp_parser_destroy,_otlp_parser_push,_
 # Build Rust library for WASM target
 wasm_rust_lib:
 	@echo "Building Rust otlp2records library for WASM..."
+	cd external/otlp2records && cargo update -p tonic-prost --precise $(OTLP2RECORDS_TONIC_COMPAT_VERSION)
+	cd external/otlp2records && cargo update -p tonic --precise $(OTLP2RECORDS_TONIC_COMPAT_VERSION)
 	cd external/otlp2records && cargo build --target wasm32-unknown-emscripten --release --features ffi
 
 # Override wasm_eh to use custom workflow with Rust FFI

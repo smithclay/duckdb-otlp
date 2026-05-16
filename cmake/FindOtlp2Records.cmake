@@ -69,6 +69,10 @@ else()
   set(CARGO_BUILD_FLAGS "--release")
 endif()
 
+set(OTLP2RECORDS_TONIC_COMPAT_VERSION
+    "0.14.5"
+    CACHE STRING "tonic/tonic-prost version compatible with Rust 1.86")
+
 # Path to otlp2records source (defaults to submodule)
 if(NOT DEFINED OTLP2RECORDS_SOURCE_DIR)
   set(OTLP2RECORDS_SOURCE_DIR
@@ -108,6 +112,9 @@ message(STATUS "otlp2records build type: ${CARGO_BUILD_TYPE}")
 # Custom command to build Rust library
 add_custom_command(
   OUTPUT ${OTLP2RECORDS_LIB_PATH}
+  COMMAND cargo update -p tonic-prost --precise
+          ${OTLP2RECORDS_TONIC_COMPAT_VERSION}
+  COMMAND cargo update -p tonic --precise ${OTLP2RECORDS_TONIC_COMPAT_VERSION}
   COMMAND cargo build ${CARGO_BUILD_FLAGS} --target ${RUST_TARGET} --features
           ffi
   WORKING_DIRECTORY ${OTLP2RECORDS_SOURCE_DIR}
