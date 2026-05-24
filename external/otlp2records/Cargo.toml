@@ -1,0 +1,26 @@
+[package]
+name = "otlp2records-ffi"
+version = "0.7.0"
+edition = "2021"
+publish = false
+description = "Static FFI staticlib wrapper around the crates.io otlp2records crate"
+
+# Produce libotlp2records.a so the DuckDB extension can link the Rust backend.
+# The lib name intentionally matches the upstream crate so the existing build
+# scripts (FindOtlp2Records.cmake / Makefile) keep finding libotlp2records.a.
+[lib]
+name = "otlp2records"
+crate-type = ["staticlib"]
+
+[features]
+# Forwards to the upstream `ffi` feature, which exposes the C ABI parser symbols.
+ffi = ["otlp2records/ffi"]
+
+[dependencies]
+otlp2records = { version = "0.7.0", default-features = false }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

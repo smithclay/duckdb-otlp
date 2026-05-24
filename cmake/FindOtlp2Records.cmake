@@ -73,7 +73,7 @@ set(OTLP2RECORDS_TONIC_COMPAT_VERSION
     "0.14.5"
     CACHE STRING "tonic/tonic-prost version compatible with Rust 1.86")
 
-# Path to otlp2records source (defaults to submodule)
+# Path to otlp2records source (defaults to the bundled crates.io FFI wrapper)
 if(NOT DEFINED OTLP2RECORDS_SOURCE_DIR)
   set(OTLP2RECORDS_SOURCE_DIR
       "${CMAKE_CURRENT_SOURCE_DIR}/external/otlp2records"
