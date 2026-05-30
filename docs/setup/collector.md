@@ -1,16 +1,12 @@
-# Duckspan Quickstart
+# OpenTelemetry Collector Setup
 
-This quickstart walks through collecting OpenTelemetry data with the OpenTelemetry Collector file exporter and exploring the resulting OTLP files with Duckspan in DuckDB.
+Use the OpenTelemetry Collector when you want a standard pipeline that receives OTLP from applications and writes OTLP files for DuckDB analysis.
 
-## Prerequisites
+For direct HTTP ingestion into DuckDB or DuckLake, see the [Live Ingest Quickstart](../quickstart/serve.md).
 
-- DuckDB 0.10+ with the Duckspan (`otlp`) extension built or installed.
-- The OpenTelemetry Collector (either `otelcol` or `otelcol-contrib`).
-- An application that can send OTLP data to the collector (any OpenTelemetry SDK, demo app, or `otel-cli`).
+## File Exporter Configuration
 
-## 1. Configure the collector
-
-Create `collector.yaml` with a file exporter that writes OTLP payloads. JSON encoding keeps the files human-readable and works with Duckspan out of the box.
+Create `collector.yaml`:
 
 ```yaml
 receivers:
@@ -46,71 +42,49 @@ service:
       exporters: [file/otel-json]
 ```
 
-Notes:
-- The collector creates the `otel-export/` directory and rotates files when they reach the configured size or age.
-- Switch `encoding: proto` to emit protobuf (`.pb`) files; Duckspan auto-detects both formats.
-
-## 2. Run the collector
-
-Start the collector with the configuration above:
+Run it:
 
 ```bash
 otelcol-contrib --config collector.yaml
 ```
 
-Leave the process running while you generate telemetry. Any OTLP-capable client pointed at `localhost:4317` (gRPC) or `localhost:4318` (HTTP) will now produce files under `./otel-export/`.
+The collector listens on the standard OTLP ports: `4317` for gRPC and `4318` for HTTP. It writes JSONL files under `./otel-export/`.
 
-## 3. Generate sample telemetry
+To generate protobuf files for native DuckDB builds, switch the exporter to `encoding: proto`.
 
-Use any OpenTelemetry-enabled service or a demo client. For example, with [`otel-cli`](https://github.com/equinix-labs/otel-cli):
-
-```bash
-otel-cli span \
-  --service "checkout" \
-  --name "place-order" \
-  --tp-endpoint http://localhost:4318/v1/traces \
-  --start  \
-  --end
-```
-
-Repeat for logs and metrics if desired. The collector writes combined JSONL files such as `telemetry.jsonl`, or rotated variants like `telemetry-00001.jsonl`.
-
-## 4. Explore the export with Duckspan
-
-Launch DuckDB and load the extension:
+## Query Exported Files
 
 ```sql
+INSTALL otlp FROM community;
 LOAD otlp;
-```
 
-Query traces, logs, and metrics directly from the exported files:
-
-```sql
--- Inspect the latest traces
-SELECT TraceId, SpanName, Duration
-FROM read_otlp_traces('otel-export/telemetry.jsonl')
-ORDER BY Timestamp DESC
+SELECT trace_id, span_name, duration
+FROM read_otlp_traces('otel-export/*.jsonl')
+ORDER BY timestamp DESC
 LIMIT 20;
 
--- Filter logs by severity
-SELECT Timestamp, SeverityText, Body
-FROM read_otlp_logs('otel-export/telemetry.jsonl')
-WHERE SeverityText IN ('ERROR', 'FATAL');
+SELECT timestamp, severity_text, body
+FROM read_otlp_logs('otel-export/*.jsonl')
+WHERE severity_text IN ('ERROR', 'FATAL');
 
--- Work with metrics using the helper scans
-SELECT Timestamp, MetricName, Value
-FROM read_otlp_metrics_gauge('otel-export/telemetry.jsonl')
-WHERE MetricName LIKE 'http.server.duration%';
+SELECT timestamp, metric_name, value
+FROM read_otlp_metrics_gauge('otel-export/*.jsonl');
 ```
 
-Duckspan automatically loads multiple files via globbing:
+## Live Ingest Alternative
+
+If you do not need collector-side processing, the extension can receive OTLP/HTTP directly:
 
 ```sql
-SELECT COUNT(*) FROM read_otlp_traces('otel-export/*.jsonl');
+SELECT listen_url
+FROM otlp_serve('otlp:localhost:4318', token := 'dev-token-123456');
 ```
 
-## 5. Next steps
+Point an OTLP/HTTP exporter at `http://localhost:4318` and set `Authorization: Bearer dev-token-123456`. See [Live Ingest Reference](../reference/serve.md) for endpoints, content types, auth, buffering, and durability.
 
-- Convert the export to Parquet and reload it later—see the [cookbook](../guides/cookbook.md#export-telemetry-to-parquet-and-read-it-back) for a worked example.
-- Review the [schema reference](../reference/schemas.md) to understand every column emitted by the table functions.
-- Automate builds and testing with the commands documented in the [repository README](../../README.md).
+## Next Steps
+
+- [Get Started](../get-started.md)
+- [Live Ingest Quickstart](../quickstart/serve.md)
+- [Sample Data](sample-data.md)
+- [Schema Reference](../reference/schemas.md)

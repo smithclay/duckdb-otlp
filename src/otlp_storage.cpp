@@ -60,12 +60,10 @@ bool OtlpStorageExtensionInfo::StopServer(ClientContext &context, const OtlpUri 
 	return true;
 }
 
-OtlpStorageExtensionInfo::FlushResult OtlpStorageExtensionInfo::FlushServer(const OtlpUri &listen_uri,
-                                                                            bool run_checkpoint) {
-	// Take a shared_ptr ref under the lock, then release the lock before the (possibly
-	// slow) seal+checkpoint. The ref keeps the server alive even if a concurrent
-	// otlp_stop erases it, and dropping the lock means a long checkpoint doesn't block
-	// otlp_serve/otlp_stop/otlp_server_list/database-close.
+OtlpStorageExtensionInfo::FlushResult OtlpStorageExtensionInfo::FlushServer(const OtlpUri &listen_uri) {
+	// Take a shared_ptr ref under the lock, then release the lock before the seal. The
+	// ref keeps the server alive even if a concurrent otlp_stop erases it, and dropping
+	// the lock means a long seal doesn't block otlp_serve/otlp_stop/otlp_server_list.
 	shared_ptr<OtlpServer> server;
 	{
 		std::lock_guard<std::mutex> lock(servers_mutex);
@@ -80,7 +78,7 @@ OtlpStorageExtensionInfo::FlushResult OtlpStorageExtensionInfo::FlushServer(cons
 	}
 	result.found = true;
 	try {
-		result.sealed_rows = server->FlushNow(run_checkpoint).rows;
+		result.sealed_rows = server->FlushNow().rows;
 	} catch (std::exception &ex) {
 		result.error = ex.what();
 	}

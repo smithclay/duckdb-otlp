@@ -10,7 +10,7 @@ The DuckDB OTLP extension is a **table-function extension** that exposes strongl
 
 The extension provides:
 - Table functions: `read_otlp_traces`, `read_otlp_logs`
-- Metrics functions: `read_otlp_metrics_gauge`, `read_otlp_metrics_sum`
+- Metrics functions: `read_otlp_metrics_gauge`, `read_otlp_metrics_sum`, `read_otlp_metrics_histogram`, `read_otlp_metrics_exp_histogram`
 - Live ingest functions: `otlp_serve`, `otlp_flush`, `otlp_stop`, `otlp_server_list` (native builds only) — see [OTLP HTTP Ingest Server](#otlp-http-ingest-server)
 
 ## How It Works
@@ -30,55 +30,32 @@ The extension reads OTLP files (JSON or protobuf), detects the format automatica
 
 ## Core Components
 
-### Format Detector
+### Rust Backend
 
-**Location:** `src/parsers/format_detector.cpp/hpp`
+**Location:** `external/otlp2records`
 
-Sniffs the first bytes of a file or stream to decide between JSON and protobuf payloads. Supports automatic format detection for all table functions.
+Parses OTLP JSON, JSONL, and protobuf payloads and emits Arrow arrays through the Arrow C Data Interface.
 
-### JSON Parser
+### Arrow Bridge
 
-**Location:** `src/parsers/json_parser.cpp/hpp`
+**Location:** `src/otlp_arrow.cpp`, `src/function/read_otlp.cpp`
 
-Streaming newline-delimited JSON parser that emits typed rows. Handles:
-- JSONL files (one OTLP message per line)
-- JSON arrays
-- Single JSON documents
-
-### Protobuf Parser
-
-**Location:** `src/parsers/protobuf_parser.cpp/hpp`
-
-Wraps generated OTLP protobuf stubs and uses shared row-builder helpers to produce DuckDB vectors. Requires protobuf runtime (not available in WASM builds).
-
-### Row Builders
-
-**Location:** `src/receiver/row_builders*.cpp`
-
-Convert OTLP message structures into vectors that match the ClickHouse-compatible schemas. Each signal type (traces, logs, metrics) has dedicated row builders that:
-- Extract fields from OTLP messages
-- Convert to appropriate DuckDB types
-- Handle nested structures (attributes, events, links)
-- Compute derived fields (e.g., Duration for traces)
+Converts Arrow arrays from the Rust backend into DuckDB `DataChunk`s for the table functions.
 
 ### Schema Definitions
 
 **Location:** `src/schema/*.hpp`
 
-Centralized column layouts for traces, logs, and metrics, including the union schema used by `read_otlp_metrics`. See the [Schema Reference](reference/schemas.md) for complete column details.
+Centralized column layouts for traces, logs, and shape-specific metrics. See the [Schema Reference](reference/schemas.md) for complete column details.
 
 ## Data Flow
 
 ```
 User: SELECT * FROM read_otlp_metrics_gauge('metrics.pb')
   ↓
-FormatDetector::DetectFormat()
+otlp2records parses OTLP JSON/protobuf into Arrow arrays
   ↓
-Choose JSON parser or protobuf parser
-  ↓
-Parsers populate typed row builders
-  ↓
-DuckDB emits DataChunks with strongly-typed columns
+Arrow bridge copies arrays into DuckDB DataChunks
 ```
 
 ## OTLP HTTP Ingest Server
@@ -113,17 +90,17 @@ Worker thread: reserve admission bytes -> otlp_transform (FFI) -> convert -> app
 
 ... asynchronously ...
 
-Sealer thread (trigger: seal_target_bytes / seal_max_age_ms / otlp_flush)
+Sealer thread (trigger: internal size/age threshold / otlp_flush)
   → one transaction → for DuckLake: one Parquet data file per signal + one snapshot → COMMIT
 ```
 
 ### Seal model and durability
 
-A single background **sealer** thread group-commits the buffer to the target catalog when any trigger fires: buffered bytes reach `seal_target_bytes` (default 64 MiB), the oldest buffered row reaches `seal_max_age_ms` (default 5000 ms), or an explicit `otlp_flush`. Each seal is one transaction.
+A single background **sealer** thread group-commits the buffer to the target catalog when any trigger fires: buffered bytes reach the internal size threshold, the oldest buffered row reaches the internal age limit, or an explicit `otlp_flush`. Each seal is one transaction.
 
-- A `202` is **not durable**; rows become durable at the next seal (within `seal_max_age_ms`, or immediately on `otlp_flush`). A crash loses buffered-but-unsealed rows (at-most-once for that window).
+- A `202` is **not durable**; rows become durable at the next seal, or immediately on `otlp_flush`. A crash loses buffered-but-unsealed rows (at-most-once for that window).
 - `otlp_stop` and `otlp_flush` seal remaining buffered rows before returning, so those lose nothing. **A plain database/connection close does NOT seal** — the shutdown drain runs after the DuckDB instance is torn down (when `db_ptr` can no longer write), so buffered-but-unsealed rows are dropped. Call `otlp_flush`/`otlp_stop` before closing the database to guarantee durability. (A durable raw-spool journal / earlier shutdown hook for at-least-once is a tracked follow-up.)
-- `otlp_flush(uri, checkpoint := true)` seals synchronously and then runs DuckLake compaction (`ducklake_merge_adjacent_files` + `CHECKPOINT`) to merge the small per-seal Parquet files.
+- DuckLake compaction is a separate catalog-maintenance operation; `otlp_flush` only seals buffered ingest rows.
 
 ### Concurrency model
 
@@ -139,6 +116,8 @@ The table functions emit schemas inspired by the OpenTelemetry ClickHouse export
 - **Logs**: 15 columns with severity, body, resource/scope maps, and trace correlation fields
 - **Metrics (gauge)**: 16 columns with timestamp, service info, metric metadata, and value
 - **Metrics (sum)**: 18 columns (gauge columns plus aggregation temporality and is_monotonic)
+- **Metrics (histogram)**: 22 columns with counts, sum, min/max, explicit bounds, and bucket counts
+- **Metrics (exponential histogram)**: 27 columns with scale, zero bucket, and positive/negative bucket data
 
 ### Streaming Architecture
 
@@ -154,8 +133,6 @@ src/
 ├── include/           # Public headers (forwarding to implementation dirs)
 ├── storage/           # Extension entry point registration
 ├── function/          # Table function implementations (`read_otlp_*`)
-├── parsers/           # JSON/protobuf parsers and format detector
-├── receiver/          # Shared row builders and OTLP helpers
 ├── schema/            # Column layout helpers
 ├── generated/         # Protobuf message stubs (DO NOT EDIT)
 └── wasm/              # Stubs for JSON-only builds
@@ -193,8 +170,8 @@ Python dependencies (via `uv`):
 - Live OTLP ingestion is supported over **HTTP** (`otlp_serve` / `otlp_flush` / `otlp_stop` / `otlp_server_list`), not gRPC. See [OTLP HTTP Ingest Server](#otlp-http-ingest-server). Ingest is buffered (a POST returns `202`) and only durable at the next seal; a crash loses buffered-but-unsealed rows (at-most-once). A durable raw-spool journal for at-least-once is a future enhancement. The server is not available in WASM builds.
 - **WASM builds support JSON format only**. Protobuf parsing is only available in native builds
 - Protobuf parsing requires linking against the protobuf runtime (available in native builds)
-- Histogram, exponential histogram, and summary metrics are not yet supported
-- The union metrics function (`read_otlp_metrics`) is not yet implemented
+- Summary metrics are not yet supported
+- The union metrics function (`read_otlp_metrics`) is not yet implemented; use the shape-specific metric readers
 
 ## Building
 

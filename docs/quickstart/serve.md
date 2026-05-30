@@ -52,7 +52,7 @@ curl -sS http://localhost:4318/v1/logs \
 {"status":"buffered","rows":1,"batches":1}
 ```
 
-A `202 Accepted` with `"status":"buffered"` means the rows were validated and accepted into the server's in-memory buffer — **they are not durable yet.** Buffered rows are group-committed ("sealed") into Parquet automatically (within `seal_max_age_ms`, default 5s) or on demand with `otlp_flush`.
+A `202 Accepted` with `"status":"buffered"` means the rows were validated and accepted into the server's in-memory buffer — **they are not durable yet.** Buffered rows are group-committed ("sealed") into Parquet automatically or on demand with `otlp_flush`.
 
 (`test/data/logs_simple.jsonl` is in the [extension repo](https://github.com/smithclay/duckdb-otlp). `application/x-ndjson` is the content type for newline-delimited OTLP/JSON; use `application/json` for a single JSON document or `application/x-protobuf` for protobuf.)
 
@@ -65,10 +65,10 @@ curl -sS http://localhost:4318/healthz
 
 ## Step 3: Seal the buffer and query
 
-Back in the DuckDB session, force a synchronous seal so the buffered rows are written to Parquet now. `checkpoint := true` also compacts the DuckLake catalog (merges small per-seal files):
+Back in the DuckDB session, force a synchronous seal so the buffered rows are written to Parquet now:
 
 ```sql
-SELECT status, sealed_rows FROM otlp_flush('otlp:localhost:4318', checkpoint := true);
+SELECT status, sealed_rows FROM otlp_flush('otlp:localhost:4318');
 ```
 
 ```
@@ -136,4 +136,4 @@ Ingest is buffered here too: a POST returns `202`, and rows become durable in th
 - **[Serve Reference](../reference/serve.md)** — all parameters, catalog targeting, content types, auth, status codes, and the buffered seal/durability model.
 - **[Architecture](../architecture.md#otlp-http-ingest-server)** — how the buffer + single-writer sealer are wired internally.
 - Point a real OpenTelemetry Collector or SDK exporter at `http://localhost:4318` (the standard OTLP/HTTP port), setting the bearer token or `x-api-key` header.
-- Schedule `otlp_flush('otlp:localhost:4318', checkpoint := true)` periodically to keep DuckLake file counts low.
+- Schedule `otlp_flush('otlp:localhost:4318')` periodically when readers need freshly durable rows.

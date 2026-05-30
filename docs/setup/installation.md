@@ -75,7 +75,7 @@ Check that the extension loaded successfully:
 SELECT * FROM duckdb_extensions() WHERE extension_name = 'otlp';
 
 -- Test with sample data
-SELECT * FROM read_otlp_options();
+SELECT count(*) FROM read_otlp_logs('test/data/logs_simple.jsonl');
 ```
 
 ## Usage
@@ -86,17 +86,17 @@ Once installed, use the table functions to query OTLP data:
 LOAD otlp;
 
 -- Query traces
-SELECT TraceId, SpanName, Duration
+SELECT trace_id, span_name, duration
 FROM read_otlp_traces('traces.jsonl')
 LIMIT 10;
 
 -- Query logs
-SELECT Timestamp, SeverityText, Body
+SELECT timestamp, severity_text, body
 FROM read_otlp_logs('logs.jsonl')
-WHERE SeverityText = 'ERROR';
+WHERE severity_text = 'ERROR';
 
 -- Query metrics
-SELECT Timestamp, MetricName, Value
+SELECT timestamp, metric_name, value
 FROM read_otlp_metrics_gauge('metrics.jsonl');
 ```
 

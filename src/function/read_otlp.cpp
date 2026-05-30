@@ -63,27 +63,56 @@ struct ReadOTLPRustGlobalState : public GlobalTableFunctionState {
 // ============================================================================
 
 struct ReadOTLPRustLocalState : public LocalTableFunctionState {
-	OtlpParserHandle *parser = nullptr;
-	unique_ptr<FileHandle> current_file;
-	ArrowArrayStream current_stream;
 	ArrowArray current_batch;
-	bool stream_active = false;
 	bool batch_active = false;
 	idx_t batch_offset = 0;
 	string file_buffer;
+	vector<column_t> column_ids;
 
 	~ReadOTLPRustLocalState() override {
 		if (batch_active && current_batch.release) {
 			current_batch.release(&current_batch);
 		}
-		if (stream_active && current_stream.release) {
-			current_stream.release(&current_stream);
-		}
-		if (parser) {
-			otlp_parser_destroy(parser);
-		}
 	}
 };
+
+static void CopyProjectedArrowStructToDataChunk(const ArrowArray &array, const ArrowSchema &schema, DataChunk &output,
+                                                const vector<column_t> &column_ids, idx_t offset, idx_t count) {
+	if (column_ids.size() != output.ColumnCount()) {
+		throw IOException("Projected column count mismatch: expected %llu columns, got %llu",
+		                  static_cast<uint64_t>(column_ids.size()), static_cast<uint64_t>(output.ColumnCount()));
+	}
+
+	output.SetCardinality(count);
+	if (column_ids.empty()) {
+		return;
+	}
+
+	for (idx_t out_col_idx = 0; out_col_idx < output.ColumnCount(); out_col_idx++) {
+		auto source_col_idx = column_ids[out_col_idx];
+		if (source_col_idx >= static_cast<idx_t>(schema.n_children)) {
+			throw IOException("Invalid projected Arrow schema column %llu: schema has %lld columns",
+			                  static_cast<uint64_t>(source_col_idx), static_cast<int64_t>(schema.n_children));
+		}
+		if (source_col_idx >= static_cast<idx_t>(array.n_children)) {
+			throw IOException("Invalid projected Arrow batch column %llu: batch has %lld columns",
+			                  static_cast<uint64_t>(source_col_idx), static_cast<int64_t>(array.n_children));
+		}
+
+		auto col_array = array.children[source_col_idx];
+		auto col_schema = schema.children[source_col_idx];
+		if (!col_array) {
+			throw IOException("Invalid Arrow batch: column %llu array is null", static_cast<uint64_t>(source_col_idx));
+		}
+		if (!col_schema) {
+			throw IOException("Invalid Arrow batch: column %llu schema is null", static_cast<uint64_t>(source_col_idx));
+		}
+
+		ArrowArray col_view = *col_array;
+		col_view.offset = col_array->offset + static_cast<int64_t>(offset);
+		CopyArrowToDuckDB(col_view, *col_schema, output.data[out_col_idx], count);
+	}
+}
 
 // ============================================================================
 // Bind Function
@@ -202,18 +231,7 @@ static unique_ptr<LocalTableFunctionState> ReadOTLPRustInitLocal(ExecutionContex
                                                                  TableFunctionInitInput &input,
                                                                  GlobalTableFunctionState *global_state) {
 	auto result = make_uniq<ReadOTLPRustLocalState>();
-	auto &bind_data = input.bind_data->CastNoConst<ReadOTLPRustBindData>();
-
-	// Create Rust parser handle
-	OtlpStatus status = otlp_parser_create(bind_data.signal_type, bind_data.format, &result->parser);
-
-	if (status != OTLP_OK) {
-		throw IOException("Failed to create OTLP parser: %s", otlp_status_message(status));
-	}
-	if (!result->parser) {
-		throw IOException("OTLP parser creation succeeded but handle is null - internal error");
-	}
-
+	result->column_ids = input.column_ids;
 	return std::move(result);
 }
 
@@ -235,8 +253,8 @@ static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, D
 			const auto row_count = static_cast<idx_t>(lstate.current_batch.length);
 			const auto remaining = row_count - lstate.batch_offset;
 			const auto count = MinValue<idx_t>(STANDARD_VECTOR_SIZE, remaining);
-			CopyArrowStructToDataChunk(lstate.current_batch, bind_data.arrow_schema, output, lstate.batch_offset,
-			                           count);
+			CopyProjectedArrowStructToDataChunk(lstate.current_batch, bind_data.arrow_schema, output, lstate.column_ids,
+			                                    lstate.batch_offset, count);
 			lstate.batch_offset += count;
 			if (lstate.batch_offset >= row_count) {
 				lstate.current_batch.release(&lstate.current_batch);
@@ -244,35 +262,6 @@ static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, D
 				lstate.batch_offset = 0;
 			}
 			return;
-		}
-
-		// If we have an active stream, try to get next batch
-		if (lstate.stream_active) {
-			ArrowArray batch;
-			int err = lstate.current_stream.get_next(&lstate.current_stream, &batch);
-
-			if (err != 0) {
-				const char *msg = lstate.current_stream.get_last_error(&lstate.current_stream);
-				throw IOException("Arrow stream error: %s", msg ? msg : "unknown");
-			}
-
-			if (batch.release != nullptr) {
-				if (batch.length < 0) {
-					batch.release(&batch);
-					throw IOException("Invalid Arrow batch: negative row count");
-				}
-				if (batch.length > 0) {
-					lstate.current_batch = batch;
-					lstate.batch_active = true;
-					lstate.batch_offset = 0;
-					continue;
-				}
-				batch.release(&batch);
-			}
-
-			// Stream exhausted
-			lstate.current_stream.release(&lstate.current_stream);
-			lstate.stream_active = false;
 		}
 
 		// Get next file
@@ -304,23 +293,34 @@ static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, D
 			                  static_cast<int64_t>(file_size), static_cast<uint64_t>(bytes_read));
 		}
 
-		// Push to Rust parser
-		OtlpStatus status = otlp_parser_push(
-		    lstate.parser, reinterpret_cast<const uint8_t *>(lstate.file_buffer.data()), lstate.file_buffer.size(),
-		    1 // is_final = true
-		);
-
+		ArrowArray array;
+		ArrowSchema schema;
+		OtlpStatus status = otlp_transform(bind_data.signal_type, bind_data.format,
+		                                   reinterpret_cast<const uint8_t *>(lstate.file_buffer.data()),
+		                                   lstate.file_buffer.size(), &array, &schema);
 		if (status != OTLP_OK) {
-			const char *err = otlp_parser_last_error(lstate.parser);
-			throw IOException("OTLP parse error on %s: %s", path, err ? err : otlp_status_message(status));
+			throw IOException("OTLP parse error on %s: %s", path, otlp_status_message(status));
 		}
 
-		// Drain batches from Rust
-		status = otlp_parser_drain(lstate.parser, &lstate.current_stream);
-		if (status != OTLP_OK) {
-			throw IOException("Failed to drain OTLP batches: %s", otlp_status_message(status));
+		if (schema.release) {
+			schema.release(&schema);
 		}
-		lstate.stream_active = true;
+
+		if (array.length < 0) {
+			if (array.release) {
+				array.release(&array);
+			}
+			throw IOException("Invalid Arrow batch: negative row count");
+		}
+		if (array.release && array.length > 0) {
+			lstate.current_batch = array;
+			lstate.batch_active = true;
+			lstate.batch_offset = 0;
+			continue;
+		}
+		if (array.release) {
+			array.release(&array);
+		}
 	}
 }
 
@@ -332,28 +332,28 @@ void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
 	// read_otlp_logs
 	TableFunction logs_func("read_otlp_logs", {LogicalType::VARCHAR}, ReadOTLPRustScan, ReadOTLPLogsRustBind,
 	                        ReadOTLPRustInitGlobal, ReadOTLPRustInitLocal);
-	logs_func.projection_pushdown = false;
+	logs_func.projection_pushdown = true;
 	logs_func.filter_pushdown = false;
 	loader.RegisterFunction(logs_func);
 
 	// read_otlp_traces
 	TableFunction traces_func("read_otlp_traces", {LogicalType::VARCHAR}, ReadOTLPRustScan, ReadOTLPTracesRustBind,
 	                          ReadOTLPRustInitGlobal, ReadOTLPRustInitLocal);
-	traces_func.projection_pushdown = false;
+	traces_func.projection_pushdown = true;
 	traces_func.filter_pushdown = false;
 	loader.RegisterFunction(traces_func);
 
 	// read_otlp_metrics_gauge
 	TableFunction gauge_func("read_otlp_metrics_gauge", {LogicalType::VARCHAR}, ReadOTLPRustScan,
 	                         ReadOTLPMetricsGaugeRustBind, ReadOTLPRustInitGlobal, ReadOTLPRustInitLocal);
-	gauge_func.projection_pushdown = false;
+	gauge_func.projection_pushdown = true;
 	gauge_func.filter_pushdown = false;
 	loader.RegisterFunction(gauge_func);
 
 	// read_otlp_metrics_sum
 	TableFunction sum_func("read_otlp_metrics_sum", {LogicalType::VARCHAR}, ReadOTLPRustScan,
 	                       ReadOTLPMetricsSumRustBind, ReadOTLPRustInitGlobal, ReadOTLPRustInitLocal);
-	sum_func.projection_pushdown = false;
+	sum_func.projection_pushdown = true;
 	sum_func.filter_pushdown = false;
 	loader.RegisterFunction(sum_func);
 
@@ -365,14 +365,14 @@ void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
 	TableFunction exp_histogram_func("read_otlp_metrics_exp_histogram", {LogicalType::VARCHAR}, ReadOTLPRustScan,
 	                                 ReadOTLPMetricsExpHistogramRustBind, ReadOTLPRustInitGlobal,
 	                                 ReadOTLPRustInitLocal);
-	exp_histogram_func.projection_pushdown = false;
+	exp_histogram_func.projection_pushdown = true;
 	exp_histogram_func.filter_pushdown = false;
 	loader.RegisterFunction(exp_histogram_func);
 
 	// read_otlp_metrics_histogram
 	TableFunction histogram_func("read_otlp_metrics_histogram", {LogicalType::VARCHAR}, ReadOTLPRustScan,
 	                             ReadOTLPMetricsHistogramRustBind, ReadOTLPRustInitGlobal, ReadOTLPRustInitLocal);
-	histogram_func.projection_pushdown = false;
+	histogram_func.projection_pushdown = true;
 	histogram_func.filter_pushdown = false;
 	loader.RegisterFunction(histogram_func);
 

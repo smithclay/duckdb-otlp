@@ -1,221 +1,103 @@
 # DuckDB OpenTelemetry (OTLP) Extension
 
-Query OpenTelemetry traces, logs, and metrics with SQL. Works with OTLP file exports from any OpenTelemetry Collector, uses a row-based schema inspired by the [Clickhouse OpenTelemetry exporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/clickhouseexporter/README.md).
+Query OpenTelemetry traces, logs, and metrics with SQL, or run an embedded OTLP/HTTP endpoint that streams live telemetry into DuckDB or DuckLake.
+
+The extension reads OTLP JSON, JSONL, and protobuf file exports from the OpenTelemetry Collector, with row schemas inspired by the [OpenTelemetry ClickHouse exporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/clickhouseexporter/README.md). Native builds also include live HTTP ingest for `/v1/logs`, `/v1/traces`, and `/v1/metrics`.
+
+## Quickstart
+
+Install and load the extension:
 
 ```sql
--- Install from DuckDB community extensions
 INSTALL otlp FROM community;
 LOAD otlp;
-
--- Query slow traces
-SELECT
-    trace_id,
-    span_name,
-    duration / 1000000 AS duration_ms
-FROM read_otlp_traces('traces.jsonl')
-WHERE duration > 1000000000  -- over 1 second
-ORDER BY duration DESC
-LIMIT 5;
 ```
 
-**Output:**
-```
-┌─────────────────────────────────┬──────────────────┬──────────────┐
-│            trace_id             │    span_name     │ duration_ms  │
-├─────────────────────────────────┼──────────────────┼──────────────┤
-│ 7a3f92e8b4c1d6f0a9e2...         │ POST /checkout   │    1523.4    │
-│ 8b1e45c9f2a7d3e6b0f1...         │ GET /search      │    1205.7    │
-│ 3c2d19f8e4b6a0c7d1f9...         │ PUT /cart/items  │    1089.2    │
-└─────────────────────────────────┴──────────────────┴──────────────┘
-```
-
-> Want to _stream_ OTLP data directly to duckdb / Parquet in cloud storage? Check out https://github.com/smithclay/otlp2parquet
-
-## What you can do
-
-- **Stream OTLP into a DuckLake lakehouse** - Run an OTLP/HTTP server and stream live exports straight into [DuckLake](https://ducklake.select) (Parquet + catalog), buffered and group-committed
-- **Analyze production telemetry** - Query OTLP file exports with familiar SQL syntax
-- **Archive to your data lake** - Convert OpenTelemetry data to Parquet with schemas intact
-- **Debug faster** - Filter logs by severity, find slow traces, aggregate metrics
-- **Integrate with data tools** - Use DuckDB's ecosystem (MotherDuck, Jupyter, DBT, etc.)
-
-## Get started in 3 minutes
-
-**[→ Quick Start Guide](docs/get-started.md)** - Install, load sample data, run your first query
-
-## Try it in your browser
-
-**[→ Interactive Demo](https://smithclay.github.io/duckdb-otlp/)** - Query OTLP data directly in your browser using DuckDB-WASM
-
-The browser demo lets you:
-- Load sample OTLP traces, logs, and metrics
-- Run SQL queries without installing anything
-- Upload your own JSONL files for analysis
-
-**Note:** The WASM demo supports JSON format only. For protobuf support, install the native extension.
-
-## Common use cases
-
-### Find slow requests
-```sql
-SELECT span_name, AVG(duration) / 1000000 AS avg_ms
-FROM read_otlp_traces('prod-traces/*.jsonl')
-WHERE span_kind = 2  -- SERVER
-GROUP BY span_name
-HAVING AVG(duration) > 1000000000
-ORDER BY avg_ms DESC;
-```
-
-### Export telemetry to Parquet
-```sql
-COPY (
-  SELECT * FROM read_otlp_traces('otel-export/*.jsonl')
-) TO 'data-lake/daily_traces.parquet' (FORMAT PARQUET);
-```
-
-### Filter logs by severity
-```sql
-SELECT timestamp, service_name, body
-FROM read_otlp_logs('app-logs/*.jsonl')
-WHERE severity_text IN ('ERROR', 'FATAL')
-ORDER BY timestamp DESC;
-```
-
-### Build metrics dashboards
-```sql
-CREATE TABLE metrics_gauge AS
-SELECT timestamp, service_name, metric_name, value
-FROM read_otlp_metrics_gauge('metrics/*.jsonl');
-```
-
-**[→ See more examples in the Cookbook](docs/guides/cookbook.md)**
-
-### Stream live OTLP into a DuckLake lakehouse
-
-Run an OTLP/HTTP server (native builds only) that streams live exports straight into a [DuckLake](https://ducklake.select) lakehouse — Parquet data files tracked by a catalog. Ingest is buffered and group-committed ("sealed"), so a POST returns `202 Accepted` and rows land in Parquet at the next seal.
+Read OTLP data from files:
 
 ```sql
--- Attach a DuckLake catalog, then stream OTLP into it
-INSTALL ducklake; LOAD ducklake;
-ATTACH 'ducklake:metadata.ducklake' AS lake (DATA_PATH 'otlp_data/');
+SELECT timestamp, service_name, severity_text, body
+FROM read_otlp_logs('test/data/logs_simple.jsonl');
 
-CALL otlp_serve('otlp:localhost:4318', catalog := 'lake');
--- point any OTLP/HTTP exporter at http://localhost:4318  (gRPC not supported)
+SELECT trace_id, span_name, duration / 1000000 AS duration_ms
+FROM read_otlp_traces('test/data/traces_simple.jsonl')
+ORDER BY duration DESC;
+```
+
+Stream one OTLP log into DuckDB over HTTP:
+
+```sql
+SELECT listen_url
+FROM otlp_serve('otlp:localhost:4318', token := 'dev-token-123456');
 ```
 
 ```bash
-# ... or POST directly. A 202 means rows were buffered, not yet sealed:
-curl -sS http://localhost:4318/v1/logs \
-  -H 'Content-Type: application/x-ndjson' \
-  -H 'Authorization: Bearer <token>' \
-  --data-binary @test/data/logs_simple.jsonl
-# {"status":"buffered","rows":1,"batches":1}
+curl -sS http://localhost:4318/v1/logs -H 'Authorization: Bearer dev-token-123456' -H 'Content-Type: application/json' -d '{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"curl-demo"}}]},"scopeLogs":[{"logRecords":[{"timeUnixNano":"1704067200000000000","severityText":"INFO","body":{"stringValue":"hello from curl"}}]}]}]}'
 ```
 
 ```sql
--- Force a seal (+ compact Parquet), then query the lakehouse
-CALL otlp_flush('otlp:localhost:4318', checkpoint := true);
-SELECT count(*) FROM lake.main.otlp_logs;
+SELECT * FROM otlp_flush('otlp:localhost:4318');
+SELECT timestamp, service_name, severity_text, body FROM otlp_logs;
+SELECT status FROM otlp_stop('otlp:localhost:4318');
 ```
 
-Omit `catalog` to land rows in the connection's default (in-memory/file) catalog instead — an ephemeral, no-lakehouse path (still buffered).
+For a full walkthrough, including streaming into DuckLake/Parquet, see [Get Started](docs/get-started.md) and the [Live Ingest Quickstart](docs/quickstart/serve.md).
 
-**[→ Live Ingest Quickstart](docs/quickstart/serve.md)**
+## What You Can Do
 
-## Limits
+- Read OTLP traces, logs, gauges, sums/counters, histograms, and exponential histograms from files.
+- Stream live OTLP/HTTP exports into the default DuckDB catalog or an attached [DuckLake](https://ducklake.select) lakehouse.
+- Convert telemetry exports to Parquet with DuckDB `COPY`.
+- Query local files, globs, S3, HTTP(S), Azure Blob, and GCS paths through DuckDB file systems.
+- Use the browser demo for JSON-only exploration with DuckDB-WASM: [Interactive Demo](https://smithclay.github.io/duckdb-otlp/).
 
-Individual files are limited to **100 MB** to prevent memory exhaustion. This applies to entire protobuf files or individual documents in JSONL files.
+## Documentation
 
-## What's inside
+- [Documentation Hub](docs/README.md)
+- [Get Started](docs/get-started.md)
+- [Live Ingest Quickstart](docs/quickstart/serve.md)
+- [Cookbook](docs/guides/cookbook.md)
+- [API Reference](docs/reference/api.md)
+- [Schema Reference](docs/reference/schemas.md)
+- [Live Ingest Reference](docs/reference/serve.md)
+- [Architecture](docs/architecture.md)
 
-**Table Functions**
+## API at a Glance
 
 | Function | What it does |
-|----------|-------------|
-| `read_otlp_traces(path)` | Stream trace spans (25 columns) with identifiers, attributes, events, and links |
-| `read_otlp_logs(path)` | Read log records (15 columns) with severity, body, and trace correlation |
-| `read_otlp_metrics_gauge(path)` | Read gauge metrics (16 columns) |
-| `read_otlp_metrics_sum(path)` | Read sum/counter metrics (18 columns) with aggregation temporality |
+| --- | --- |
+| `read_otlp_traces(path)` | Read trace spans with identifiers, attributes, events, links, and duration |
+| `read_otlp_logs(path)` | Read log records with severity, body, attributes, and trace correlation |
+| `read_otlp_metrics_gauge(path)` | Read gauge metrics |
+| `read_otlp_metrics_sum(path)` | Read sum/counter metrics |
+| `read_otlp_metrics_histogram(path)` | Read standard histogram metrics |
+| `read_otlp_metrics_exp_histogram(path)` | Read exponential histogram metrics |
+| `otlp_serve([uri], ...)` | Start a native OTLP/HTTP ingest server |
+| `otlp_flush(uri)` | Force buffered ingest rows to seal into the target catalog |
+| `otlp_stop(uri)` | Stop a server after sealing remaining rows |
+| `otlp_server_list()` | Inspect running servers and ingest counters |
 
-**Live Ingest** (native builds only)
-
-| Function | What it does |
-|----------|-------------|
-| `otlp_serve([uri], catalog := ..., ...)` | Start an OTLP/HTTP server that buffers `/v1/logs`, `/v1/traces`, `/v1/metrics` POSTs and seals them into a target catalog (DuckLake or default) |
-| `otlp_flush(uri, checkpoint := false)` | Force a synchronous seal of the buffer (optionally compact a DuckLake catalog) |
-| `otlp_stop(uri)` | Stop a running server (seals remaining rows first) |
-| `otlp_server_list()` | List running servers with live counters, buffer state, and health |
-
-**[→ Full API Reference](docs/reference/api.md)** · **[→ Live Ingest Server](docs/reference/serve.md)**
-
-**Features**
-
-- **Automatic format detection** - Works with JSON, JSONL, and protobuf OTLP files (protobuf requires native extension)
-- **DuckDB file systems** - Read from local files, S3, HTTP(S), Azure Blob, GCS
-- **ClickHouse-inspired schema** - Row-based schema inspired by OpenTelemetry ClickHouse exporter
-- **Browser support** - Run queries in-browser with DuckDB-WASM (JSON only)
+`read_otlp_metrics` and `read_otlp_metrics_summary` are registered but intentionally unsupported until the extension has stable schemas for those shapes. See the [API Reference](docs/reference/api.md) for details.
 
 ## Installation
-
-**Option 1: Install from community (recommended)**
 
 ```sql
 INSTALL otlp FROM community;
 LOAD otlp;
 ```
 
-**Option 2: Build from source**
+For source builds, development commands, and WASM builds, see [CONTRIBUTING.md](CONTRIBUTING.md). WASM supports JSON/JSONL file reads, but not protobuf or the live ingest server.
 
-See **[CONTRIBUTING.md](CONTRIBUTING.md)** for build instructions.
+## Limits
 
-## Documentation
+Individual file reads are limited to **100 MB** to prevent memory exhaustion. Live ingest accepts request bodies up to `max_body_bytes` and applies buffered-ingest backpressure through `max_buffered_bytes`; see the [Live Ingest Reference](docs/reference/serve.md#responses-and-status-codes).
 
-**[Documentation Hub →](docs/)**
+## Need Help?
 
-📚 **Guides** - Task-based tutorials with real examples
-📖 **Reference** - Schemas, API signatures, error handling
-⚙️  **Setup** - Installation, collector configuration, sample data
-
-## How it works
-
-Generally speaking: the idea is you load files created using the OpenTelemetry Collector file exporter.
-
-```
-OpenTelemetry     File         DuckDB OTLP          SQL
-Collector      Exporter       Extension          Results
-   │              │               │                 │
-   │  OTLP/gRPC   │               │                 │
-   ├─────────────►│  .jsonl/.pb   │                 │
-   │              ├──────────────►│  read_otlp_*()  │
-   │              │               ├────────────────►│
-   │              │               │                 │
-```
-
-The extension reads OTLP files (JSON or protobuf), detects the format automatically, and streams strongly-typed rows into DuckDB tables. Schemas match the ClickHouse exporter format for compatibility.
-
-**[→ Learn more in Architecture Guide](docs/architecture.md)**
-
-## Schemas
-
-All table functions emit strongly-typed columns with `snake_case` naming:
-
-- **Traces**: 25 columns - identifiers, timestamps, attributes, events, links
-- **Logs**: 15 columns - severity, body, trace correlation, attributes
-- **Metrics**: 16-18 columns depending on metric type (gauge, sum)
-
-**[→ Schema Reference](docs/reference/schemas.md)**
-
-## Need help?
-
-- **Getting started?** Read the **[Quick Start Guide](docs/get-started.md)**
-- **Have a question?** Check **[Discussions](https://github.com/smithclay/duckdb-otlp/discussions)**
-- **Found a bug?** **[Open an issue](https://github.com/smithclay/duckdb-otlp/issues)**
-- **Want to contribute?** See **[CONTRIBUTING.md](CONTRIBUTING.md)**
+- [GitHub Discussions](https://github.com/smithclay/duckdb-otlp/discussions)
+- [Open an issue](https://github.com/smithclay/duckdb-otlp/issues)
+- [Contributing guide](CONTRIBUTING.md)
 
 ## License
 
-MIT - See [LICENSE](LICENSE) for details
-
----
-
-**Learn more**: [OpenTelemetry Protocol (OTLP)](https://opentelemetry.io/docs/specs/otlp/) | [ClickHouse Exporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/clickhouseexporter) | [DuckDB Extensions](https://duckdb.org/docs/extensions/overview)
+MIT. See [LICENSE](LICENSE) for details.

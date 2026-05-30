@@ -116,10 +116,10 @@ def stop_server(con, port):
     return con.execute("SELECT status FROM otlp_stop(?)", [f"otlp:127.0.0.1:{port}"]).fetchone()[0]
 
 
-def flush_server(con, port, checkpoint=False):
+def flush_server(con, port):
     return con.execute(
-        "SELECT status, sealed_rows, seals_total, error FROM otlp_flush(?, checkpoint := ?)",
-        [f"otlp:127.0.0.1:{port}", checkpoint],
+        "SELECT status, sealed_rows, seals_total, error FROM otlp_flush(?)",
+        [f"otlp:127.0.0.1:{port}"],
     ).fetchone()
 
 
@@ -169,7 +169,7 @@ def scenario_auth_and_validation(failures, port):
     con, catalog, table_prefix = connect("auth_validation")
     body = load_payload(LOG_PAYLOAD)
     ctype = content_type_for(LOG_PAYLOAD)
-    base_url = start_server(con, port, catalog=catalog, seal_max_age_ms=60000)
+    base_url = start_server(con, port, catalog=catalog)
     url = base_url + "/v1/logs"
     print(f"[auth] {base_url}")
 
@@ -211,7 +211,7 @@ def scenario_auth_and_validation(failures, port):
                 f"{encoding} expected 415 without zlib, got {status}: {text}",
             )
 
-    flush_server(con, port, checkpoint=bool(catalog))
+    flush_server(con, port)
     rows = table_count(con, table_prefix, "otlp_logs")
     require(
         failures,
@@ -247,8 +247,6 @@ def scenario_backpressure(failures, port):
         catalog=catalog,
         max_body_bytes=len(body) + 1024,
         max_buffered_bytes=reservation,
-        seal_target_bytes=reservation,
-        seal_max_age_ms=60000,
     )
     url = base_url + "/v1/logs"
     print(f"[backpressure] {base_url} reservation={reservation} concurrency={CONCURRENCY}")
@@ -271,7 +269,7 @@ def scenario_backpressure(failures, port):
         f"backpressure expected some 503s, got statuses {statuses}",
     )
 
-    flush_server(con, port, checkpoint=bool(catalog))
+    flush_server(con, port)
     rows = table_count(con, table_prefix, "otlp_logs")
     require(
         failures,
@@ -291,7 +289,7 @@ def scenario_metrics_fanout(failures, port):
         table: con.execute(f"SELECT count(*) FROM {func}(?)", [METRICS_PAYLOAD]).fetchone()[0]
         for table, func in METRIC_READ_FUNCTIONS.items()
     }
-    base_url = start_server(con, port, catalog=catalog, seal_max_age_ms=60000)
+    base_url = start_server(con, port, catalog=catalog)
     status, text = post(base_url + "/v1/metrics", body, ctype, auth="bearer")
     print(f"[metrics] {status} expected={expected}")
     require(failures, status == 202, f"metrics fanout expected 202, got {status}: {text}")
@@ -300,7 +298,7 @@ def scenario_metrics_fanout(failures, port):
         rows_from_response(status, text) == sum(expected.values()),
         f"metrics response rows {rows_from_response(status, text)} != expected {sum(expected.values())}",
     )
-    flush_server(con, port, checkpoint=bool(catalog))
+    flush_server(con, port)
     actual = {table: table_count(con, table_prefix, table) for table in expected}
     require(
         failures,
@@ -327,8 +325,6 @@ def scenario_stop_under_load(failures, port):
         catalog=catalog,
         max_body_bytes=len(body) + 1024,
         max_buffered_bytes=max(len(body), 1024) * max(CONCURRENCY, 4),
-        seal_target_bytes=max(len(body), 1024) * max(CONCURRENCY, 4),
-        seal_max_age_ms=60000,
     )
     url = base_url + "/v1/logs"
     print(f"[stop-load] {base_url}")
@@ -372,7 +368,6 @@ def scenario_flush_stop_race(failures, port):
         port,
         catalog=catalog,
         max_body_bytes=len(body) + 1024,
-        seal_max_age_ms=60000,
     )
     url = base_url + "/v1/logs"
     accepted_rows = 0
@@ -390,7 +385,7 @@ def scenario_flush_stop_race(failures, port):
     def run_flush():
         try:
             cur = con.cursor()
-            results["flush"] = flush_server(cur, port, checkpoint=bool(catalog))
+            results["flush"] = flush_server(cur, port)
         except Exception as exc:
             results["flush_error"] = str(exc)
 

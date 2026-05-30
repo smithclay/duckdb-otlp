@@ -20,6 +20,13 @@ SELECT COUNT(*) FROM read_otlp_logs('__TEST_DIR__/duckdb_otlp_many_logs.jsonl');
 ----
 2049
 
+# Projection pushdown should copy only requested Arrow child columns and still
+# keep COUNT(*) working with an empty output column list.
+query T
+SELECT body FROM read_otlp_logs('test/data/logs_simple.jsonl') ORDER BY body LIMIT 1;
+----
+Application started
+
 # Test schema is correct for logs
 query I
 SELECT COUNT(*) FROM (

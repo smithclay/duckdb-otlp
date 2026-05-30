@@ -30,10 +30,10 @@ struct OtlpServerConfig {
 	string schema_name = "main";
 	bool create_tables = true;
 	idx_t max_body_bytes = 16ULL * 1024ULL * 1024ULL;
-	//! Buffered group-commit ("seal") tuning. Ingest buffers rows in memory and a
-	//! single writer seals them on a size or age trigger (one DuckLake snapshot per
-	//! seal), avoiding per-request Parquet files and write conflicts.
-	idx_t seal_target_bytes = 64ULL * 1024ULL * 1024ULL;   //! seal when a signal buffer reaches this
+	//! Internal buffered group-commit ("seal") defaults. Ingest buffers rows in memory
+	//! and a single writer seals them on a size or age trigger, avoiding per-request
+	//! Parquet files and write conflicts.
+	idx_t seal_target_bytes = 64ULL * 1024ULL * 1024ULL;   //! seal when admitted bytes reach this
 	int64_t seal_max_age_ms = 5000;                        //! seal when the oldest buffered row is this old
 	idx_t max_buffered_bytes = 512ULL * 1024ULL * 1024ULL; //! hard cap across all signals -> 503
 };
@@ -41,6 +41,15 @@ struct OtlpServerConfig {
 struct OtlpIngestResult {
 	idx_t rows = 0;
 	idx_t batches = 0;
+	idx_t skipped_summaries = 0;
+	idx_t skipped_nan_values = 0;
+	idx_t skipped_infinity_values = 0;
+	idx_t skipped_missing_values = 0;
+
+	bool HasSkipped() const {
+		return skipped_summaries > 0 || skipped_nan_values > 0 || skipped_infinity_values > 0 ||
+		       skipped_missing_values > 0;
+	}
 };
 
 class OtlpServer {
@@ -114,8 +123,8 @@ public:
 	}
 
 	//! Force a synchronous seal of all buffered rows (used by otlp_flush). Returns the
-	//! number of rows sealed. When run_checkpoint is set, also compacts the catalog.
-	OtlpIngestResult FlushNow(bool run_checkpoint);
+	//! number of rows sealed.
+	OtlpIngestResult FlushNow();
 
 private:
 	bool CheckAuth(const string &authorization, const string &api_key) const;
@@ -148,13 +157,14 @@ private:
 	OtlpSignalBuffer &BufferFor(OtlpSignalType signal_type);
 	idx_t AdmissionReservationBytes(idx_t body_size) const;
 	bool TryReserveAdmission(idx_t bytes, idx_t &current);
+	void ClaimUnsealedAdmission(idx_t &bytes);
 	void ReleaseAdmission(idx_t bytes);
 
 	// --- seal path (single writer) ---
 	void InitBuffers();
 	void StartSealer();
 	void SealerLoop();
-	OtlpIngestResult SealOnce(bool run_checkpoint);
+	OtlpIngestResult SealOnce();
 	void RequestSeal();
 	bool SealAgeDue() const;
 
@@ -172,6 +182,10 @@ private:
 	//! The single real byte counter: enforces max_buffered_bytes under concurrency and
 	//! drives the seal size trigger (seal_target_bytes).
 	std::atomic<idx_t> admitted_bytes {0};
+	//! Subset of admitted_bytes already attached to buffered rows and awaiting seal.
+	//! Protected separately so admission checks stay atomic-only on the request path.
+	std::mutex admission_mutex;
+	idx_t unsealed_admission_bytes = 0;
 
 	// Single serialized writer + background sealer. writer_mutex serializes SealOnce
 	// (sealer thread) against FlushNow (otlp_flush) and the final drain on shutdown.

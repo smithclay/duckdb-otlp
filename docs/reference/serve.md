@@ -13,7 +13,7 @@ The extension registers four lifecycle functions:
 | Function | What it does |
 |----------|-------------|
 | `otlp_serve([uri], ...)` | Start an HTTP server and create/validate target tables. Returns one row describing the listener. |
-| `otlp_flush(uri, ...)` | Force a synchronous seal of the buffer (optionally compact). Returns seal stats. |
+| `otlp_flush(uri)` | Force a synchronous seal of the buffer. Returns seal stats. |
 | `otlp_stop(uri)` | Stop the server listening on `uri` (seals remaining rows first). Returns a status string. |
 | `otlp_server_list()` | List all running servers with live counters, buffer state, and health. |
 
@@ -37,8 +37,6 @@ SELECT * FROM otlp_serve('otlp:localhost:4318', catalog := 'lake', token := 'my-
 | `create_tables` | BOOLEAN | `true` | Create the six target tables if they don't exist. When `false`, the tables must already exist with the expected columns or `otlp_serve` fails fast. |
 | `allow_other_hostname` | BOOLEAN | `false` | Allow binding to a non-localhost host. By default only `localhost`, `127.0.0.1`, and `::1` are permitted. |
 | `max_body_bytes` | UBIGINT | `16777216` (16 MiB) | Reject request bodies larger than this with `413`. Must be greater than zero. |
-| `seal_target_bytes` | UBIGINT | `67108864` (64 MiB) | Seal the buffer once buffered bytes reach this size. See [Durability and the seal model](#durability-and-the-seal-model). |
-| `seal_max_age_ms` | UBIGINT | `5000` | Seal the buffer once the oldest buffered row reaches this age (ms). |
 | `max_buffered_bytes` | UBIGINT | `536870912` (512 MiB) | Backpressure cap. POSTs that would exceed this return `503`. |
 
 **Output columns** (one row):
@@ -59,13 +57,13 @@ SELECT * FROM otlp_serve('otlp:localhost:4318', catalog := 'lake', token := 'my-
 
 Starting a second server on the same URI fails (`OTLP server already exists`). The server's lifetime is tied to the DuckDB `DatabaseInstance`: all servers are stopped automatically when the database closes, but their buffers are **not** sealed at that point (see Durability below) — `otlp_flush`/`otlp_stop` before closing to avoid losing buffered rows.
 
-### `otlp_flush(uri, ...)`
+### `otlp_flush(uri)`
 
-Forces a **synchronous seal**: the server's in-memory buffer is committed to the target in one transaction before the function returns. Use it to make buffered rows durable on demand (e.g. right before querying), and — with `checkpoint := true` — to compact a DuckLake catalog.
+Forces a **synchronous seal**: the server's in-memory buffer is committed to the target in one transaction before the function returns. Use it to make buffered rows durable on demand, for example right before querying.
 
 ```sql
--- Force a seal and compact the DuckLake catalog
-SELECT * FROM otlp_flush('otlp:localhost:4318', checkpoint := true);
+-- Force a seal
+SELECT * FROM otlp_flush('otlp:localhost:4318');
 ```
 
 **Parameters:**
@@ -73,7 +71,6 @@ SELECT * FROM otlp_flush('otlp:localhost:4318', checkpoint := true);
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `uri` (positional) | VARCHAR | *(required)* | Listen URI of the server to flush. |
-| `checkpoint` | BOOLEAN | `false` | After the seal, also run DuckLake compaction: `CALL ducklake_merge_adjacent_files('<catalog>')` then `CHECKPOINT '<catalog>'`. Merges the small per-seal Parquet files. |
 
 **Output columns** (one row):
 
@@ -83,8 +80,6 @@ SELECT * FROM otlp_flush('otlp:localhost:4318', checkpoint := true);
 | `sealed_rows` | UBIGINT | Rows committed by this seal. |
 | `seals_total` | UBIGINT | Total seals performed by this server since startup. |
 | `error` | VARCHAR | Seal error detail, or `NULL` if none. |
-
-Run `otlp_flush(uri, checkpoint := true)` periodically (e.g. from a scheduled query) to keep DuckLake file counts low — compaction is **off by default**, so without it each seal leaves a separate small Parquet file per signal.
 
 ### `otlp_stop(uri)`
 
@@ -123,7 +118,6 @@ FROM otlp_server_list();
 | `total_requests` | UBIGINT | Requests handled since startup (includes failures). |
 | `total_rows` | UBIGINT | Rows **accepted** (buffered) since startup. Once the buffer drains, this equals the rows sealed. A `/v1/metrics` request counts rows across all four metric tables. |
 | `buffered_rows` | UBIGINT | Rows currently in the buffer, not yet sealed. |
-| `buffered_bytes` | UBIGINT | Approximate bytes currently buffered. |
 | `last_seal_age_ms` | BIGINT | Age (ms) since the last seal, or `NULL` if never sealed. |
 | `seals_total` | UBIGINT | Seals performed since startup. |
 | `is_listening` | BOOLEAN | `false` once the listener has fallen over (e.g. an error after a successful bind). |
@@ -231,14 +225,14 @@ Ingest is **buffered and group-committed** for every target (default catalog and
 
 1. A POST reserves admission bytes, parses, converts, and appends rows into the relevant per-signal in-memory buffer, then returns `202`. The 128-thread worker pool does this concurrently; append locks only the target signal buffer.
 2. A single background **sealer** thread group-commits the buffer to the target in **one transaction** when any trigger fires:
-   - buffered bytes reach `seal_target_bytes` (default 64 MiB), or
-   - the oldest buffered row reaches `seal_max_age_ms` (default 5000 ms), or
+   - buffered bytes reach the internal size threshold, or
+   - the oldest buffered row reaches the internal age limit, or
    - an explicit [`otlp_flush`](#otlp_flushuri-).
 3. For a DuckLake target, each seal writes **one Parquet data file per signal** plus one snapshot.
 
 **Durability contract:**
 
-- A `202` is **not durable.** Rows become durable at the next seal — within `seal_max_age_ms`, or immediately on `otlp_flush`.
+- A `202` is **not durable.** Rows become durable at the next automatic seal, or immediately on `otlp_flush`.
 - A crash or hard kill loses buffered-but-unsealed rows (**at-most-once** for that window).
 - `otlp_stop` and `otlp_flush` **seal remaining rows before returning**, so those lose nothing. A plain **database/connection close does NOT seal** (the drain runs after the DuckDB instance is torn down, when it can no longer write) — buffered-but-unsealed rows are dropped. Call `otlp_flush`/`otlp_stop` before closing the database to guarantee durability.
 
@@ -246,7 +240,7 @@ Ingest is **buffered and group-committed** for every target (default catalog and
 
 **Backpressure:** if admitting a request would exceed `max_buffered_bytes` (default 512 MiB) across in-flight and unsealed accepted payloads, the POST returns `503` before parse/transform work. Clients should retry with backoff.
 
-**Keeping DuckLake tidy:** each seal leaves a small Parquet file per signal. Run `otlp_flush(uri, checkpoint := true)` periodically to merge them (`ducklake_merge_adjacent_files` + `CHECKPOINT`). Compaction is off unless you ask for it.
+**Keeping DuckLake tidy:** each seal leaves a small Parquet file per signal. DuckLake compaction is separate from `otlp_flush`; run DuckLake maintenance explicitly when file counts need cleanup.
 
 ## Concurrency model
 

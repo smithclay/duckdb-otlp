@@ -133,8 +133,6 @@ src/
 ├── include/           # Public headers (forwarding to implementation dirs)
 ├── storage/           # Extension entry point registration
 ├── function/          # Table function implementations (`read_otlp_*`)
-├── parsers/           # JSON/protobuf parsers and format detector
-├── receiver/          # Shared row builders and OTLP helpers
 ├── schema/            # Column layout helpers
 ├── generated/         # Protobuf message stubs (DO NOT EDIT)
 └── wasm/              # WASM-specific build configuration
@@ -161,9 +159,9 @@ demo/
 
 - Live OTLP ingestion is supported over **HTTP** (`otlp_serve` / `otlp_stop` / `otlp_server_list` / `otlp_flush`), not gRPC. The HTTP server (`src/otlp_server.cpp`) accepts OTLP/JSON, OTLP/NDJSON, and OTLP/protobuf POSTs to `/v1/logs`, `/v1/traces`, `/v1/metrics`.
   - **Catalog targeting**: `otlp_serve(uri, catalog := '<attached_db>')` streams into an attached catalog. Set it to a DuckLake catalog to land data as Parquet in a lakehouse; empty = the default (in-memory/file) catalog.
-  - **Buffered group-commit ("seal")**: ingest is buffered in memory (per-signal `ColumnDataCollection` with per-signal locking) and a single background sealer thread group-commits on a trigger — `seal_target_bytes` (default 64 MiB), `seal_max_age_ms` (default 5000), or an explicit `otlp_flush`. One seal = one transaction (for DuckLake: one Parquet file per signal + one snapshot), so a single serialized writer avoids DuckLake's optimistic-concurrency conflicts and tiny-file churn. The 128-thread httplib pool only parses/converts/buffers concurrently.
+  - **Buffered group-commit ("seal")**: ingest is buffered in memory (per-signal `ColumnDataCollection` with per-signal locking) and a single background sealer thread group-commits on internal size/age triggers or an explicit `otlp_flush`. One seal = one transaction (for DuckLake: one Parquet file per signal + one snapshot), so a single serialized writer avoids DuckLake's optimistic-concurrency conflicts and tiny-file churn. The 128-thread httplib pool only parses/converts/buffers concurrently.
   - **Durability**: ingest is buffered in memory and durability is the seal. A POST returns **`202 Accepted`** (`{"status":"buffered",...}`) once rows are parsed and buffered in memory, but not yet durable; they commit at the next seal. **`otlp_stop` and `otlp_flush` seal remaining rows before returning; a plain database/connection close does NOT** — buffered-but-un-sealed rows can be lost, so callers must `otlp_stop`/`otlp_flush` before closing the database. Backpressure: request admission over `max_buffered_bytes` (default 512 MiB) → **`503`**.
-  - **`otlp_flush(uri, checkpoint := false)`** forces a synchronous seal; `checkpoint := true` also compacts DuckLake (`ducklake_merge_adjacent_files` + `CHECKPOINT`). `otlp_server_list` exposes buffer/seal metrics (`buffered_rows`, `last_seal_age_ms`, `seals_total`, `seal_failures_total`, `seal_last_error`, `catalog_name`). Verify the ingest/seal path with `test/manual/otlp_serve_concurrency.py` (set `OTLP_DUCKLAKE_DIR` for the DuckLake path).
+  - **`otlp_flush(uri)`** forces a synchronous seal. `otlp_server_list` exposes buffer/seal metrics (`buffered_rows`, `last_seal_age_ms`, `seals_total`, `seal_failures_total`, `seal_last_error`, `catalog_name`). Verify the ingest/seal path with `test/manual/otlp_serve_concurrency.py` (set `OTLP_DUCKLAKE_DIR` for the DuckLake path).
   - Not available on the wasm build.
 - Summary metrics are not yet supported
 - The union metrics function (`read_otlp_metrics`) is not yet implemented

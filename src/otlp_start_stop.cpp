@@ -30,6 +30,9 @@ static LogicalType OtlpBigIntType() {
 }
 
 struct OtlpStartStopFunctionData : public TableFunctionData {
+	// These lifecycle functions are side-effecting control-plane calls that also
+	// return a status row. DuckDB may rescan table functions, so `finished` makes
+	// server creation/stop safe under rescan instead of repeating the side effect.
 	bool finished = false;
 	OtlpUri listen_uri;
 	OtlpServerConfig config;
@@ -87,28 +90,11 @@ static unique_ptr<FunctionData> OtlpServeBind(ClientContext &context, TableFunct
 			throw InvalidInputException("max_body_bytes must be greater than zero");
 		}
 	}
-	if (input.named_parameters.find("seal_target_bytes") != input.named_parameters.end()) {
-		bind_data->config.seal_target_bytes = input.named_parameters["seal_target_bytes"].GetValue<idx_t>();
-		if (bind_data->config.seal_target_bytes == 0) {
-			throw InvalidInputException("seal_target_bytes must be greater than zero");
-		}
-	}
-	if (input.named_parameters.find("seal_max_age_ms") != input.named_parameters.end()) {
-		bind_data->config.seal_max_age_ms = input.named_parameters["seal_max_age_ms"].GetValue<int64_t>();
-		if (bind_data->config.seal_max_age_ms <= 0) {
-			throw InvalidInputException("seal_max_age_ms must be greater than zero");
-		}
-	}
 	if (input.named_parameters.find("max_buffered_bytes") != input.named_parameters.end()) {
 		bind_data->config.max_buffered_bytes = input.named_parameters["max_buffered_bytes"].GetValue<idx_t>();
 		if (bind_data->config.max_buffered_bytes == 0) {
 			throw InvalidInputException("max_buffered_bytes must be greater than zero");
 		}
-	}
-	if (bind_data->config.seal_target_bytes > bind_data->config.max_buffered_bytes) {
-		throw InvalidInputException("seal_target_bytes (%llu) must not exceed max_buffered_bytes (%llu)",
-		                            static_cast<uint64_t>(bind_data->config.seal_target_bytes),
-		                            static_cast<uint64_t>(bind_data->config.max_buffered_bytes));
 	}
 
 	names.emplace_back("listen_uri");
@@ -172,8 +158,6 @@ TableFunctionSet OtlpServeFunction::GetFunction() {
 	fun.named_parameters["create_tables"] = OtlpBooleanType();
 	fun.named_parameters["allow_other_hostname"] = OtlpBooleanType();
 	fun.named_parameters["max_body_bytes"] = OtlpUBigIntType();
-	fun.named_parameters["seal_target_bytes"] = OtlpUBigIntType();
-	fun.named_parameters["seal_max_age_ms"] = OtlpBigIntType();
 	fun.named_parameters["max_buffered_bytes"] = OtlpUBigIntType();
 	set.AddFunction(fun);
 	fun.arguments.clear();
@@ -295,9 +279,10 @@ TableFunction OtlpServerListFunction::GetFunction() {
 }
 
 struct OtlpFlushFunctionData : public TableFunctionData {
+	// See OtlpStartStopFunctionData: otlp_flush is a side-effecting table function
+	// that returns a row, and the guard makes DuckDB rescan safe.
 	bool finished = false;
 	OtlpUri listen_uri;
-	bool run_checkpoint = false;
 };
 
 static unique_ptr<FunctionData> OtlpFlushBind(ClientContext &context, TableFunctionBindInput &input,
@@ -308,9 +293,6 @@ static unique_ptr<FunctionData> OtlpFlushBind(ClientContext &context, TableFunct
 		throw InvalidInputException("Invalid OTLP listen URI specified");
 	}
 	bind_data->listen_uri = OtlpUri(uri_value.GetValue<string>());
-	if (input.named_parameters.find("checkpoint") != input.named_parameters.end()) {
-		bind_data->run_checkpoint = input.named_parameters["checkpoint"].GetValue<bool>();
-	}
 	names.emplace_back("status");
 	return_types.emplace_back(OtlpVarcharType());
 	names.emplace_back("sealed_rows");
@@ -328,7 +310,7 @@ static void OtlpFlush(ClientContext &context, TableFunctionInput &data_p, DataCh
 		return;
 	}
 	auto &state = OtlpStorageExtensionInfo::GetState(*context.db);
-	auto result = state.FlushServer(bind_data.listen_uri, bind_data.run_checkpoint);
+	auto result = state.FlushServer(bind_data.listen_uri);
 	if (!result.found) {
 		output.SetValue(0, 0, StringUtil::Format("No server found listening on %s", bind_data.listen_uri.Uri()));
 		output.SetValue(1, 0, Value::UBIGINT(0));
@@ -345,9 +327,7 @@ static void OtlpFlush(ClientContext &context, TableFunctionInput &data_p, DataCh
 }
 
 TableFunction OtlpFlushFunction::GetFunction() {
-	auto fun = TableFunction("otlp_flush", {OtlpVarcharType()}, OtlpFlush, OtlpFlushBind);
-	fun.named_parameters["checkpoint"] = OtlpBooleanType();
-	return fun;
+	return TableFunction("otlp_flush", {OtlpVarcharType()}, OtlpFlush, OtlpFlushBind);
 }
 
 } // namespace duckdb

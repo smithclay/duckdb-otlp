@@ -136,7 +136,7 @@ static OtlpInputFormat FormatFromContentType(const string &content_type) {
 	if (value == "application/json" || value == "application/otlp+json") {
 		return OTLP_FORMAT_JSON;
 	}
-	if (value == "application/x-ndjson") {
+	if (value == "application/x-ndjson" || value == "application/jsonl") {
 		return OTLP_FORMAT_JSONL;
 	}
 	if (value == "application/x-protobuf" || value == "application/protobuf" || value == "application/otlp") {
@@ -176,7 +176,6 @@ struct OtlpSignalBuffer {
 	std::mutex mutex;
 	unique_ptr<ColumnDataCollection> collection;
 	idx_t buffered_rows = 0;
-	idx_t admission_bytes = 0;
 	bool have_unsealed = false;
 	std::chrono::steady_clock::time_point first_unsealed;
 
@@ -326,6 +325,15 @@ void OtlpServer::ReleaseAdmission(idx_t bytes) {
 	}
 }
 
+void OtlpServer::ClaimUnsealedAdmission(idx_t &bytes) {
+	if (bytes == 0) {
+		return;
+	}
+	std::lock_guard<std::mutex> lock(admission_mutex);
+	unsealed_admission_bytes += bytes;
+	bytes = 0;
+}
+
 void OtlpServer::EnsureTargetTables() {
 	auto db = db_ptr.lock();
 	if (!db) {
@@ -410,8 +418,8 @@ OtlpIngestResult OtlpServer::Ingest(OtlpRequestKind kind, const string &content_
 
 	// Backpressure: reserve payload bytes before parse/transform so concurrent bursts
 	// cannot all pass the check and allocate work beyond max_buffered_bytes. The
-	// reservation moves into the first signal buffer that accepts rows and is released
-	// only after those rows seal; parse/validation failures release it immediately.
+	// reservation moves into the unsealed-row counter when rows are buffered and is
+	// released only after those rows seal; parse/validation failures release it immediately.
 	auto reservation_bytes = AdmissionReservationBytes(body.size());
 	idx_t admitted_before = 0;
 	if (!TryReserveAdmission(reservation_bytes, admitted_before)) {
@@ -518,6 +526,11 @@ void OtlpServer::BufferMetrics(const string &body, OtlpInputFormat format, OtlpI
 		throw OtlpHttpError(400, StringUtil::Format("OTLP parse failed for metrics: %s", otlp_status_message(status)));
 	}
 
+	result.skipped_summaries += batches.skipped_summaries;
+	result.skipped_nan_values += batches.skipped_nan_values;
+	result.skipped_infinity_values += batches.skipped_infinity_values;
+	result.skipped_missing_values += batches.skipped_missing_values;
+
 	try {
 		if (batches.gauge.present) {
 			AppendArrowBatch(BufferFor(OTLP_SIGNAL_METRICS_GAUGE), batches.gauge.array, batches.gauge.schema, result,
@@ -576,10 +589,7 @@ void OtlpServer::BufferAppend(OtlpSignalBuffer &buf, DataChunk &chunk, idx_t &ad
 			buf.first_unsealed = std::chrono::steady_clock::now();
 		}
 		buf.buffered_rows += rows;
-		if (admission_bytes > 0) {
-			buf.admission_bytes += admission_bytes;
-			admission_bytes = 0;
-		}
+		ClaimUnsealedAdmission(admission_bytes);
 	}
 	// The single real byte counter (admitted-and-not-yet-sealed body bytes) drives the
 	// size trigger; the exact COPY size is whatever the buffered chunks hold at seal time.
@@ -598,7 +608,7 @@ static int64_t NowUnixMs() {
 	    .count();
 }
 
-OtlpIngestResult OtlpServer::SealOnce(bool run_checkpoint) {
+OtlpIngestResult OtlpServer::SealOnce() {
 	std::lock_guard<std::mutex> writer_lock(writer_mutex);
 	auto db = db_ptr.lock();
 	if (!db) {
@@ -609,7 +619,6 @@ OtlpIngestResult OtlpServer::SealOnce(bool run_checkpoint) {
 	struct SealingBuffer {
 		unique_ptr<ColumnDataCollection> collection;
 		idx_t rows = 0;
-		idx_t admission_bytes = 0;
 	};
 
 	std::vector<unique_ptr<ColumnDataCollection>> fresh;
@@ -630,18 +639,18 @@ OtlpIngestResult OtlpServer::SealOnce(bool run_checkpoint) {
 			locks.emplace_back(buf->mutex);
 		}
 		sealing.reserve(signal_buffers.size());
+		std::lock_guard<std::mutex> admission_lock(admission_mutex);
+		sealed_admission_bytes = unsealed_admission_bytes;
+		unsealed_admission_bytes = 0;
 		for (idx_t i = 0; i < signal_buffers.size(); i++) {
 			auto &buf = *signal_buffers[i];
 			SealingBuffer state;
 			state.collection = std::move(buf.collection);
 			state.rows = buf.buffered_rows;
-			state.admission_bytes = buf.admission_bytes;
 			total += state.rows;
-			sealed_admission_bytes += state.admission_bytes;
 
 			buf.collection = std::move(fresh[i]);
 			buf.buffered_rows = 0;
-			buf.admission_bytes = 0;
 			buf.have_unsealed = false;
 			sealing.push_back(std::move(state));
 		}
@@ -725,10 +734,11 @@ OtlpIngestResult OtlpServer::SealOnce(bool run_checkpoint) {
 				state.collection->Combine(*buf.collection); // old rows, then live rows
 				buf.collection = std::move(state.collection);
 				buf.buffered_rows += state.rows;
-				buf.admission_bytes += state.admission_bytes;
 				buf.have_unsealed = true;
 				buf.first_unsealed = std::chrono::steady_clock::now();
 			}
+			std::lock_guard<std::mutex> admission_lock(admission_mutex);
+			unsealed_admission_bytes += sealed_admission_bytes;
 		}
 		seal_failures_total.fetch_add(1);
 		{
@@ -748,17 +758,6 @@ OtlpIngestResult OtlpServer::SealOnce(bool run_checkpoint) {
 	}
 	LogServerEvent(StringUtil::Format("seal: catalog=%s rows=%llu batches=%llu", config.catalog_name,
 	                                  static_cast<uint64_t>(result.rows), static_cast<uint64_t>(result.batches)));
-
-	if (run_checkpoint && !config.catalog_name.empty()) {
-		// Compaction runs after the durable COMMIT, so a failure here can't lose data.
-		try {
-			RunSQL(*writer_con,
-			       "CALL ducklake_merge_adjacent_files('" + StringUtil::Replace(config.catalog_name, "'", "''") + "')");
-			RunSQL(*writer_con, "CHECKPOINT " + QuoteIdentifier(config.catalog_name));
-		} catch (std::exception &ex) {
-			LogServerEvent(StringUtil::Format("checkpoint failed (rows already committed): %s", ex.what()));
-		}
-	}
 	return result;
 }
 
@@ -781,7 +780,7 @@ void OtlpServer::SealerLoop() {
 		}
 		if (due) {
 			try {
-				SealOnce(false);
+				SealOnce();
 			} catch (...) {
 				// Already logged + buffers restored (SealOnce catches all); back off.
 				std::this_thread::sleep_for(std::chrono::milliseconds(250));
@@ -811,8 +810,8 @@ bool OtlpServer::SealAgeDue() const {
 	return age >= config.seal_max_age_ms;
 }
 
-OtlpIngestResult OtlpServer::FlushNow(bool run_checkpoint) {
-	return SealOnce(run_checkpoint);
+OtlpIngestResult OtlpServer::FlushNow() {
+	return SealOnce();
 }
 
 void OtlpServer::ShutdownIngest() {
@@ -832,7 +831,7 @@ void OtlpServer::ShutdownIngest() {
 	// the database to guarantee a seal (see Known Limitations).
 	for (int attempt = 0; attempt < 3 && BufferedRows() > 0; attempt++) {
 		try {
-			SealOnce(false);
+			SealOnce();
 		} catch (...) {
 			LogServerEvent("final seal attempt failed during shutdown");
 		}
@@ -922,10 +921,20 @@ OtlpServer::OtlpServer(ClientContext &context, const OtlpUri &uri_p, const OtlpS
 					                     req.get_header_value("Content-Encoding"), req.body);
 					// 202 Accepted: rows are parsed + buffered in memory, not yet durable.
 					// They commit at the next seal (otlp_flush / otlp_stop force one).
-					SetJson(res, 202,
-					        StringUtil::Format("{\"status\":\"buffered\",\"rows\":%llu,\"batches\":%llu}",
-					                           static_cast<uint64_t>(result.rows),
-					                           static_cast<uint64_t>(result.batches)));
+					auto response =
+					    StringUtil::Format("{\"status\":\"buffered\",\"rows\":%llu,\"batches\":%llu",
+					                       static_cast<uint64_t>(result.rows), static_cast<uint64_t>(result.batches));
+					if (kind == OtlpRequestKind::METRICS || result.HasSkipped()) {
+						response += StringUtil::Format(
+						    ",\"skipped\":{\"summaries\":%llu,\"nan_values\":%llu,\"infinity_values\":%llu,"
+						    "\"missing_values\":%llu}",
+						    static_cast<uint64_t>(result.skipped_summaries),
+						    static_cast<uint64_t>(result.skipped_nan_values),
+						    static_cast<uint64_t>(result.skipped_infinity_values),
+						    static_cast<uint64_t>(result.skipped_missing_values));
+					}
+					response += "}";
+					SetJson(res, 202, response);
 				}
 			} catch (OtlpHttpError &ex) {
 				SetError(res, ex.status, "request_failed", ex.what(), ex.retry_after_seconds);

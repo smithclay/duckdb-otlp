@@ -50,16 +50,16 @@ public:
 	};
 	//! Force a synchronous seal of a registered server's buffer. Takes a shared_ptr
 	//! under servers_mutex, then releases the registry lock while the seal runs.
-	FlushResult FlushServer(const OtlpUri &listen_uri, bool run_checkpoint);
+	FlushResult FlushServer(const OtlpUri &listen_uri);
 
 private:
 	void StopAllServers();
 
 private:
 	std::mutex servers_mutex;
-	//! shared_ptr (not unique_ptr) so FlushServer can hold a ref across a slow seal/
-	//! checkpoint with servers_mutex released — the server can't be freed mid-flush, and
-	//! a concurrent otlp_stop/db-close isn't blocked for the checkpoint duration.
+	//! shared_ptr (not unique_ptr) so FlushServer can hold a ref across a slow seal
+	//! with servers_mutex released; the server can't be freed mid-flush, and a
+	//! concurrent otlp_stop/db-close isn't blocked by the seal.
 	unordered_map<string, shared_ptr<OtlpServer>> servers;
 };
 
