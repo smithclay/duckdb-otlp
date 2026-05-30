@@ -116,6 +116,27 @@ void GetArrowSchemaColumns(const ArrowSchema &schema, vector<LogicalType> &retur
 	}
 }
 
+// Copy a fixed-width Arrow primitive column into a DuckDB FlatVector. With no nulls the Arrow
+// buffer layout is bit-identical to the FlatVector layout, so a single memcpy replaces the loop.
+template <class T>
+static void CopyFixedWidth(const ArrowArray &array, const uint8_t *null_bitmap, Vector &output, idx_t count) {
+	const T *values = static_cast<const T *>(array.buffers[1]);
+	T *output_data = FlatVector::GetData<T>(output);
+	if (!null_bitmap) {
+		memcpy(output_data, values + array.offset, count * sizeof(T));
+		return;
+	}
+	auto &mask = FlatVector::Validity(output);
+	for (idx_t i = 0; i < count; i++) {
+		idx_t array_idx = i + array.offset;
+		if (!(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
+			mask.SetInvalid(i);
+			continue;
+		}
+		output_data[i] = values[array_idx];
+	}
+}
+
 void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vector &output, idx_t count) {
 	std::string fmt(schema.format ? schema.format : "");
 
@@ -184,98 +205,41 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 			throw IOException("Invalid Arrow integer array (%s): expected at least 2 buffers, got %lld", fmt.c_str(),
 			                  static_cast<int64_t>(array.n_buffers));
 		}
-		auto copy_int = [&](auto *typed_values, auto *typed_output) {
-			if (!null_bitmap) {
-				// No nulls: Arrow buffer layout is bit-identical to the DuckDB FlatVector
-				// layout for fixed-width integers, so a single memcpy replaces the loop.
-				memcpy(typed_output, typed_values + array.offset, count * sizeof(*typed_output));
-				return;
-			}
-			for (idx_t i = 0; i < count; i++) {
-				idx_t array_idx = i + array.offset;
-				if (!(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
-					mask.SetInvalid(i);
-					continue;
-				}
-				typed_output[i] = typed_values[array_idx];
-			}
-		};
 		if (fmt == "l") {
-			copy_int(static_cast<const int64_t *>(array.buffers[1]), FlatVector::GetData<int64_t>(output));
+			CopyFixedWidth<int64_t>(array, null_bitmap, output, count);
 		} else if (fmt == "L") {
-			copy_int(static_cast<const uint64_t *>(array.buffers[1]), FlatVector::GetData<uint64_t>(output));
+			CopyFixedWidth<uint64_t>(array, null_bitmap, output, count);
 		} else if (fmt == "i") {
-			copy_int(static_cast<const int32_t *>(array.buffers[1]), FlatVector::GetData<int32_t>(output));
+			CopyFixedWidth<int32_t>(array, null_bitmap, output, count);
 		} else if (fmt == "I") {
-			copy_int(static_cast<const uint32_t *>(array.buffers[1]), FlatVector::GetData<uint32_t>(output));
+			CopyFixedWidth<uint32_t>(array, null_bitmap, output, count);
 		} else if (fmt == "s") {
-			copy_int(static_cast<const int16_t *>(array.buffers[1]), FlatVector::GetData<int16_t>(output));
+			CopyFixedWidth<int16_t>(array, null_bitmap, output, count);
 		} else if (fmt == "S") {
-			copy_int(static_cast<const uint16_t *>(array.buffers[1]), FlatVector::GetData<uint16_t>(output));
+			CopyFixedWidth<uint16_t>(array, null_bitmap, output, count);
 		} else if (fmt == "c") {
-			copy_int(static_cast<const int8_t *>(array.buffers[1]), FlatVector::GetData<int8_t>(output));
+			CopyFixedWidth<int8_t>(array, null_bitmap, output, count);
 		} else { // "C"
-			copy_int(static_cast<const uint8_t *>(array.buffers[1]), FlatVector::GetData<uint8_t>(output));
+			CopyFixedWidth<uint8_t>(array, null_bitmap, output, count);
 		}
 	} else if (fmt.size() >= 3 && fmt[0] == 't' && fmt[1] == 'D') {
 		if (array.n_buffers < 2) {
 			throw IOException("Invalid Arrow duration array: expected at least 2 buffers, got %lld",
 			                  static_cast<int64_t>(array.n_buffers));
 		}
-		const int64_t *values = static_cast<const int64_t *>(array.buffers[1]);
-		auto *output_data = FlatVector::GetData<int64_t>(output);
-		if (!null_bitmap) {
-			memcpy(output_data, values + array.offset, count * sizeof(int64_t));
-		} else {
-			for (idx_t i = 0; i < count; i++) {
-				idx_t array_idx = i + array.offset;
-				if (!(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
-					mask.SetInvalid(i);
-					continue;
-				}
-				output_data[i] = values[array_idx];
-			}
-		}
+		CopyFixedWidth<int64_t>(array, null_bitmap, output, count);
 	} else if (fmt == "g") {
 		if (array.n_buffers < 2) {
 			throw IOException("Invalid Arrow double array: expected at least 2 buffers, got %lld",
 			                  static_cast<int64_t>(array.n_buffers));
 		}
-		const double *values = static_cast<const double *>(array.buffers[1]);
-		auto *output_data = FlatVector::GetData<double>(output);
-
-		if (!null_bitmap) {
-			memcpy(output_data, values + array.offset, count * sizeof(double));
-		} else {
-			for (idx_t i = 0; i < count; i++) {
-				idx_t array_idx = i + array.offset;
-				if (!(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
-					mask.SetInvalid(i);
-					continue;
-				}
-				output_data[i] = values[array_idx];
-			}
-		}
+		CopyFixedWidth<double>(array, null_bitmap, output, count);
 	} else if (fmt == "f") {
 		if (array.n_buffers < 2) {
 			throw IOException("Invalid Arrow float array: expected at least 2 buffers, got %lld",
 			                  static_cast<int64_t>(array.n_buffers));
 		}
-		const float *values = static_cast<const float *>(array.buffers[1]);
-		auto *output_data = FlatVector::GetData<float>(output);
-
-		if (!null_bitmap) {
-			memcpy(output_data, values + array.offset, count * sizeof(float));
-		} else {
-			for (idx_t i = 0; i < count; i++) {
-				idx_t array_idx = i + array.offset;
-				if (!(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
-					mask.SetInvalid(i);
-					continue;
-				}
-				output_data[i] = values[array_idx];
-			}
-		}
+		CopyFixedWidth<float>(array, null_bitmap, output, count);
 	} else if (fmt == "z" || fmt == "Z") {
 		// Variable-size binary -> BLOB. Same buffer layout as utf8 (validity, offsets,
 		// data); "z" uses 32-bit offsets, "Z" uses 64-bit. Stored as non-UTF8 bytes.
@@ -326,20 +290,7 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 			throw IOException("Invalid Arrow timestamp array: expected at least 2 buffers, got %lld",
 			                  static_cast<int64_t>(array.n_buffers));
 		}
-		const int64_t *values = static_cast<const int64_t *>(array.buffers[1]);
-		auto *output_data = FlatVector::GetData<int64_t>(output);
-		if (!null_bitmap) {
-			memcpy(output_data, values + array.offset, count * sizeof(int64_t));
-		} else {
-			for (idx_t i = 0; i < count; i++) {
-				idx_t array_idx = i + array.offset;
-				if (!(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
-					mask.SetInvalid(i);
-					continue;
-				}
-				output_data[i] = values[array_idx];
-			}
-		}
+		CopyFixedWidth<int64_t>(array, null_bitmap, output, count);
 	} else if (fmt.size() > 2 && fmt[0] == 'w' && fmt[1] == ':') {
 		// FixedSizeBinary -> lowercase hex VARCHAR (trace_id/span_id). See the type-mapping
 		// note in ArrowFormatToDuckDBType for why this is hex and not a raw BLOB.
