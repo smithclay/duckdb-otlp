@@ -1,4 +1,6 @@
-# How to Export Telemetry to Parquet
+---
+title: "How to Export Telemetry to Parquet"
+---
 
 Use Parquet when you will query the same telemetry repeatedly or hand it to BI/data tools. After export, DuckDB can read the Parquet files without loading the OTLP extension.
 

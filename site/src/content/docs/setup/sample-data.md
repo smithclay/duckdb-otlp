@@ -1,4 +1,6 @@
-# How to Get Sample Data
+---
+title: "How to Get Sample Data"
+---
 
 The repository includes small OTLP fixtures under `test/data/`.
 
@@ -30,8 +32,8 @@ curl -LO https://raw.githubusercontent.com/smithclay/duckdb-otlp/main/test/data/
 
 Use the collector file exporter for application telemetry:
 
-- [How to Configure the OpenTelemetry Collector](collector.md)
-- [How to Export the OpenTelemetry Demo](otel-demo.md)
+- [How to Configure the OpenTelemetry Collector](../collector/)
+- [How to Export the OpenTelemetry Demo](../otel-demo/)
 
 Use the live ingest server for quick HTTP tests:
 
@@ -54,4 +56,4 @@ SELECT count(*) FROM read_otlp_logs('my_logs.jsonl');
 SELECT count(*) FROM read_otlp_metrics_gauge('my_metrics.jsonl');
 ```
 
-See [Error Handling](../guides/error-handling.md) for common failures.
+See [Error Handling](../../guides/error-handling/) for common failures.

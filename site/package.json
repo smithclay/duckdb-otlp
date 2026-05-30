@@ -4,10 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "sync": "node ./scripts/sync-content.mjs",
-    "predev": "npm run sync",
     "dev": "ASTRO_TELEMETRY_DISABLED=1 astro dev",
-    "prebuild": "npm run sync",
     "build": "ASTRO_TELEMETRY_DISABLED=1 astro build",
     "check": "ASTRO_TELEMETRY_DISABLED=1 astro check",
     "preview": "ASTRO_TELEMETRY_DISABLED=1 astro preview"

@@ -1,8 +1,8 @@
-# DuckDB OTLP site
+# DuckDB OpenTelemetry Extension Site
 
-Astro/Starlight documentation site for DuckDB OTLP.
+Astro/Starlight documentation site for the DuckDB OpenTelemetry Extension.
 
-The build syncs markdown from `../docs` into Starlight content and copies `../demo` into `public/demo`, so the repository docs and WASM demo stay the source of truth.
+Docs live directly in `src/content/docs/`. The embedded WASM demo lives in `public/wasm-demo/`.
 
 ```bash
 npm install

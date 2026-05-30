@@ -1,4 +1,6 @@
-# How to Install the Extension
+---
+title: "How to Install the Extension"
+---
 
 Install the DuckDB OpenTelemetry Extension to start querying OpenTelemetry data with SQL.
 
@@ -38,7 +40,7 @@ The live ingest server is available only in native builds.
 
 ## Build from Source
 
-For development or custom builds, see [CONTRIBUTING.md](../../CONTRIBUTING.md).
+For development or custom builds, see [CONTRIBUTING.md](https://github.com/smithclay/duckdb-otlp/blob/main/CONTRIBUTING.md).
 
 ### Quick Build
 
@@ -82,10 +84,10 @@ SELECT count(*) FROM read_otlp_logs('test/data/logs_simple.jsonl');
 
 ## Next Steps
 
-- [Get Started](../get-started.md) - install, load, and run first queries.
-- [OpenTelemetry Collector](collector.md) - export OTLP files from the collector.
-- [Sample Data](sample-data.md) - use small test files.
-- [How-to Guides](../guides/README.md) - complete query and export tasks.
+- [Get Started](../../get-started/) - install, load, and run first queries.
+- [OpenTelemetry Collector](../collector/) - export OTLP files from the collector.
+- [Sample Data](../sample-data/) - use small test files.
+- [How-to Guides](../../guides/) - complete query and export tasks.
 
 ## Troubleshooting
 
@@ -104,7 +106,7 @@ LOAD otlp;
 
 ### Platform Not Supported
 
-If pre-built binaries aren't available for your platform, [build from source](../../CONTRIBUTING.md).
+If pre-built binaries aren't available for your platform, [build from source](https://github.com/smithclay/duckdb-otlp/blob/main/CONTRIBUTING.md).
 
 ### Live Ingest in WASM
 
@@ -116,6 +118,6 @@ The HTTP ingest server is native-only. Use a native DuckDB build for `otlp_serve
 
 ## See Also
 
-- [How to Configure the OpenTelemetry Collector](collector.md) - export OTLP files
-- [CONTRIBUTING.md](../../CONTRIBUTING.md) - Build instructions
-- [Get Started](../get-started.md) - first queries and one HTTP ingest request
+- [How to Configure the OpenTelemetry Collector](../collector/) - export OTLP files
+- [CONTRIBUTING.md](https://github.com/smithclay/duckdb-otlp/blob/main/CONTRIBUTING.md) - Build instructions
+- [Get Started](../../get-started/) - first queries and one HTTP ingest request

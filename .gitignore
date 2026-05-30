@@ -23,5 +23,3 @@ __pycache__/
 site/.astro/
 site/dist/
 site/node_modules/
-site/src/content/docs/
-site/public/wasm-demo/

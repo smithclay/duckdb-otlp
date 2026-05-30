@@ -1,4 +1,6 @@
-# Schema Reference
+---
+title: "Schema Reference"
+---
 
 The extension emits strongly-typed tables inspired by the [OpenTelemetry ClickHouse exporter schema](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/clickhouseexporter). All column names use `snake_case`.
 
@@ -177,4 +179,4 @@ All gauge columns are included, plus the two sum-specific columns above.
 
 ---
 
-For task-oriented queries and exports, use the [how-to guides](../guides/README.md).
+For task-oriented queries and exports, use the [how-to guides](../../guides/).

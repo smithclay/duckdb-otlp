@@ -1,4 +1,6 @@
-# OpenTelemetry Demo Export Config
+---
+title: "OpenTelemetry Demo Example"
+---
 
 This directory contains `otelcol-config-extras.yml` for exporting OpenTelemetry Demo traces, logs, and metrics to JSONL and protobuf files.
 
@@ -8,7 +10,7 @@ This directory contains `otelcol-config-extras.yml` for exporting OpenTelemetry 
 git clone https://github.com/open-telemetry/opentelemetry-demo.git
 cd opentelemetry-demo
 
-cp /path/to/duckdb-otlp/docs/examples/otel-demo/otelcol-config-extras.yml \
+cp /path/to/duckdb-otlp/site/public/examples/otel-demo/otelcol-config-extras.yml \
   src/otelcollector/otelcol-config-extras.yml
 
 mkdir -p exports/json exports/proto
@@ -35,4 +37,4 @@ LOAD otlp;
 SELECT * FROM read_otlp_traces('exports/json/traces.jsonl') LIMIT 10;
 ```
 
-See [OpenTelemetry Demo Exports](../../setup/otel-demo.md).
+See [OpenTelemetry Demo Exports](../../setup/otel-demo/).

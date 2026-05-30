@@ -1,4 +1,6 @@
-# How to Stream OTLP to DuckLake
+---
+title: "How to Stream OTLP to DuckLake"
+---
 
 Use `otlp_serve(..., catalog := 'lake')` to stream OTLP/HTTP exports into a DuckLake lakehouse. The extension buffers accepted rows and commits them in batches, so a busy ingest stream writes fewer Parquet files than one file per request.
 
@@ -103,5 +105,5 @@ DuckLake file compaction is separate from `otlp_flush`; run DuckLake maintenance
 ## See also
 
 - [DuckLake documentation](https://ducklake.select/)
-- [Live Ingest Reference](../reference/serve.md)
-- [Live Ingest Quickstart](../quickstart/serve.md)
+- [Live Ingest Reference](../../reference/serve/)
+- [Live Ingest Quickstart](../../quickstart/serve/)

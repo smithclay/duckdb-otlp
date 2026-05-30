@@ -1,8 +1,10 @@
-# How to Configure the OpenTelemetry Collector
+---
+title: "How to Configure the OpenTelemetry Collector"
+---
 
 Use the OpenTelemetry Collector when you want a standard pipeline that receives OTLP from applications and writes OTLP files for DuckDB analysis.
 
-For direct HTTP ingestion into DuckDB, DuckLake, or Iceberg, see the [Live Ingest Quickstart](../quickstart/serve.md), [Stream to DuckLake](../guides/stream-to-ducklake.md), and [Stream to Iceberg](../guides/stream-to-iceberg.md).
+For direct HTTP ingestion into DuckDB, DuckLake, or Iceberg, see the [Live Ingest Quickstart](../../quickstart/serve/), [Stream to DuckLake](../../guides/stream-to-ducklake/), and [Stream to Iceberg](../../guides/stream-to-iceberg/).
 
 ## File Exporter Configuration
 
@@ -80,13 +82,13 @@ SELECT listen_url
 FROM otlp_serve('otlp:localhost:4318', token := 'dev-token-123456');
 ```
 
-Point an OTLP/HTTP exporter at `http://localhost:4318` and set `Authorization: Bearer dev-token-123456`. See [Live Ingest Reference](../reference/serve.md) for endpoints, content types, auth, buffering, and durability.
+Point an OTLP/HTTP exporter at `http://localhost:4318` and set `Authorization: Bearer dev-token-123456`. See [Live Ingest Reference](../../reference/serve/) for endpoints, content types, auth, buffering, and durability.
 
 ## Next Steps
 
-- [Get Started](../get-started.md)
-- [Live Ingest Quickstart](../quickstart/serve.md)
-- [Stream to DuckLake](../guides/stream-to-ducklake.md)
-- [Stream to Iceberg](../guides/stream-to-iceberg.md)
-- [How to Get Sample Data](sample-data.md)
-- [Schema Reference](../reference/schemas.md)
+- [Get Started](../../get-started/)
+- [Live Ingest Quickstart](../../quickstart/serve/)
+- [Stream to DuckLake](../../guides/stream-to-ducklake/)
+- [Stream to Iceberg](../../guides/stream-to-iceberg/)
+- [How to Get Sample Data](../sample-data/)
+- [Schema Reference](../../reference/schemas/)

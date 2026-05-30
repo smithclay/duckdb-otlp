@@ -1,4 +1,6 @@
-# API Reference
+---
+title: "API Reference"
+---
 
 This document provides an overview of the DuckDB OpenTelemetry Extension API. All file readers accept a path or glob pattern and auto-detect OTLP JSON, JSONL, and protobuf. Live ingest is available only in native builds.
 
@@ -10,7 +12,7 @@ The extension provides the following table functions for reading OTLP data:
 
 **`read_otlp_traces(path)`**
 
-Streams trace spans with identifiers, attributes, events, and links. See the [schema reference](schemas.md#traces-read_otlp_traces) for all 25 columns.
+Streams trace spans with identifiers, attributes, events, and links. See the [schema reference](../schemas/#traces-read_otlp_traces) for all 25 columns.
 
 **Parameters:**
 - `path` (VARCHAR): File path or glob pattern. DuckDB file systems provide local, S3, HTTP(S), Azure, and GCS access.
@@ -19,7 +21,7 @@ Streams trace spans with identifiers, attributes, events, and links. See the [sc
 
 **`read_otlp_logs(path)`**
 
-Reads log records with severity, body, and trace correlation. See the [schema reference](schemas.md#logs-read_otlp_logs) for all 15 columns.
+Reads log records with severity, body, and trace correlation. See the [schema reference](../schemas/#logs-read_otlp_logs) for all 15 columns.
 
 **Parameters:** Same as `read_otlp_traces`
 
@@ -27,19 +29,19 @@ Reads log records with severity, body, and trace correlation. See the [schema re
 
 **`read_otlp_metrics_gauge(path)`**
 
-Returns gauge metrics (16 columns). See the [schema reference](schemas.md#gauge-metrics-read_otlp_metrics_gauge) for details.
+Returns gauge metrics (16 columns). See the [schema reference](../schemas/#gauge-metrics-read_otlp_metrics_gauge) for details.
 
 **`read_otlp_metrics_sum(path)`**
 
-Returns sum/counter metrics (18 columns) with `value`, `aggregation_temporality`, and `is_monotonic`. See the [schema reference](schemas.md#sum-metrics-read_otlp_metrics_sum) for details.
+Returns sum/counter metrics (18 columns) with `value`, `aggregation_temporality`, and `is_monotonic`. See the [schema reference](../schemas/#sum-metrics-read_otlp_metrics_sum) for details.
 
 **`read_otlp_metrics_histogram(path)`**
 
-Returns standard histogram metrics (22 columns) with counts, sum, min/max, explicit bucket bounds, and bucket counts. See the [schema reference](schemas.md#histogram-metrics-read_otlp_metrics_histogram) for details.
+Returns standard histogram metrics (22 columns) with counts, sum, min/max, explicit bucket bounds, and bucket counts. See the [schema reference](../schemas/#histogram-metrics-read_otlp_metrics_histogram) for details.
 
 **`read_otlp_metrics_exp_histogram(path)`**
 
-Returns exponential histogram metrics (27 columns) with scale, zero bucket, positive buckets, negative buckets, and aggregation temporality. See the [schema reference](schemas.md#exponential-histogram-metrics-read_otlp_metrics_exp_histogram) for details.
+Returns exponential histogram metrics (27 columns) with scale, zero bucket, positive buckets, negative buckets, and aggregation temporality. See the [schema reference](../schemas/#exponential-histogram-metrics-read_otlp_metrics_exp_histogram) for details.
 
 **Parameters:** Same as `read_otlp_traces`
 
@@ -54,10 +56,10 @@ In native builds, the extension can also run an HTTP server that accepts live OT
 - **`otlp_stop(uri)`** - Stop the server listening on `uri` (commits remaining rows first).
 - **`otlp_server_list()`** - List running servers with live counters, buffer state, and health.
 
-See the [Serve Reference](serve.md) for parameters, catalog targeting, endpoints, auth, and buffered commit behavior. For task-oriented walkthroughs, start with the [Live Ingest Quickstart](../quickstart/serve.md), [Stream to DuckLake](../guides/stream-to-ducklake.md), or [Stream to Iceberg](../guides/stream-to-iceberg.md).
+See the [Serve Reference](../serve/) for parameters, catalog targeting, endpoints, auth, and buffered commit behavior. For task-oriented walkthroughs, start with the [Live Ingest Quickstart](../../quickstart/serve/), [Stream to DuckLake](../../guides/stream-to-ducklake/), or [Stream to Iceberg](../../guides/stream-to-iceberg/).
 
 ## Examples
 
-For task-oriented examples, see the [How-to Guides](../guides/README.md).
+For task-oriented examples, see the [How-to Guides](../../guides/).
 
-For complete schema details, see the [Schema Reference](schemas.md).
+For complete schema details, see the [Schema Reference](../schemas/).

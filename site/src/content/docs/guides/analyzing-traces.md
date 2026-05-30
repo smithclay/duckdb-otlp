@@ -1,4 +1,6 @@
-# How to Analyze Traces
+---
+title: "How to Analyze Traces"
+---
 
 Use `read_otlp_traces(path)` when you need span-level answers such as slow operations, error spans, one-trace drilldowns, or service dependencies. Durations are nanoseconds; divide by `1000000` for milliseconds.
 
@@ -75,4 +77,4 @@ WHERE json_extract_string(span_attributes, '$."http.method"') = 'POST'
 ORDER BY duration DESC;
 ```
 
-For column details, see [Traces Schema](../reference/schemas.md#traces-read_otlp_traces).
+For column details, see [Traces Schema](../../reference/schemas/#traces-read_otlp_traces).

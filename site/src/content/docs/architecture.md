@@ -1,4 +1,6 @@
-# Architecture
+---
+title: "Architecture"
+---
 
 This document describes the internal architecture of the DuckDB OpenTelemetry Extension.
 
@@ -46,7 +48,7 @@ Converts Arrow arrays from the Rust backend into DuckDB `DataChunk`s for the tab
 
 **Location:** `src/schema/*.hpp`
 
-Centralized column layouts for traces, logs, and shape-specific metrics. See the [Schema Reference](reference/schemas.md) for complete column details.
+Centralized column layouts for traces, logs, and shape-specific metrics. See the [Schema Reference](../reference/schemas/) for complete column details.
 
 ## Data Flow
 
@@ -60,7 +62,7 @@ Arrow bridge copies arrays into DuckDB DataChunks
 
 ## OTLP HTTP Ingest Server
 
-Alongside the file readers, the extension can run an embedded HTTP server that accepts live OTLP/HTTP exports and streams them into a DuckDB catalog: the connection's default in-memory/file catalog, an attached DuckLake lakehouse, or another writable catalog such as an Iceberg REST catalog. It is registered as a **storage extension** so the running servers are owned by the database and torn down with it. See the [Serve Reference](reference/serve.md) for the user-facing surface.
+Alongside the file readers, the extension can run an embedded HTTP server that accepts live OTLP/HTTP exports and streams them into a DuckDB catalog: the connection's default in-memory/file catalog, an attached DuckLake lakehouse, or another writable catalog such as an Iceberg REST catalog. It is registered as a **storage extension** so the running servers are owned by the database and torn down with it. See the [Serve Reference](../reference/serve/) for the user-facing surface.
 
 > Not available in WASM builds. Live ingestion is HTTP-only (no gRPC).
 
@@ -141,12 +143,9 @@ test/
 ├── sql/               # SQLLogicTests (primary test format)
 └── data/              # Test data (OTLP JSON/protobuf files)
 
-demo/
-├── index.html         # Browser-based demo application
-├── app.js             # DuckDB-WASM integration code
-├── style.css          # Demo styling
-├── otlp.duckdb_extension.wasm  # WASM build of extension
-└── samples/           # Sample OTLP JSONL files for testing
+site/
+├── src/content/docs/  # Astro/Starlight documentation pages
+└── public/wasm-demo/  # Browser demo, WASM extension, and sample OTLP files
 ```
 
 ## Generated Code
@@ -175,9 +174,9 @@ Python dependencies (via `uv`):
 
 ## Building
 
-See [CONTRIBUTING.md](../CONTRIBUTING.md) for build instructions.
+See [CONTRIBUTING.md](https://github.com/smithclay/duckdb-otlp/blob/main/CONTRIBUTING.md) for build instructions.
 
 ## See Also
 
-- [API Reference](reference/api.md) - Table function signatures and parameters
-- [Schema Reference](reference/schemas.md) - Complete column layouts
+- [API Reference](../reference/api/) - Table function signatures and parameters
+- [Schema Reference](../reference/schemas/) - Complete column layouts

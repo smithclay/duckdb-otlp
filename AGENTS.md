@@ -144,22 +144,19 @@ test/
 ├── sql/               # SQLLogicTests (primary test format)
 └── data/              # Test data (OTLP JSON/protobuf files)
 
-demo/
-├── index.html         # Browser-based demo application
-├── app.js             # DuckDB-WASM integration code
-├── style.css          # Demo styling
-├── otlp.duckdb_extension.wasm  # WASM build of extension
-└── samples/           # Sample OTLP files (JSON and Protobuf)
+site/
+├── src/content/docs/  # Astro/Starlight documentation pages
+└── public/wasm-demo/  # Browser demo, WASM extension, and sample OTLP files
 ```
 
 ## Documentation
 
 Follow the Diátaxis documentation framework and keep docs lean:
 
-- **Tutorials**: `README.md`, `docs/get-started.md`, and focused quickstarts such as `docs/quickstart/serve.md`.
-- **How-to guides**: task-oriented docs under `docs/guides/` (for example traces, logs, metrics, Parquet, dashboards, errors). Do not add a separate "cookbook" section.
-- **Reference**: exact API, schema, server contract, and operational limits under `docs/reference/`.
-- **Explanation**: architecture and design context in `docs/architecture.md`.
+- **Tutorials**: `README.md`, `site/src/content/docs/get-started.md`, and focused quickstarts such as `site/src/content/docs/quickstart/serve.md`.
+- **How-to guides**: task-oriented docs under `site/src/content/docs/guides/` (for example traces, logs, metrics, Parquet, lakehouse ingest, errors). Do not add a separate "cookbook" section.
+- **Reference**: exact API, schema, server contract, and operational limits under `site/src/content/docs/reference/`.
+- **Explanation**: architecture and design context in `site/src/content/docs/architecture.md`.
 
 Prefer one canonical page per topic and link to it instead of duplicating examples. Since this is an early-stage project, do not add backwards-compatibility redirect pages or migration stubs unless explicitly requested.
 

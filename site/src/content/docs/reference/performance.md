@@ -1,4 +1,6 @@
-# Performance Tips
+---
+title: "Performance Tips"
+---
 
 Use these rules before reaching for deeper tuning.
 
@@ -58,4 +60,4 @@ GROUP BY hour, service_name;
 
 Live ingest buffers accepted rows and commits them in batches automatically. Current native builds commit when the oldest buffered row is about 5 seconds old, or when admitted request-body bytes reach about 64 MiB. `otlp_flush` is an optional low-latency read path for cases where readers need fresh rows immediately while the server keeps running.
 
-For DuckLake targets, each batch commit writes small Parquet files; use DuckLake maintenance separately when file counts need cleanup. See [Live Ingest Reference](serve.md).
+For DuckLake targets, each batch commit writes small Parquet files; use DuckLake maintenance separately when file counts need cleanup. See [Live Ingest Reference](../serve/).

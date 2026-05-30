@@ -1,4 +1,6 @@
-# How to Handle Malformed Input
+---
+title: "How to Handle Malformed Input"
+---
 
 The file readers fail fast on malformed OTLP input. Use the error message to decide whether the problem is file discovery, payload shape, file size, unsupported metric shape, or live-ingest admission.
 
@@ -56,10 +58,10 @@ For `otlp_serve`, HTTP errors are returned as JSON. Common cases are:
 - `415` for unsupported content types or encodings.
 - `503` when `max_buffered_bytes` backpressure rejects a request.
 
-See the [Live Ingest Reference](../reference/serve.md#responses-and-status-codes) for the complete contract.
+See the [Live Ingest Reference](../../reference/serve/#responses-and-status-codes) for the complete contract.
 
 ## See Also
 
-- [API Reference](../reference/api.md)
-- [Live Ingest Reference](../reference/serve.md)
-- [Schema Reference](../reference/schemas.md)
+- [API Reference](../../reference/api/)
+- [Live Ingest Reference](../../reference/serve/)
+- [Schema Reference](../../reference/schemas/)

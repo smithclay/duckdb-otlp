@@ -1,4 +1,6 @@
-# How to Stream OTLP to Iceberg
+---
+title: "How to Stream OTLP to Iceberg"
+---
 
 Use `otlp_serve(..., catalog := 'iceberg_catalog')` to stream OTLP/HTTP exports into an attached Iceberg REST catalog. The DuckDB Iceberg extension must be attached with write support; plain metadata-file scans are not enough for live ingest.
 
@@ -132,5 +134,5 @@ SELECT status FROM otlp_stop('otlp:localhost:4318');
 ## See also
 
 - [DuckDB Iceberg REST catalog docs](https://duckdb.org/docs/current/core_extensions/iceberg/iceberg_rest_catalogs)
-- [Live Ingest Reference](../reference/serve.md)
-- [Live Ingest Quickstart](../quickstart/serve.md)
+- [Live Ingest Reference](../../reference/serve/)
+- [Live Ingest Quickstart](../../quickstart/serve/)

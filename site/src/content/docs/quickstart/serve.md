@@ -1,4 +1,6 @@
-# Live Ingest Quickstart
+---
+title: "Live Ingest Quickstart"
+---
 
 Start a local OTLP/HTTP endpoint, POST one log record, and query it from DuckDB.
 
@@ -81,6 +83,6 @@ FROM otlp_logs;
 
 ## Next steps
 
-- **[Stream to DuckLake](../guides/stream-to-ducklake.md)** - land OTLP rows in Parquet files tracked by DuckLake.
-- **[Stream to Iceberg](../guides/stream-to-iceberg.md)** - land OTLP rows in an attached Iceberg REST catalog.
-- **[Live Ingest Reference](../reference/serve.md)** - all parameters, endpoints, auth, status codes, buffering, and durability.
+- **[Stream to DuckLake](../../guides/stream-to-ducklake/)** - land OTLP rows in Parquet files tracked by DuckLake.
+- **[Stream to Iceberg](../../guides/stream-to-iceberg/)** - land OTLP rows in an attached Iceberg REST catalog.
+- **[Live Ingest Reference](../../reference/serve/)** - all parameters, endpoints, auth, status codes, buffering, and durability.

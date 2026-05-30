@@ -1,4 +1,6 @@
-# How to Filter Logs
+---
+title: "How to Filter Logs"
+---
 
 Use `read_otlp_logs(path)` when you need to narrow OTLP log exports by severity, service, time, body text, attributes, or trace correlation.
 
@@ -58,4 +60,4 @@ FROM read_otlp_logs('logs/*.jsonl')
 WHERE json_extract_string(resource_attributes, '$."deployment.environment"') = 'prod';
 ```
 
-Malformed files fail fast; see [How to handle malformed input](error-handling.md).
+Malformed files fail fast; see [How to handle malformed input](../error-handling/).

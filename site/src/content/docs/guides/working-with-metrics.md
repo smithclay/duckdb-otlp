@@ -1,6 +1,8 @@
-# How to Work with Metrics
+---
+title: "How to Work with Metrics"
+---
 
-Use the shape-specific metric reader that matches the OTLP metric type you are analyzing. OTLP metric types have different columns, so `read_otlp_metrics()` is intentionally unsupported for now. For complete column details, see the [Schema Reference](../reference/schemas.md#metrics).
+Use the shape-specific metric reader that matches the OTLP metric type you are analyzing. OTLP metric types have different columns, so `read_otlp_metrics()` is intentionally unsupported for now. For complete column details, see the [Schema Reference](../../reference/schemas/#metrics).
 
 ## Query Gauge Metrics
 
@@ -105,5 +107,5 @@ COPY (
 
 ## See Also
 
-- [API Reference](../reference/api.md#metrics)
-- [Schema Reference](../reference/schemas.md#metrics)
+- [API Reference](../../reference/api/#metrics)
+- [Schema Reference](../../reference/schemas/#metrics)

@@ -81,7 +81,7 @@ For a full walkthrough, including lakehouse ingest, see the [documentation site]
 | `otlp_stop(uri)` | Stop a server after committing remaining rows |
 | `otlp_server_list()` | Inspect running servers and ingest counters |
 
-`read_otlp_metrics` and `read_otlp_metrics_summary` are registered but intentionally unsupported until the extension has stable schemas for those shapes. See the [API Reference](docs/reference/api.md) for details.
+`read_otlp_metrics` and `read_otlp_metrics_summary` are registered but intentionally unsupported until the extension has stable schemas for those shapes. See the [API Reference](https://smithclay.github.io/duckdb-otlp/reference/api/) for details.
 
 ## Installation
 
@@ -94,7 +94,7 @@ For source builds, development commands, and WASM builds, see [CONTRIBUTING.md](
 
 ## Limits
 
-Individual file reads are limited to **100 MB** to prevent memory exhaustion. Live ingest accepts request bodies up to `max_body_bytes` and applies buffered-ingest backpressure through `max_buffered_bytes`; see the [Live Ingest Reference](docs/reference/serve.md#responses-and-status-codes).
+Individual file reads are limited to **100 MB** to prevent memory exhaustion. Live ingest accepts request bodies up to `max_body_bytes` and applies buffered-ingest backpressure through `max_buffered_bytes`; see the [Live Ingest Reference](https://smithclay.github.io/duckdb-otlp/reference/serve/#responses-and-status-codes).
 
 ## Need Help?
 

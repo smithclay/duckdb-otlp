@@ -1,4 +1,6 @@
-# Get Started
+---
+title: "Get Started"
+---
 
 Use the DuckDB OpenTelemetry Extension to query OpenTelemetry files, then try the native OTLP/HTTP ingest server.
 
@@ -51,7 +53,7 @@ SELECT metric_name, count, sum, bucket_counts, explicit_bounds
 FROM read_otlp_metrics_histogram('test/data/metrics_simple.jsonl');
 ```
 
-See the [Schema Reference](reference/schemas.md) for every column emitted by each reader.
+See the [Schema Reference](../reference/schemas/) for every column emitted by each reader.
 
 ## 3. Stream One Log over OTLP/HTTP
 
@@ -85,17 +87,17 @@ FROM otlp_logs;
 
 You can query while the server is still running after the automatic background commit. Use `otlp_flush` only when you need the latest accepted rows visible immediately.
 
-For durable lakehouse ingest, pass `catalog` to an attached lakehouse catalog; see [Stream to DuckLake](guides/stream-to-ducklake.md) or [Stream to Iceberg](guides/stream-to-iceberg.md).
+For durable lakehouse ingest, pass `catalog` to an attached lakehouse catalog; see [Stream to DuckLake](../guides/stream-to-ducklake/) or [Stream to Iceberg](../guides/stream-to-iceberg/).
 
 ## Next Steps
 
-- [Live Ingest Quickstart](quickstart/serve.md) - POST one log record over OTLP/HTTP.
-- [Stream to DuckLake](guides/stream-to-ducklake.md) - stream OTLP into DuckLake/Parquet.
-- [Stream to Iceberg](guides/stream-to-iceberg.md) - stream OTLP into an Iceberg REST catalog.
-- [How to Configure the OpenTelemetry Collector](setup/collector.md) - export OTLP files from the OpenTelemetry Collector.
-- [How-to Guides](guides/README.md) - common query and export tasks.
-- [API Reference](reference/api.md) - function signatures and capability notes.
-- [Schema Reference](reference/schemas.md) - complete column lists.
+- [Live Ingest Quickstart](../quickstart/serve/) - POST one log record over OTLP/HTTP.
+- [Stream to DuckLake](../guides/stream-to-ducklake/) - stream OTLP into DuckLake/Parquet.
+- [Stream to Iceberg](../guides/stream-to-iceberg/) - stream OTLP into an Iceberg REST catalog.
+- [How to Configure the OpenTelemetry Collector](../setup/collector/) - export OTLP files from the OpenTelemetry Collector.
+- [How-to Guides](../guides/) - common query and export tasks.
+- [API Reference](../reference/api/) - function signatures and capability notes.
+- [Schema Reference](../reference/schemas/) - complete column lists.
 
 ## Common Issues
 

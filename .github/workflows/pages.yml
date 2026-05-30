@@ -4,8 +4,6 @@ on:
   push:
     branches: [main]
     paths:
-      - 'docs/**'
-      - 'demo/**'
       - 'site/**'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
