@@ -747,12 +747,12 @@ void OtlpServer::ShutdownIngest() {
 	if (sealer_thread.joinable()) {
 		sealer_thread.join();
 	}
-	// Final drain. On the explicit otlp_stop / ~OtlpServer path the listener+workers
-	// are already joined and the controlling thread still holds the database alive, so
-	// SealOnce can write and nothing is lost. On the implicit DB-teardown path
-	// (~OtlpStorageExtensionInfo) db_ptr is already expired, so SealOnce is a no-op and
-	// the buffered rows are dropped — callers must otlp_stop / otlp_flush before closing
-	// the database to guarantee a seal (see Known Limitations).
+	// Final drain. Explicit otlp_flush is optional for normal ingest: the background
+	// sealer handles size/age triggers, and otlp_stop lands here while the database is
+	// still alive. On the implicit DB-teardown path (~OtlpStorageExtensionInfo), db_ptr
+	// is already expired, so SealOnce is a no-op and buffered rows are dropped.
+	// Callers should use otlp_stop before closing the database, or otlp_flush when they
+	// need durable rows immediately while the server keeps running.
 	for (int attempt = 0; attempt < 3 && BufferedRows() > 0; attempt++) {
 		try {
 			SealOnce();
@@ -763,7 +763,7 @@ void OtlpServer::ShutdownIngest() {
 	auto remaining_rows = BufferedRows();
 	if (remaining_rows > 0) {
 		LogServerEvent(
-		    StringUtil::Format("dropping %llu buffered rows on shutdown (database closed without otlp_stop/otlp_flush, "
+		    StringUtil::Format("dropping %llu buffered rows on shutdown (database closed without graceful otlp_stop, "
 		                       "or repeated seal failure)",
 		                       static_cast<uint64_t>(remaining_rows)));
 	}

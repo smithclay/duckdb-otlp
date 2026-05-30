@@ -1,6 +1,6 @@
 extension:
   name: otlp
-  description: Query OpenTelemetry traces, logs, and metrics with SQL — or stream live OTLP/HTTP into DuckDB and DuckLake
+  description: Query OpenTelemetry traces, logs, and metrics with SQL — or stream live OTLP/HTTP into DuckDB, DuckLake, or Iceberg
   version: 0.5.0
   language: C++
   build: cmake
@@ -41,8 +41,9 @@ docs:
 
     -- Or run a live OTLP/HTTP endpoint and query what arrives
     SELECT listen_url, auth_token FROM otlp_serve('otlp:localhost:4318');
-    -- POST telemetry to http://localhost:4318/v1/logs, then:
-    SELECT * FROM otlp_flush('otlp:localhost:4318');
+    -- POST telemetry to http://localhost:4318/v1/logs.
+    -- Rows commit automatically in the background; otlp_stop commits remaining rows.
+    SELECT status FROM otlp_stop('otlp:localhost:4318');
     SELECT * FROM otlp_logs;
 
   extended_description: |
@@ -76,23 +77,26 @@ docs:
 
     ```sql
     SELECT listen_url, auth_token
-    FROM otlp_serve('otlp:localhost:4318', catalog := 'lake');
+    FROM otlp_serve('otlp:localhost:4318');
     ```
 
-    Set `catalog` to an attached [DuckLake](https://ducklake.select) lakehouse and
-    telemetry streams in as Parquet, one tidy file per seal. Leave it empty to land
-    rows in the default catalog for quick local work.
+    Leave `catalog` empty to land rows in the default catalog for quick local work.
+    Set it to an attached [DuckLake](https://ducklake.select) lakehouse or writable
+    Iceberg REST catalog for durable lakehouse ingest.
 
     Ingest is buffered and group-committed. A POST returns `202 Accepted` once rows
-    are parsed and buffered; they turn durable at the next seal. `otlp_flush()`
-    seals on demand, `otlp_server_list()` reports the counters, and `otlp_stop()`
-    seals what is left before it shuts down. Seal before you close the database — a
-    plain close does not.
+    are parsed and buffered; they turn durable at the next automatic background commit, currently
+    when the oldest buffered row is about 5 seconds old or admitted request-body
+    bytes reach about 64 MiB. `otlp_server_list()` reports the counters, and
+    `otlp_stop()` commits what is left before it shuts down. `otlp_flush()` is optional:
+    use it only when readers need the latest accepted rows durable immediately while
+    the server keeps running. Stop before you close the database — a plain close does
+    not commit buffered rows.
 
     ## Use it for
 
     - Reading and analyzing Collector or SDK exports
-    - A small, always-on OTLP sink that writes a Parquet lakehouse
+    - A small, always-on OTLP sink that writes to DuckDB, DuckLake, or Iceberg
     - Converting telemetry to Parquet, CSV, or anything DuckDB writes
     - Inspecting traces, logs, and metrics during local development
 

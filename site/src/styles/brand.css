@@ -1,0 +1,103 @@
+:root {
+  --otlp-ink: #121417;
+  --otlp-lake: #006b7a;
+  --otlp-lake-bright: #0097a7;
+  --otlp-gold: #d8a028;
+  --otlp-green: #276749;
+  --otlp-paper: #fbfcf8;
+
+  --sl-color-accent-low: #d9f0ef;
+  --sl-color-accent: var(--otlp-lake);
+  --sl-color-accent-high: #123f45;
+  --sl-color-white: #111418;
+  --sl-color-gray-1: #253039;
+  --sl-color-gray-2: #3d4b55;
+  --sl-color-gray-3: #64727b;
+  --sl-color-gray-4: #9aa5aa;
+  --sl-color-gray-5: #d1d9dc;
+  --sl-color-gray-6: #ecf2f0;
+  --sl-color-gray-7: #f8fbf7;
+  --sl-color-black: #fffdf7;
+}
+
+:root[data-theme='dark'] {
+  --sl-color-accent-low: #103036;
+  --sl-color-accent: #80dbe4;
+  --sl-color-accent-high: #d6fbff;
+  --sl-color-white: #fff9e8;
+  --sl-color-gray-1: #edf1ee;
+  --sl-color-gray-2: #c8d2d0;
+  --sl-color-gray-3: #9aa9aa;
+  --sl-color-gray-4: #68797c;
+  --sl-color-gray-5: #3f5155;
+  --sl-color-gray-6: #26353a;
+  --sl-color-gray-7: #171f22;
+  --sl-color-black: #090d0f;
+}
+
+body {
+  background:
+    radial-gradient(circle at top left, rgb(0 151 167 / 12%), transparent 32rem),
+    linear-gradient(180deg, rgb(216 160 40 / 10%), transparent 24rem);
+}
+
+:root[data-theme='dark'] body {
+  background:
+    radial-gradient(circle at top left, rgb(128 219 228 / 13%), transparent 34rem),
+    linear-gradient(180deg, rgb(39 103 73 / 16%), transparent 24rem);
+}
+
+.site-title {
+  color: var(--otlp-ink);
+  font-weight: 750;
+}
+
+.site-title img {
+  border-radius: 8px;
+  box-shadow: 0 0 0 1px rgb(17 20 24 / 10%);
+}
+
+:root[data-theme='dark'] .site-title {
+  color: var(--otlp-paper);
+}
+
+.hero {
+  border-block-end: 1px solid rgb(0 107 122 / 14%);
+}
+
+.sl-link-button.primary {
+  background: linear-gradient(135deg, var(--otlp-lake), var(--otlp-lake-bright));
+  border-color: transparent;
+  color: var(--otlp-paper);
+}
+
+.sl-link-button.primary:hover {
+  background: linear-gradient(135deg, #00545f, var(--otlp-lake));
+}
+
+.sl-link-button.secondary {
+  border-color: rgb(216 160 40 / 56%);
+  color: var(--otlp-ink);
+}
+
+:root[data-theme='dark'] .sl-link-button.secondary {
+  color: var(--otlp-paper);
+}
+
+.sl-markdown-content a:not(:where(.not-content *)) {
+  color: var(--otlp-lake);
+}
+
+:root[data-theme='dark'] .sl-markdown-content a:not(:where(.not-content *)) {
+  color: #80dbe4;
+}
+
+.sl-markdown-content code:not(:where(.not-content *)) {
+  background-color: rgb(0 151 167 / 11%);
+  color: #00545f;
+}
+
+:root[data-theme='dark'] .sl-markdown-content code:not(:where(.not-content *)) {
+  background-color: rgb(128 219 228 / 12%);
+  color: #80dbe4;
+}

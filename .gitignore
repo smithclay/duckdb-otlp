@@ -18,3 +18,8 @@ __pycache__/
 .Python
 .ccache
 .cache
+
+# Astro docs site
+site/.astro/
+site/dist/
+site/node_modules/
