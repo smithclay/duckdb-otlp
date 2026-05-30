@@ -665,6 +665,16 @@ OtlpIngestResult OtlpServer::SealOnce() {
 
 	try {
 		RunSQL(*writer_con, "BEGIN TRANSACTION");
+		// Each buffered ColumnDataCollection is scanned chunk-by-chunk into the writer's
+		// Appender, which re-buffers into its own collection before flushing (one extra
+		// copy beyond the Arrow->DataChunk and DataChunk->buffer copies on the request
+		// path). Kept deliberately: benchmarked (logs, in-memory) single-connection ingest
+		// matches read-path throughput (~106 MB/s), so the DataChunk->buffer copy is
+		// negligible next to Rust parse + Arrow->DataChunk conversion, and this seal runs
+		// off the request path on the background sealer (sustained >300 MB/s aggregate over
+		// 16 connections without becoming the limiter). The bottleneck is the essential
+		// parse/convert work, which already scales with concurrency, so a more direct
+		// collection->table insert is not worth the added complexity at v0.
 		for (idx_t i = 0; i < signal_buffers.size(); i++) {
 			auto &collection = *sealing[i].collection;
 			if (sealing[i].rows == 0) {

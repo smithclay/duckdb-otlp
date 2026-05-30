@@ -6,6 +6,11 @@
 
 namespace duckdb {
 
+//! NOT a real storage/ATTACH backend: this StorageExtension implements no attach,
+//! transaction, or catalog semantics. It is only the standard DuckDB hook for hanging
+//! per-DatabaseInstance global state (the OtlpServer registry in OtlpStorageExtensionInfo)
+//! off DatabaseInstance.config, keyed by STORAGE_EXTENSION_KEY. Mirrors duckdb-quack; do
+//! not repurpose as an actual storage backend without sign-off.
 class OtlpStorageExtension : public StorageExtension {
 public:
 	OtlpStorageExtension();

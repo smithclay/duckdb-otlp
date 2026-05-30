@@ -425,31 +425,54 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 	}
 }
 
-void CopyArrowStructToDataChunk(const ArrowArray &array, const ArrowSchema &schema, DataChunk &output, idx_t offset,
-                                idx_t count) {
-	if (schema.n_children < static_cast<int64_t>(output.ColumnCount())) {
-		throw IOException("Invalid Arrow schema: expected at least %llu columns, got %lld",
-		                  static_cast<uint64_t>(output.ColumnCount()), static_cast<int64_t>(schema.n_children));
-	}
-	if (array.n_children < static_cast<int64_t>(output.ColumnCount())) {
-		throw IOException("Invalid Arrow batch: expected at least %llu columns, got %lld",
-		                  static_cast<uint64_t>(output.ColumnCount()), static_cast<int64_t>(array.n_children));
+void CopyProjectedArrowStructToDataChunk(const ArrowArray &array, const ArrowSchema &schema, DataChunk &output,
+                                         const vector<column_t> &column_ids, idx_t offset, idx_t count) {
+	if (column_ids.size() != output.ColumnCount()) {
+		throw IOException("Projected column count mismatch: expected %llu columns, got %llu",
+		                  static_cast<uint64_t>(column_ids.size()), static_cast<uint64_t>(output.ColumnCount()));
 	}
 
 	output.SetCardinality(count);
-	for (idx_t col_idx = 0; col_idx < output.ColumnCount(); col_idx++) {
-		auto col_array = array.children[col_idx];
-		auto col_schema = schema.children[col_idx];
+	if (column_ids.empty()) {
+		return;
+	}
+
+	for (idx_t out_col_idx = 0; out_col_idx < output.ColumnCount(); out_col_idx++) {
+		auto source_col_idx = column_ids[out_col_idx];
+		if (source_col_idx >= static_cast<idx_t>(schema.n_children)) {
+			throw IOException("Invalid projected Arrow schema column %llu: schema has %lld columns",
+			                  static_cast<uint64_t>(source_col_idx), static_cast<int64_t>(schema.n_children));
+		}
+		if (source_col_idx >= static_cast<idx_t>(array.n_children)) {
+			throw IOException("Invalid projected Arrow batch column %llu: batch has %lld columns",
+			                  static_cast<uint64_t>(source_col_idx), static_cast<int64_t>(array.n_children));
+		}
+
+		auto col_array = array.children[source_col_idx];
+		auto col_schema = schema.children[source_col_idx];
 		if (!col_array) {
-			throw IOException("Invalid Arrow batch: column %llu array is null", static_cast<uint64_t>(col_idx));
+			throw IOException("Invalid Arrow batch: column %llu array is null", static_cast<uint64_t>(source_col_idx));
 		}
 		if (!col_schema) {
-			throw IOException("Invalid Arrow batch: column %llu schema is null", static_cast<uint64_t>(col_idx));
+			throw IOException("Invalid Arrow batch: column %llu schema is null", static_cast<uint64_t>(source_col_idx));
 		}
+
 		ArrowArray col_view = *col_array;
 		col_view.offset = col_array->offset + static_cast<int64_t>(offset);
-		CopyArrowToDuckDB(col_view, *col_schema, output.data[col_idx], count);
+		CopyArrowToDuckDB(col_view, *col_schema, output.data[out_col_idx], count);
 	}
+}
+
+void CopyArrowStructToDataChunk(const ArrowArray &array, const ArrowSchema &schema, DataChunk &output, idx_t offset,
+                                idx_t count) {
+	// Non-projected callers (e.g. the HTTP server) map output column N to source Arrow child N.
+	// Build identity column_ids and delegate to the single shared per-column dispatch routine.
+	vector<column_t> column_ids;
+	column_ids.reserve(output.ColumnCount());
+	for (idx_t col_idx = 0; col_idx < output.ColumnCount(); col_idx++) {
+		column_ids.push_back(col_idx);
+	}
+	CopyProjectedArrowStructToDataChunk(array, schema, output, column_ids, offset, count);
 }
 
 } // namespace duckdb

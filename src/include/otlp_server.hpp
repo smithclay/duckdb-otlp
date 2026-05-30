@@ -32,10 +32,16 @@ struct OtlpServerConfig {
 	idx_t max_body_bytes = 16ULL * 1024ULL * 1024ULL;
 	//! Internal buffered group-commit ("seal") defaults. Ingest buffers rows in memory
 	//! and a single writer seals them on a size or age trigger, avoiding per-request
-	//! Parquet files and write conflicts.
-	idx_t seal_target_bytes = 64ULL * 1024ULL * 1024ULL;   //! seal when admitted bytes reach this
-	int64_t seal_max_age_ms = 5000;                        //! seal when the oldest buffered row is this old
-	idx_t max_buffered_bytes = 512ULL * 1024ULL * 1024ULL; //! hard cap across all signals -> 503
+	//! Parquet files and write conflicts. seal_target_bytes / seal_max_age_ms are fixed
+	//! internal v0 defaults — deliberately NOT exposed as otlp_serve() named parameters
+	//! until a caller actually needs to tune the seal cadence.
+	idx_t seal_target_bytes = 64ULL * 1024ULL * 1024ULL; //! seal when admitted bytes reach this
+	int64_t seal_max_age_ms = 5000;                      //! seal when the oldest buffered row is this old
+	//! Backpressure admission cap (over it -> 503). NOTE: this bounds cumulative *admitted
+	//! request-body bytes* (each request reserves max(body_size, 1024) input bytes), NOT
+	//! decoded buffer heap — decoded columnar size differs from the encoded/compressed
+	//! input size. It is an admission/throughput proxy, not a precise memory bound.
+	idx_t max_buffered_bytes = 512ULL * 1024ULL * 1024ULL;
 };
 
 struct OtlpIngestResult {

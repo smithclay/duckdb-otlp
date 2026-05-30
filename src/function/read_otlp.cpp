@@ -4,11 +4,7 @@
  *
  * This file implements read_otlp_logs, read_otlp_traces, etc.
  * table functions that use the Rust otlp2records library for parsing.
- *
- * Requires: -DOTLP_USE_RUST=ON at build time
  */
-
-#ifdef OTLP_RUST_BACKEND
 
 #include "duckdb.hpp"
 #include "duckdb/function/table_function.hpp"
@@ -51,10 +47,15 @@ struct ReadOTLPRustBindData : public TableFunctionData {
 struct ReadOTLPRustGlobalState : public GlobalTableFunctionState {
 	mutex lock;
 	atomic<idx_t> next_file {0};
+	// Number of files in the glob; one file is handed to each thread via the atomic
+	// next_file cursor, so the scan parallelizes across files (one file per task).
+	idx_t file_count = 1;
 
 	idx_t MaxThreads() const override {
-		// Start single-threaded for prototype
-		return 1;
+		// One file per thread: each thread pulls a distinct file via next_file and
+		// keeps fully isolated local state (file_buffer/current_batch). bind_data
+		// (schema) is read-only, so multi-file globs scan in parallel.
+		return MaxValue<idx_t>(1, file_count);
 	}
 };
 
@@ -75,44 +76,6 @@ struct ReadOTLPRustLocalState : public LocalTableFunctionState {
 		}
 	}
 };
-
-static void CopyProjectedArrowStructToDataChunk(const ArrowArray &array, const ArrowSchema &schema, DataChunk &output,
-                                                const vector<column_t> &column_ids, idx_t offset, idx_t count) {
-	if (column_ids.size() != output.ColumnCount()) {
-		throw IOException("Projected column count mismatch: expected %llu columns, got %llu",
-		                  static_cast<uint64_t>(column_ids.size()), static_cast<uint64_t>(output.ColumnCount()));
-	}
-
-	output.SetCardinality(count);
-	if (column_ids.empty()) {
-		return;
-	}
-
-	for (idx_t out_col_idx = 0; out_col_idx < output.ColumnCount(); out_col_idx++) {
-		auto source_col_idx = column_ids[out_col_idx];
-		if (source_col_idx >= static_cast<idx_t>(schema.n_children)) {
-			throw IOException("Invalid projected Arrow schema column %llu: schema has %lld columns",
-			                  static_cast<uint64_t>(source_col_idx), static_cast<int64_t>(schema.n_children));
-		}
-		if (source_col_idx >= static_cast<idx_t>(array.n_children)) {
-			throw IOException("Invalid projected Arrow batch column %llu: batch has %lld columns",
-			                  static_cast<uint64_t>(source_col_idx), static_cast<int64_t>(array.n_children));
-		}
-
-		auto col_array = array.children[source_col_idx];
-		auto col_schema = schema.children[source_col_idx];
-		if (!col_array) {
-			throw IOException("Invalid Arrow batch: column %llu array is null", static_cast<uint64_t>(source_col_idx));
-		}
-		if (!col_schema) {
-			throw IOException("Invalid Arrow batch: column %llu schema is null", static_cast<uint64_t>(source_col_idx));
-		}
-
-		ArrowArray col_view = *col_array;
-		col_view.offset = col_array->offset + static_cast<int64_t>(offset);
-		CopyArrowToDuckDB(col_view, *col_schema, output.data[out_col_idx], count);
-	}
-}
 
 // ============================================================================
 // Bind Function
@@ -224,7 +187,10 @@ static void ReadOTLPMetricsUnsupportedScan(ClientContext &context, TableFunction
 
 static unique_ptr<GlobalTableFunctionState> ReadOTLPRustInitGlobal(ClientContext &context,
                                                                    TableFunctionInitInput &input) {
-	return make_uniq<ReadOTLPRustGlobalState>();
+	auto result = make_uniq<ReadOTLPRustGlobalState>();
+	auto &bind_data = input.bind_data->Cast<ReadOTLPRustBindData>();
+	result->file_count = bind_data.files.size();
+	return std::move(result);
 }
 
 static unique_ptr<LocalTableFunctionState> ReadOTLPRustInitLocal(ExecutionContext &context,
@@ -276,7 +242,10 @@ static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, D
 		auto &path = bind_data.files[file_idx];
 		auto handle = fs.OpenFile(path, FileOpenFlags::FILE_FLAGS_READ);
 
-		// Read entire file (for prototype - streaming would be better)
+		// Whole-file materialization: the entire file is read into file_buffer and the whole
+		// file is transformed into a single ArrowArray held in memory at once (input is capped
+		// at MAX_FILE_SIZE below). This is the prototype approach; a streaming/chunked reader
+		// that incrementally parses and yields batches is the intended future direction.
 		auto file_size = handle->GetFileSize();
 
 		// Limit file size to 100MB for safety
@@ -295,15 +264,93 @@ static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, D
 
 		ArrowArray array;
 		ArrowSchema schema;
-		OtlpStatus status = otlp_transform(bind_data.signal_type, bind_data.format,
-		                                   reinterpret_cast<const uint8_t *>(lstate.file_buffer.data()),
-		                                   lstate.file_buffer.size(), &array, &schema);
-		if (status != OTLP_OK) {
-			throw IOException("OTLP parse error on %s: %s", path, otlp_status_message(status));
-		}
+		const auto *input_bytes = reinterpret_cast<const uint8_t *>(lstate.file_buffer.data());
+		const auto input_len = lstate.file_buffer.size();
 
-		if (schema.release) {
-			schema.release(&schema);
+		switch (bind_data.signal_type) {
+		case OTLP_SIGNAL_LOGS:
+		case OTLP_SIGNAL_TRACES: {
+			// Logs/Traces have a single shape; otlp_transform is the canonical verb for them.
+			OtlpStatus status =
+			    otlp_transform(bind_data.signal_type, bind_data.format, input_bytes, input_len, &array, &schema);
+			if (status != OTLP_OK) {
+				throw IOException("OTLP parse error on %s: %s", path, otlp_status_message(status));
+			}
+			// Schema was cached at bind time; release this copy and keep only the array.
+			if (schema.release) {
+				schema.release(&schema);
+			}
+			break;
+		}
+		case OTLP_SIGNAL_METRICS_GAUGE:
+		case OTLP_SIGNAL_METRICS_SUM:
+		case OTLP_SIGNAL_METRICS_HISTOGRAM:
+		case OTLP_SIGNAL_METRICS_EXP_HISTOGRAM: {
+			// Metrics: one parse yields all four shapes (otlp_transform_metrics_all is the single
+			// canonical metric verb). Keep only the requested shape's array; release every other
+			// present batch's array+schema plus the chosen batch's schema (the cached bind-time
+			// schema is used for conversion).
+			OtlpMetricsArrowBatches batches = {};
+			OtlpStatus status = otlp_transform_metrics_all(bind_data.format, input_bytes, input_len, &batches);
+			if (status != OTLP_OK) {
+				// On failure no batch is present; nothing to release.
+				throw IOException("OTLP parse error on %s: %s", path, otlp_status_message(status));
+			}
+
+			OtlpArrowBatch *chosen = nullptr;
+			switch (bind_data.signal_type) {
+			case OTLP_SIGNAL_METRICS_GAUGE:
+				chosen = &batches.gauge;
+				break;
+			case OTLP_SIGNAL_METRICS_SUM:
+				chosen = &batches.sum;
+				break;
+			case OTLP_SIGNAL_METRICS_HISTOGRAM:
+				chosen = &batches.histogram;
+				break;
+			default: // OTLP_SIGNAL_METRICS_EXP_HISTOGRAM
+				chosen = &batches.exp_histogram;
+				break;
+			}
+
+			// Release helper: free a present batch's array+schema and mark it absent so the
+			// later release_others pass cannot double-free the chosen batch.
+			auto release_batch = [](OtlpArrowBatch &batch) {
+				if (!batch.present) {
+					return;
+				}
+				if (batch.array.release) {
+					batch.array.release(&batch.array);
+				}
+				if (batch.schema.release) {
+					batch.schema.release(&batch.schema);
+				}
+				batch.present = 0;
+			};
+
+			// Keep the chosen array; release its schema (we convert via the cached bind-time
+			// schema). If the chosen shape is absent, leave array unreleasable below.
+			if (chosen->present) {
+				if (chosen->schema.release) {
+					chosen->schema.release(&chosen->schema);
+				}
+				array = chosen->array;
+			} else {
+				// No rows for this shape: synthesize an empty, no-op array.
+				array = {};
+			}
+			// Prevent the chosen batch from being released as an "other" below.
+			chosen->present = 0;
+
+			// Release every remaining present batch (array + schema) so nothing leaks.
+			release_batch(batches.gauge);
+			release_batch(batches.sum);
+			release_batch(batches.histogram);
+			release_batch(batches.exp_histogram);
+			break;
+		}
+		default:
+			throw IOException("Unsupported OTLP signal type for read scan");
 		}
 
 		if (array.length < 0) {
@@ -382,5 +429,3 @@ void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
 }
 
 } // namespace duckdb
-
-#endif // OTLP_RUST_BACKEND

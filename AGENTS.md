@@ -86,9 +86,10 @@ Column names use `snake_case` (e.g., `trace_id`, `span_name`, `service_name`).
 
 ### Core Components
 
-- **Rust Backend (`external/otlp2records`)**: Rust library that parses OTLP JSON and protobuf, returns Arrow arrays via C Data Interface
-- **FFI Bridge (`src/function/read_otlp.cpp`)**: Converts Arrow arrays from Rust to DuckDB DataChunks
-- **Format Detection**: Automatic detection of JSON vs protobuf formats
+- **Rust Backend (`external/otlp2records`)**: Rust library that parses OTLP JSON, NDJSON, and protobuf and returns Arrow arrays via the C Data Interface
+- **FFI Bridge (`src/function/read_otlp.cpp`)**: Table function implementations that drive the Rust backend over FFI
+- **Arrow conversion (`src/otlp_arrow.cpp`)**: Converts the Arrow arrays returned by Rust into DuckDB DataChunks
+- **Format Detection**: Automatic detection of JSON/NDJSON vs protobuf formats (handled by the Rust backend)
 
 ### Data Flow
 
@@ -102,10 +103,6 @@ Arrow C Data Interface
 DuckDB: Convert Arrow to DataChunks
 ```
 
-### Generated Code
-
-The `src/generated/` directory contains protobuf message stubs generated from OpenTelemetry `.proto` files (`*.pb.h`, `*.pb.cc`). They provide the message types consumed by `parsers/protobuf_parser.cpp`. **Do not edit these files directly.** They are excluded from formatting and linting.
-
 ## Key Design Decisions
 
 ### Schema Design
@@ -118,8 +115,10 @@ The table functions emit schemas inspired by the OpenTelemetry ClickHouse export
 
 ## Dependencies
 
-Managed via VCPKG:
-- **Protobuf** - Wire format parsing for binary OTLP files (optional for JSON-only builds)
+Managed via VCPKG (see `vcpkg.json`):
+- **zlib** - gzip/deflate decompression of incoming OTLP request bodies on the ingest server
+
+OTLP protobuf/JSON wire parsing is handled entirely in the Rust backend (`prost`), not via a C++/VCPKG protobuf dependency.
 
 Python dependencies (via `uv`):
 - `black` - Python formatting
@@ -130,12 +129,16 @@ Python dependencies (via `uv`):
 
 ```
 src/
-├── include/           # Public headers (forwarding to implementation dirs)
-├── storage/           # Extension entry point registration
-├── function/          # Table function implementations (`read_otlp_*`)
-├── schema/            # Column layout helpers
-├── generated/         # Protobuf message stubs (DO NOT EDIT)
-└── wasm/              # WASM-specific build configuration
+├── storage/
+│   └── otlp_extension.cpp     # Extension entry point + registration
+├── function/
+│   └── read_otlp.cpp          # FFI bridge / `read_otlp_*` table functions
+├── otlp_arrow.cpp             # Arrow → DuckDB DataChunk conversion
+├── otlp_server.cpp            # HTTP OTLP ingest server
+├── otlp_storage.cpp           # Buffered group-commit / seal storage
+├── otlp_start_stop.cpp        # `otlp_serve` / `otlp_stop` / `otlp_flush` functions
+├── otlp_uri.cpp               # URI parsing/validation
+└── include/                   # Public headers (otlp_*.hpp)
 
 test/
 ├── sql/               # SQLLogicTests (primary test format)
@@ -171,7 +174,7 @@ Prefer one canonical page per topic and link to it instead of duplicating exampl
 - Live OTLP ingestion is supported over **HTTP** (`otlp_serve` / `otlp_stop` / `otlp_server_list` / `otlp_flush`), not gRPC. The HTTP server (`src/otlp_server.cpp`) accepts OTLP/JSON, OTLP/NDJSON, and OTLP/protobuf POSTs to `/v1/logs`, `/v1/traces`, `/v1/metrics`.
   - **Catalog targeting**: `otlp_serve(uri, catalog := '<attached_db>')` streams into an attached catalog. Set it to a DuckLake catalog to land data as Parquet in a lakehouse; empty = the default (in-memory/file) catalog.
   - **Buffered group-commit ("seal")**: ingest is buffered in memory (per-signal `ColumnDataCollection` with per-signal locking) and a single background sealer thread group-commits on internal size/age triggers or an explicit `otlp_flush`. One seal = one transaction (for DuckLake: one Parquet file per signal + one snapshot), so a single serialized writer avoids DuckLake's optimistic-concurrency conflicts and tiny-file churn. The 128-thread httplib pool only parses/converts/buffers concurrently.
-  - **Durability**: ingest is buffered in memory and durability is the seal. A POST returns **`202 Accepted`** (`{"status":"buffered",...}`) once rows are parsed and buffered in memory, but not yet durable; they commit at the next seal. **`otlp_stop` and `otlp_flush` seal remaining rows before returning; a plain database/connection close does NOT** — buffered-but-un-sealed rows can be lost, so callers must `otlp_stop`/`otlp_flush` before closing the database. Backpressure: request admission over `max_buffered_bytes` (default 512 MiB) → **`503`**.
+  - **Durability**: ingest is buffered in memory and durability is the seal. A POST returns **`202 Accepted`** (`{"status":"buffered",...}`) once rows are parsed and buffered in memory, but not yet durable; they commit at the next seal. **`otlp_stop` and `otlp_flush` seal remaining rows before returning; a plain database/connection close does NOT** — buffered-but-un-sealed rows can be lost, so callers must `otlp_stop`/`otlp_flush` before closing the database. Backpressure: `max_buffered_bytes` (default 512 MiB) bounds cumulative *admitted request-body bytes*, not decoded buffer heap — each request reserves `max(body_size, 1024)` input bytes against this budget (the decoded columnar size differs from the encoded/compressed input size). A request whose admission would exceed the budget is rejected with **`503`**.
   - **`otlp_flush(uri)`** forces a synchronous seal. `otlp_server_list` exposes buffer/seal metrics (`buffered_rows`, `last_seal_age_ms`, `seals_total`, `seal_failures_total`, `seal_last_error`, `catalog_name`). Verify the ingest/seal path with `test/manual/otlp_serve_concurrency.py` (set `OTLP_DUCKLAKE_DIR` for the DuckLake path).
   - Not available on the wasm build.
 - Summary metrics are not yet supported
