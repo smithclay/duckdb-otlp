@@ -100,6 +100,28 @@ CALL otlp_serve('otlp:127.0.0.1:55442', token := 'dev-token-123456', max_body_by
 ----
 max_body_bytes must be greater than zero
 
+# seal-tuning params must be positive
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55452', token := 'dev-token-123456', seal_target_bytes := 0);
+----
+seal_target_bytes must be greater than zero
+
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55453', token := 'dev-token-123456', seal_max_age_ms := 0);
+----
+seal_max_age_ms must be greater than zero
+
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55454', token := 'dev-token-123456', max_buffered_bytes := 0);
+----
+max_buffered_bytes must be greater than zero
+
+# seal_target_bytes must not exceed max_buffered_bytes
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55455', token := 'dev-token-123456', seal_target_bytes := 1000000, max_buffered_bytes := 1000);
+----
+must not exceed max_buffered_bytes
+
 # schema must not be empty
 statement error
 CALL otlp_serve('otlp:127.0.0.1:55443', token := 'dev-token-123456', schema := '');

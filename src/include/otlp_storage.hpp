@@ -37,6 +37,7 @@ public:
 		idx_t buffered_bytes;
 		int64_t last_seal_age_ms;
 		idx_t seals_total;
+		idx_t seal_failures_total;
 		string seal_last_error;
 	};
 
@@ -57,7 +58,10 @@ private:
 
 private:
 	std::mutex servers_mutex;
-	unordered_map<string, unique_ptr<OtlpServer>> servers;
+	//! shared_ptr (not unique_ptr) so FlushServer can hold a ref across a slow seal/
+	//! checkpoint with servers_mutex released — the server can't be freed mid-flush, and
+	//! a concurrent otlp_stop/db-close isn't blocked for the checkpoint duration.
+	unordered_map<string, shared_ptr<OtlpServer>> servers;
 };
 
 } // namespace duckdb

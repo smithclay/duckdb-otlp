@@ -105,6 +105,11 @@ public:
 	idx_t SealsTotal() const {
 		return seals_total.load();
 	}
+	//! Monotonic count of failed seal attempts (never reset), so a flapping/failing
+	//! sealer is visible even when seal_last_error self-clears on the next success.
+	idx_t SealFailuresTotal() const {
+		return seal_failures_total.load();
+	}
 	//! Milliseconds since the last successful seal, or -1 if none yet.
 	int64_t LastSealAgeMs() const;
 	string SealLastError() const {
@@ -177,6 +182,7 @@ private:
 	std::atomic<bool> ingest_shutdown_done {false};
 
 	std::atomic<idx_t> seals_total {0};
+	std::atomic<idx_t> seal_failures_total {0};
 	std::atomic<int64_t> last_seal_unix_ms {0};
 	mutable mutex seal_error_mutex;
 	string seal_last_error;

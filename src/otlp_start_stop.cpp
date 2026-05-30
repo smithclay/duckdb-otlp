@@ -105,6 +105,11 @@ static unique_ptr<FunctionData> OtlpServeBind(ClientContext &context, TableFunct
 			throw InvalidInputException("max_buffered_bytes must be greater than zero");
 		}
 	}
+	if (bind_data->config.seal_target_bytes > bind_data->config.max_buffered_bytes) {
+		throw InvalidInputException("seal_target_bytes (%llu) must not exceed max_buffered_bytes (%llu)",
+		                            static_cast<uint64_t>(bind_data->config.seal_target_bytes),
+		                            static_cast<uint64_t>(bind_data->config.max_buffered_bytes));
+	}
 
 	names.emplace_back("listen_uri");
 	return_types.emplace_back(OtlpVarcharType());
@@ -246,6 +251,8 @@ static unique_ptr<FunctionData> OtlpServerListBind(ClientContext &context, Table
 	return_types.emplace_back(OtlpBigIntType());
 	names.emplace_back("seals_total");
 	return_types.emplace_back(OtlpUBigIntType());
+	names.emplace_back("seal_failures_total");
+	return_types.emplace_back(OtlpUBigIntType());
 	names.emplace_back("seal_last_error");
 	return_types.emplace_back(OtlpVarcharType());
 	return make_uniq<OtlpServerListFunctionData>();
@@ -278,7 +285,8 @@ static void OtlpServerList(ClientContext &context, TableFunctionInput &data_p, D
 		output.SetValue(13, row,
 		                s.last_seal_age_ms < 0 ? Value(LogicalType::BIGINT) : Value::BIGINT(s.last_seal_age_ms));
 		output.SetValue(14, row, Value::UBIGINT(s.seals_total));
-		output.SetValue(15, row, s.seal_last_error.empty() ? Value(LogicalType::VARCHAR) : Value(s.seal_last_error));
+		output.SetValue(15, row, Value::UBIGINT(s.seal_failures_total));
+		output.SetValue(16, row, s.seal_last_error.empty() ? Value(LogicalType::VARCHAR) : Value(s.seal_last_error));
 		row++;
 		bind_data.offset++;
 	}

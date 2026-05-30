@@ -107,7 +107,7 @@ SELECT status FROM otlp_stop('otlp:localhost:4318');
 -- Stopped listening on otlp:localhost:4318
 ```
 
-A graceful stop **seals remaining buffered rows first**, so nothing is lost. Servers are also stopped (and drained) automatically when the DuckDB database closes.
+`otlp_stop` (and `otlp_flush`) **seal remaining buffered rows first**, so nothing is lost. A plain database/connection close stops the server but does **not** seal — buffered-but-unsealed rows are dropped — so call `otlp_flush` or `otlp_stop` before closing the database to guarantee durability.
 
 ## Ephemeral ingest (no lakehouse)
 

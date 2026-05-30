@@ -158,15 +158,16 @@ def main():
         time.sleep(7)
     table_rows = sum(con.execute(f"SELECT count(*) FROM {table_prefix}{t}").fetchone()[0] for t in tables)
     print(f"  {'+'.join(tables)} now have {table_rows} rows total")
+
+    failures = []
     if DUCKLAKE_DIR:
         import glob
 
         parquet = glob.glob(f"{DUCKLAKE_DIR}/data/**/*.parquet", recursive=True)
         print(f"  DuckLake Parquet files: {len(parquet)}")
         if table_rows > 0 and not parquet:
-            print("  WARNING: rows sealed but no Parquet files found")
+            failures.append("rows sealed but no DuckLake Parquet files were written")
 
-    failures = []
     if ok != CONCURRENCY:
         failures.append(f"{CONCURRENCY - ok} requests were not accepted")
     if server[0] != CONCURRENCY:

@@ -34,7 +34,7 @@ OtlpServer &OtlpStorageExtensionInfo::CreateServer(ClientContext &context, const
 	if (it != servers.end()) {
 		throw InvalidInputException("OTLP server already exists for %s", key);
 	}
-	auto server = make_uniq<HttpOtlpServer>(context, listen_uri, config);
+	auto server = make_shared_ptr<HttpOtlpServer>(context, listen_uri, config);
 	auto &server_ref = *server;
 	servers.emplace(key, std::move(server));
 	return server_ref;
@@ -42,7 +42,7 @@ OtlpServer &OtlpStorageExtensionInfo::CreateServer(ClientContext &context, const
 }
 
 bool OtlpStorageExtensionInfo::StopServer(ClientContext &context, const OtlpUri &listen_uri) {
-	unique_ptr<OtlpServer> to_destroy;
+	shared_ptr<OtlpServer> to_destroy;
 	{
 		std::lock_guard<std::mutex> lock(servers_mutex);
 		const auto it = servers.find(listen_uri.CanonicalUri());
@@ -52,7 +52,9 @@ bool OtlpStorageExtensionInfo::StopServer(ClientContext &context, const OtlpUri 
 		to_destroy = std::move(it->second);
 		servers.erase(it);
 	}
-	// Synchronously free the listening port so the URI can be reused immediately.
+	// Synchronously free the listening port so the URI can be reused immediately. The
+	// object itself is destroyed when the last shared_ptr drops (which may be a
+	// concurrent otlp_flush rather than this reset()).
 	to_destroy->StopAccepting();
 	to_destroy.reset();
 	return true;
@@ -60,27 +62,34 @@ bool OtlpStorageExtensionInfo::StopServer(ClientContext &context, const OtlpUri 
 
 OtlpStorageExtensionInfo::FlushResult OtlpStorageExtensionInfo::FlushServer(const OtlpUri &listen_uri,
                                                                             bool run_checkpoint) {
-	// Hold servers_mutex across the flush so StopServer can't free the server mid-seal.
-	// A slow seal briefly blocks concurrent otlp_serve/otlp_stop/otlp_flush calls.
-	std::lock_guard<std::mutex> lock(servers_mutex);
+	// Take a shared_ptr ref under the lock, then release the lock before the (possibly
+	// slow) seal+checkpoint. The ref keeps the server alive even if a concurrent
+	// otlp_stop erases it, and dropping the lock means a long checkpoint doesn't block
+	// otlp_serve/otlp_stop/otlp_server_list/database-close.
+	shared_ptr<OtlpServer> server;
+	{
+		std::lock_guard<std::mutex> lock(servers_mutex);
+		auto it = servers.find(listen_uri.CanonicalUri());
+		if (it != servers.end()) {
+			server = it->second;
+		}
+	}
 	FlushResult result;
-	auto it = servers.find(listen_uri.CanonicalUri());
-	if (it == servers.end()) {
+	if (!server) {
 		return result;
 	}
 	result.found = true;
-	auto &server = *it->second;
 	try {
-		result.sealed_rows = server.FlushNow(run_checkpoint).rows;
+		result.sealed_rows = server->FlushNow(run_checkpoint).rows;
 	} catch (std::exception &ex) {
 		result.error = ex.what();
 	}
-	result.seals_total = server.SealsTotal();
+	result.seals_total = server->SealsTotal();
 	return result;
 }
 
 void OtlpStorageExtensionInfo::StopAllServers() {
-	vector<unique_ptr<OtlpServer>> to_destroy;
+	vector<shared_ptr<OtlpServer>> to_destroy;
 	{
 		std::lock_guard<std::mutex> lock(servers_mutex);
 		to_destroy.reserve(servers.size());
@@ -118,6 +127,7 @@ vector<OtlpStorageExtensionInfo::ServerSnapshot> OtlpStorageExtensionInfo::ListS
 		snap.buffered_bytes = server.BufferedBytes();
 		snap.last_seal_age_ms = server.LastSealAgeMs();
 		snap.seals_total = server.SealsTotal();
+		snap.seal_failures_total = server.SealFailuresTotal();
 		snap.seal_last_error = server.SealLastError();
 		result.push_back(std::move(snap));
 	}

@@ -192,14 +192,22 @@ static idx_t EstimateRowWidth(const vector<LogicalType> &types) {
 
 } // namespace
 
-//! In-memory buffer for one OTLP signal table. All access is serialized by
-//! OtlpServer::buffer_mutex (workers Append; the sealer swaps the collection out).
+//! In-memory buffer for one OTLP signal table. The metadata fields are immutable
+//! after construction (so workers may read `types` lock-free); only `collection` is
+//! mutable and is guarded by OtlpServer::buffer_mutex (workers Append; the sealer
+//! swaps it out).
 struct OtlpSignalBuffer {
-	OtlpSignalType signal_type;
-	string table_name;
-	vector<LogicalType> types;
-	idx_t row_width = 1;
+	const OtlpSignalType signal_type;
+	const string table_name;
+	const vector<LogicalType> types;
+	const idx_t row_width;
 	unique_ptr<ColumnDataCollection> collection;
+
+	OtlpSignalBuffer(OtlpSignalType signal_type_p, string table_name_p, vector<LogicalType> types_p, idx_t row_width_p,
+	                 unique_ptr<ColumnDataCollection> collection_p)
+	    : signal_type(signal_type_p), table_name(std::move(table_name_p)), types(std::move(types_p)),
+	      row_width(row_width_p), collection(std::move(collection_p)) {
+	}
 };
 
 OtlpServer::OtlpServer(ClientContext &context, OtlpUri uri_p, OtlpServerConfig config_p)
@@ -230,12 +238,10 @@ void OtlpServer::InitBuffers() {
 		if (status != OTLP_OK) {
 			throw IOException("Failed to get OTLP schema: %s", otlp_status_message(status));
 		}
-		auto buf = make_uniq<OtlpSignalBuffer>();
-		buf->signal_type = target.signal_type;
-		buf->table_name = target.table_name;
+		vector<LogicalType> types;
 		try {
 			vector<string> names;
-			GetArrowSchemaColumns(arrow_schema, buf->types, names);
+			GetArrowSchemaColumns(arrow_schema, types, names);
 		} catch (...) {
 			if (arrow_schema.release) {
 				arrow_schema.release(&arrow_schema);
@@ -245,9 +251,10 @@ void OtlpServer::InitBuffers() {
 		if (arrow_schema.release) {
 			arrow_schema.release(&arrow_schema);
 		}
-		buf->row_width = EstimateRowWidth(buf->types);
-		buf->collection = make_uniq<ColumnDataCollection>(allocator, buf->types);
-		signal_buffers.push_back(std::move(buf));
+		auto row_width = EstimateRowWidth(types);
+		auto collection = make_uniq<ColumnDataCollection>(allocator, types);
+		signal_buffers.push_back(make_uniq<OtlpSignalBuffer>(target.signal_type, target.table_name, std::move(types),
+		                                                     row_width, std::move(collection)));
 	}
 }
 
@@ -542,6 +549,8 @@ OtlpIngestResult OtlpServer::SealOnce(bool run_checkpoint) {
 	// Swap each buffer out for a fresh empty collection so workers keep filling during
 	// the (potentially slow) COPY. The moved-out collections are owned solely here.
 	std::vector<unique_ptr<ColumnDataCollection>> sealing;
+	std::chrono::steady_clock::time_point pre_first_unsealed;
+	bool pre_have_unsealed = false;
 	{
 		std::lock_guard<std::mutex> lock(buffer_mutex);
 		sealing.reserve(signal_buffers.size());
@@ -549,6 +558,8 @@ OtlpIngestResult OtlpServer::SealOnce(bool run_checkpoint) {
 			sealing.push_back(std::move(buf->collection));
 			buf->collection = make_uniq<ColumnDataCollection>(allocator, buf->types);
 		}
+		pre_first_unsealed = first_unsealed;
+		pre_have_unsealed = have_unsealed;
 		buffered_rows.store(0);
 		buffered_bytes.store(0);
 		have_unsealed = false;
@@ -588,10 +599,32 @@ OtlpIngestResult OtlpServer::SealOnce(bool run_checkpoint) {
 			result.rows += collection.Count();
 		}
 		RunSQL(*writer_con, "COMMIT");
-	} catch (std::exception &ex) {
+	} catch (...) {
+		// catch(...) — not just std::exception — so a non-std throw can never escape and
+		// std::terminate the host process, and the buffer is always restored.
+		string msg;
+		try {
+			throw;
+		} catch (std::exception &ex) {
+			msg = ex.what();
+		} catch (...) {
+			msg = "unknown (non-std) exception during seal";
+		}
+		bool rollback_ok = true;
 		try {
 			RunSQL(*writer_con, "ROLLBACK");
 		} catch (...) {
+			rollback_ok = false;
+		}
+		if (!rollback_ok) {
+			// ROLLBACK failed: the writer connection may be wedged in an aborted
+			// transaction. Rebuild it so the next seal can recover instead of failing
+			// forever on BEGIN.
+			try {
+				writer_con = make_uniq<Connection>(*db);
+				writer_con->context->config.enable_progress_bar = false;
+			} catch (...) {
+			}
 		}
 		// Restore the un-sealed rows ahead of whatever workers buffered during the COPY,
 		// so nothing is lost and order is preserved. Only the old (swapped-out) rows are
@@ -610,14 +643,18 @@ OtlpIngestResult OtlpServer::SealOnce(bool run_checkpoint) {
 			}
 			if (buffered_rows.load() > 0 && !have_unsealed) {
 				have_unsealed = true;
-				first_unsealed = std::chrono::steady_clock::now();
+				// Preserve the original arrival time of the restored rows so the age
+				// trigger still fires within seal_max_age_ms of when they actually
+				// arrived, even across repeated seal failures.
+				first_unsealed = pre_have_unsealed ? pre_first_unsealed : std::chrono::steady_clock::now();
 			}
 		}
+		seal_failures_total.fetch_add(1);
 		{
 			std::lock_guard<std::mutex> elock(seal_error_mutex);
-			seal_last_error = ex.what();
+			seal_last_error = msg;
 		}
-		LogServerEvent(StringUtil::Format("seal failed: %s", ex.what()));
+		LogServerEvent(StringUtil::Format("seal failed: %s", msg));
 		throw;
 	}
 
@@ -644,10 +681,13 @@ OtlpIngestResult OtlpServer::SealOnce(bool run_checkpoint) {
 }
 
 void OtlpServer::SealerLoop() {
+	// Poll at most every seal_max_age_ms (floored) so a small max_age is honored, rather
+	// than a fixed 1s that would delay seals configured to be faster than 1s.
+	auto poll_ms = std::max<int64_t>(50, std::min<int64_t>(config.seal_max_age_ms, 1000));
 	while (!sealer_stop.load()) {
 		{
 			std::unique_lock<std::mutex> lock(sealer_mutex);
-			sealer_cv.wait_for(lock, std::chrono::milliseconds(1000),
+			sealer_cv.wait_for(lock, std::chrono::milliseconds(poll_ms),
 			                   [this] { return sealer_stop.load() || flush_requested.load(); });
 		}
 		if (sealer_stop.load()) {
@@ -666,8 +706,8 @@ void OtlpServer::SealerLoop() {
 		if (due) {
 			try {
 				SealOnce(false);
-			} catch (std::exception &) {
-				// Already logged + buffers restored; back off before the next attempt.
+			} catch (...) {
+				// Already logged + buffers restored (SealOnce catches all); back off.
 				std::this_thread::sleep_for(std::chrono::milliseconds(250));
 			}
 		}
@@ -687,18 +727,24 @@ void OtlpServer::ShutdownIngest() {
 	if (sealer_thread.joinable()) {
 		sealer_thread.join();
 	}
-	// Workers are already joined by the time Close() calls this, so a bounded retry of
-	// the final drain catches everything still buffered (a graceful stop loses nothing).
+	// Final drain. On the explicit otlp_stop / ~HttpOtlpServer path the listener+workers
+	// are already joined and the controlling thread still holds the database alive, so
+	// SealOnce can write and nothing is lost. On the implicit DB-teardown path
+	// (~OtlpStorageExtensionInfo) db_ptr is already expired, so SealOnce is a no-op and
+	// the buffered rows are dropped — callers must otlp_stop / otlp_flush before closing
+	// the database to guarantee a seal (see Known Limitations).
 	for (int attempt = 0; attempt < 3 && buffered_rows.load() > 0; attempt++) {
 		try {
 			SealOnce(false);
-		} catch (std::exception &ex) {
-			LogServerEvent(StringUtil::Format("final seal attempt failed: %s", ex.what()));
+		} catch (...) {
+			LogServerEvent("final seal attempt failed during shutdown");
 		}
 	}
 	if (buffered_rows.load() > 0) {
 		LogServerEvent(
-		    StringUtil::Format("dropping %llu buffered rows on shutdown", static_cast<uint64_t>(buffered_rows.load())));
+		    StringUtil::Format("dropping %llu buffered rows on shutdown (database closed without otlp_stop/otlp_flush, "
+		                       "or repeated seal failure)",
+		                       static_cast<uint64_t>(buffered_rows.load())));
 	}
 	writer_con.reset();
 }

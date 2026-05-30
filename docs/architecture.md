@@ -95,7 +95,7 @@ Ingest is **buffered and group-committed** ("sealed"), not per-request. Worker t
 |-----------|----------|------|
 | `OtlpServer` | `src/otlp_server.cpp` / `src/include/otlp_server.hpp` | Base server: token validation/auth, content-type → format selection, Arrow → DuckDB conversion, the in-memory buffer, and the background sealer that group-commits into the target catalog. |
 | `HttpOtlpServer` | `src/otlp_server.cpp` | `OtlpServer` subclass wrapping httplib. Owns the worker pool and the `/v1/logs`, `/v1/traces`, `/v1/metrics`, and `/healthz` routes; binds the socket synchronously so bind failures surface to the caller. |
-| `OtlpStorageExtensionInfo` | `src/include/otlp_storage.hpp` | Database-scoped registry of running servers (keyed by listen URI). Backs `CreateServer` / `FlushServer` / `StopServer` / `ListServers`, and stops (sealing first) every server when the database closes. |
+| `OtlpStorageExtensionInfo` | `src/include/otlp_storage.hpp` | Database-scoped registry of running servers (keyed by listen URI). Backs `CreateServer` / `FlushServer` / `StopServer` / `ListServers`, and stops every server when the database closes (but cannot seal at that point — see durability note below). |
 | Lifecycle functions | `src/otlp_start_stop.cpp` | The `otlp_serve`, `otlp_flush`, `otlp_stop`, and `otlp_server_list` table functions that drive the registry. |
 
 ### Request flow
@@ -122,7 +122,7 @@ Sealer thread (trigger: seal_target_bytes / seal_max_age_ms / otlp_flush)
 A single background **sealer** thread group-commits the buffer to the target catalog when any trigger fires: buffered bytes reach `seal_target_bytes` (default 64 MiB), the oldest buffered row reaches `seal_max_age_ms` (default 5000 ms), or an explicit `otlp_flush`. Each seal is one transaction.
 
 - A `202` is **not durable**; rows become durable at the next seal (within `seal_max_age_ms`, or immediately on `otlp_flush`). A crash loses buffered-but-unsealed rows (at-most-once for that window).
-- Graceful `otlp_stop` / database close seals remaining rows first, so a clean shutdown loses nothing. (A durable raw-spool journal for at-least-once is a future enhancement, not implemented.)
+- `otlp_stop` and `otlp_flush` seal remaining buffered rows before returning, so those lose nothing. **A plain database/connection close does NOT seal** — the shutdown drain runs after the DuckDB instance is torn down (when `db_ptr` can no longer write), so buffered-but-unsealed rows are dropped. Call `otlp_flush`/`otlp_stop` before closing the database to guarantee durability. (A durable raw-spool journal / earlier shutdown hook for at-least-once is a tracked follow-up.)
 - `otlp_flush(uri, checkpoint := true)` seals synchronously and then runs DuckLake compaction (`ducklake_merge_adjacent_files` + `CHECKPOINT`) to merge the small per-seal Parquet files.
 
 ### Concurrency model

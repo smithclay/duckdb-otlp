@@ -57,7 +57,7 @@ SELECT * FROM otlp_serve('otlp:localhost:4318', catalog := 'lake', token := 'my-
 | `metrics_histogram_table` | VARCHAR | `otlp_metrics_histogram` |
 | `metrics_exp_histogram_table` | VARCHAR | `otlp_metrics_exp_histogram` |
 
-Starting a second server on the same URI fails (`OTLP server already exists`). The server's lifetime is tied to the DuckDB `DatabaseInstance`: all servers are stopped — and their buffers sealed — automatically when the database closes.
+Starting a second server on the same URI fails (`OTLP server already exists`). The server's lifetime is tied to the DuckDB `DatabaseInstance`: all servers are stopped automatically when the database closes, but their buffers are **not** sealed at that point (see Durability below) — `otlp_flush`/`otlp_stop` before closing to avoid losing buffered rows.
 
 ### `otlp_flush(uri, ...)`
 
@@ -240,7 +240,7 @@ Ingest is **buffered and group-committed** for every target (default catalog and
 
 - A `202` is **not durable.** Rows become durable at the next seal — within `seal_max_age_ms`, or immediately on `otlp_flush`.
 - A crash or hard kill loses buffered-but-unsealed rows (**at-most-once** for that window).
-- A graceful `otlp_stop` or database close **seals remaining rows first**, so a clean shutdown loses nothing.
+- `otlp_stop` and `otlp_flush` **seal remaining rows before returning**, so those lose nothing. A plain **database/connection close does NOT seal** (the drain runs after the DuckDB instance is torn down, when it can no longer write) — buffered-but-unsealed rows are dropped. Call `otlp_flush`/`otlp_stop` before closing the database to guarantee durability.
 
 > A durable raw-spool journal for at-least-once delivery is a documented future enhancement, not yet implemented.
 
