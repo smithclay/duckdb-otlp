@@ -1,0 +1,6 @@
+# otlp2records 0.8.0 calls `u*::is_multiple_of`, stabilized in Rust 1.87
+# (rust-lang/rust#128101). Pin the wrapper crate's toolchain so cargo picks
+# up a new-enough compiler on CI runners whose default rustc is older.
+[toolchain]
+channel = "1.87"
+profile = "minimal"
