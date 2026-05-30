@@ -84,8 +84,7 @@ static void RunSQL(Connection &connection, const string &sql) {
 
 class OtlpHttpError : public std::exception {
 public:
-	OtlpHttpError(int status_p, string message_p, int retry_after_seconds_p = 0)
-	    : status(status_p), retry_after_seconds(retry_after_seconds_p), message(std::move(message_p)) {
+	OtlpHttpError(int status_p, string message_p) : status(status_p), message(std::move(message_p)) {
 	}
 
 	const char *what() const noexcept override {
@@ -93,7 +92,6 @@ public:
 	}
 
 	int status;
-	int retry_after_seconds;
 	string message;
 };
 
@@ -868,11 +866,7 @@ static void SetJson(duckdb_httplib::Response &res, int status, const string &jso
 	res.set_content(json, "application/json");
 }
 
-static void SetError(duckdb_httplib::Response &res, int status, const string &reason, const string &message,
-                     int retry_after_seconds = 0) {
-	if (retry_after_seconds > 0) {
-		res.set_header("Retry-After", std::to_string(retry_after_seconds));
-	}
+static void SetError(duckdb_httplib::Response &res, int status, const string &reason, const string &message) {
 	SetJson(res, status, "{\"error\":\"" + JsonEscape(reason) + "\",\"message\":\"" + JsonEscape(message) + "\"}");
 }
 
@@ -947,7 +941,7 @@ OtlpServer::OtlpServer(ClientContext &context, const OtlpUri &uri_p, const OtlpS
 					SetJson(res, 202, response);
 				}
 			} catch (OtlpHttpError &ex) {
-				SetError(res, ex.status, "request_failed", ex.what(), ex.retry_after_seconds);
+				SetError(res, ex.status, "request_failed", ex.what());
 			} catch (InvalidInputException &ex) {
 				SetError(res, 400, "bad_request", ex.what());
 			} catch (IOException &ex) {
