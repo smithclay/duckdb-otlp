@@ -8,6 +8,10 @@ namespace duckdb {
 OtlpStorageExtension::OtlpStorageExtension() {
 }
 
+OtlpStorageExtensionInfo::~OtlpStorageExtensionInfo() {
+	StopAllServers();
+}
+
 OtlpStorageExtensionInfo &OtlpStorageExtensionInfo::GetState(const DatabaseInstance &instance) {
 	auto &config = instance.config;
 	auto ext = StorageExtension::Find(config, STORAGE_EXTENSION_KEY);
@@ -29,8 +33,9 @@ OtlpServer &OtlpStorageExtensionInfo::CreateServer(ClientContext &context, const
 		throw InvalidInputException("OTLP server already exists for %s", key);
 	}
 	auto server = make_uniq<HttpOtlpServer>(context, listen_uri, std::move(config));
+	auto &server_ref = *server;
 	servers.emplace(key, std::move(server));
-	return *servers[key];
+	return server_ref;
 #endif
 }
 
@@ -47,11 +52,24 @@ bool OtlpStorageExtensionInfo::StopServer(ClientContext &context, const OtlpUri 
 	}
 	// Synchronously free the listening port so the URI can be reused immediately.
 	to_destroy->StopAccepting();
-	// Full destruction joins the httplib worker pool, which can block; run it
-	// off-thread so the calling SQL query (which may itself be a worker) is not
-	// stalled and cannot deadlock joining the pool it is running on.
-	std::thread([srv = std::move(to_destroy)]() mutable { srv.reset(); }).detach();
+	to_destroy.reset();
 	return true;
+}
+
+void OtlpStorageExtensionInfo::StopAllServers() {
+	vector<unique_ptr<OtlpServer>> to_destroy;
+	{
+		std::lock_guard<std::mutex> lock(servers_mutex);
+		to_destroy.reserve(servers.size());
+		for (auto &kv : servers) {
+			to_destroy.push_back(std::move(kv.second));
+		}
+		servers.clear();
+	}
+	for (auto &server : to_destroy) {
+		server->StopAccepting();
+	}
+	to_destroy.clear();
 }
 
 vector<OtlpStorageExtensionInfo::ServerSnapshot> OtlpStorageExtensionInfo::ListServers() {

@@ -14,6 +14,7 @@ public:
 class OtlpStorageExtensionInfo : public StorageExtensionInfo {
 public:
 	static constexpr const char *STORAGE_EXTENSION_KEY = "otlp_server";
+	~OtlpStorageExtensionInfo() override;
 
 	static OtlpStorageExtensionInfo &GetState(const DatabaseInstance &instance);
 
@@ -32,6 +33,9 @@ public:
 	};
 
 	vector<ServerSnapshot> ListServers();
+
+private:
+	void StopAllServers();
 
 private:
 	std::mutex servers_mutex;

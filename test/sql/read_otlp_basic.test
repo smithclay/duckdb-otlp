@@ -8,6 +8,18 @@ require otlp
 statement ok
 SELECT * FROM read_otlp_logs('test/data/logs_simple.jsonl') LIMIT 1;
 
+# Regression: Arrow FFI batches can be larger than DuckDB's vector size.
+statement ok
+COPY (
+    SELECT '{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"test-service"}},{"key":"host.name","value":{"stringValue":"test-host"}}]},"scopeLogs":[{"scope":{"name":"test-logger"},"logRecords":[{"timeUnixNano":"1640000000000000000","severityNumber":9,"severityText":"INFO","body":{"stringValue":"Application started"},"attributes":[{"key":"event.name","value":{"stringValue":"startup"}}],"traceId":"5B8EFFF798038103D269B633813FC60C","spanId":"EEE19B7EC3C1B174"}]}]}]}' AS line
+    FROM range(2049)
+) TO '/tmp/duckdb_otlp_many_logs.jsonl' (FORMAT csv, HEADER false, DELIMITER '\n', QUOTE '', ESCAPE '');
+
+query I
+SELECT COUNT(*) FROM read_otlp_logs('/tmp/duckdb_otlp_many_logs.jsonl');
+----
+2049
+
 # Test schema is correct for logs
 query I
 SELECT COUNT(*) FROM (
@@ -61,8 +73,8 @@ SELECT * FROM read_otlp_metrics_summary('test/data/metrics_simple.jsonl');
 ----
 Summary metrics not yet supported
 
-# Test union metrics function throws NotImplementedException with valid file
+# Test union metrics function fails at bind time with a clear unsupported message
 statement error
 SELECT * FROM read_otlp_metrics('test/data/metrics_simple.jsonl');
 ----
-Union metrics scan not yet implemented
+read_otlp_metrics() is not supported yet

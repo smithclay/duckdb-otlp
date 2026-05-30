@@ -91,6 +91,21 @@ select unnest(otlp_uri_parser('otlp:localhost:asdf'));
 Invalid OTLP listen port
 
 statement error
+select unnest(otlp_uri_parser('otlp:localhost:123abc'));
+----
+Invalid OTLP listen port
+
+statement error
+select unnest(otlp_uri_parser('otlp:[::1]:123abc'));
+----
+Invalid OTLP listen port
+
+statement error
+select unnest(otlp_uri_parser('otlp:localhost:12:34'));
+----
+Invalid OTLP listen port
+
+statement error
 select unnest(otlp_uri_parser('otlp:localhost:0'));
 ----
 Invalid OTLP listen port

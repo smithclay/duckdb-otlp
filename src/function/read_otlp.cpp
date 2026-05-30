@@ -22,12 +22,6 @@
 
 namespace duckdb {
 
-// Helper to add metric_type discriminator column
-static void AddMetricTypeColumn(vector<LogicalType> &return_types, vector<string> &names) {
-	names.push_back("metric_type");
-	return_types.push_back(LogicalType::VARCHAR);
-}
-
 // ============================================================================
 // Bind Data
 // ============================================================================
@@ -42,7 +36,6 @@ struct ReadOTLPRustBindData : public TableFunctionData {
 	vector<LogicalType> return_types;
 	vector<string> names;
 	bool schema_initialized = false;
-	bool is_union_metrics = false;
 
 	~ReadOTLPRustBindData() override {
 		if (schema_initialized && arrow_schema.release) {
@@ -73,10 +66,16 @@ struct ReadOTLPRustLocalState : public LocalTableFunctionState {
 	OtlpParserHandle *parser = nullptr;
 	unique_ptr<FileHandle> current_file;
 	ArrowArrayStream current_stream;
+	ArrowArray current_batch;
 	bool stream_active = false;
+	bool batch_active = false;
+	idx_t batch_offset = 0;
 	string file_buffer;
 
 	~ReadOTLPRustLocalState() override {
+		if (batch_active && current_batch.release) {
+			current_batch.release(&current_batch);
+		}
 		if (stream_active && current_stream.release) {
 			current_stream.release(&current_stream);
 		}
@@ -147,21 +146,6 @@ static unique_ptr<FunctionData> ReadOTLPMetricsSumRustBind(ClientContext &contex
 	return ReadOTLPRustBind(context, input, return_types, names, OTLP_SIGNAL_METRICS_SUM);
 }
 
-static unique_ptr<FunctionData> ReadOTLPMetricsRustBind(ClientContext &context, TableFunctionBindInput &input,
-                                                        vector<LogicalType> &return_types, vector<string> &names) {
-	// Use sum schema as base (has all columns)
-	auto result = ReadOTLPRustBind(context, input, return_types, names, OTLP_SIGNAL_METRICS_SUM);
-
-	// Add metric_type discriminator column
-	AddMetricTypeColumn(return_types, names);
-
-	// Store that this is union mode
-	auto &bind_data = result->CastNoConst<ReadOTLPRustBindData>();
-	bind_data.is_union_metrics = true;
-
-	return result;
-}
-
 // Unsupported metric types - throw on bind with clear error message
 static unique_ptr<FunctionData> ReadOTLPMetricsUnsupportedBind(ClientContext &context, TableFunctionBindInput &input,
                                                                vector<LogicalType> &return_types, vector<string> &names,
@@ -169,6 +153,15 @@ static unique_ptr<FunctionData> ReadOTLPMetricsUnsupportedBind(ClientContext &co
 	throw NotImplementedException("%s metrics not yet supported. "
 	                              "Use read_otlp_metrics_gauge() or read_otlp_metrics_sum() instead.",
 	                              metric_type);
+}
+
+static unique_ptr<FunctionData> ReadOTLPMetricsUnionUnsupportedBind(ClientContext &context,
+                                                                    TableFunctionBindInput &input,
+                                                                    vector<LogicalType> &return_types,
+                                                                    vector<string> &names) {
+	throw NotImplementedException("read_otlp_metrics() is not supported yet because OTLP metrics have multiple "
+	                              "shape-specific schemas. Use read_otlp_metrics_gauge(), read_otlp_metrics_sum(), "
+	                              "read_otlp_metrics_histogram(), or read_otlp_metrics_exp_histogram().");
 }
 
 static unique_ptr<FunctionData> ReadOTLPMetricsHistogramRustBind(ClientContext &context, TableFunctionBindInput &input,
@@ -228,24 +221,6 @@ static unique_ptr<LocalTableFunctionState> ReadOTLPRustInitLocal(ExecutionContex
 // Scan Function
 // ============================================================================
 
-// Scan function that combines gauge and sum metrics
-static void ReadOTLPMetricsUnionScan(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
-	auto &bind_data = data.bind_data->CastNoConst<ReadOTLPRustBindData>();
-	auto &gstate = data.global_state->Cast<ReadOTLPRustGlobalState>();
-	auto &lstate = data.local_state->Cast<ReadOTLPRustLocalState>();
-	auto &fs = FileSystem::GetFileSystem(context);
-
-	// Suppress unused variable warnings for now
-	(void)bind_data;
-	(void)gstate;
-	(void)lstate;
-	(void)fs;
-
-	// For now, just throw - we'll implement full union later
-	// TODO: Alternate between gauge and sum, add metric_type column
-	throw NotImplementedException("Union metrics scan not yet implemented");
-}
-
 static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
 	auto &bind_data = data.bind_data->CastNoConst<ReadOTLPRustBindData>();
 	auto &gstate = data.global_state->Cast<ReadOTLPRustGlobalState>();
@@ -253,6 +228,24 @@ static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, D
 	auto &fs = FileSystem::GetFileSystem(context);
 
 	while (true) {
+		if (lstate.batch_active) {
+			if (lstate.current_batch.length < 0) {
+				throw IOException("Invalid Arrow batch: negative row count");
+			}
+			const auto row_count = static_cast<idx_t>(lstate.current_batch.length);
+			const auto remaining = row_count - lstate.batch_offset;
+			const auto count = MinValue<idx_t>(STANDARD_VECTOR_SIZE, remaining);
+			CopyArrowStructToDataChunk(lstate.current_batch, bind_data.arrow_schema, output, lstate.batch_offset,
+			                           count);
+			lstate.batch_offset += count;
+			if (lstate.batch_offset >= row_count) {
+				lstate.current_batch.release(&lstate.current_batch);
+				lstate.batch_active = false;
+				lstate.batch_offset = 0;
+			}
+			return;
+		}
+
 		// If we have an active stream, try to get next batch
 		if (lstate.stream_active) {
 			ArrowArray batch;
@@ -264,36 +257,17 @@ static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, D
 			}
 
 			if (batch.release != nullptr) {
-				// We have a batch - convert to DuckDB DataChunk
-				idx_t row_count = batch.length;
-
-				if (row_count > 0) {
-					output.SetCardinality(row_count);
-
-					// The batch is a struct array - its children are the columns
-					for (idx_t col_idx = 0; col_idx < output.ColumnCount(); col_idx++) {
-						if (col_idx < (idx_t)batch.n_children) {
-							ArrowArray *col_array = batch.children[col_idx];
-							ArrowSchema *col_schema = bind_data.arrow_schema.children[col_idx];
-							if (!col_array) {
-								throw IOException("Invalid Arrow batch: column %llu array is null",
-								                  static_cast<uint64_t>(col_idx));
-							}
-							if (!col_schema) {
-								throw IOException("Invalid Arrow batch: column %llu schema is null",
-								                  static_cast<uint64_t>(col_idx));
-							}
-							CopyArrowToDuckDB(*col_array, *col_schema, output.data[col_idx], row_count);
-						}
-					}
+				if (batch.length < 0) {
+					batch.release(&batch);
+					throw IOException("Invalid Arrow batch: negative row count");
 				}
-
-				// Release the batch
+				if (batch.length > 0) {
+					lstate.current_batch = batch;
+					lstate.batch_active = true;
+					lstate.batch_offset = 0;
+					continue;
+				}
 				batch.release(&batch);
-
-				if (row_count > 0) {
-					return;
-				}
 			}
 
 			// Stream exhausted
@@ -383,11 +357,8 @@ void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
 	sum_func.filter_pushdown = false;
 	loader.RegisterFunction(sum_func);
 
-	// Union metrics (gauge + sum combined)
-	TableFunction metrics_func("read_otlp_metrics", {LogicalType::VARCHAR}, ReadOTLPMetricsUnionScan,
-	                           ReadOTLPMetricsRustBind, ReadOTLPRustInitGlobal, ReadOTLPRustInitLocal);
-	metrics_func.projection_pushdown = false;
-	metrics_func.filter_pushdown = false;
+	TableFunction metrics_func("read_otlp_metrics", {LogicalType::VARCHAR}, ReadOTLPMetricsUnsupportedScan,
+	                           ReadOTLPMetricsUnionUnsupportedBind);
 	loader.RegisterFunction(metrics_func);
 
 	// read_otlp_metrics_exp_histogram

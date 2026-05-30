@@ -139,7 +139,15 @@ static bool IsUnsupportedEncoding(const string &content_encoding) {
 	}
 	auto value = StringUtil::Lower(content_encoding);
 	StringUtil::Trim(value);
-	return value != "identity";
+	if (value == "identity") {
+		return false;
+	}
+#ifdef CPPHTTPLIB_ZLIB_SUPPORT
+	if (value == "gzip" || value == "deflate") {
+		return false;
+	}
+#endif
+	return true;
 }
 
 static const char *TableNameForSignal(OtlpSignalType signal_type) {
@@ -384,9 +392,9 @@ HttpOtlpServer::HttpOtlpServer(ClientContext &context, const OtlpUri &uri_p, Otl
     : OtlpServer(context, uri_p, config_p), impl(make_uniq<Impl>()) {
 	impl->server = make_uniq<duckdb_httplib::Server>();
 	impl->server->new_task_queue = [] {
-		return new duckdb_httplib::ThreadPool(16);
+		return new duckdb_httplib::ThreadPool(1);
 	};
-	impl->server->set_keep_alive_max_count(16);
+	impl->server->set_keep_alive_max_count(8);
 	impl->server->set_keep_alive_timeout(5);
 	impl->server->set_tcp_nodelay(true);
 	impl->server->set_payload_max_length(static_cast<size_t>(config_p.max_body_bytes));
@@ -401,11 +409,13 @@ HttpOtlpServer::HttpOtlpServer(ClientContext &context, const OtlpUri &uri_p, Otl
 			// throw that escapes the catch chain below (e.g. allocation failure).
 			struct RequestGuard {
 				std::atomic<idx_t> &counter;
+				explicit RequestGuard(std::atomic<idx_t> &counter_p) : counter(counter_p) {
+					counter++;
+				}
 				~RequestGuard() {
 					counter--;
 				}
 			} request_guard {active_requests};
-			active_requests++;
 			total_requests++;
 			try {
 				if (!CheckAuth(req.get_header_value("Authorization"), req.get_header_value("x-api-key"))) {
@@ -437,7 +447,6 @@ HttpOtlpServer::HttpOtlpServer(ClientContext &context, const OtlpUri &uri_p, Otl
 	if (!impl->server->is_valid()) {
 		throw IOException("Failed to instantiate OTLP HTTP server at %s / %s", uri_p.Uri(), uri_p.Http());
 	}
-	is_running = true;
 	// Bind synchronously here so that bind() failures (e.g. EADDRINUSE) propagate
 	// to the caller of otlp_serve() rather than being lost on the listener thread.
 	if (!impl->server->bind_to_port(uri_p.Host(), uri_p.Port())) {
@@ -445,15 +454,15 @@ HttpOtlpServer::HttpOtlpServer(ClientContext &context, const OtlpUri &uri_p, Otl
 		                  "port)",
 		                  uri_p.Http());
 	}
+	is_running.store(true);
 	listen_threads.push_back(std::thread(ListenThread, this));
 }
 
 void HttpOtlpServer::StopAccepting() {
 	// Closes the listening socket only. Idempotent. Safe to call from a
 	// request-handler thread — does not wait on httplib's task queue.
-	if (is_running) {
+	if (is_running.exchange(false)) {
 		impl->server->stop();
-		is_running = false;
 	}
 }
 
@@ -484,7 +493,7 @@ void HttpOtlpServer::ListenThread(HttpOtlpServer *server) {
 	try {
 		server->impl->server->listen_after_bind();
 	} catch (...) {
-		server->is_running = false;
+		server->is_running.store(false);
 	}
 }
 

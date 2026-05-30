@@ -47,6 +47,15 @@ include(FindOtlp2Records)
 target_link_libraries(${EXTENSION_NAME} otlp2records::otlp2records)
 target_link_libraries(${LOADABLE_EXTENSION_NAME} otlp2records::otlp2records)
 
+if(NOT EMSCRIPTEN)
+  find_package(ZLIB REQUIRED)
+  target_compile_definitions(${EXTENSION_NAME} PRIVATE CPPHTTPLIB_ZLIB_SUPPORT)
+  target_compile_definitions(${LOADABLE_EXTENSION_NAME}
+                             PRIVATE CPPHTTPLIB_ZLIB_SUPPORT)
+  target_link_libraries(${EXTENSION_NAME} ZLIB::ZLIB)
+  target_link_libraries(${LOADABLE_EXTENSION_NAME} ZLIB::ZLIB)
+endif()
+
 # Define preprocessor macro for conditional compilation
 target_compile_definitions(${EXTENSION_NAME} PRIVATE OTLP_RUST_BACKEND)
 target_compile_definitions(${LOADABLE_EXTENSION_NAME} PRIVATE OTLP_RUST_BACKEND)

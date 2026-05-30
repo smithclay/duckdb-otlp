@@ -18,7 +18,7 @@ public:
 		return uri;
 	}
 	string CanonicalUri() const {
-		return "otlp:" + host + ":" + std::to_string(port);
+		return "otlp:" + (ipv6 ? "[" + host + "]" : host) + ":" + std::to_string(port);
 	}
 	string Host() const {
 		return host;

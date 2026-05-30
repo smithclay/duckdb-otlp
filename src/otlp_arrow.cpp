@@ -112,6 +112,7 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 	}
 
 	auto &mask = FlatVector::Validity(output);
+	mask.Reset(count);
 
 	if (fmt == "u") {
 		if (array.n_buffers < 3) {

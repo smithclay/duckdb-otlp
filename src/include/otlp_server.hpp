@@ -111,7 +111,7 @@ private:
 private:
 	class Impl;
 	unique_ptr<Impl> impl;
-	bool is_running = false;
+	std::atomic<bool> is_running {false};
 };
 
 } // namespace duckdb

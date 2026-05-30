@@ -1,6 +1,26 @@
 #include "otlp_uri.hpp"
 
+#include <charconv>
+
 namespace duckdb {
+
+namespace {
+
+static uint16_t ParsePort(const string &port_str) {
+	if (port_str.empty()) {
+		throw InvalidInputException("Invalid OTLP listen port");
+	}
+	int raw_port = 0;
+	auto begin = port_str.data();
+	auto end = begin + port_str.size();
+	auto result = std::from_chars(begin, end, raw_port);
+	if (result.ec != std::errc() || result.ptr != end || raw_port < 1 || raw_port > 65535) {
+		throw InvalidInputException("Invalid OTLP listen port");
+	}
+	return static_cast<uint16_t>(raw_port);
+}
+
+} // namespace
 
 OtlpUri::OtlpUri(string uri_p) : uri(std::move(uri_p)) {
 	StringUtil::Trim(uri);
@@ -31,34 +51,13 @@ OtlpUri::OtlpUri(string uri_p) : uri(std::move(uri_p)) {
 			remainder = remainder.substr(1);
 		}
 		if (!remainder.empty()) {
-			int raw_port;
-			try {
-				raw_port = stoi(remainder);
-			} catch (std::exception &) {
-				throw InvalidInputException("Invalid OTLP listen port");
-			}
-			if (raw_port < 1 || raw_port > 65535) {
-				throw InvalidInputException("Invalid OTLP listen port");
-			}
-			port = raw_port;
+			port = ParsePort(remainder);
 		}
 	} else {
 		if (StringUtil::Contains(remainder, ':')) {
 			auto pos = remainder.find(':');
 			auto port_str = remainder.substr(pos + 1);
-			if (port_str.empty()) {
-				throw InvalidInputException("Invalid OTLP listen port");
-			}
-			int raw_port;
-			try {
-				raw_port = stoi(port_str);
-			} catch (std::exception &) {
-				throw InvalidInputException("Invalid OTLP listen port");
-			}
-			if (raw_port < 1 || raw_port > 65535) {
-				throw InvalidInputException("Invalid OTLP listen port");
-			}
-			port = raw_port;
+			port = ParsePort(port_str);
 			remainder = remainder.substr(0, pos);
 		}
 		host = remainder;
