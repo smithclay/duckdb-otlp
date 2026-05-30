@@ -1,7 +1,6 @@
 #pragma once
 
 #include "duckdb.hpp"
-#include "duckdb/common/encryption_state.hpp"
 
 #include "otlp_request.hpp"
 #include "otlp_uri.hpp"
@@ -10,7 +9,6 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
-#include <optional>
 #include <thread>
 
 namespace duckdb {

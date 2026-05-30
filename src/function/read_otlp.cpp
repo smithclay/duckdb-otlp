@@ -1,5 +1,5 @@
 /**
- * @file read_otlp_rust.cpp
+ * @file read_otlp.cpp
  * @brief DuckDB table functions using Rust otlp2records backend
  *
  * This file implements read_otlp_logs, read_otlp_traces, etc.

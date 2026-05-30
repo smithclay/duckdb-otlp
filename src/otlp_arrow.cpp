@@ -7,7 +7,7 @@
 
 namespace duckdb {
 
-LogicalType ArrowFormatToDuckDBType(const ArrowSchema &schema) {
+static LogicalType ArrowFormatToDuckDBType(const ArrowSchema &schema) {
 	if (!schema.format) {
 		throw IOException("Arrow schema has null format string - indicates FFI error");
 	}

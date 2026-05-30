@@ -7,8 +7,6 @@
 
 namespace duckdb {
 
-LogicalType ArrowFormatToDuckDBType(const ArrowSchema &schema);
-
 void GetArrowSchemaColumns(const ArrowSchema &schema, vector<LogicalType> &return_types, vector<string> &names);
 
 void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vector &output, idx_t count);

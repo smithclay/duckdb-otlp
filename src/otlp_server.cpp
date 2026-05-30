@@ -1,6 +1,7 @@
 #include "otlp_server.hpp"
 
 #include "duckdb/common/allocator.hpp"
+#include "duckdb/common/encryption_state.hpp"
 #include "duckdb/common/types/blob.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/common/types/column/column_data_scan_states.hpp"
