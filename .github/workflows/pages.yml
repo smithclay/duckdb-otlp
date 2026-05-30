@@ -1,8 +1,9 @@
 name: Pages
 #
-# GitHub Pages should be configured with "GitHub Actions" as the source.
-# Pages artifact deploys replace the whole site, so this workflow restores the
-# latest packaged extension repository before uploading the final Pages artifact.
+# GitHub Pages is configured for the "GitHub Actions" source. Pages artifact
+# deploys are whole-site snapshots, so this workflow is the only Pages deployer
+# and always assembles the Astro site plus the extension repository before
+# uploading one final Pages artifact.
 
 on:
   push:
@@ -10,10 +11,19 @@ on:
     paths:
       - 'site/**'
       - '.github/workflows/pages.yml'
+  release:
+    types: [published]
   workflow_dispatch:
+    inputs:
+      publish_extension:
+        description: Build and publish unsigned extension binaries before deploying Pages
+        required: false
+        type: boolean
+        default: false
 
 permissions:
-  contents: read
+  actions: read
+  contents: write
   pages: write
   id-token: write
 
@@ -21,10 +31,113 @@ concurrency:
   group: pages
   cancel-in-progress: false
 
+env:
+  EXT_NAME: otlp
+  DUCKDB_VERSION: v1.5.3
+
 jobs:
+  extension-build:
+    name: build extension binaries
+    if: ${{ github.event_name == 'release' || inputs.publish_extension }}
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.3
+    with:
+      duckdb_version: v1.5.3
+      ci_tools_version: v1.5.3
+      extension_name: otlp
+      extra_toolchains: rust
+      exclude_archs: "wasm_mvp;wasm_threads;linux_amd64_musl"
+
+  extension-package:
+    name: package extension repository
+    if: ${{ github.event_name == 'release' || inputs.publish_extension }}
+    runs-on: ubuntu-latest
+    needs: extension-build
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: ${{ env.EXT_NAME }}-${{ env.DUCKDB_VERSION }}-extension-*
+
+      - name: Assemble extension repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          prefix="${EXT_NAME}-${DUCKDB_VERSION}-extension-"
+          found=0
+          mkdir -p _extension_repository
+          for dir in artifacts/${prefix}*/; do
+            arch="$(basename "$dir")"
+            arch="${arch#${prefix}}"
+            src="${dir}${EXT_NAME}.duckdb_extension"
+            if [ ! -f "$src" ]; then
+              echo "::warning::no ${EXT_NAME}.duckdb_extension in ${dir}, skipping ${arch}"
+              continue
+            fi
+            out="_extension_repository/${DUCKDB_VERSION}/${arch}"
+            mkdir -p "$out"
+            # Match the official unsigned packaging: replace any existing
+            # signature placeholder with the unsigned 256-byte zero signature,
+            # then gzip for DuckDB's native extension repository path.
+            cp "$src" work.bin
+            truncate -s -256 work.bin
+            dd if=/dev/zero bs=256 count=1 status=none >> work.bin
+            gzip -n < work.bin > "${out}/${EXT_NAME}.duckdb_extension.gz"
+            rm -f work.bin
+            echo "packaged ${arch}"
+            found=$((found + 1))
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "::error::no extension binaries found to package"
+            exit 1
+          fi
+          echo "Packaged ${found} platform(s) for ${DUCKDB_VERSION}"
+
+      - name: Write extension repository index
+        shell: bash
+        env:
+          PAGES_BASE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          mkdir -p _extension_repository/extensions
+          {
+            echo "<!doctype html><meta charset=utf-8>"
+            echo "<title>duckdb-otlp extension repository</title>"
+            echo "<h1>duckdb-otlp extension repository</h1>"
+            echo "<p>Unsigned DuckDB extension repository. Requires DuckDB <code>${DUCKDB_VERSION}</code>.</p>"
+            echo "<pre>SET allow_unsigned_extensions = true;"
+            echo "INSTALL ${EXT_NAME} FROM '${PAGES_BASE_URL}';"
+            echo "LOAD ${EXT_NAME};</pre>"
+            echo "<h2>Available binaries</h2><ul>"
+            for f in $(cd _extension_repository && find "${DUCKDB_VERSION}" -name '*.duckdb_extension.gz' | sort); do
+              echo "<li><a href=\"../${f}\">${f}</a></li>"
+            done
+            echo "</ul>"
+          } > _extension_repository/extensions/index.html
+          touch _extension_repository/.nojekyll
+
+      - name: Archive extension repository
+        run: tar -czf extension-repository.tar.gz -C _extension_repository .
+
+      - name: Upload extension repository artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: extension-repository
+          path: extension-repository.tar.gz
+          retention-days: 30
+
+      - name: Upload extension repository release asset
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.event.release.tag_name }}" extension-repository.tar.gz --clobber
+
   deploy:
     name: deploy site
     runs-on: ubuntu-latest
+    needs: extension-package
+    if: ${{ always() && (needs.extension-package.result == 'success' || needs.extension-package.result == 'skipped') }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -49,7 +162,19 @@ jobs:
           ASTRO_TELEMETRY_DISABLED: 1
         run: npm run build
 
-      - name: Restore latest extension repository
+      - name: Download extension repository from this run
+        if: needs.extension-package.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: extension-repository
+          path: _extension_repository_artifact
+
+      - name: Add extension repository from this run
+        if: needs.extension-package.result == 'success'
+        run: tar -xzf _extension_repository_artifact/extension-repository.tar.gz -C site/dist
+
+      - name: Restore latest extension repository release asset
+        if: needs.extension-package.result == 'skipped'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
