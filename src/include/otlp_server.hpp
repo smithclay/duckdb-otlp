@@ -7,6 +7,8 @@
 #include "otlp2records.h"
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <thread>
 
 namespace duckdb {
@@ -14,14 +16,26 @@ namespace duckdb {
 class ClientContext;
 class Connection;
 class DatabaseInstance;
+class ColumnDataCollection;
+class DataChunk;
+struct OtlpSignalBuffer;
 
 enum class OtlpRequestKind : uint8_t { LOGS, TRACES, METRICS };
 
 struct OtlpServerConfig {
 	string token;
+	//! Target catalog (attached database). Empty = the connection's default catalog.
+	//! Set this to an attached DuckLake catalog name to stream OTLP into a lakehouse.
+	string catalog_name;
 	string schema_name = "main";
 	bool create_tables = true;
 	idx_t max_body_bytes = 16ULL * 1024ULL * 1024ULL;
+	//! Buffered group-commit ("seal") tuning. Ingest buffers rows in memory and a
+	//! single writer seals them on a size or age trigger (one DuckLake snapshot per
+	//! seal), avoiding per-request Parquet files and write conflicts.
+	idx_t seal_target_bytes = 64ULL * 1024ULL * 1024ULL;   //! seal when a signal buffer reaches this
+	int64_t seal_max_age_ms = 5000;                        //! seal when the oldest buffered row is this old
+	idx_t max_buffered_bytes = 512ULL * 1024ULL * 1024ULL; //! hard cap across all signals -> 503
 };
 
 struct OtlpIngestResult {
@@ -70,6 +84,9 @@ public:
 	const string &SchemaName() const {
 		return config.schema_name;
 	}
+	const string &CatalogName() const {
+		return config.catalog_name;
+	}
 	idx_t ActiveRequests() const {
 		return active_requests.load();
 	}
@@ -79,12 +96,34 @@ public:
 	idx_t TotalRows() const {
 		return total_rows.load();
 	}
+	idx_t BufferedRows() const {
+		return buffered_rows.load();
+	}
+	idx_t BufferedBytes() const {
+		return buffered_bytes.load();
+	}
+	idx_t SealsTotal() const {
+		return seals_total.load();
+	}
+	//! Milliseconds since the last successful seal, or -1 if none yet.
+	int64_t LastSealAgeMs() const;
+	string SealLastError() const {
+		std::lock_guard<std::mutex> lock(seal_error_mutex);
+		return seal_last_error;
+	}
+
+	//! Force a synchronous seal of all buffered rows (used by otlp_flush). Returns the
+	//! number of rows sealed. When run_checkpoint is set, also compacts the catalog.
+	OtlpIngestResult FlushNow(bool run_checkpoint);
 
 protected:
 	bool CheckAuth(const string &authorization, const string &api_key) const;
 	OtlpIngestResult Ingest(OtlpRequestKind kind, const string &content_type, const string &content_encoding,
 	                        const string &body);
 	void EnsureTargetTables();
+	//! Stop the sealer thread and seal any remaining buffered rows before the writer
+	//! connection / database go away. Idempotent; called from Close() and ~OtlpServer().
+	void ShutdownIngest();
 	//! Write a server-side diagnostic to duckdb_logs under the OTLP log type. No-op
 	//! if the database has been closed. Safe to call from any worker thread.
 	void LogServerEvent(const string &message) const;
@@ -96,28 +135,51 @@ protected:
 	std::atomic<idx_t> total_rows {0};
 
 private:
-	//! Return this worker thread's long-lived Connection, lazily creating one on
-	//! first use. Each httplib worker thread gets its own Connection so requests
-	//! run concurrently; only DuckDB's per-table append lock briefly serializes at
-	//! commit. A Connection is never shared between threads, so no request-path
-	//! mutex is needed and each request's BEGIN/COMMIT is isolated and atomic.
-	Connection &GetWorkerConnection();
-	void TransformAndAppend(Connection &con, OtlpRequestKind request_kind, const string &body, OtlpInputFormat format,
+	// --- request path (runs on httplib worker threads; buffers, never commits) ---
+	void TransformAndBuffer(OtlpRequestKind request_kind, const string &body, OtlpInputFormat format,
 	                        OtlpIngestResult &result);
-	void AppendSignal(Connection &con, OtlpSignalType signal_type, const string &table_name, const string &body,
-	                  OtlpInputFormat format, OtlpIngestResult &result);
-	void AppendArrowBatch(Connection &con, const string &table_name, const ArrowArray &array, const ArrowSchema &schema,
-	                      OtlpIngestResult &result);
+	void BufferSignal(OtlpSignalType signal_type, const string &body, OtlpInputFormat format, OtlpIngestResult &result);
+	void BufferAppend(OtlpSignalBuffer &buf, DataChunk &chunk);
+	OtlpSignalBuffer &BufferFor(OtlpSignalType signal_type);
+
+	// --- seal path (single writer) ---
+	void InitBuffers();
+	void StartSealer();
+	void SealerLoop();
+	OtlpIngestResult SealOnce(bool run_checkpoint);
+	void RequestSeal();
+
 	void CreateOrValidateTable(Connection &con, OtlpSignalType signal_type, const string &table_name);
 
 private:
 	weak_ptr<DatabaseInstance> db_ptr;
-	//! Guards worker_connections structural mutation only (find/insert), not query
-	//! execution — a worker only ever touches its own Connection.
-	mutex connections_mutex;
-	unordered_map<std::thread::id, unique_ptr<Connection>> worker_connections;
 	OtlpUri uri;
 	OtlpServerConfig config;
+
+	// Per-signal in-memory buffers. Guarded by buffer_mutex for all structural access;
+	// a worker only briefly locks to Append a converted chunk.
+	mutex buffer_mutex;
+	std::vector<unique_ptr<OtlpSignalBuffer>> signal_buffers;
+	std::atomic<idx_t> buffered_rows {0};
+	std::atomic<idx_t> buffered_bytes {0};
+	bool have_unsealed = false;                           //! guarded by buffer_mutex
+	std::chrono::steady_clock::time_point first_unsealed; //! guarded by buffer_mutex
+
+	// Single serialized writer + background sealer. writer_mutex serializes SealOnce
+	// (sealer thread) against FlushNow (otlp_flush) and the final drain on shutdown.
+	unique_ptr<Connection> writer_con;
+	mutex writer_mutex;
+	std::thread sealer_thread;
+	std::mutex sealer_mutex;
+	std::condition_variable sealer_cv;
+	std::atomic<bool> sealer_stop {false};
+	std::atomic<bool> flush_requested {false};
+	std::atomic<bool> ingest_shutdown_done {false};
+
+	std::atomic<idx_t> seals_total {0};
+	std::atomic<int64_t> last_seal_unix_ms {0};
+	mutable mutex seal_error_mutex;
+	string seal_last_error;
 };
 
 class HttpOtlpServer : public OtlpServer {

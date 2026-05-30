@@ -23,6 +23,7 @@ Requires the `duckdb` Python package and a built extension.
 
 import os
 import sys
+import time
 import urllib.request
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor
@@ -33,6 +34,9 @@ EXTENSION = os.environ.get("OTLP_EXTENSION", "build/release/extension/otlp/otlp.
 PAYLOAD = os.environ.get("OTLP_PAYLOAD", "test/data/logs_simple.jsonl")
 CONCURRENCY = int(os.environ.get("OTLP_CONCURRENCY", "64"))
 PORT = int(os.environ.get("OTLP_PORT", "4329"))
+# When set to a directory, attach a DuckLake catalog there and stream into it, so the
+# run exercises the DuckLake seal path (Parquet files) instead of an in-memory table.
+DUCKLAKE_DIR = os.environ.get("OTLP_DUCKLAKE_DIR", "")
 TOKEN = "manual-smoke-token-0123456789"
 
 CONTENT_TYPES = {
@@ -92,10 +96,27 @@ def main():
 
     con = duckdb.connect(config={"allow_unsigned_extensions": "true"})
     con.execute(f"LOAD '{EXTENSION}'")
-    row = con.execute(
-        "SELECT listen_url FROM otlp_serve(?, token := ?)",
-        [f"otlp:127.0.0.1:{PORT}", TOKEN],
-    ).fetchone()
+
+    catalog = ""
+    table_prefix = ""
+    if DUCKLAKE_DIR:
+        os.makedirs(DUCKLAKE_DIR, exist_ok=True)
+        con.execute("LOAD ducklake")
+        con.execute(f"ATTACH 'ducklake:{DUCKLAKE_DIR}/meta.ducklake' AS lake (DATA_PATH '{DUCKLAKE_DIR}/data/')")
+        catalog = "lake"
+        table_prefix = "lake.main."
+        print(f"attached DuckLake at {DUCKLAKE_DIR}; streaming into catalog 'lake'")
+
+    if catalog:
+        row = con.execute(
+            "SELECT listen_url FROM otlp_serve(?, token := ?, catalog := ?)",
+            [f"otlp:127.0.0.1:{PORT}", TOKEN, catalog],
+        ).fetchone()
+    else:
+        row = con.execute(
+            "SELECT listen_url FROM otlp_serve(?, token := ?)",
+            [f"otlp:127.0.0.1:{PORT}", TOKEN],
+        ).fetchone()
     base_url = row[0]
     print(f"serving at {base_url}, POSTing {CONCURRENCY}x {PAYLOAD} ({ctype}) -> {endpoint}")
 
@@ -110,27 +131,48 @@ def main():
             except urllib.error.HTTPError as exc:
                 statuses.append(exc.code)
 
-    ok = sum(1 for s in statuses if s == 200)
-    print(f"  responses: {ok}/{CONCURRENCY} returned 200 (statuses: {sorted(set(statuses))})")
+    # Ingest is buffered: a 202 means the rows were accepted, not yet sealed.
+    ok = sum(1 for s in statuses if s in (200, 202))
+    print(f"  responses: {ok}/{CONCURRENCY} accepted (statuses: {sorted(set(statuses))})")
 
     server = con.execute(
         "SELECT total_requests, total_rows, is_listening, last_error FROM otlp_server_list() WHERE port = ?",
         [PORT],
     ).fetchone()
-    table_rows = sum(con.execute(f"SELECT count(*) FROM {t}").fetchone()[0] for t in tables)
+    accepted_rows = server[1]
     print(
-        f"  otlp_server_list: total_requests={server[0]} total_rows={server[1]} "
+        f"  otlp_server_list: total_requests={server[0]} total_rows(accepted)={accepted_rows} "
         f"is_listening={server[2]} last_error={server[3]}"
     )
+
+    # Force a synchronous seal so we don't have to wait for the age trigger, then the
+    # rows are durable in the target table(s). For DuckLake, also compact.
+    try:
+        flush = con.execute(
+            "SELECT status, sealed_rows, seals_total, error FROM otlp_flush(?, checkpoint := ?)",
+            [f"otlp:127.0.0.1:{PORT}", bool(catalog)],
+        ).fetchone()
+        print(f"  otlp_flush: {flush}")
+    except Exception:
+        # otlp_flush not available (pre-Phase-3): fall back to waiting for the age seal.
+        time.sleep(7)
+    table_rows = sum(con.execute(f"SELECT count(*) FROM {table_prefix}{t}").fetchone()[0] for t in tables)
     print(f"  {'+'.join(tables)} now have {table_rows} rows total")
+    if DUCKLAKE_DIR:
+        import glob
+
+        parquet = glob.glob(f"{DUCKLAKE_DIR}/data/**/*.parquet", recursive=True)
+        print(f"  DuckLake Parquet files: {len(parquet)}")
+        if table_rows > 0 and not parquet:
+            print("  WARNING: rows sealed but no Parquet files found")
 
     failures = []
     if ok != CONCURRENCY:
-        failures.append(f"{CONCURRENCY - ok} requests did not return 200")
+        failures.append(f"{CONCURRENCY - ok} requests were not accepted")
     if server[0] != CONCURRENCY:
         failures.append(f"total_requests {server[0]} != {CONCURRENCY}")
-    if server[1] != table_rows:
-        failures.append(f"total_rows {server[1]} != table row count {table_rows}")
+    if accepted_rows != table_rows:
+        failures.append(f"accepted rows {accepted_rows} != sealed table row count {table_rows}")
     if not server[2]:
         failures.append("server reports is_listening = false while up")
 

@@ -43,13 +43,14 @@ Returns sum/counter metrics (18 columns) with `value`, `aggregation_temporality`
 
 ## Live Ingest
 
-In native builds, the extension can also run an HTTP server that accepts live OTLP/HTTP exports and appends them into DuckDB tables:
+In native builds, the extension can also run an HTTP server that accepts live OTLP/HTTP exports and streams them into a DuckDB catalog — most usefully an attached **DuckLake** lakehouse (Parquet + catalog), or the connection's default in-memory/file catalog. Ingest is buffered and group-committed: a POST returns `202 Accepted`, and rows become durable at the next seal.
 
-- **`otlp_serve([uri], ...)`** - Start the ingest server and create/validate the target tables.
-- **`otlp_stop(uri)`** - Stop the server listening on `uri`.
-- **`otlp_server_list()`** - List running servers with live request/row counters and health.
+- **`otlp_serve([uri], catalog := '<attached_db>', ...)`** - Start the ingest server, target a catalog, and create/validate the target tables.
+- **`otlp_flush(uri, checkpoint := false)`** - Force a synchronous seal of the buffer (optionally compact a DuckLake catalog).
+- **`otlp_stop(uri)`** - Stop the server listening on `uri` (seals remaining rows first).
+- **`otlp_server_list()`** - List running servers with live counters, buffer state, and health.
 
-See the [Serve Reference](serve.md) for parameters, endpoints, auth, and the concurrency model, or the [Live Ingest Quickstart](../quickstart/serve.md) for a `curl` walkthrough.
+See the [Serve Reference](serve.md) for parameters, catalog targeting, endpoints, auth, and the buffered seal/durability model, or the [Live Ingest Quickstart](../quickstart/serve.md) for a DuckLake `curl` walkthrough.
 
 ## Examples
 

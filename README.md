@@ -33,8 +33,8 @@ LIMIT 5;
 
 ## What you can do
 
+- **Stream OTLP into a DuckLake lakehouse** - Run an OTLP/HTTP server and stream live exports straight into [DuckLake](https://ducklake.select) (Parquet + catalog), buffered and group-committed
 - **Analyze production telemetry** - Query OTLP file exports with familiar SQL syntax
-- **Stream live telemetry in** - Run an OTLP/HTTP server and POST exports straight into DuckDB tables
 - **Archive to your data lake** - Convert OpenTelemetry data to Parquet with schemas intact
 - **Debug faster** - Filter logs by severity, find slow traces, aggregate metrics
 - **Integrate with data tools** - Use DuckDB's ecosystem (MotherDuck, Jupyter, DBT, etc.)
@@ -90,25 +90,35 @@ FROM read_otlp_metrics_gauge('metrics/*.jsonl');
 
 **[→ See more examples in the Cookbook](docs/guides/cookbook.md)**
 
-### Stream live OTLP exports into DuckDB
+### Stream live OTLP into a DuckLake lakehouse
+
+Run an OTLP/HTTP server (native builds only) that streams live exports straight into a [DuckLake](https://ducklake.select) lakehouse — Parquet data files tracked by a catalog. Ingest is buffered and group-committed ("sealed"), so a POST returns `202 Accepted` and rows land in Parquet at the next seal.
 
 ```sql
--- Start an OTLP/HTTP server (native builds only)
-SELECT listen_url, auth_token
-FROM otlp_serve('otlp:localhost:4318', token := 'dev-token-123456');
+-- Attach a DuckLake catalog, then stream OTLP into it
+INSTALL ducklake; LOAD ducklake;
+ATTACH 'ducklake:metadata.ducklake' AS lake (DATA_PATH 'otlp_data/');
+
+CALL otlp_serve('otlp:localhost:4318', catalog := 'lake');
+-- point any OTLP/HTTP exporter at http://localhost:4318  (gRPC not supported)
 ```
 
 ```bash
-# Point any OpenTelemetry exporter at it, or POST directly:
+# ... or POST directly. A 202 means rows were buffered, not yet sealed:
 curl -sS http://localhost:4318/v1/logs \
   -H 'Content-Type: application/x-ndjson' \
-  -H 'Authorization: Bearer dev-token-123456' \
+  -H 'Authorization: Bearer <token>' \
   --data-binary @test/data/logs_simple.jsonl
+# {"status":"buffered","rows":1,"batches":1}
 ```
 
 ```sql
-SELECT count(*) FROM otlp_logs;  -- rows landed live
+-- Force a seal (+ compact Parquet), then query the lakehouse
+CALL otlp_flush('otlp:localhost:4318', checkpoint := true);
+SELECT count(*) FROM lake.main.otlp_logs;
 ```
+
+Omit `catalog` to land rows in the connection's default (in-memory/file) catalog instead — an ephemeral, no-lakehouse path (still buffered).
 
 **[→ Live Ingest Quickstart](docs/quickstart/serve.md)**
 
@@ -131,9 +141,10 @@ Individual files are limited to **100 MB** to prevent memory exhaustion. This ap
 
 | Function | What it does |
 |----------|-------------|
-| `otlp_serve([uri], ...)` | Start an OTLP/HTTP server that appends `/v1/logs`, `/v1/traces`, `/v1/metrics` POSTs into DuckDB tables |
-| `otlp_stop(uri)` | Stop a running server |
-| `otlp_server_list()` | List running servers with live request/row counters |
+| `otlp_serve([uri], catalog := ..., ...)` | Start an OTLP/HTTP server that buffers `/v1/logs`, `/v1/traces`, `/v1/metrics` POSTs and seals them into a target catalog (DuckLake or default) |
+| `otlp_flush(uri, checkpoint := false)` | Force a synchronous seal of the buffer (optionally compact a DuckLake catalog) |
+| `otlp_stop(uri)` | Stop a running server (seals remaining rows first) |
+| `otlp_server_list()` | List running servers with live counters, buffer state, and health |
 
 **[→ Full API Reference](docs/reference/api.md)** · **[→ Live Ingest Server](docs/reference/serve.md)**
 

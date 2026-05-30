@@ -43,6 +43,34 @@ WHERE listen_uri = 'otlp:127.0.0.1:55439' AND is_listening AND last_error IS NUL
 ----
 1
 
+# a server started without a catalog targets the default catalog (empty catalog_name)
+query I
+SELECT count(*) FROM otlp_server_list()
+WHERE listen_uri = 'otlp:127.0.0.1:55439' AND catalog_name = '';
+----
+1
+
+# a freshly-started server has an empty buffer and has never sealed
+query I
+SELECT count(*) FROM otlp_server_list()
+WHERE listen_uri = 'otlp:127.0.0.1:55439'
+  AND buffered_rows = 0 AND buffered_bytes = 0 AND seals_total = 0
+  AND last_seal_age_ms IS NULL AND seal_last_error IS NULL;
+----
+1
+
+# flushing a server with nothing buffered seals zero rows, no error
+query TI
+SELECT status, sealed_rows FROM otlp_flush('otlp:127.0.0.1:55439');
+----
+sealed	0
+
+# flushing an unknown server reports not found
+query T
+SELECT status FROM otlp_flush('otlp:127.0.0.1:59999');
+----
+No server found listening on otlp:127.0.0.1:59999
+
 query T
 SELECT status FROM otlp_stop('otlp:127.0.0.1:55439');
 ----

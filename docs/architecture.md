@@ -11,7 +11,7 @@ The DuckDB OTLP extension is a **table-function extension** that exposes strongl
 The extension provides:
 - Table functions: `read_otlp_traces`, `read_otlp_logs`
 - Metrics functions: `read_otlp_metrics_gauge`, `read_otlp_metrics_sum`
-- Live ingest functions: `otlp_serve`, `otlp_stop`, `otlp_server_list` (native builds only) — see [OTLP HTTP Ingest Server](#otlp-http-ingest-server)
+- Live ingest functions: `otlp_serve`, `otlp_flush`, `otlp_stop`, `otlp_server_list` (native builds only) — see [OTLP HTTP Ingest Server](#otlp-http-ingest-server)
 
 ## How It Works
 
@@ -83,18 +83,20 @@ DuckDB emits DataChunks with strongly-typed columns
 
 ## OTLP HTTP Ingest Server
 
-Alongside the file readers, the extension can run an embedded HTTP server that accepts live OTLP/HTTP exports and appends them into DuckDB tables. It is registered as a **storage extension** so the running servers are owned by the database and torn down with it. See the [Serve Reference](reference/serve.md) for the user-facing surface.
+Alongside the file readers, the extension can run an embedded HTTP server that accepts live OTLP/HTTP exports and streams them into a DuckDB catalog — most usefully an attached **DuckLake** lakehouse (Parquet + catalog), or the connection's default in-memory/file catalog. It is registered as a **storage extension** so the running servers are owned by the database and torn down with it. See the [Serve Reference](reference/serve.md) for the user-facing surface.
 
 > Not available in WASM builds. Live ingestion is HTTP-only (no gRPC).
+
+Ingest is **buffered and group-committed** ("sealed"), not per-request. Worker threads validate, convert, and append rows into an in-memory buffer (returning `202`); a single background sealer thread group-commits the buffer to the target in one transaction. This is what makes the DuckLake path viable: one Parquet data file per signal per seal (instead of per request), and a single serialized writer that avoids DuckLake's optimistic-concurrency retries.
 
 ### Components
 
 | Component | Location | Role |
 |-----------|----------|------|
-| `OtlpServer` | `src/otlp_server.cpp` / `src/include/otlp_server.hpp` | Base server: token validation/auth, content-type → format selection, per-request transactions, and Arrow → DuckDB appends into the target tables. |
+| `OtlpServer` | `src/otlp_server.cpp` / `src/include/otlp_server.hpp` | Base server: token validation/auth, content-type → format selection, Arrow → DuckDB conversion, the in-memory buffer, and the background sealer that group-commits into the target catalog. |
 | `HttpOtlpServer` | `src/otlp_server.cpp` | `OtlpServer` subclass wrapping httplib. Owns the worker pool and the `/v1/logs`, `/v1/traces`, `/v1/metrics`, and `/healthz` routes; binds the socket synchronously so bind failures surface to the caller. |
-| `OtlpStorageExtensionInfo` | `src/include/otlp_storage.hpp` | Database-scoped registry of running servers (keyed by listen URI). Backs `CreateServer` / `StopServer` / `ListServers`, and stops every server when the database closes. |
-| Lifecycle functions | `src/otlp_start_stop.cpp` | The `otlp_serve`, `otlp_stop`, and `otlp_server_list` table functions that drive the registry. |
+| `OtlpStorageExtensionInfo` | `src/include/otlp_storage.hpp` | Database-scoped registry of running servers (keyed by listen URI). Backs `CreateServer` / `FlushServer` / `StopServer` / `ListServers`, and stops (sealing first) every server when the database closes. |
+| Lifecycle functions | `src/otlp_start_stop.cpp` | The `otlp_serve`, `otlp_flush`, `otlp_stop`, and `otlp_server_list` table functions that drive the registry. |
 
 ### Request flow
 
@@ -105,14 +107,27 @@ HttpOtlpServer route → CheckAuth (Bearer or x-api-key)
   ↓
 FormatFromContentType (json / ndjson / protobuf)
   ↓
-Worker-thread Connection: BEGIN → otlp_transform (FFI) → Appender → COMMIT
+Worker thread: otlp_transform (FFI) → convert → append to in-memory buffer (brief lock)
   ↓
-200 {"status":"ok","rows":N,"batches":M}   (rows are committed/durable)
+202 {"status":"buffered","rows":N,"batches":M}   (NOT yet durable)
+
+... asynchronously ...
+
+Sealer thread (trigger: seal_target_bytes / seal_max_age_ms / otlp_flush)
+  → one transaction → for DuckLake: one Parquet data file per signal + one snapshot → COMMIT
 ```
+
+### Seal model and durability
+
+A single background **sealer** thread group-commits the buffer to the target catalog when any trigger fires: buffered bytes reach `seal_target_bytes` (default 64 MiB), the oldest buffered row reaches `seal_max_age_ms` (default 5000 ms), or an explicit `otlp_flush`. Each seal is one transaction.
+
+- A `202` is **not durable**; rows become durable at the next seal (within `seal_max_age_ms`, or immediately on `otlp_flush`). A crash loses buffered-but-unsealed rows (at-most-once for that window).
+- Graceful `otlp_stop` / database close seals remaining rows first, so a clean shutdown loses nothing. (A durable raw-spool journal for at-least-once is a future enhancement, not implemented.)
+- `otlp_flush(uri, checkpoint := true)` seals synchronously and then runs DuckLake compaction (`ducklake_merge_adjacent_files` + `CHECKPOINT`) to merge the small per-seal Parquet files.
 
 ### Concurrency model
 
-Mirrors `duckdb-quack`: a 128-thread httplib pool, with one long-lived DuckDB `Connection` per worker thread (lazily created in `GetWorkerConnection`). Requests parse, convert, and append in parallel; only DuckDB's per-table append lock briefly serializes the commit. Each request is its own transaction, so a `/v1/metrics` POST — which fans out across all four metric-shape tables — commits or rolls back atomically. Backpressure today is bounded only by `max_body_bytes` and the pool / keep-alive caps; there is no `429`/`503` request-shedding yet (a tracked follow-up).
+Mirrors `duckdb-quack`'s worker pool but inverts the writer: a 128-thread httplib pool parses, converts, and buffers requests **concurrently** (the only shared state is the buffer, guarded by a brief lock), while a **single sealer thread is the only writer** to the target catalog. Serializing all writes through one thread is what lets a DuckLake target avoid tiny-file churn and optimistic-concurrency retries. **Backpressure:** when total buffered bytes exceed `max_buffered_bytes` (default 512 MiB), POSTs return `503` and clients should retry with backoff.
 
 ## Key Design Decisions
 
@@ -175,7 +190,7 @@ Python dependencies (via `uv`):
 
 ## Known Limitations
 
-- Live OTLP ingestion is supported over **HTTP** (`otlp_serve` / `otlp_stop` / `otlp_server_list`), not gRPC. See [OTLP HTTP Ingest Server](#otlp-http-ingest-server). Backpressure is currently bounded only by `max_body_bytes` and the worker-pool / keep-alive caps; there is no `429`/`503` request-shedding yet. The server is not available in WASM builds.
+- Live OTLP ingestion is supported over **HTTP** (`otlp_serve` / `otlp_flush` / `otlp_stop` / `otlp_server_list`), not gRPC. See [OTLP HTTP Ingest Server](#otlp-http-ingest-server). Ingest is buffered (a POST returns `202`) and only durable at the next seal; a crash loses buffered-but-unsealed rows (at-most-once). A durable raw-spool journal for at-least-once is a future enhancement. The server is not available in WASM builds.
 - **WASM builds support JSON format only**. Protobuf parsing is only available in native builds
 - Protobuf parsing requires linking against the protobuf runtime (available in native builds)
 - Histogram, exponential histogram, and summary metrics are not yet supported

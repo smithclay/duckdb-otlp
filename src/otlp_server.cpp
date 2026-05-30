@@ -1,6 +1,9 @@
 #include "otlp_server.hpp"
 
+#include "duckdb/common/allocator.hpp"
 #include "duckdb/common/types/blob.hpp"
+#include "duckdb/common/types/column/column_data_collection.hpp"
+#include "duckdb/common/types/column/column_data_scan_states.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/main/appender.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -10,6 +13,8 @@
 
 #include "otlp_arrow.hpp"
 #include "otlp_log.hpp"
+
+#include <chrono>
 
 #ifndef __EMSCRIPTEN__
 #include "httplib.hpp"
@@ -60,8 +65,13 @@ static string QuoteIdentifier(const string &identifier) {
 	return "\"" + StringUtil::Replace(identifier, "\"", "\"\"") + "\"";
 }
 
-static string QualifiedTable(const string &schema_name, const string &table_name) {
-	return QuoteIdentifier(schema_name) + "." + QuoteIdentifier(table_name);
+static string QualifiedTable(const string &catalog_name, const string &schema_name, const string &table_name) {
+	string qualified;
+	if (!catalog_name.empty()) {
+		qualified += QuoteIdentifier(catalog_name) + ".";
+	}
+	qualified += QuoteIdentifier(schema_name) + "." + QuoteIdentifier(table_name);
+	return qualified;
 }
 
 static void RunSQL(Connection &connection, const string &sql) {
@@ -161,38 +171,103 @@ static const char *TableNameForSignal(OtlpSignalType signal_type) {
 	throw InternalException("Unknown OTLP signal type");
 }
 
+//! Rough per-row byte estimate used only to drive the size-based seal trigger and the
+//! backpressure cap. Exactness doesn't matter; it just needs to be cheap and monotonic.
+static idx_t EstimateRowWidth(const vector<LogicalType> &types) {
+	idx_t width = 0;
+	for (auto &type : types) {
+		switch (type.InternalType()) {
+		case PhysicalType::VARCHAR:
+		case PhysicalType::LIST:
+		case PhysicalType::STRUCT:
+			width += 32; // variable-length: assume a small heap payload per row
+			break;
+		default:
+			width += GetTypeIdSize(type.InternalType());
+			break;
+		}
+	}
+	return width == 0 ? 1 : width;
+}
+
 } // namespace
+
+//! In-memory buffer for one OTLP signal table. All access is serialized by
+//! OtlpServer::buffer_mutex (workers Append; the sealer swaps the collection out).
+struct OtlpSignalBuffer {
+	OtlpSignalType signal_type;
+	string table_name;
+	vector<LogicalType> types;
+	idx_t row_width = 1;
+	unique_ptr<ColumnDataCollection> collection;
+};
 
 OtlpServer::OtlpServer(ClientContext &context, OtlpUri uri_p, OtlpServerConfig config_p)
     : db_ptr(context.db), uri(std::move(uri_p)), config(std::move(config_p)) {
 	ValidateToken(config.token);
-	if (!db_ptr.lock()) {
+	auto db = db_ptr.lock();
+	if (!db) {
 		throw InternalException("Database was closed");
 	}
 	EnsureTargetTables();
+	InitBuffers();
+	// One dedicated writer connection; the single sealer thread is the only thing
+	// that ever commits, so concurrent DuckLake writes never conflict.
+	writer_con = make_uniq<Connection>(*db);
+	writer_con->context->config.enable_progress_bar = false;
+	StartSealer();
 }
 
-Connection &OtlpServer::GetWorkerConnection() {
-	auto tid = std::this_thread::get_id();
-	std::lock_guard<std::mutex> lock(connections_mutex);
-	auto it = worker_connections.find(tid);
-	if (it != worker_connections.end()) {
-		return *it->second;
-	}
+void OtlpServer::InitBuffers() {
 	auto db = db_ptr.lock();
 	if (!db) {
-		throw IOException("Database was closed");
+		throw InternalException("Database was closed");
 	}
-	auto con = make_uniq<Connection>(*db);
-	con->context->config.enable_progress_bar = false;
-	auto &ref = *con;
-	// unordered_map keeps element pointers stable across rehash, so `ref` stays
-	// valid after the lock is released and other workers insert their own entries.
-	worker_connections.emplace(tid, std::move(con));
-	return ref;
+	auto &allocator = Allocator::Get(*db);
+	for (auto &target : TARGET_TABLES) {
+		ArrowSchema arrow_schema;
+		OtlpStatus status = otlp_get_schema(target.signal_type, &arrow_schema);
+		if (status != OTLP_OK) {
+			throw IOException("Failed to get OTLP schema: %s", otlp_status_message(status));
+		}
+		auto buf = make_uniq<OtlpSignalBuffer>();
+		buf->signal_type = target.signal_type;
+		buf->table_name = target.table_name;
+		try {
+			vector<string> names;
+			GetArrowSchemaColumns(arrow_schema, buf->types, names);
+		} catch (...) {
+			if (arrow_schema.release) {
+				arrow_schema.release(&arrow_schema);
+			}
+			throw;
+		}
+		if (arrow_schema.release) {
+			arrow_schema.release(&arrow_schema);
+		}
+		buf->row_width = EstimateRowWidth(buf->types);
+		buf->collection = make_uniq<ColumnDataCollection>(allocator, buf->types);
+		signal_buffers.push_back(std::move(buf));
+	}
+}
+
+void OtlpServer::StartSealer() {
+	sealer_thread = std::thread([this] { SealerLoop(); });
 }
 
 OtlpServer::~OtlpServer() {
+	ShutdownIngest();
+}
+
+int64_t OtlpServer::LastSealAgeMs() const {
+	auto last = last_seal_unix_ms.load();
+	if (last == 0) {
+		return -1;
+	}
+	auto now =
+	    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+	        .count();
+	return now >= last ? now - last : 0;
 }
 
 void OtlpServer::LogServerEvent(const string &message) const {
@@ -272,7 +347,7 @@ void OtlpServer::CreateOrValidateTable(Connection &con, OtlpSignalType signal_ty
 		vector<string> expected_names;
 		GetArrowSchemaColumns(arrow_schema, expected_types, expected_names);
 
-		auto qualified = QualifiedTable(config.schema_name, table_name);
+		auto qualified = QualifiedTable(config.catalog_name, config.schema_name, table_name);
 		if (config.create_tables) {
 			string sql = "CREATE TABLE IF NOT EXISTS " + qualified + " (";
 			for (idx_t i = 0; i < expected_names.size(); i++) {
@@ -329,108 +404,303 @@ OtlpIngestResult OtlpServer::Ingest(OtlpRequestKind kind, const string &content_
 	}
 	auto format = FormatFromContentType(content_type);
 
-	// Each worker thread owns its Connection, so concurrent requests run in
-	// parallel; this request's transaction is fully isolated and either commits
-	// all signals or rolls them all back.
-	auto &con = GetWorkerConnection();
-	OtlpIngestResult result;
-	RunSQL(con, "BEGIN TRANSACTION");
-	try {
-		TransformAndAppend(con, kind, body, format, result);
-		RunSQL(con, "COMMIT");
-		total_rows.fetch_add(result.rows);
-		return result;
-	} catch (...) {
-		try {
-			RunSQL(con, "ROLLBACK");
-		} catch (std::exception &rollback_ex) {
-			// The original ingest error is rethrown below; surface the rollback
-			// failure too so a wedged transaction state isn't lost silently.
-			LogServerEvent(StringUtil::Format("ingest rollback failed: %s", rollback_ex.what()));
-		}
-		throw;
+	// Backpressure: if the sealer can't keep up and buffered data exceeds the hard
+	// cap, shed load with 503 rather than grow memory unbounded.
+	if (buffered_bytes.load() >= config.max_buffered_bytes) {
+		throw OtlpHttpError(503, StringUtil::Format("ingest buffer full (%llu bytes); retry later",
+		                                            static_cast<uint64_t>(buffered_bytes.load())));
 	}
+
+	// Parse + convert (lock-free per worker), then buffer the rows. The single sealer
+	// thread group-commits buffered rows to the target catalog asynchronously, so this
+	// returns once the rows are accepted into the buffer (HTTP 202), not once durable.
+	OtlpIngestResult result;
+	TransformAndBuffer(kind, body, format, result);
+	total_rows.fetch_add(result.rows);
+	return result;
 }
 
-void OtlpServer::TransformAndAppend(Connection &con, OtlpRequestKind request_kind, const string &body,
-                                    OtlpInputFormat format, OtlpIngestResult &result) {
+void OtlpServer::TransformAndBuffer(OtlpRequestKind request_kind, const string &body, OtlpInputFormat format,
+                                    OtlpIngestResult &result) {
 	switch (request_kind) {
 	case OtlpRequestKind::LOGS:
-		AppendSignal(con, OTLP_SIGNAL_LOGS, TableNameForSignal(OTLP_SIGNAL_LOGS), body, format, result);
+		BufferSignal(OTLP_SIGNAL_LOGS, body, format, result);
 		break;
 	case OtlpRequestKind::TRACES:
-		AppendSignal(con, OTLP_SIGNAL_TRACES, TableNameForSignal(OTLP_SIGNAL_TRACES), body, format, result);
+		BufferSignal(OTLP_SIGNAL_TRACES, body, format, result);
 		break;
 	case OtlpRequestKind::METRICS:
 		// TODO(perf): this re-parses `body` once per metric shape (4x). Collapsing to
 		// a single parse requires an otlp2records FFI change that fans one parse out
-		// to all present shapes; tracked as a follow-up (see AGENTS.md Known
-		// Limitations). Kept as 4 calls for now to stay on the stable single-signal FFI.
-		AppendSignal(con, OTLP_SIGNAL_METRICS_GAUGE, TableNameForSignal(OTLP_SIGNAL_METRICS_GAUGE), body, format,
-		             result);
-		AppendSignal(con, OTLP_SIGNAL_METRICS_SUM, TableNameForSignal(OTLP_SIGNAL_METRICS_SUM), body, format, result);
-		AppendSignal(con, OTLP_SIGNAL_METRICS_HISTOGRAM, TableNameForSignal(OTLP_SIGNAL_METRICS_HISTOGRAM), body,
-		             format, result);
-		AppendSignal(con, OTLP_SIGNAL_METRICS_EXP_HISTOGRAM, TableNameForSignal(OTLP_SIGNAL_METRICS_EXP_HISTOGRAM),
-		             body, format, result);
+		// to all present shapes; tracked as a follow-up (see AGENTS.md Known Limitations).
+		BufferSignal(OTLP_SIGNAL_METRICS_GAUGE, body, format, result);
+		BufferSignal(OTLP_SIGNAL_METRICS_SUM, body, format, result);
+		BufferSignal(OTLP_SIGNAL_METRICS_HISTOGRAM, body, format, result);
+		BufferSignal(OTLP_SIGNAL_METRICS_EXP_HISTOGRAM, body, format, result);
 		break;
 	default:
 		throw InternalException("Unknown OTLP request kind");
 	}
 }
 
-void OtlpServer::AppendSignal(Connection &con, OtlpSignalType signal_type, const string &table_name, const string &body,
-                              OtlpInputFormat format, OtlpIngestResult &result) {
+OtlpSignalBuffer &OtlpServer::BufferFor(OtlpSignalType signal_type) {
+	for (auto &buf : signal_buffers) {
+		if (buf->signal_type == signal_type) {
+			return *buf;
+		}
+	}
+	throw InternalException("No OTLP buffer for signal type");
+}
+
+void OtlpServer::BufferSignal(OtlpSignalType signal_type, const string &body, OtlpInputFormat format,
+                              OtlpIngestResult &result) {
+	auto &buf = BufferFor(signal_type);
 	ArrowArray array;
 	ArrowSchema schema;
 	OtlpStatus status = otlp_transform(signal_type, format, reinterpret_cast<const uint8_t *>(body.data()), body.size(),
 	                                   &array, &schema);
 	if (status != OTLP_OK) {
 		throw OtlpHttpError(
-		    400, StringUtil::Format("OTLP parse failed for %s: %s", table_name, otlp_status_message(status)));
+		    400, StringUtil::Format("OTLP parse failed for %s: %s", buf.table_name, otlp_status_message(status)));
 	}
 
-	try {
-		AppendArrowBatch(con, table_name, array, schema, result);
-	} catch (...) {
+	auto release = [&]() {
 		if (array.release) {
 			array.release(&array);
 		}
 		if (schema.release) {
 			schema.release(&schema);
 		}
+	};
+	try {
+		if (array.length > 0) {
+			DataChunk chunk;
+			auto db = db_ptr.lock();
+			if (!db) {
+				throw IOException("Database was closed");
+			}
+			chunk.Initialize(Allocator::Get(*db), buf.types, APPEND_CHUNK_SIZE);
+			for (idx_t offset = 0; offset < static_cast<idx_t>(array.length); offset += APPEND_CHUNK_SIZE) {
+				auto count = MinValue<idx_t>(APPEND_CHUNK_SIZE, static_cast<idx_t>(array.length) - offset);
+				chunk.Reset();
+				CopyArrowStructToDataChunk(array, schema, chunk, offset, count);
+				BufferAppend(buf, chunk);
+				result.rows += count;
+				result.batches++;
+			}
+		}
+	} catch (...) {
+		release();
 		throw;
 	}
-	if (array.release) {
-		array.release(&array);
+	release();
+}
+
+void OtlpServer::BufferAppend(OtlpSignalBuffer &buf, DataChunk &chunk) {
+	auto rows = chunk.size();
+	if (rows == 0) {
+		return;
 	}
-	if (schema.release) {
-		schema.release(&schema);
+	bool size_trigger = false;
+	{
+		std::lock_guard<std::mutex> lock(buffer_mutex);
+		buf.collection->Append(chunk);
+		if (!have_unsealed) {
+			have_unsealed = true;
+			first_unsealed = std::chrono::steady_clock::now();
+		}
+		auto added = rows * buf.row_width;
+		buffered_rows.fetch_add(rows);
+		auto total = buffered_bytes.fetch_add(added) + added;
+		// Cheap running estimate drives the trigger; the exact COPY size is whatever
+		// the buffered chunks hold at seal time.
+		size_trigger = total >= config.seal_target_bytes;
+	}
+	if (size_trigger) {
+		RequestSeal();
 	}
 }
 
-void OtlpServer::AppendArrowBatch(Connection &con, const string &table_name, const ArrowArray &array,
-                                  const ArrowSchema &schema, OtlpIngestResult &result) {
-	if (array.length <= 0) {
-		return;
+void OtlpServer::RequestSeal() {
+	flush_requested.store(true);
+	sealer_cv.notify_one();
+}
+
+static int64_t NowUnixMs() {
+	return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+	    .count();
+}
+
+OtlpIngestResult OtlpServer::SealOnce(bool run_checkpoint) {
+	std::lock_guard<std::mutex> writer_lock(writer_mutex);
+	auto db = db_ptr.lock();
+	if (!db) {
+		return OtlpIngestResult {}; // database closed; nothing we can durably write
+	}
+	auto &allocator = Allocator::Get(*db);
+
+	// Swap each buffer out for a fresh empty collection so workers keep filling during
+	// the (potentially slow) COPY. The moved-out collections are owned solely here.
+	std::vector<unique_ptr<ColumnDataCollection>> sealing;
+	{
+		std::lock_guard<std::mutex> lock(buffer_mutex);
+		sealing.reserve(signal_buffers.size());
+		for (auto &buf : signal_buffers) {
+			sealing.push_back(std::move(buf->collection));
+			buf->collection = make_uniq<ColumnDataCollection>(allocator, buf->types);
+		}
+		buffered_rows.store(0);
+		buffered_bytes.store(0);
+		have_unsealed = false;
 	}
 
-	vector<LogicalType> types;
-	vector<string> names;
-	GetArrowSchemaColumns(schema, types, names);
-	DataChunk chunk;
-	chunk.Initialize(Allocator::Get(*con.context), types, APPEND_CHUNK_SIZE);
-	Appender appender(con, config.schema_name, table_name);
-
-	for (idx_t offset = 0; offset < static_cast<idx_t>(array.length); offset += APPEND_CHUNK_SIZE) {
-		auto count = MinValue<idx_t>(APPEND_CHUNK_SIZE, static_cast<idx_t>(array.length) - offset);
-		chunk.Reset();
-		CopyArrowStructToDataChunk(array, schema, chunk, offset, count);
-		appender.AppendDataChunk(chunk);
-		result.rows += count;
-		result.batches++;
+	idx_t total = 0;
+	for (auto &c : sealing) {
+		total += c->Count();
 	}
-	appender.Close();
+	OtlpIngestResult result;
+	if (total == 0) {
+		last_seal_unix_ms.store(NowUnixMs());
+		return result;
+	}
+
+	try {
+		RunSQL(*writer_con, "BEGIN TRANSACTION");
+		for (idx_t i = 0; i < signal_buffers.size(); i++) {
+			auto &collection = *sealing[i];
+			if (collection.Count() == 0) {
+				continue;
+			}
+			auto &buf = *signal_buffers[i];
+			auto appender =
+			    config.catalog_name.empty()
+			        ? make_uniq<Appender>(*writer_con, config.schema_name, buf.table_name)
+			        : make_uniq<Appender>(*writer_con, config.catalog_name, config.schema_name, buf.table_name);
+			ColumnDataScanState scan;
+			collection.InitializeScan(scan);
+			DataChunk chunk;
+			collection.InitializeScanChunk(chunk);
+			while (collection.Scan(scan, chunk)) {
+				appender->AppendDataChunk(chunk);
+				result.batches++;
+			}
+			appender->Close();
+			result.rows += collection.Count();
+		}
+		RunSQL(*writer_con, "COMMIT");
+	} catch (std::exception &ex) {
+		try {
+			RunSQL(*writer_con, "ROLLBACK");
+		} catch (...) {
+		}
+		// Restore the un-sealed rows ahead of whatever workers buffered during the COPY,
+		// so nothing is lost and order is preserved. Only the old (swapped-out) rows are
+		// re-counted; the live rows were already counted as they were appended.
+		{
+			std::lock_guard<std::mutex> lock(buffer_mutex);
+			for (idx_t i = 0; i < signal_buffers.size(); i++) {
+				auto old_count = sealing[i]->Count();
+				if (old_count == 0) {
+					continue;
+				}
+				sealing[i]->Combine(*signal_buffers[i]->collection); // old rows, then live rows
+				signal_buffers[i]->collection = std::move(sealing[i]);
+				buffered_rows.fetch_add(old_count);
+				buffered_bytes.fetch_add(old_count * signal_buffers[i]->row_width);
+			}
+			if (buffered_rows.load() > 0 && !have_unsealed) {
+				have_unsealed = true;
+				first_unsealed = std::chrono::steady_clock::now();
+			}
+		}
+		{
+			std::lock_guard<std::mutex> elock(seal_error_mutex);
+			seal_last_error = ex.what();
+		}
+		LogServerEvent(StringUtil::Format("seal failed: %s", ex.what()));
+		throw;
+	}
+
+	seals_total.fetch_add(1);
+	last_seal_unix_ms.store(NowUnixMs());
+	{
+		std::lock_guard<std::mutex> elock(seal_error_mutex);
+		seal_last_error.clear();
+	}
+	LogServerEvent(StringUtil::Format("seal: catalog=%s rows=%llu batches=%llu", config.catalog_name,
+	                                  static_cast<uint64_t>(result.rows), static_cast<uint64_t>(result.batches)));
+
+	if (run_checkpoint && !config.catalog_name.empty()) {
+		// Compaction runs after the durable COMMIT, so a failure here can't lose data.
+		try {
+			RunSQL(*writer_con,
+			       "CALL ducklake_merge_adjacent_files('" + StringUtil::Replace(config.catalog_name, "'", "''") + "')");
+			RunSQL(*writer_con, "CHECKPOINT " + QuoteIdentifier(config.catalog_name));
+		} catch (std::exception &ex) {
+			LogServerEvent(StringUtil::Format("checkpoint failed (rows already committed): %s", ex.what()));
+		}
+	}
+	return result;
+}
+
+void OtlpServer::SealerLoop() {
+	while (!sealer_stop.load()) {
+		{
+			std::unique_lock<std::mutex> lock(sealer_mutex);
+			sealer_cv.wait_for(lock, std::chrono::milliseconds(1000),
+			                   [this] { return sealer_stop.load() || flush_requested.load(); });
+		}
+		if (sealer_stop.load()) {
+			break;
+		}
+		bool due = flush_requested.exchange(false);
+		if (!due) {
+			std::lock_guard<std::mutex> lock(buffer_mutex);
+			if (have_unsealed) {
+				auto age = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
+				                                                                 first_unsealed)
+				               .count();
+				due = age >= config.seal_max_age_ms;
+			}
+		}
+		if (due) {
+			try {
+				SealOnce(false);
+			} catch (std::exception &) {
+				// Already logged + buffers restored; back off before the next attempt.
+				std::this_thread::sleep_for(std::chrono::milliseconds(250));
+			}
+		}
+	}
+}
+
+OtlpIngestResult OtlpServer::FlushNow(bool run_checkpoint) {
+	return SealOnce(run_checkpoint);
+}
+
+void OtlpServer::ShutdownIngest() {
+	if (ingest_shutdown_done.exchange(true)) {
+		return; // idempotent: Close() and ~OtlpServer() may both call this
+	}
+	sealer_stop.store(true);
+	sealer_cv.notify_all();
+	if (sealer_thread.joinable()) {
+		sealer_thread.join();
+	}
+	// Workers are already joined by the time Close() calls this, so a bounded retry of
+	// the final drain catches everything still buffered (a graceful stop loses nothing).
+	for (int attempt = 0; attempt < 3 && buffered_rows.load() > 0; attempt++) {
+		try {
+			SealOnce(false);
+		} catch (std::exception &ex) {
+			LogServerEvent(StringUtil::Format("final seal attempt failed: %s", ex.what()));
+		}
+	}
+	if (buffered_rows.load() > 0) {
+		LogServerEvent(
+		    StringUtil::Format("dropping %llu buffered rows on shutdown", static_cast<uint64_t>(buffered_rows.load())));
+	}
+	writer_con.reset();
 }
 
 #ifndef __EMSCRIPTEN__
@@ -454,9 +724,9 @@ HttpOtlpServer::HttpOtlpServer(ClientContext &context, const OtlpUri &uri_p, con
 	impl->server = make_uniq<duckdb_httplib::Server>();
 	// Wide worker pool (mirrors duckdb-quack): each keep-alive connection holds a
 	// worker thread for its lifetime, so we need enough threads to serve many
-	// concurrent exporters at once. Each worker uses its own DuckDB Connection
-	// (see OtlpServer::GetWorkerConnection), so requests parse/append in parallel
-	// and only DuckDB's per-table append lock briefly serializes the commit.
+	// concurrent exporters at once. Workers only parse/convert and buffer rows in
+	// memory (lock-free apart from a brief buffer append); a single background sealer
+	// group-commits the buffer, so concurrent exporters never contend on the writer.
 	impl->server->new_task_queue = [] {
 		return new duckdb_httplib::ThreadPool(128);
 	};
@@ -489,8 +759,10 @@ HttpOtlpServer::HttpOtlpServer(ClientContext &context, const OtlpUri &uri_p, con
 				} else {
 					auto result = Ingest(kind, req.get_header_value("Content-Type"),
 					                     req.get_header_value("Content-Encoding"), req.body);
-					SetJson(res, 200,
-					        StringUtil::Format("{\"status\":\"ok\",\"rows\":%llu,\"batches\":%llu}",
+					// 202 Accepted: rows are validated + buffered, and will be sealed
+					// (committed) within seal_max_age. They are NOT yet durable.
+					SetJson(res, 202,
+					        StringUtil::Format("{\"status\":\"buffered\",\"rows\":%llu,\"batches\":%llu}",
 					                           static_cast<uint64_t>(result.rows),
 					                           static_cast<uint64_t>(result.batches)));
 				}
@@ -547,6 +819,10 @@ void HttpOtlpServer::Close() {
 			thread.join();
 		}
 	}
+	// Workers are now joined: stop the sealer and drain the remaining buffer before
+	// the writer connection / database go away. Safe here (controlling thread, not a
+	// worker); idempotent with the ~OtlpServer() safety-net call.
+	ShutdownIngest();
 }
 
 HttpOtlpServer::~HttpOtlpServer() {

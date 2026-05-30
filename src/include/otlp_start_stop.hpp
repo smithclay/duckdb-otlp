@@ -19,4 +19,9 @@ public:
 	static TableFunction GetFunction();
 };
 
+class OtlpFlushFunction {
+public:
+	static TableFunction GetFunction();
+};
+
 } // namespace duckdb

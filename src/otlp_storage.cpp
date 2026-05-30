@@ -24,7 +24,7 @@ OtlpStorageExtensionInfo &OtlpStorageExtensionInfo::GetState(const DatabaseInsta
 }
 
 OtlpServer &OtlpStorageExtensionInfo::CreateServer(ClientContext &context, const OtlpUri &listen_uri,
-                                                   OtlpServerConfig config) {
+                                                   const OtlpServerConfig &config) {
 #ifdef __EMSCRIPTEN__
 	throw NotImplementedException("otlp_serve is not implemented for the wasm platform");
 #else
@@ -34,7 +34,7 @@ OtlpServer &OtlpStorageExtensionInfo::CreateServer(ClientContext &context, const
 	if (it != servers.end()) {
 		throw InvalidInputException("OTLP server already exists for %s", key);
 	}
-	auto server = make_uniq<HttpOtlpServer>(context, listen_uri, std::move(config));
+	auto server = make_uniq<HttpOtlpServer>(context, listen_uri, config);
 	auto &server_ref = *server;
 	servers.emplace(key, std::move(server));
 	return server_ref;
@@ -56,6 +56,27 @@ bool OtlpStorageExtensionInfo::StopServer(ClientContext &context, const OtlpUri 
 	to_destroy->StopAccepting();
 	to_destroy.reset();
 	return true;
+}
+
+OtlpStorageExtensionInfo::FlushResult OtlpStorageExtensionInfo::FlushServer(const OtlpUri &listen_uri,
+                                                                            bool run_checkpoint) {
+	// Hold servers_mutex across the flush so StopServer can't free the server mid-seal.
+	// A slow seal briefly blocks concurrent otlp_serve/otlp_stop/otlp_flush calls.
+	std::lock_guard<std::mutex> lock(servers_mutex);
+	FlushResult result;
+	auto it = servers.find(listen_uri.CanonicalUri());
+	if (it == servers.end()) {
+		return result;
+	}
+	result.found = true;
+	auto &server = *it->second;
+	try {
+		result.sealed_rows = server.FlushNow(run_checkpoint).rows;
+	} catch (std::exception &ex) {
+		result.error = ex.what();
+	}
+	result.seals_total = server.SealsTotal();
+	return result;
 }
 
 void OtlpStorageExtensionInfo::StopAllServers() {
@@ -86,12 +107,18 @@ vector<OtlpStorageExtensionInfo::ServerSnapshot> OtlpStorageExtensionInfo::ListS
 		snap.listen_url = uri.Http();
 		snap.host = uri.Host();
 		snap.port = uri.Port();
+		snap.catalog_name = server.CatalogName();
 		snap.schema_name = server.SchemaName();
 		snap.active_requests = server.ActiveRequests();
 		snap.total_requests = server.TotalRequests();
 		snap.total_rows = server.TotalRows();
 		snap.is_listening = server.IsListening();
 		snap.last_error = server.LastError();
+		snap.buffered_rows = server.BufferedRows();
+		snap.buffered_bytes = server.BufferedBytes();
+		snap.last_seal_age_ms = server.LastSealAgeMs();
+		snap.seals_total = server.SealsTotal();
+		snap.seal_last_error = server.SealLastError();
 		result.push_back(std::move(snap));
 	}
 	// servers is an unordered_map; sort for deterministic output order.

@@ -25,6 +25,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(OtlpServeFunction::GetFunction());
 	loader.RegisterFunction(OtlpStopFunction::GetFunction());
 	loader.RegisterFunction(OtlpServerListFunction::GetFunction());
+	loader.RegisterFunction(OtlpFlushFunction::GetFunction());
 	loader.RegisterFunction(OtlpUriParserFunction::GetFunction());
 
 	loader.GetDatabaseInstance().GetLogManager().RegisterLogType(make_uniq<OtlpLogType>());
