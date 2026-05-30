@@ -107,7 +107,7 @@ HttpOtlpServer route → CheckAuth (Bearer or x-api-key)
   ↓
 FormatFromContentType (json / ndjson / protobuf)
   ↓
-Worker thread: otlp_transform (FFI) → convert → append to in-memory buffer (brief lock)
+Worker thread: reserve admission bytes -> otlp_transform (FFI) -> convert -> append to per-signal buffer
   ↓
 202 {"status":"buffered","rows":N,"batches":M}   (NOT yet durable)
 
@@ -127,7 +127,7 @@ A single background **sealer** thread group-commits the buffer to the target cat
 
 ### Concurrency model
 
-Mirrors `duckdb-quack`'s worker pool but inverts the writer: a 128-thread httplib pool parses, converts, and buffers requests **concurrently** (the only shared state is the buffer, guarded by a brief lock), while a **single sealer thread is the only writer** to the target catalog. Serializing all writes through one thread is what lets a DuckLake target avoid tiny-file churn and optimistic-concurrency retries. **Backpressure:** when total buffered bytes exceed `max_buffered_bytes` (default 512 MiB), POSTs return `503` and clients should retry with backoff.
+Mirrors `duckdb-quack`'s worker pool but inverts the writer: a 128-thread httplib pool parses, converts, and buffers requests **concurrently** (each signal table has its own buffer lock), while a **single sealer thread is the only writer** to the target catalog. Serializing all writes through one thread is what lets a DuckLake target avoid tiny-file churn and optimistic-concurrency retries. **Backpressure:** if request admission would exceed `max_buffered_bytes` (default 512 MiB) across in-flight and unsealed accepted payloads, POSTs return `503` before parse/transform work and clients should retry with backoff.
 
 ## Key Design Decisions
 

@@ -6,9 +6,9 @@
 # Coverage note: SQLLogicTest cannot issue HTTP POSTs, so this file covers only
 # the lifecycle/bind surface (serve/list/stop, validation, hostname gating,
 # schema/column validation, the is_listening/last_error columns). The ingest hot
-# path — auth (Bearer/x-api-key), content-type -> format, gzip rejection, 413,
-# the 4-signal metrics fan-out, per-request transaction atomicity, and Arrow ->
-# DuckDB conversion under concurrency — is exercised end-to-end by
+# path -- auth (Bearer/x-api-key), content-type/encoding errors, 413, concurrent
+# 503 backpressure, metrics fan-out, stop-under-load, flush/stop races, and
+# Arrow -> DuckDB conversion under concurrency -- is exercised end-to-end by
 # test/manual/otlp_serve_concurrency.py (run manually, ideally under TSan/ASan).
 
 require otlp

@@ -49,8 +49,8 @@ public:
 		idx_t seals_total = 0;
 		string error;
 	};
-	//! Force a synchronous seal of a registered server's buffer. Holds servers_mutex
-	//! for the duration so the server cannot be destroyed mid-flush.
+	//! Force a synchronous seal of a registered server's buffer. Takes a shared_ptr
+	//! under servers_mutex, then releases the registry lock while the seal runs.
 	FlushResult FlushServer(const OtlpUri &listen_uri, bool run_checkpoint);
 
 private:

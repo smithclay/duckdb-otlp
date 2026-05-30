@@ -220,7 +220,7 @@ Errors return JSON shaped like `{"error":"<reason>","message":"<detail>"}`:
 | `401` | Missing or invalid auth token. |
 | `413` | Body larger than `max_body_bytes`. |
 | `415` | Unsupported `Content-Type` or `Content-Encoding`. |
-| `503` | Buffer full (total buffered bytes exceed `max_buffered_bytes`). Retry with backoff. |
+| `503` | Buffer admission full (request would exceed `max_buffered_bytes`). Retry with backoff. |
 | `500` | Internal error (also written to `duckdb_logs`). |
 
 ## Durability and the seal model
@@ -229,7 +229,7 @@ Ingest is **buffered and group-committed** for every target (default catalog and
 
 **The flow:**
 
-1. A POST parses, converts, and appends rows into an in-memory buffer, then returns `202`. The 128-thread worker pool does this concurrently; the buffer append takes a brief lock.
+1. A POST reserves admission bytes, parses, converts, and appends rows into the relevant per-signal in-memory buffer, then returns `202`. The 128-thread worker pool does this concurrently; append locks only the target signal buffer.
 2. A single background **sealer** thread group-commits the buffer to the target in **one transaction** when any trigger fires:
    - buffered bytes reach `seal_target_bytes` (default 64 MiB), or
    - the oldest buffered row reaches `seal_max_age_ms` (default 5000 ms), or
@@ -244,13 +244,13 @@ Ingest is **buffered and group-committed** for every target (default catalog and
 
 > A durable raw-spool journal for at-least-once delivery is a documented future enhancement, not yet implemented.
 
-**Backpressure:** if total buffered bytes exceed `max_buffered_bytes` (default 512 MiB), POSTs return `503`. Clients should retry with backoff.
+**Backpressure:** if admitting a request would exceed `max_buffered_bytes` (default 512 MiB) across in-flight and unsealed accepted payloads, the POST returns `503` before parse/transform work. Clients should retry with backoff.
 
 **Keeping DuckLake tidy:** each seal leaves a small Parquet file per signal. Run `otlp_flush(uri, checkpoint := true)` periodically to merge them (`ducklake_merge_adjacent_files` + `CHECKPOINT`). Compaction is off unless you ask for it.
 
 ## Concurrency model
 
-- The server runs a 128-thread httplib worker pool. Workers parse, convert, and buffer requests concurrently; the only shared state is the buffer, guarded by a brief lock.
+- The server runs a 128-thread httplib worker pool. Workers parse, convert, and buffer requests concurrently; each signal table has its own buffer lock.
 - A single **sealer** thread is the only writer to the target catalog. Serializing writes is what lets DuckLake (which uses optimistic concurrency) avoid conflict retries and tiny-file churn.
 
 ## Verifying ingest under load
@@ -269,7 +269,7 @@ OTLP_DUCKLAKE_DIR=/tmp/otlp_lake \
     uv run python test/manual/otlp_serve_concurrency.py
 ```
 
-It fires N concurrent POSTs of a real OTLP payload, then reconciles `total_requests` / `total_rows` from `otlp_server_list()` against the committed row counts. Run it against a TSan/ASan build to catch races.
+It covers auth and validation errors, low-buffer backpressure, metrics fanout, stop-under-load, and concurrent flush/stop, then reconciles accepted rows against committed row counts. Run it against a TSan/ASan build to catch races.
 
 ## See also
 

@@ -52,10 +52,10 @@ bool OtlpStorageExtensionInfo::StopServer(ClientContext &context, const OtlpUri 
 		to_destroy = std::move(it->second);
 		servers.erase(it);
 	}
-	// Synchronously free the listening port so the URI can be reused immediately. The
-	// object itself is destroyed when the last shared_ptr drops (which may be a
-	// concurrent otlp_flush rather than this reset()).
-	to_destroy->StopAccepting();
+	// Synchronously stop listeners/workers and drain the final seal before returning.
+	// A concurrent otlp_flush may still hold another shared_ptr; Close() is idempotent
+	// and serializes with it through the server's writer mutex.
+	to_destroy->Close();
 	to_destroy.reset();
 	return true;
 }
@@ -99,7 +99,7 @@ void OtlpStorageExtensionInfo::StopAllServers() {
 		servers.clear();
 	}
 	for (auto &server : to_destroy) {
-		server->StopAccepting();
+		server->Close();
 	}
 	to_destroy.clear();
 }

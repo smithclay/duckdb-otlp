@@ -8,7 +8,7 @@ EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
 # FFI functions that need to be exported for WASM Rust backend
-OTLP_FFI_EXPORTS := _otlp_parser_create,_otlp_parser_destroy,_otlp_parser_push,_otlp_parser_drain,_otlp_parser_last_error,_otlp_get_schema
+OTLP_FFI_EXPORTS := _otlp_parser_create,_otlp_parser_destroy,_otlp_parser_push,_otlp_parser_drain,_otlp_parser_last_error,_otlp_get_schema,_otlp_transform_metrics_all
 
 # =============================================================================
 # WASM Build Overrides

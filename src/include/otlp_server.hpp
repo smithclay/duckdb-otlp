@@ -96,12 +96,8 @@ public:
 	idx_t TotalRows() const {
 		return total_rows.load();
 	}
-	idx_t BufferedRows() const {
-		return buffered_rows.load();
-	}
-	idx_t BufferedBytes() const {
-		return buffered_bytes.load();
-	}
+	idx_t BufferedRows() const;
+	idx_t BufferedBytes() const;
 	idx_t SealsTotal() const {
 		return seals_total.load();
 	}
@@ -142,10 +138,17 @@ protected:
 private:
 	// --- request path (runs on httplib worker threads; buffers, never commits) ---
 	void TransformAndBuffer(OtlpRequestKind request_kind, const string &body, OtlpInputFormat format,
-	                        OtlpIngestResult &result);
-	void BufferSignal(OtlpSignalType signal_type, const string &body, OtlpInputFormat format, OtlpIngestResult &result);
-	void BufferAppend(OtlpSignalBuffer &buf, DataChunk &chunk);
+	                        OtlpIngestResult &result, idx_t &admission_bytes);
+	void BufferSignal(OtlpSignalType signal_type, const string &body, OtlpInputFormat format, OtlpIngestResult &result,
+	                  idx_t &admission_bytes);
+	void BufferMetrics(const string &body, OtlpInputFormat format, OtlpIngestResult &result, idx_t &admission_bytes);
+	void AppendArrowBatch(OtlpSignalBuffer &buf, ArrowArray &array, ArrowSchema &schema, OtlpIngestResult &result,
+	                      idx_t &admission_bytes);
+	void BufferAppend(OtlpSignalBuffer &buf, DataChunk &chunk, idx_t &admission_bytes);
 	OtlpSignalBuffer &BufferFor(OtlpSignalType signal_type);
+	idx_t AdmissionReservationBytes(idx_t body_size) const;
+	bool TryReserveAdmission(idx_t bytes, idx_t &current);
+	void ReleaseAdmission(idx_t bytes);
 
 	// --- seal path (single writer) ---
 	void InitBuffers();
@@ -153,6 +156,7 @@ private:
 	void SealerLoop();
 	OtlpIngestResult SealOnce(bool run_checkpoint);
 	void RequestSeal();
+	bool SealAgeDue() const;
 
 	void CreateOrValidateTable(Connection &con, OtlpSignalType signal_type, const string &table_name);
 
@@ -161,14 +165,13 @@ private:
 	OtlpUri uri;
 	OtlpServerConfig config;
 
-	// Per-signal in-memory buffers. Guarded by buffer_mutex for all structural access;
-	// a worker only briefly locks to Append a converted chunk.
-	mutex buffer_mutex;
+	// Per-signal in-memory buffers. The vector is immutable after InitBuffers();
+	// each OtlpSignalBuffer carries its own mutex and mutable counters.
 	std::vector<unique_ptr<OtlpSignalBuffer>> signal_buffers;
-	std::atomic<idx_t> buffered_rows {0};
-	std::atomic<idx_t> buffered_bytes {0};
-	bool have_unsealed = false;                           //! guarded by buffer_mutex
-	std::chrono::steady_clock::time_point first_unsealed; //! guarded by buffer_mutex
+	//! Payload-byte admission counter for in-flight and unsealed accepted requests.
+	//! This enforces max_buffered_bytes under concurrency; row-width estimates below
+	//! remain only for operator visibility and seal-size triggers.
+	std::atomic<idx_t> admitted_bytes {0};
 
 	// Single serialized writer + background sealer. writer_mutex serializes SealOnce
 	// (sealer thread) against FlushNow (otlp_flush) and the final drain on shutdown.

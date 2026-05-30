@@ -193,15 +193,20 @@ static idx_t EstimateRowWidth(const vector<LogicalType> &types) {
 } // namespace
 
 //! In-memory buffer for one OTLP signal table. The metadata fields are immutable
-//! after construction (so workers may read `types` lock-free); only `collection` is
-//! mutable and is guarded by OtlpServer::buffer_mutex (workers Append; the sealer
-//! swaps it out).
+//! after construction (so workers may read `types` lock-free); mutable rows live
+//! behind this signal's own mutex so independent signals don't contend on append.
 struct OtlpSignalBuffer {
 	const OtlpSignalType signal_type;
 	const string table_name;
 	const vector<LogicalType> types;
 	const idx_t row_width;
+	std::mutex mutex;
 	unique_ptr<ColumnDataCollection> collection;
+	idx_t buffered_rows = 0;
+	idx_t buffered_bytes = 0;
+	idx_t admission_bytes = 0;
+	bool have_unsealed = false;
+	std::chrono::steady_clock::time_point first_unsealed;
 
 	OtlpSignalBuffer(OtlpSignalType signal_type_p, string table_name_p, vector<LogicalType> types_p, idx_t row_width_p,
 	                 unique_ptr<ColumnDataCollection> collection_p)
@@ -277,6 +282,24 @@ int64_t OtlpServer::LastSealAgeMs() const {
 	return now >= last ? now - last : 0;
 }
 
+idx_t OtlpServer::BufferedRows() const {
+	idx_t rows = 0;
+	for (auto &buf : signal_buffers) {
+		std::lock_guard<std::mutex> lock(buf->mutex);
+		rows += buf->buffered_rows;
+	}
+	return rows;
+}
+
+idx_t OtlpServer::BufferedBytes() const {
+	idx_t bytes = 0;
+	for (auto &buf : signal_buffers) {
+		std::lock_guard<std::mutex> lock(buf->mutex);
+		bytes += buf->buffered_bytes;
+	}
+	return bytes;
+}
+
 void OtlpServer::LogServerEvent(const string &message) const {
 	auto db = db_ptr.lock();
 	if (!db) {
@@ -327,6 +350,38 @@ bool OtlpServer::CheckAuth(const string &authorization, const string &api_key) c
 		return true;
 	}
 	return false;
+}
+
+idx_t OtlpServer::AdmissionReservationBytes(idx_t body_size) const {
+	static constexpr idx_t MIN_RESERVATION_BYTES = 1024;
+	auto base = MaxValue<idx_t>(body_size, MIN_RESERVATION_BYTES);
+	return base;
+}
+
+bool OtlpServer::TryReserveAdmission(idx_t bytes, idx_t &current) {
+	current = admitted_bytes.load();
+	while (true) {
+		if (bytes > config.max_buffered_bytes || current > config.max_buffered_bytes - bytes) {
+			return false;
+		}
+		auto next = current + bytes;
+		if (admitted_bytes.compare_exchange_weak(current, next)) {
+			return true;
+		}
+	}
+}
+
+void OtlpServer::ReleaseAdmission(idx_t bytes) {
+	if (bytes == 0) {
+		return;
+	}
+	auto current = admitted_bytes.load();
+	while (true) {
+		auto next = current > bytes ? current - bytes : 0;
+		if (admitted_bytes.compare_exchange_weak(current, next)) {
+			return;
+		}
+	}
 }
 
 void OtlpServer::EnsureTargetTables() {
@@ -411,39 +466,45 @@ OtlpIngestResult OtlpServer::Ingest(OtlpRequestKind kind, const string &content_
 	}
 	auto format = FormatFromContentType(content_type);
 
-	// Backpressure: if the sealer can't keep up and buffered data exceeds the hard
-	// cap, shed load with 503 rather than grow memory unbounded.
-	if (buffered_bytes.load() >= config.max_buffered_bytes) {
-		throw OtlpHttpError(503, StringUtil::Format("ingest buffer full (%llu bytes); retry later",
-		                                            static_cast<uint64_t>(buffered_bytes.load())));
+	// Backpressure: reserve payload bytes before parse/transform so concurrent bursts
+	// cannot all pass the check and allocate work beyond max_buffered_bytes. The
+	// reservation moves into the first signal buffer that accepts rows and is released
+	// only after those rows seal; parse/validation failures release it immediately.
+	auto reservation_bytes = AdmissionReservationBytes(body.size());
+	idx_t admitted_before = 0;
+	if (!TryReserveAdmission(reservation_bytes, admitted_before)) {
+		throw OtlpHttpError(
+		    503, StringUtil::Format("ingest buffer full (%llu admitted bytes, request would add %llu); retry later",
+		                            static_cast<uint64_t>(admitted_before), static_cast<uint64_t>(reservation_bytes)));
 	}
 
 	// Parse + convert (lock-free per worker), then buffer the rows. The single sealer
 	// thread group-commits buffered rows to the target catalog asynchronously, so this
 	// returns once the rows are accepted into the buffer (HTTP 202), not once durable.
 	OtlpIngestResult result;
-	TransformAndBuffer(kind, body, format, result);
+	idx_t unclaimed_admission = reservation_bytes;
+	try {
+		TransformAndBuffer(kind, body, format, result, unclaimed_admission);
+	} catch (...) {
+		ReleaseAdmission(unclaimed_admission);
+		throw;
+	}
+	ReleaseAdmission(unclaimed_admission);
 	total_rows.fetch_add(result.rows);
 	return result;
 }
 
 void OtlpServer::TransformAndBuffer(OtlpRequestKind request_kind, const string &body, OtlpInputFormat format,
-                                    OtlpIngestResult &result) {
+                                    OtlpIngestResult &result, idx_t &admission_bytes) {
 	switch (request_kind) {
 	case OtlpRequestKind::LOGS:
-		BufferSignal(OTLP_SIGNAL_LOGS, body, format, result);
+		BufferSignal(OTLP_SIGNAL_LOGS, body, format, result, admission_bytes);
 		break;
 	case OtlpRequestKind::TRACES:
-		BufferSignal(OTLP_SIGNAL_TRACES, body, format, result);
+		BufferSignal(OTLP_SIGNAL_TRACES, body, format, result, admission_bytes);
 		break;
 	case OtlpRequestKind::METRICS:
-		// TODO(perf): this re-parses `body` once per metric shape (4x). Collapsing to
-		// a single parse requires an otlp2records FFI change that fans one parse out
-		// to all present shapes; tracked as a follow-up (see AGENTS.md Known Limitations).
-		BufferSignal(OTLP_SIGNAL_METRICS_GAUGE, body, format, result);
-		BufferSignal(OTLP_SIGNAL_METRICS_SUM, body, format, result);
-		BufferSignal(OTLP_SIGNAL_METRICS_HISTOGRAM, body, format, result);
-		BufferSignal(OTLP_SIGNAL_METRICS_EXP_HISTOGRAM, body, format, result);
+		BufferMetrics(body, format, result, admission_bytes);
 		break;
 	default:
 		throw InternalException("Unknown OTLP request kind");
@@ -460,7 +521,7 @@ OtlpSignalBuffer &OtlpServer::BufferFor(OtlpSignalType signal_type) {
 }
 
 void OtlpServer::BufferSignal(OtlpSignalType signal_type, const string &body, OtlpInputFormat format,
-                              OtlpIngestResult &result) {
+                              OtlpIngestResult &result, idx_t &admission_bytes) {
 	auto &buf = BufferFor(signal_type);
 	ArrowArray array;
 	ArrowSchema schema;
@@ -480,22 +541,7 @@ void OtlpServer::BufferSignal(OtlpSignalType signal_type, const string &body, Ot
 		}
 	};
 	try {
-		if (array.length > 0) {
-			DataChunk chunk;
-			auto db = db_ptr.lock();
-			if (!db) {
-				throw IOException("Database was closed");
-			}
-			chunk.Initialize(Allocator::Get(*db), buf.types, APPEND_CHUNK_SIZE);
-			for (idx_t offset = 0; offset < static_cast<idx_t>(array.length); offset += APPEND_CHUNK_SIZE) {
-				auto count = MinValue<idx_t>(APPEND_CHUNK_SIZE, static_cast<idx_t>(array.length) - offset);
-				chunk.Reset();
-				CopyArrowStructToDataChunk(array, schema, chunk, offset, count);
-				BufferAppend(buf, chunk);
-				result.rows += count;
-				result.batches++;
-			}
-		}
+		AppendArrowBatch(buf, array, schema, result, admission_bytes);
 	} catch (...) {
 		release();
 		throw;
@@ -503,25 +549,105 @@ void OtlpServer::BufferSignal(OtlpSignalType signal_type, const string &body, Ot
 	release();
 }
 
-void OtlpServer::BufferAppend(OtlpSignalBuffer &buf, DataChunk &chunk) {
+void OtlpServer::BufferMetrics(const string &body, OtlpInputFormat format, OtlpIngestResult &result,
+                               idx_t &admission_bytes) {
+	OtlpMetricsArrowBatches batches = {};
+	OtlpStatus status =
+	    otlp_transform_metrics_all(format, reinterpret_cast<const uint8_t *>(body.data()), body.size(), &batches);
+
+	auto release_batch = [](OtlpArrowBatch &batch) {
+		if (!batch.present) {
+			return;
+		}
+		if (batch.array.release) {
+			batch.array.release(&batch.array);
+		}
+		if (batch.schema.release) {
+			batch.schema.release(&batch.schema);
+		}
+		batch.present = 0;
+	};
+	auto release_all = [&]() {
+		release_batch(batches.gauge);
+		release_batch(batches.sum);
+		release_batch(batches.histogram);
+		release_batch(batches.exp_histogram);
+	};
+
+	if (status != OTLP_OK) {
+		release_all();
+		throw OtlpHttpError(400, StringUtil::Format("OTLP parse failed for metrics: %s", otlp_status_message(status)));
+	}
+
+	try {
+		if (batches.gauge.present) {
+			AppendArrowBatch(BufferFor(OTLP_SIGNAL_METRICS_GAUGE), batches.gauge.array, batches.gauge.schema, result,
+			                 admission_bytes);
+		}
+		if (batches.sum.present) {
+			AppendArrowBatch(BufferFor(OTLP_SIGNAL_METRICS_SUM), batches.sum.array, batches.sum.schema, result,
+			                 admission_bytes);
+		}
+		if (batches.histogram.present) {
+			AppendArrowBatch(BufferFor(OTLP_SIGNAL_METRICS_HISTOGRAM), batches.histogram.array,
+			                 batches.histogram.schema, result, admission_bytes);
+		}
+		if (batches.exp_histogram.present) {
+			AppendArrowBatch(BufferFor(OTLP_SIGNAL_METRICS_EXP_HISTOGRAM), batches.exp_histogram.array,
+			                 batches.exp_histogram.schema, result, admission_bytes);
+		}
+	} catch (...) {
+		release_all();
+		throw;
+	}
+	release_all();
+}
+
+void OtlpServer::AppendArrowBatch(OtlpSignalBuffer &buf, ArrowArray &array, ArrowSchema &schema,
+                                  OtlpIngestResult &result, idx_t &admission_bytes) {
+	if (array.length <= 0) {
+		return;
+	}
+	DataChunk chunk;
+	auto db = db_ptr.lock();
+	if (!db) {
+		throw IOException("Database was closed");
+	}
+	chunk.Initialize(Allocator::Get(*db), buf.types, APPEND_CHUNK_SIZE);
+	for (idx_t offset = 0; offset < static_cast<idx_t>(array.length); offset += APPEND_CHUNK_SIZE) {
+		auto count = MinValue<idx_t>(APPEND_CHUNK_SIZE, static_cast<idx_t>(array.length) - offset);
+		chunk.Reset();
+		CopyArrowStructToDataChunk(array, schema, chunk, offset, count);
+		BufferAppend(buf, chunk, admission_bytes);
+		result.rows += count;
+		result.batches++;
+	}
+}
+
+void OtlpServer::BufferAppend(OtlpSignalBuffer &buf, DataChunk &chunk, idx_t &admission_bytes) {
 	auto rows = chunk.size();
 	if (rows == 0) {
 		return;
 	}
 	bool size_trigger = false;
 	{
-		std::lock_guard<std::mutex> lock(buffer_mutex);
+		std::lock_guard<std::mutex> lock(buf.mutex);
 		buf.collection->Append(chunk);
-		if (!have_unsealed) {
-			have_unsealed = true;
-			first_unsealed = std::chrono::steady_clock::now();
+		if (!buf.have_unsealed) {
+			buf.have_unsealed = true;
+			buf.first_unsealed = std::chrono::steady_clock::now();
 		}
 		auto added = rows * buf.row_width;
-		buffered_rows.fetch_add(rows);
-		auto total = buffered_bytes.fetch_add(added) + added;
+		buf.buffered_rows += rows;
+		buf.buffered_bytes += added;
+		if (admission_bytes > 0) {
+			buf.admission_bytes += admission_bytes;
+			admission_bytes = 0;
+		}
 		// Cheap running estimate drives the trigger; the exact COPY size is whatever
 		// the buffered chunks hold at seal time.
-		size_trigger = total >= config.seal_target_bytes;
+		size_trigger =
+		    buf.buffered_bytes >= config.seal_target_bytes || admitted_bytes.load() >= config.seal_target_bytes;
 	}
 	if (size_trigger) {
 		RequestSeal();
@@ -546,31 +672,57 @@ OtlpIngestResult OtlpServer::SealOnce(bool run_checkpoint) {
 	}
 	auto &allocator = Allocator::Get(*db);
 
-	// Swap each buffer out for a fresh empty collection so workers keep filling during
-	// the (potentially slow) COPY. The moved-out collections are owned solely here.
-	std::vector<unique_ptr<ColumnDataCollection>> sealing;
-	std::chrono::steady_clock::time_point pre_first_unsealed;
-	bool pre_have_unsealed = false;
-	{
-		std::lock_guard<std::mutex> lock(buffer_mutex);
-		sealing.reserve(signal_buffers.size());
-		for (auto &buf : signal_buffers) {
-			sealing.push_back(std::move(buf->collection));
-			buf->collection = make_uniq<ColumnDataCollection>(allocator, buf->types);
-		}
-		pre_first_unsealed = first_unsealed;
-		pre_have_unsealed = have_unsealed;
-		buffered_rows.store(0);
-		buffered_bytes.store(0);
-		have_unsealed = false;
+	struct SealingBuffer {
+		unique_ptr<ColumnDataCollection> collection;
+		idx_t rows = 0;
+		idx_t bytes = 0;
+		idx_t admission_bytes = 0;
+		bool have_unsealed = false;
+		std::chrono::steady_clock::time_point first_unsealed;
+	};
+
+	std::vector<unique_ptr<ColumnDataCollection>> fresh;
+	fresh.reserve(signal_buffers.size());
+	for (auto &buf : signal_buffers) {
+		fresh.push_back(make_uniq<ColumnDataCollection>(allocator, buf->types));
 	}
 
+	// Swap each buffer out for a fresh empty collection so workers keep filling during
+	// the (potentially slow) COPY. The moved-out collections are owned solely here.
+	std::vector<SealingBuffer> sealing;
 	idx_t total = 0;
-	for (auto &c : sealing) {
-		total += c->Count();
+	idx_t sealed_admission_bytes = 0;
+	{
+		std::vector<std::unique_lock<std::mutex>> locks;
+		locks.reserve(signal_buffers.size());
+		for (auto &buf : signal_buffers) {
+			locks.emplace_back(buf->mutex);
+		}
+		sealing.reserve(signal_buffers.size());
+		for (idx_t i = 0; i < signal_buffers.size(); i++) {
+			auto &buf = *signal_buffers[i];
+			SealingBuffer state;
+			state.collection = std::move(buf.collection);
+			state.rows = buf.buffered_rows;
+			state.bytes = buf.buffered_bytes;
+			state.admission_bytes = buf.admission_bytes;
+			state.have_unsealed = buf.have_unsealed;
+			state.first_unsealed = buf.first_unsealed;
+			total += state.rows;
+			sealed_admission_bytes += state.admission_bytes;
+
+			buf.collection = std::move(fresh[i]);
+			buf.buffered_rows = 0;
+			buf.buffered_bytes = 0;
+			buf.admission_bytes = 0;
+			buf.have_unsealed = false;
+			sealing.push_back(std::move(state));
+		}
 	}
+
 	OtlpIngestResult result;
 	if (total == 0) {
+		ReleaseAdmission(sealed_admission_bytes);
 		last_seal_unix_ms.store(NowUnixMs());
 		return result;
 	}
@@ -578,8 +730,8 @@ OtlpIngestResult OtlpServer::SealOnce(bool run_checkpoint) {
 	try {
 		RunSQL(*writer_con, "BEGIN TRANSACTION");
 		for (idx_t i = 0; i < signal_buffers.size(); i++) {
-			auto &collection = *sealing[i];
-			if (collection.Count() == 0) {
+			auto &collection = *sealing[i].collection;
+			if (sealing[i].rows == 0) {
 				continue;
 			}
 			auto &buf = *signal_buffers[i];
@@ -596,7 +748,7 @@ OtlpIngestResult OtlpServer::SealOnce(bool run_checkpoint) {
 				result.batches++;
 			}
 			appender->Close();
-			result.rows += collection.Count();
+			result.rows += sealing[i].rows;
 		}
 		RunSQL(*writer_con, "COMMIT");
 	} catch (...) {
@@ -630,23 +782,38 @@ OtlpIngestResult OtlpServer::SealOnce(bool run_checkpoint) {
 		// so nothing is lost and order is preserved. Only the old (swapped-out) rows are
 		// re-counted; the live rows were already counted as they were appended.
 		{
-			std::lock_guard<std::mutex> lock(buffer_mutex);
+			std::vector<std::unique_lock<std::mutex>> locks;
+			locks.reserve(signal_buffers.size());
+			for (auto &buf : signal_buffers) {
+				locks.emplace_back(buf->mutex);
+			}
 			for (idx_t i = 0; i < signal_buffers.size(); i++) {
-				auto old_count = sealing[i]->Count();
-				if (old_count == 0) {
+				auto &state = sealing[i];
+				if (state.rows == 0) {
 					continue;
 				}
-				sealing[i]->Combine(*signal_buffers[i]->collection); // old rows, then live rows
-				signal_buffers[i]->collection = std::move(sealing[i]);
-				buffered_rows.fetch_add(old_count);
-				buffered_bytes.fetch_add(old_count * signal_buffers[i]->row_width);
-			}
-			if (buffered_rows.load() > 0 && !have_unsealed) {
-				have_unsealed = true;
-				// Preserve the original arrival time of the restored rows so the age
-				// trigger still fires within seal_max_age_ms of when they actually
-				// arrived, even across repeated seal failures.
-				first_unsealed = pre_have_unsealed ? pre_first_unsealed : std::chrono::steady_clock::now();
+				auto &buf = *signal_buffers[i];
+				auto live_have_unsealed = buf.have_unsealed;
+				auto live_first_unsealed = buf.first_unsealed;
+				state.collection->Combine(*buf.collection); // old rows, then live rows
+				buf.collection = std::move(state.collection);
+				buf.buffered_rows += state.rows;
+				buf.buffered_bytes += state.bytes;
+				buf.admission_bytes += state.admission_bytes;
+				buf.have_unsealed = true;
+				// Preserve the original arrival time of restored rows so the age trigger
+				// still fires from their true arrival time across repeated seal failures.
+				if (state.have_unsealed) {
+					if (live_have_unsealed && live_first_unsealed < state.first_unsealed) {
+						buf.first_unsealed = live_first_unsealed;
+					} else {
+						buf.first_unsealed = state.first_unsealed;
+					}
+				} else if (live_have_unsealed) {
+					buf.first_unsealed = live_first_unsealed;
+				} else {
+					buf.first_unsealed = std::chrono::steady_clock::now();
+				}
 			}
 		}
 		seal_failures_total.fetch_add(1);
@@ -658,6 +825,7 @@ OtlpIngestResult OtlpServer::SealOnce(bool run_checkpoint) {
 		throw;
 	}
 
+	ReleaseAdmission(sealed_admission_bytes);
 	seals_total.fetch_add(1);
 	last_seal_unix_ms.store(NowUnixMs());
 	{
@@ -695,13 +863,7 @@ void OtlpServer::SealerLoop() {
 		}
 		bool due = flush_requested.exchange(false);
 		if (!due) {
-			std::lock_guard<std::mutex> lock(buffer_mutex);
-			if (have_unsealed) {
-				auto age = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
-				                                                                 first_unsealed)
-				               .count();
-				due = age >= config.seal_max_age_ms;
-			}
+			due = SealAgeDue();
 		}
 		if (due) {
 			try {
@@ -712,6 +874,27 @@ void OtlpServer::SealerLoop() {
 			}
 		}
 	}
+}
+
+bool OtlpServer::SealAgeDue() const {
+	auto now = std::chrono::steady_clock::now();
+	bool have_oldest = false;
+	std::chrono::steady_clock::time_point oldest;
+	for (auto &buf : signal_buffers) {
+		std::lock_guard<std::mutex> lock(buf->mutex);
+		if (!buf->have_unsealed) {
+			continue;
+		}
+		if (!have_oldest || buf->first_unsealed < oldest) {
+			oldest = buf->first_unsealed;
+			have_oldest = true;
+		}
+	}
+	if (!have_oldest) {
+		return false;
+	}
+	auto age = std::chrono::duration_cast<std::chrono::milliseconds>(now - oldest).count();
+	return age >= config.seal_max_age_ms;
 }
 
 OtlpIngestResult OtlpServer::FlushNow(bool run_checkpoint) {
@@ -733,18 +916,19 @@ void OtlpServer::ShutdownIngest() {
 	// (~OtlpStorageExtensionInfo) db_ptr is already expired, so SealOnce is a no-op and
 	// the buffered rows are dropped — callers must otlp_stop / otlp_flush before closing
 	// the database to guarantee a seal (see Known Limitations).
-	for (int attempt = 0; attempt < 3 && buffered_rows.load() > 0; attempt++) {
+	for (int attempt = 0; attempt < 3 && BufferedRows() > 0; attempt++) {
 		try {
 			SealOnce(false);
 		} catch (...) {
 			LogServerEvent("final seal attempt failed during shutdown");
 		}
 	}
-	if (buffered_rows.load() > 0) {
+	auto remaining_rows = BufferedRows();
+	if (remaining_rows > 0) {
 		LogServerEvent(
 		    StringUtil::Format("dropping %llu buffered rows on shutdown (database closed without otlp_stop/otlp_flush, "
 		                       "or repeated seal failure)",
-		                       static_cast<uint64_t>(buffered_rows.load())));
+		                       static_cast<uint64_t>(remaining_rows)));
 	}
 	writer_con.reset();
 }
