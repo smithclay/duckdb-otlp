@@ -37,3 +37,39 @@ SELECT count(*) FROM otlp_server_list()
 WHERE listen_uri = 'otlp:127.0.0.1:55439';
 ----
 0
+
+# non-localhost binds require allow_other_hostname (rejected before binding a socket)
+statement error
+CALL otlp_serve('otlp:0.0.0.0:55440', token := 'dev-token-123456');
+----
+Only localhost is allowed
+
+# create_tables := false against a schema with no OTLP tables fails fast
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55441', token := 'dev-token-123456', schema := 'no_such_schema', create_tables := false);
+----
+is not available
+
+# max_body_bytes must be positive
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55442', token := 'dev-token-123456', max_body_bytes := 0);
+----
+max_body_bytes must be greater than zero
+
+# schema must not be empty
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55443', token := 'dev-token-123456', schema := '');
+----
+schema must not be empty
+
+# create_tables := false succeeds when the target tables already exist (created above)
+query TTT
+SELECT listen_uri, listen_url, schema_name
+FROM otlp_serve('otlp:127.0.0.1:55444', token := 'dev-token-123456', schema := 'main', create_tables := false);
+----
+otlp:127.0.0.1:55444	http://127.0.0.1:55444	main
+
+query T
+SELECT status FROM otlp_stop('otlp:127.0.0.1:55444');
+----
+Stopped listening on otlp:127.0.0.1:55444

@@ -1,0 +1,111 @@
+# name: test/sql/uri.test
+# description: Test OTLP listen URI parsing (otlp_uri_parser)
+# group: [sql]
+
+require otlp
+
+# fields: host, port, ipv6, url
+
+query IIII
+select unnest(otlp_uri_parser('otlp:localhost'));
+----
+localhost	4318	false	http://localhost:4318
+
+query IIII
+select unnest(otlp_uri_parser('otlp://localhost'));
+----
+localhost	4318	false	http://localhost:4318
+
+query IIII
+select unnest(otlp_uri_parser('otlp:localhost:1234'));
+----
+localhost	1234	false	http://localhost:1234
+
+query IIII
+select unnest(otlp_uri_parser('otlp:otherhost'));
+----
+otherhost	4318	false	http://otherhost:4318
+
+query IIII
+select unnest(otlp_uri_parser('otlp:127.0.0.1'));
+----
+127.0.0.1	4318	false	http://127.0.0.1:4318
+
+query IIII
+select unnest(otlp_uri_parser('otlp:127.0.0.1:1234'));
+----
+127.0.0.1	1234	false	http://127.0.0.1:1234
+
+query IIII
+select unnest(otlp_uri_parser('otlp:[::1]'));
+----
+::1	4318	true	http://[::1]:4318
+
+query IIII
+select unnest(otlp_uri_parser('otlp:[::1]:1234'));
+----
+::1	1234	true	http://[::1]:1234
+
+# an empty host after the scheme defaults to localhost
+query IIII
+select unnest(otlp_uri_parser('otlp:'));
+----
+localhost	4318	false	http://localhost:4318
+
+# hostnames containing the substring "otlp" — must not be mangled by scheme stripping
+query IIII
+select unnest(otlp_uri_parser('otlp://ilum-otlp:4318'));
+----
+ilum-otlp	4318	false	http://ilum-otlp:4318
+
+query IIII
+select unnest(otlp_uri_parser('otlp:my-otlp-host:4318'));
+----
+my-otlp-host	4318	false	http://my-otlp-host:4318
+
+# failure cases
+
+statement error
+select unnest(otlp_uri_parser(''));
+----
+needs to start with 'otlp:'
+
+statement error
+select unnest(otlp_uri_parser('asdf'));
+----
+needs to start with 'otlp:'
+
+statement error
+select unnest(otlp_uri_parser('otlp::'));
+----
+Invalid OTLP listen port
+
+statement error
+select unnest(otlp_uri_parser('otlp:localhost:'));
+----
+Invalid OTLP listen port
+
+statement error
+select unnest(otlp_uri_parser('otlp:localhost:asdf'));
+----
+Invalid OTLP listen port
+
+statement error
+select unnest(otlp_uri_parser('otlp:localhost:0'));
+----
+Invalid OTLP listen port
+
+statement error
+select unnest(otlp_uri_parser('otlp:localhost:65536'));
+----
+Invalid OTLP listen port
+
+statement error
+select unnest(otlp_uri_parser('otlp:[::1'));
+----
+missing ']'
+
+statement error
+select unnest(otlp_uri_parser('otlp:[]'));
+----
+Missing IPv6 address

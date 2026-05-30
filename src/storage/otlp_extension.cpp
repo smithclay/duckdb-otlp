@@ -7,6 +7,7 @@
 
 #include "otlp_start_stop.hpp"
 #include "otlp_storage.hpp"
+#include "otlp_uri.hpp"
 
 // Rust backend provides all OTLP functionality
 namespace duckdb {
@@ -21,6 +22,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(OtlpServeFunction::GetFunction());
 	loader.RegisterFunction(OtlpStopFunction::GetFunction());
 	loader.RegisterFunction(OtlpServerListFunction::GetFunction());
+	loader.RegisterFunction(OtlpUriParserFunction::GetFunction());
 
 	auto ext = duckdb::make_shared_ptr<OtlpStorageExtension>();
 	ext->storage_info = duckdb::make_uniq<OtlpStorageExtensionInfo>();

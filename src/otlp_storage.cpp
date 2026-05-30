@@ -45,7 +45,11 @@ bool OtlpStorageExtensionInfo::StopServer(ClientContext &context, const OtlpUri 
 		to_destroy = std::move(it->second);
 		servers.erase(it);
 	}
+	// Synchronously free the listening port so the URI can be reused immediately.
 	to_destroy->StopAccepting();
+	// Full destruction joins the httplib worker pool, which can block; run it
+	// off-thread so the calling SQL query (which may itself be a worker) is not
+	// stalled and cannot deadlock joining the pool it is running on.
 	std::thread([srv = std::move(to_destroy)]() mutable { srv.reset(); }).detach();
 	return true;
 }

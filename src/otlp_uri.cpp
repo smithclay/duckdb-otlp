@@ -71,4 +71,36 @@ OtlpUri::OtlpUri(string uri_p) : uri(std::move(uri_p)) {
 	uri = CanonicalUri();
 }
 
+static void OtlpUriParser(const DataChunk &args, ExpressionState &, Vector &result) {
+	if (!args.AllConstant()) {
+		throw InvalidInputException("otlp_uri_parser expects all arguments to be constant");
+	}
+	OtlpUri parsed(args.GetValue(0, 0).GetValue<string>());
+	result.SetValue(0, Value::STRUCT({{"host", Value(parsed.Host())},
+	                                  {"port", Value::USMALLINT(parsed.Port())},
+	                                  {"ipv6", Value::BOOLEAN(parsed.IPv6())},
+	                                  {"url", Value(parsed.Http())}}));
+	result.SetVectorType(VectorType::CONSTANT_VECTOR);
+}
+
+ScalarFunction OtlpUriParserFunction::GetFunction() {
+	// Materialize the LogicalType constants into locals (read by value) before they
+	// reach perfect-forwarding APIs (pair/initializer_list). Binding a reference to
+	// the static constexpr LogicalType::VARCHAR/USMALLINT/BOOLEAN members ODR-uses
+	// them and forces a duplicate symbol definition, which the GNU linker rejects as
+	// a multiple definition of e.g. duckdb::LogicalType::VARCHAR.
+	LogicalType varchar_type(LogicalType::VARCHAR);
+	LogicalType usmallint_type(LogicalType::USMALLINT);
+	LogicalType boolean_type(LogicalType::BOOLEAN);
+
+	child_list_t<LogicalType> struct_children;
+	struct_children.emplace_back("host", varchar_type);
+	struct_children.emplace_back("port", usmallint_type);
+	struct_children.emplace_back("ipv6", boolean_type);
+	struct_children.emplace_back("url", varchar_type);
+
+	return ScalarFunction("otlp_uri_parser", {varchar_type}, LogicalType::STRUCT(std::move(struct_children)),
+	                      OtlpUriParser);
+}
+
 } // namespace duckdb

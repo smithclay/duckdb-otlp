@@ -1,6 +1,7 @@
 #pragma once
 
 #include "duckdb.hpp"
+#include "duckdb/function/scalar_function.hpp"
 
 namespace duckdb {
 
@@ -38,6 +39,12 @@ private:
 	uint16_t port = 4318;
 	string http;
 	string uri;
+};
+
+//! Exposes OtlpUri parsing as a scalar function so the parser can be unit-tested from SQL.
+class OtlpUriParserFunction {
+public:
+	static ScalarFunction GetFunction();
 };
 
 } // namespace duckdb

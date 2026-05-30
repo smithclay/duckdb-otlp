@@ -128,7 +128,9 @@ static OtlpInputFormat FormatFromContentType(const string &content_type) {
 	if (value == "application/x-protobuf" || value == "application/protobuf" || value == "application/otlp") {
 		return OTLP_FORMAT_PROTOBUF;
 	}
-	throw InvalidInputException("unsupported content-type %s", value.empty() ? "<missing>" : value);
+	// 415: a genuine content-type problem. Raise it as an HTTP error directly rather
+	// than InvalidInputException, which is also thrown for non-content-type reasons.
+	throw OtlpHttpError(415, StringUtil::Format("unsupported content-type %s", value.empty() ? "<missing>" : value));
 }
 
 static bool IsUnsupportedEncoding(const string &content_encoding) {
@@ -184,8 +186,9 @@ string OtlpServer::GenerateRandomToken(DatabaseInstance &db) {
 
 bool OtlpServer::CheckAuth(const string &authorization, const string &api_key) const {
 	string supplied;
-	if (!authorization.empty() && StringUtil::StartsWith(authorization, "Bearer ")) {
-		supplied = authorization.substr(strlen("Bearer "));
+	// RFC 7235 auth schemes are case-insensitive; exporters/proxies may send "bearer".
+	if (authorization.size() >= 7 && StringUtil::Lower(authorization.substr(0, 7)) == "bearer ") {
+		supplied = authorization.substr(7);
 	} else if (!api_key.empty()) {
 		supplied = api_key;
 	}
@@ -394,6 +397,14 @@ HttpOtlpServer::HttpOtlpServer(ClientContext &context, const OtlpUri &uri_p, Otl
 
 	auto post_handler = [&](OtlpRequestKind kind) {
 		return [this, kind](const duckdb_httplib::Request &req, duckdb_httplib::Response &res) {
+			// RAII so active_requests is decremented on every exit path, including a
+			// throw that escapes the catch chain below (e.g. allocation failure).
+			struct RequestGuard {
+				std::atomic<idx_t> &counter;
+				~RequestGuard() {
+					counter--;
+				}
+			} request_guard {active_requests};
 			active_requests++;
 			total_requests++;
 			try {
@@ -410,13 +421,12 @@ HttpOtlpServer::HttpOtlpServer(ClientContext &context, const OtlpUri &uri_p, Otl
 			} catch (OtlpHttpError &ex) {
 				SetError(res, ex.status, "request_failed", ex.what());
 			} catch (InvalidInputException &ex) {
-				SetError(res, 415, "unsupported_content_type", ex.what());
+				SetError(res, 400, "bad_request", ex.what());
 			} catch (IOException &ex) {
 				SetError(res, 500, "internal_error", ex.what());
 			} catch (std::exception &ex) {
 				SetError(res, 500, "internal_error", ex.what());
 			}
-			active_requests--;
 		};
 	};
 
@@ -428,6 +438,8 @@ HttpOtlpServer::HttpOtlpServer(ClientContext &context, const OtlpUri &uri_p, Otl
 		throw IOException("Failed to instantiate OTLP HTTP server at %s / %s", uri_p.Uri(), uri_p.Http());
 	}
 	is_running = true;
+	// Bind synchronously here so that bind() failures (e.g. EADDRINUSE) propagate
+	// to the caller of otlp_serve() rather than being lost on the listener thread.
 	if (!impl->server->bind_to_port(uri_p.Host(), uri_p.Port())) {
 		throw IOException("Failed to bind OTLP HTTP server to %s (address in use, permission denied, or invalid host/"
 		                  "port)",
@@ -437,6 +449,8 @@ HttpOtlpServer::HttpOtlpServer(ClientContext &context, const OtlpUri &uri_p, Otl
 }
 
 void HttpOtlpServer::StopAccepting() {
+	// Closes the listening socket only. Idempotent. Safe to call from a
+	// request-handler thread — does not wait on httplib's task queue.
 	if (is_running) {
 		impl->server->stop();
 		is_running = false;
@@ -444,6 +458,10 @@ void HttpOtlpServer::StopAccepting() {
 }
 
 void HttpOtlpServer::Close() {
+	// Stops accepting new connections AND joins the listener threads (NOT the
+	// httplib worker pool). Must not be called from a worker thread — the
+	// listener's exit path inside httplib joins all workers, so a worker
+	// joining the listener would deadlock through that chain.
 	StopAccepting();
 	for (auto &thread : listen_threads) {
 		if (thread.joinable()) {
@@ -460,6 +478,9 @@ HttpOtlpServer::~HttpOtlpServer() {
 }
 
 void HttpOtlpServer::ListenThread(HttpOtlpServer *server) {
+	// The socket is already bound (synchronously, in the constructor); this only
+	// runs the accept loop. Catch everything so the listener thread never lets an
+	// exception escape — that would call std::terminate and abort the host process.
 	try {
 		server->impl->server->listen_after_bind();
 	} catch (...) {

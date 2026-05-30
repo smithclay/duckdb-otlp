@@ -34,10 +34,20 @@ public:
 	OtlpServer(ClientContext &context, OtlpUri uri, OtlpServerConfig config);
 	virtual ~OtlpServer();
 
+	//! Stop accepting new connections (close the listener socket) without joining
+	//! listener threads. Safe to call from a request-handler thread — does not wait
+	//! on httplib's task queue, which would deadlock when the caller is a worker.
 	virtual void StopAccepting() {};
+
+	//! Synchronously stop accepting connections and join the listener threads. Must
+	//! NOT be called from a worker / request-handler thread; httplib's listen-loop
+	//! teardown joins all workers, which would deadlock.
 	virtual void Close() {};
 
+	//! Generate a fresh CSPRNG-backed 128-bit token, hex-encoded (32 chars).
 	static string GenerateRandomToken(DatabaseInstance &db);
+
+	//! Throw InvalidInputException if `token` doesn't meet requirements (length >= 16).
 	static void ValidateToken(const string &token);
 
 	const OtlpUri &ListenUri() const {

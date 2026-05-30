@@ -159,7 +159,8 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 			int64_t len = end - start;
 			string_data[i] = StringVector::AddString(output, data + start, static_cast<idx_t>(len));
 		}
-	} else if (fmt == "l" || fmt == "L" || fmt == "i" || fmt == "I") {
+	} else if (fmt == "l" || fmt == "L" || fmt == "i" || fmt == "I" || fmt == "s" || fmt == "S" || fmt == "c" ||
+	           fmt == "C") {
 		if (array.n_buffers < 2) {
 			throw IOException("Invalid Arrow integer array (%s): expected at least 2 buffers, got %lld", fmt.c_str(),
 			                  static_cast<int64_t>(array.n_buffers));
@@ -180,8 +181,16 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 			copy_int(static_cast<const uint64_t *>(array.buffers[1]), FlatVector::GetData<uint64_t>(output));
 		} else if (fmt == "i") {
 			copy_int(static_cast<const int32_t *>(array.buffers[1]), FlatVector::GetData<int32_t>(output));
-		} else {
+		} else if (fmt == "I") {
 			copy_int(static_cast<const uint32_t *>(array.buffers[1]), FlatVector::GetData<uint32_t>(output));
+		} else if (fmt == "s") {
+			copy_int(static_cast<const int16_t *>(array.buffers[1]), FlatVector::GetData<int16_t>(output));
+		} else if (fmt == "S") {
+			copy_int(static_cast<const uint16_t *>(array.buffers[1]), FlatVector::GetData<uint16_t>(output));
+		} else if (fmt == "c") {
+			copy_int(static_cast<const int8_t *>(array.buffers[1]), FlatVector::GetData<int8_t>(output));
+		} else { // "C"
+			copy_int(static_cast<const uint8_t *>(array.buffers[1]), FlatVector::GetData<uint8_t>(output));
 		}
 	} else if (fmt.size() >= 3 && fmt[0] == 't' && fmt[1] == 'D') {
 		if (array.n_buffers < 2) {
@@ -213,6 +222,48 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 				continue;
 			}
 			output_data[i] = values[array_idx];
+		}
+	} else if (fmt == "f") {
+		if (array.n_buffers < 2) {
+			throw IOException("Invalid Arrow float array: expected at least 2 buffers, got %lld",
+			                  static_cast<int64_t>(array.n_buffers));
+		}
+		const float *values = static_cast<const float *>(array.buffers[1]);
+		auto *output_data = FlatVector::GetData<float>(output);
+
+		for (idx_t i = 0; i < count; i++) {
+			idx_t array_idx = i + array.offset;
+			if (null_bitmap && !(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
+				mask.SetInvalid(i);
+				continue;
+			}
+			output_data[i] = values[array_idx];
+		}
+	} else if (fmt == "z" || fmt == "Z") {
+		// Variable-size binary -> BLOB. Same buffer layout as utf8 (validity, offsets,
+		// data); "z" uses 32-bit offsets, "Z" uses 64-bit. Stored as non-UTF8 bytes.
+		if (array.n_buffers < 3) {
+			throw IOException("Invalid Arrow binary array (%s): expected 3 buffers, got %lld", fmt.c_str(),
+			                  static_cast<int64_t>(array.n_buffers));
+		}
+		const char *data = static_cast<const char *>(array.buffers[2]);
+		auto *string_data = FlatVector::GetData<string_t>(output);
+		const bool large = (fmt == "Z");
+		auto offset_at = [&](idx_t idx) -> int64_t {
+			if (large) {
+				return static_cast<const int64_t *>(array.buffers[1])[idx];
+			}
+			return static_cast<const int32_t *>(array.buffers[1])[idx];
+		};
+		for (idx_t i = 0; i < count; i++) {
+			idx_t array_idx = i + array.offset;
+			if (null_bitmap && !(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
+				mask.SetInvalid(i);
+				continue;
+			}
+			int64_t start = offset_at(array_idx);
+			int64_t len = offset_at(array_idx + 1) - start;
+			string_data[i] = StringVector::AddStringOrBlob(output, data + start, static_cast<idx_t>(len));
 		}
 	} else if (fmt == "b") {
 		if (array.n_buffers < 2) {
