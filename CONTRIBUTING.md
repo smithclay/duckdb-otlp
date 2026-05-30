@@ -121,8 +121,7 @@ duckdb-otlp/
 │   ├── include/          # Public headers
 │   ├── storage/          # Extension entry point
 │   ├── function/         # Table function implementations
-│   ├── parsers/          # JSON/protobuf parsers, format detector
-│   ├── receiver/         # Row builders (convert OTLP → DuckDB)
+│   ├── otlp_arrow.cpp    # Arrow-to-DuckDB conversion bridge
 │   ├── schema/           # Column layout definitions
 │   └── generated/        # Protobuf stubs (DO NOT EDIT)
 ├── test/
@@ -137,21 +136,19 @@ duckdb-otlp/
 ### Data Flow
 
 ```
-OTLP File → Format Detector → Parser → Row Builders → DuckDB Vectors
+OTLP File -> Rust backend -> Arrow arrays -> DuckDB DataChunks
 ```
 
-1. **Format Detector** (`parsers/format_detector.cpp`) - Sniffs first bytes to choose JSON vs protobuf parser
-2. **Parsers** (`parsers/json_parser.cpp`, `parsers/protobuf_parser.cpp`) - Stream data from files
-3. **Row Builders** (`receiver/row_builders*.cpp`) - Convert OTLP structs to DuckDB column vectors
-4. **Schema** (`schema/*.hpp`) - Define ClickHouse-compatible column layouts
+1. **Rust backend** (`external/otlp2records`) - Parses OTLP JSON/protobuf payloads and emits Arrow arrays
+2. **Arrow bridge** (`src/otlp_arrow.cpp`) - Converts Arrow arrays into DuckDB vectors
+3. **Table functions** (`src/function/read_otlp.cpp`) - Bind schemas and scan DuckDB `DataChunk`s
 
 ### Key Files
 
 - `src/storage/otlp_extension.cpp` - Extension registration
 - `src/function/read_otlp.cpp` - Table function implementations
-- `src/parsers/format_detector.cpp` - Auto-detect JSON vs protobuf
-- `src/receiver/row_builders.cpp` - Shared row builder logic
-- `src/schema/otlp_metrics_schemas.hpp` - Metrics schema definitions
+- `src/otlp_arrow.cpp` - Arrow-to-DuckDB conversion bridge
+- `external/otlp2records` - Rust OTLP parser and Arrow batch builder
 
 ### Generated Code
 
@@ -169,19 +166,15 @@ OTLP File → Format Detector → Parser → Row Builders → DuckDB Vectors
 
 ### Adding a new table function
 
-1. Define the schema in `src/schema/`
-2. Implement row builders in `src/receiver/`
+1. Define the schema in the table function binding.
+2. Add the corresponding Arrow output in `external/otlp2records`.
 3. Register the function in `src/storage/otlp_extension.cpp`
 4. Add table function wrapper in `src/function/read_otlp.cpp`
 5. Add tests in `test/sql/`
 
 ### Modifying parsers
 
-- **JSON parser**: `src/parsers/json_parser.cpp`
-- **Protobuf parser**: `src/parsers/protobuf_parser.cpp`
-- **Format detection**: `src/parsers/format_detector.cpp`
-
-All parsers call shared row builders in `src/receiver/`.
+JSON/protobuf parsing lives in the Rust backend under `external/otlp2records`.
 
 ## Updating DuckDB Version
 

@@ -1,0 +1,134 @@
+# name: test/sql/otlp_serve.test
+# description: Test OTLP HTTP server lifecycle SQL functions
+# group: [sql]
+
+#
+# Coverage note: SQLLogicTest cannot issue HTTP POSTs, so this file covers only
+# the lifecycle/bind surface (serve/list/stop, validation, hostname gating,
+# schema/column validation, the is_listening/last_error columns). The ingest hot
+# path -- auth (Bearer/x-api-key), content-type/encoding errors, 413, concurrent
+# 503 backpressure, metrics fan-out, stop-under-load, flush/stop races, and
+# Arrow -> DuckDB conversion under concurrency -- is exercised end-to-end by
+# test/manual/otlp_serve_concurrency.py (run manually, ideally under TSan/ASan).
+
+require otlp
+
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55439', token := 'short');
+----
+OTLP server token must be at least 16 characters long
+
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55439', token := 'dev-token-123456', seal_target_bytes := 1024);
+----
+Invalid named parameter "seal_target_bytes"
+
+statement error
+CALL otlp_flush('otlp:127.0.0.1:55439', checkpoint := true);
+----
+Invalid named parameter "checkpoint"
+
+query TTT
+SELECT listen_uri, listen_url, schema_name
+FROM otlp_serve('otlp:127.0.0.1:55439', token := 'dev-token-123456', schema := 'main', create_tables := true);
+----
+otlp:127.0.0.1:55439	http://127.0.0.1:55439	main
+
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55439', token := 'dev-token-123456');
+----
+OTLP server already exists
+
+query TTI
+SELECT listen_uri, schema_name, total_requests
+FROM otlp_server_list()
+WHERE listen_uri = 'otlp:127.0.0.1:55439';
+----
+otlp:127.0.0.1:55439	main	0
+
+# a freshly-started server reports itself listening with no error
+query I
+SELECT count(*) FROM otlp_server_list()
+WHERE listen_uri = 'otlp:127.0.0.1:55439' AND is_listening AND last_error IS NULL;
+----
+1
+
+# a server started without a catalog targets the default catalog (empty catalog_name)
+query I
+SELECT count(*) FROM otlp_server_list()
+WHERE listen_uri = 'otlp:127.0.0.1:55439' AND catalog_name = '';
+----
+1
+
+# a freshly-started server has an empty buffer and has never sealed
+query I
+SELECT count(*) FROM otlp_server_list()
+WHERE listen_uri = 'otlp:127.0.0.1:55439'
+  AND buffered_rows = 0 AND seals_total = 0
+  AND last_seal_age_ms IS NULL AND seal_last_error IS NULL;
+----
+1
+
+# flushing a server with nothing buffered seals zero rows, no error
+query TI
+SELECT status, sealed_rows FROM otlp_flush('otlp:127.0.0.1:55439');
+----
+sealed	0
+
+# flushing an unknown server reports not found
+query T
+SELECT status FROM otlp_flush('otlp:127.0.0.1:59999');
+----
+No server found listening on otlp:127.0.0.1:59999
+
+query T
+SELECT status FROM otlp_stop('otlp:127.0.0.1:55439');
+----
+Stopped listening on otlp:127.0.0.1:55439
+
+query I
+SELECT count(*) FROM otlp_server_list()
+WHERE listen_uri = 'otlp:127.0.0.1:55439';
+----
+0
+
+# non-localhost binds require allow_other_hostname (rejected before binding a socket)
+statement error
+CALL otlp_serve('otlp:0.0.0.0:55440', token := 'dev-token-123456');
+----
+Only localhost is allowed
+
+# create_tables := false against a schema with no OTLP tables fails fast
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55441', token := 'dev-token-123456', schema := 'no_such_schema', create_tables := false);
+----
+is not available
+
+# max_body_bytes must be positive
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55442', token := 'dev-token-123456', max_body_bytes := 0);
+----
+max_body_bytes must be greater than zero
+
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55454', token := 'dev-token-123456', max_buffered_bytes := 0);
+----
+max_buffered_bytes must be greater than zero
+
+# schema must not be empty
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55443', token := 'dev-token-123456', schema := '');
+----
+schema must not be empty
+
+# create_tables := false succeeds when the target tables already exist (created above)
+query TTT
+SELECT listen_uri, listen_url, schema_name
+FROM otlp_serve('otlp:127.0.0.1:55444', token := 'dev-token-123456', schema := 'main', create_tables := false);
+----
+otlp:127.0.0.1:55444	http://127.0.0.1:55444	main
+
+query T
+SELECT status FROM otlp_stop('otlp:127.0.0.1:55444');
+----
+Stopped listening on otlp:127.0.0.1:55444

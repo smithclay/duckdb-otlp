@@ -1,75 +1,38 @@
 # Documentation
 
-Welcome to the DuckDB OTLP Extension documentation. Find what you need:
+Use this page to choose the document that matches what you need to do now.
 
-## 🚀 Getting Started
+## Learn by doing
 
-**New to the extension?**
+- **[Get Started](get-started.md)** - install the extension, query bundled OTLP files, and POST one log over HTTP.
+- **[Live Ingest Quickstart](quickstart/serve.md)** - stream OTLP/HTTP exports into a DuckLake lakehouse and query the sealed rows.
 
-→ **[Get Started in 3 Minutes](get-started.md)** - Install the extension, load sample data, run your first query
+## Do a job
 
-**Want to see it in action?**
+- **[How to analyze traces](guides/analyzing-traces.md)** - find slow spans, errors, trace details, and service dependencies.
+- **[How to filter logs](guides/filtering-logs.md)** - query logs by severity, service, time, text, and trace correlation.
+- **[How to work with metrics](guides/working-with-metrics.md)** - query gauge, sum, histogram, and exponential histogram metrics.
+- **[How to export telemetry to Parquet](guides/exporting-to-parquet.md)** - write traces, logs, and metrics to reusable Parquet datasets.
+- **[How to build dashboard tables](guides/building-dashboards.md)** - materialize compact rollups for BI and dashboards.
+- **[How to handle malformed input](guides/error-handling.md)** - diagnose reader and ingest errors.
+- **[How to install the extension](setup/installation.md)** - install from community extensions or build locally.
+- **[How to configure the OpenTelemetry Collector](setup/collector.md)** - write OTLP file exports for DuckDB analysis.
+- **[How to get sample data](setup/sample-data.md)** - use bundled fixtures, download files, or generate your own telemetry.
+- **[How to export the OpenTelemetry Demo](setup/otel-demo.md)** - collect real demo telemetry as OTLP files.
 
-→ **[Main README](../README.md)** - Quick examples and use cases
+## Look up facts
 
-## 📚 Guides
+- **[API Reference](reference/api.md)** - file readers and live ingest functions.
+- **[Schema Reference](reference/schemas.md)** - columns for traces, logs, gauges, sums, histograms, and exponential histograms.
+- **[Live Ingest Reference](reference/serve.md)** - `otlp_serve`, `otlp_flush`, `otlp_stop`, `otlp_server_list`, HTTP endpoints, auth, buffering, and durability.
+- **[Performance Reference](reference/performance.md)** - file formats, projection, file sizes, materialization, and live ingest notes.
 
-Task-based tutorials with real-world examples:
+## Understand the design
 
-### Getting Telemetry Data
+- **[Architecture](architecture.md)** - how the file readers, Arrow bridge, schema layer, and HTTP ingest server work.
+- **[Contributing](../CONTRIBUTING.md)** - build, test, and contribute to the project.
 
-- **[OTel Collector Demo Exports](guides/otel-collector-demo-exports.md)** - Export OTLP files from the OpenTelemetry demo
+## Need help?
 
-### Analyzing Data
-
-- **[Analyzing Traces](guides/analyzing-traces.md)** - Find slow requests, trace bottlenecks, analyze service dependencies
-- **[Filtering Logs](guides/filtering-logs.md)** - Debug production issues by querying log exports
-- **[Working with Metrics](guides/working-with-metrics.md)** - Query gauge, sum, histogram, and summary metrics
-
-### Data Management
-
-- **[Cookbook](guides/cookbook.md)** - Common recipes and patterns
-
-## 📖 Reference
-
-Detailed technical documentation:
-
-### API
-
-- **[Table Functions](reference/api.md)** - Function signatures and parameters
-- **[Schemas](reference/schemas.md)** - Complete schema reference for traces (25 columns), logs (15 columns), and metrics (16-18 columns)
-
-## ⚙️ Setup
-
-Installation and configuration:
-
-- **[Installation](setup/installation.md)** - Install from community or build from source
-- **[OpenTelemetry Collector](setup/collector.md)** - Configure collector to export OTLP files
-- **[Sample Data](setup/sample-data.md)** - Download or generate test data
-
-## 🏗️ Advanced Topics
-
-- **[Architecture](architecture.md)** - How the extension works internally
-- **[ClickHouse Compatibility](clickhouse-compatibility.md)** - Schema mapping and migration guide
-- **[Contributing](../CONTRIBUTING.md)** - Build, test, and contribute to the project
-
-## 💡 Common Tasks
-
-**I want to...**
-
-- **Get sample OTLP data** → See [Sample Data](setup/sample-data.md)
-- **Query trace spans** → See [Cookbook](guides/cookbook.md)
-- **Filter logs by severity** → See [Cookbook](guides/cookbook.md)
-- **Export to Parquet** → See [Cookbook](guides/cookbook.md)
-- **Build metrics tables** → See [Cookbook](guides/cookbook.md)
-- **Understand schemas** → See [Schema Reference](reference/schemas.md)
-
-## ❓ Need Help?
-
-- **Questions?** Check [GitHub Discussions](https://github.com/smithclay/duckdb-otlp/discussions)
-- **Found a bug?** [Open an issue](https://github.com/smithclay/duckdb-otlp/issues)
-- **Want to contribute?** See [CONTRIBUTING.md](../CONTRIBUTING.md)
-
----
-
-**Quick Links**: [Main README](../README.md) | [Get Started](get-started.md) | [GitHub](https://github.com/smithclay/duckdb-otlp)
+- [GitHub Discussions](https://github.com/smithclay/duckdb-otlp/discussions)
+- [Open an issue](https://github.com/smithclay/duckdb-otlp/issues)

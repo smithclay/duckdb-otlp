@@ -1,191 +1,57 @@
-# Sample Data
+# How to Get Sample Data
 
-Get sample OTLP data for testing and exploration.
-
-## Quick Start: Use Built-in Samples
-
-The extension repository includes sample files for testing:
+The repository includes small OTLP fixtures under `test/data/`.
 
 ```bash
-# Clone repository
 git clone https://github.com/smithclay/duckdb-otlp.git
 cd duckdb-otlp
-
-# Sample files are in test/data/
-ls -la test/data/
+ls test/data/
 ```
 
 ```sql
 LOAD otlp;
 
--- Query sample traces
 SELECT * FROM read_otlp_traces('test/data/traces_simple.jsonl');
-
--- Query sample logs
 SELECT * FROM read_otlp_logs('test/data/logs_simple.jsonl');
-
--- Query sample metrics
-SELECT * FROM read_otlp_metrics('test/data/metrics_simple.jsonl');
+SELECT * FROM read_otlp_metrics_gauge('test/data/metrics_simple.jsonl');
+SELECT * FROM read_otlp_metrics_sum('test/data/metrics_simple.jsonl');
+SELECT * FROM read_otlp_metrics_histogram('test/data/metrics_simple.jsonl');
 ```
 
-## Browser Demo Samples
+## Download Individual Fixtures
 
-Try the [interactive browser demo](https://smithclay.github.io/duckdb-otlp/) which includes:
-- Pre-loaded sample OTLP traces, logs, and metrics
-- Ability to upload your own JSONL files
-- Example queries to get started
-
-## Generate Data with OpenTelemetry Demo
-
-Export OTLP data from the official OpenTelemetry demo application:
-
-See the [OTel Collector Demo Exports Guide](../guides/otel-collector-demo-exports.md) for step-by-step instructions.
-
-## Generate Data with Collector
-
-Configure the OpenTelemetry Collector to export OTLP files from your own applications:
-
-See the [Collector Setup Guide](collector.md) for configuration examples.
-
-## Download Public Datasets
-
-Several public OTLP datasets are available online:
-
-### Example Datasets
-
-1. **OpenTelemetry Demo Exports** - Sample data from the OTel demo app
-   ```bash
-   # Download sample files (example)
-   wget https://github.com/smithclay/duckdb-otlp/raw/main/test/data/traces_simple.jsonl
-   wget https://github.com/smithclay/duckdb-otlp/raw/main/test/data/logs_simple.jsonl
-   wget https://github.com/smithclay/duckdb-otlp/raw/main/test/data/metrics_simple.jsonl
-   ```
-
-2. **Generate with otel-cli** - Command-line tool for generating telemetry
-   ```bash
-   # Install otel-cli
-   brew install otel-cli  # macOS
-   # or download from: https://github.com/equinix-labs/otel-cli
-
-   # Generate sample trace
-   otel-cli span \
-     --service "sample-service" \
-     --name "sample-operation" \
-     --endpoint http://localhost:4318/v1/traces
-   ```
-
-## Generate Synthetic Data
-
-Create your own test data with Python:
-
-```python
-from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-
-# Configure exporter
-exporter = OTLPSpanExporter(endpoint="http://localhost:4318/v1/traces")
-
-# Setup tracer
-provider = TracerProvider()
-provider.add_span_processor(BatchSpanProcessor(exporter))
-trace.set_tracer_provider(provider)
-tracer = trace.get_tracer(__name__)
-
-# Generate sample spans
-for i in range(100):
-    with tracer.start_as_current_span(f"operation-{i}"):
-        # Simulate work
-        time.sleep(random.random() * 0.1)
+```bash
+curl -LO https://raw.githubusercontent.com/smithclay/duckdb-otlp/main/test/data/traces_simple.jsonl
+curl -LO https://raw.githubusercontent.com/smithclay/duckdb-otlp/main/test/data/logs_simple.jsonl
+curl -LO https://raw.githubusercontent.com/smithclay/duckdb-otlp/main/test/data/metrics_simple.jsonl
 ```
 
-Configure the collector to write these spans to JSONL files (see [Collector Setup](collector.md)).
+## Generate Your Own
 
-## Sample File Formats
+Use the collector file exporter for application telemetry:
 
-### Traces (JSONL)
+- [How to Configure the OpenTelemetry Collector](collector.md)
+- [How to Export the OpenTelemetry Demo](otel-demo.md)
 
-```jsonl
-{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"checkout"}}]},"scopeSpans":[{"spans":[{"traceId":"1234567890abcdef","spanId":"abcdef123456","name":"POST /checkout","kind":2,"startTimeUnixNano":"1704067200000000000","endTimeUnixNano":"1704067201000000000"}]}]}]}
-```
-
-### Logs (JSONL)
-
-```jsonl
-{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"api"}}]},"scopeLogs":[{"logRecords":[{"timeUnixNano":"1704067200000000000","severityText":"ERROR","body":{"stringValue":"Connection timeout"}}]}]}]}
-```
-
-### Metrics (JSONL)
-
-```jsonl
-{"resourceMetrics":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"api"}}]},"scopeMetrics":[{"metrics":[{"name":"http.server.duration","unit":"ms","gauge":{"dataPoints":[{"timeUnixNano":"1704067200000000000","asDouble":123.45}]}}]}]}]}
-```
-
-## Validate OTLP Files
-
-Check if your files are valid OTLP format:
+Use the live ingest server for quick HTTP tests:
 
 ```sql
-LOAD otlp;
-
--- Try reading with error handling
-SELECT COUNT(*) AS valid_records
-FROM read_otlp_traces('my_data.jsonl', on_error := 'skip');
-
--- Check scan stats
-SELECT * FROM read_otlp_scan_stats();
+SELECT listen_url
+FROM otlp_serve('otlp:localhost:4318', token := 'dev-token-123456');
 ```
 
-## Convert Between Formats
-
-### JSON to Protobuf
-
-Use the OpenTelemetry Collector to convert:
-
-```yaml
-receivers:
-  otlp:
-    protocols:
-      http:
-
-exporters:
-  file/json:
-    path: output.jsonl
-    encoding: json
-  file/proto:
-    path: output.pb
-    encoding: proto
-
-service:
-  pipelines:
-    traces:
-      receivers: [otlp]
-      exporters: [file/json, file/proto]
+```bash
+curl -sS http://localhost:4318/v1/logs -H 'Authorization: Bearer dev-token-123456' -H 'Content-Type: application/json' -d '{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"curl-demo"}}]},"scopeLogs":[{"logRecords":[{"timeUnixNano":"1704067200000000000","severityText":"INFO","body":{"stringValue":"hello from curl"}}]}]}]}'
 ```
 
-### Query and Re-export
+## Validate a File
+
+Run the matching reader. Malformed files fail fast.
 
 ```sql
-LOAD otlp;
-
--- Convert JSONL to Parquet
-COPY (
-  SELECT * FROM read_otlp_traces('input.jsonl')
-) TO 'output.parquet' (FORMAT PARQUET);
-
--- Later, query Parquet directly
-SELECT * FROM read_parquet('output.parquet');
+SELECT count(*) FROM read_otlp_traces('my_traces.jsonl');
+SELECT count(*) FROM read_otlp_logs('my_logs.jsonl');
+SELECT count(*) FROM read_otlp_metrics_gauge('my_metrics.jsonl');
 ```
 
-## Next Steps
-
-- **Query Sample Data**: Follow the [Get Started Guide](../get-started.md)
-- **Setup Collector**: See [Collector Setup](collector.md)
-- **Learn Query Patterns**: Browse the [Cookbook](../guides/cookbook.md)
-
-## See Also
-
-- [Collector Setup](collector.md) - Configure OpenTelemetry Collector
-- [OTel Demo Exports](../guides/otel-collector-demo-exports.md) - Export from demo app
-- [Installation](installation.md) - Install the extension
+See [Error Handling](../guides/error-handling.md) for common failures.

@@ -1,36 +1,28 @@
-# Get Started in 3 Minutes
+# Get Started
 
-Get up and running with the DuckDB OTLP extension in three simple steps.
+Use the DuckDB OTLP extension to query OpenTelemetry files, then try the native OTLP/HTTP ingest server.
 
 ## Prerequisites
 
-Just DuckDB installed. That's it.
+- DuckDB 0.10 or later.
+- A native DuckDB build for live ingest.
+- The repository checkout if you want to use the bundled `test/data/` samples:
 
-- **Mac/Linux**: [Install DuckDB](https://duckdb.org/docs/installation/)
-- **Windows**: [Install DuckDB](https://duckdb.org/docs/installation/)
+```bash
+git clone https://github.com/smithclay/duckdb-otlp.git
+cd duckdb-otlp
+```
 
-## Step 1: Install the Extension
-
-Open DuckDB and install the extension from the community repository:
+## 1. Install and Load
 
 ```sql
 INSTALL otlp FROM community;
 LOAD otlp;
 ```
 
-**Checkpoint**: You should see no errors. The extension is now loaded.
+## 2. Read OTLP Files
 
-## Step 2: Query Sample Data
-
-The extension repository includes sample OTLP files for testing. Clone the repo or download sample data:
-
-```bash
-# Clone the repository (or download sample files)
-git clone https://github.com/smithclay/duckdb-otlp.git
-cd duckdb-otlp
-```
-
-Now query the sample traces:
+The table functions accept local paths, globs, and DuckDB-supported remote file systems.
 
 ```sql
 SELECT
@@ -41,118 +33,85 @@ FROM read_otlp_traces('test/data/traces_simple.jsonl')
 ORDER BY duration DESC;
 ```
 
-**Expected output:**
-```
-┌─────────────────────────────────┬─────────────┬──────────────┐
-│            trace_id             │  span_name  │ duration_ms  │
-├─────────────────────────────────┼─────────────┼──────────────┤
-│ 5b8aa5a2d2c872e8321120eab66d... │ operation-1 │     500.0    │
-│ 5b8aa5a2d2c872e8321120eab66d... │ operation-2 │     300.0    │
-└─────────────────────────────────┴─────────────┴──────────────┘
-```
-
-## Step 3: Try Logs and Metrics
-
-**Query logs:**
 ```sql
-SELECT timestamp, severity_text, body
+SELECT timestamp, service_name, severity_text, body
 FROM read_otlp_logs('test/data/logs_simple.jsonl')
 WHERE severity_text = 'ERROR';
 ```
 
-**Query gauge metrics:**
 ```sql
-SELECT metric_name, value
-FROM read_otlp_metrics_gauge('test/data/metrics_simple.jsonl')
-LIMIT 5;
+SELECT timestamp, metric_name, value
+FROM read_otlp_metrics_gauge('test/data/metrics_simple.jsonl');
 ```
 
-**Checkpoint**: If you see data, you're all set! The extension is working.
+Histogram metrics use typed readers too:
 
-## What Just Happened?
+```sql
+SELECT metric_name, count, sum, bucket_counts, explicit_bounds
+FROM read_otlp_metrics_histogram('test/data/metrics_simple.jsonl');
+```
 
-You've successfully:
-1. Installed the OTLP extension
-2. Loaded sample OpenTelemetry data
-3. Queried traces, logs, and metrics with SQL
+See the [Schema Reference](reference/schemas.md) for every column emitted by each reader.
 
-The extension automatically detected the JSON format, parsed the OTLP data, and returned it as strongly-typed DuckDB tables.
+## 3. Stream One Log over OTLP/HTTP
+
+The ingest server is available in native builds only. It accepts OTLP/HTTP, buffers rows in memory, and commits them on a seal. A POST returning `202` means the rows are accepted but not durable until `otlp_flush` or an automatic seal.
+
+Start a local server:
+
+```sql
+SELECT listen_url
+FROM otlp_serve('otlp:localhost:4318', token := 'dev-token-123456');
+```
+
+Send one OTLP log record:
+
+```bash
+curl -sS http://localhost:4318/v1/logs -H 'Authorization: Bearer dev-token-123456' -H 'Content-Type: application/json' -d '{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"curl-demo"}}]},"scopeLogs":[{"logRecords":[{"timeUnixNano":"1704067200000000000","severityText":"INFO","body":{"stringValue":"hello from curl"}}]}]}]}'
+```
+
+Flush and query the accepted row:
+
+```sql
+SELECT * FROM otlp_flush('otlp:localhost:4318');
+
+SELECT timestamp, service_name, severity_text, body
+FROM otlp_logs;
+```
+
+Stop the server before closing the database:
+
+```sql
+SELECT status FROM otlp_stop('otlp:localhost:4318');
+```
+
+For durable lakehouse ingest, attach DuckLake and pass `catalog := 'lake'`; see the [Live Ingest Quickstart](quickstart/serve.md).
 
 ## Next Steps
 
-### Use Your Own Data
-
-**Option 1: Use existing OTLP exports**
-
-If you already have OTLP JSON or protobuf files:
-
-```sql
-SELECT * FROM read_otlp_traces('path/to/your/traces.jsonl');
-SELECT * FROM read_otlp_logs('s3://your-bucket/logs/*.jsonl');
-SELECT * FROM read_otlp_metrics_gauge('https://example.com/metrics.pb');
-```
-
-**Option 2: Set up the OpenTelemetry Collector**
-
-Export telemetry from your applications using the OTel Collector:
-
-> **[OpenTelemetry Collector Setup](setup/collector.md)**
-
-### Explore the Schemas
-
-Understand what columns are available:
-
-> **[Schema Reference](reference/schemas.md)** - Complete column listings for traces (25), logs (15), and metrics (16-18)
+- [Live Ingest Quickstart](quickstart/serve.md) - stream OTLP into DuckLake/Parquet.
+- [How to Configure the OpenTelemetry Collector](setup/collector.md) - export OTLP files from the OpenTelemetry Collector.
+- [How-to Guides](guides/README.md) - common query and export tasks.
+- [API Reference](reference/api.md) - function signatures and capability notes.
+- [Schema Reference](reference/schemas.md) - complete column lists.
 
 ## Common Issues
 
-**"Extension 'otlp' not found"**
+**Extension `otlp` not found**
 
-Make sure you installed from community:
 ```sql
 INSTALL otlp FROM community;
 LOAD otlp;
 ```
 
-**"File does not exist"**
+**File does not exist**
 
-Use the correct path to your data files:
+Use a path relative to DuckDB's current working directory, or use an absolute path:
+
 ```sql
--- Absolute path
 SELECT * FROM read_otlp_traces('/full/path/to/traces.jsonl');
-
--- Relative path (from DuckDB working directory)
-SELECT * FROM read_otlp_traces('./test/data/traces_simple.jsonl');
 ```
 
-**Still stuck?**
+**Rows posted to the server are not visible yet**
 
-> Ask on [GitHub Discussions](https://github.com/smithclay/duckdb-otlp/discussions)
-
-## Quick Reference
-
-**Install and load:**
-```sql
-INSTALL otlp FROM community;
-LOAD otlp;
-```
-
-**Query traces:**
-```sql
-SELECT * FROM read_otlp_traces('traces.jsonl');
-```
-
-**Query logs:**
-```sql
-SELECT * FROM read_otlp_logs('logs.jsonl');
-```
-
-**Query metrics:**
-```sql
-SELECT * FROM read_otlp_metrics_gauge('metrics.jsonl');
-SELECT * FROM read_otlp_metrics_sum('metrics.jsonl');
-```
-
----
-
-**Next**: [Cookbook](guides/cookbook.md) | [API Reference](reference/api.md) | [Schema Reference](reference/schemas.md)
+Call `otlp_flush('otlp:localhost:4318')`. Ingest is buffered, so POST responses are not durable commits.

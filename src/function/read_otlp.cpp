@@ -1,110 +1,22 @@
 /**
- * @file read_otlp_rust.cpp
+ * @file read_otlp.cpp
  * @brief DuckDB table functions using Rust otlp2records backend
  *
  * This file implements read_otlp_logs, read_otlp_traces, etc.
  * table functions that use the Rust otlp2records library for parsing.
- *
- * Requires: -DOTLP_USE_RUST=ON at build time
  */
-
-#ifdef OTLP_RUST_BACKEND
 
 #include "duckdb.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 
+#include "otlp_arrow.hpp"
+
 // Include the Rust FFI header
 #include "otlp2records.h"
 
 namespace duckdb {
-
-// ============================================================================
-// Helper: Arrow C Data Interface to DuckDB type conversion
-// ============================================================================
-
-static LogicalType ArrowFormatToDuckDBType(const char *format) {
-	if (!format) {
-		throw IOException("Arrow schema has null format string - indicates FFI error");
-	}
-
-	std::string fmt(format);
-
-	// Timestamp types
-	if (fmt.substr(0, 3) == "tsm") {
-		// Timestamp millisecond
-		return LogicalType::TIMESTAMP_MS;
-	}
-	if (fmt.substr(0, 3) == "tsu") {
-		// Timestamp microsecond
-		return LogicalType::TIMESTAMP;
-	}
-	if (fmt.substr(0, 3) == "tsn") {
-		// Timestamp nanosecond
-		return LogicalType::TIMESTAMP_NS;
-	}
-
-	// Integer types
-	if (fmt == "l") {
-		return LogicalType::BIGINT;
-	}
-	if (fmt == "i") {
-		return LogicalType::INTEGER;
-	}
-	if (fmt == "s") {
-		return LogicalType::SMALLINT;
-	}
-	if (fmt == "c") {
-		return LogicalType::TINYINT;
-	}
-
-	// Unsigned integer types
-	if (fmt == "L") {
-		return LogicalType::UBIGINT;
-	}
-	if (fmt == "I") {
-		return LogicalType::UINTEGER;
-	}
-	if (fmt == "S") {
-		return LogicalType::USMALLINT;
-	}
-	if (fmt == "C") {
-		return LogicalType::UTINYINT;
-	}
-
-	// Float types
-	if (fmt == "g") {
-		return LogicalType::DOUBLE;
-	}
-	if (fmt == "f") {
-		return LogicalType::FLOAT;
-	}
-
-	// Boolean
-	if (fmt == "b") {
-		return LogicalType::BOOLEAN;
-	}
-
-	// String types
-	if (fmt == "u" || fmt == "U") {
-		return LogicalType::VARCHAR;
-	}
-
-	// Binary
-	if (fmt == "z" || fmt == "Z") {
-		return LogicalType::BLOB;
-	}
-
-	// Default to VARCHAR for unknown types (including complex types)
-	return LogicalType::VARCHAR;
-}
-
-// Helper to add metric_type discriminator column
-static void AddMetricTypeColumn(vector<LogicalType> &return_types, vector<string> &names) {
-	names.push_back("metric_type");
-	return_types.push_back(LogicalType::VARCHAR);
-}
 
 // ============================================================================
 // Bind Data
@@ -120,7 +32,6 @@ struct ReadOTLPRustBindData : public TableFunctionData {
 	vector<LogicalType> return_types;
 	vector<string> names;
 	bool schema_initialized = false;
-	bool is_union_metrics = false;
 
 	~ReadOTLPRustBindData() override {
 		if (schema_initialized && arrow_schema.release) {
@@ -136,10 +47,15 @@ struct ReadOTLPRustBindData : public TableFunctionData {
 struct ReadOTLPRustGlobalState : public GlobalTableFunctionState {
 	mutex lock;
 	atomic<idx_t> next_file {0};
+	// Number of files in the glob; one file is handed to each thread via the atomic
+	// next_file cursor, so the scan parallelizes across files (one file per task).
+	idx_t file_count = 1;
 
 	idx_t MaxThreads() const override {
-		// Start single-threaded for prototype
-		return 1;
+		// One file per thread: each thread pulls a distinct file via next_file and
+		// keeps fully isolated local state (file_buffer/current_batch). bind_data
+		// (schema) is read-only, so multi-file globs scan in parallel.
+		return MaxValue<idx_t>(1, file_count);
 	}
 };
 
@@ -148,18 +64,15 @@ struct ReadOTLPRustGlobalState : public GlobalTableFunctionState {
 // ============================================================================
 
 struct ReadOTLPRustLocalState : public LocalTableFunctionState {
-	OtlpParserHandle *parser = nullptr;
-	unique_ptr<FileHandle> current_file;
-	ArrowArrayStream current_stream;
-	bool stream_active = false;
+	ArrowArray current_batch;
+	bool batch_active = false;
+	idx_t batch_offset = 0;
 	string file_buffer;
+	vector<column_t> column_ids;
 
 	~ReadOTLPRustLocalState() override {
-		if (stream_active && current_stream.release) {
-			current_stream.release(&current_stream);
-		}
-		if (parser) {
-			otlp_parser_destroy(parser);
+		if (batch_active && current_batch.release) {
+			current_batch.release(&current_batch);
 		}
 	}
 };
@@ -196,22 +109,7 @@ static unique_ptr<FunctionData> ReadOTLPRustBind(ClientContext &context, TableFu
 	}
 	result->schema_initialized = true;
 
-	// Convert Arrow schema to DuckDB types
-	auto &schema = result->arrow_schema;
-	if (schema.n_children > 0 && !schema.children) {
-		throw IOException("Invalid Arrow schema: children array is null");
-	}
-	for (int64_t i = 0; i < schema.n_children; i++) {
-		auto child = schema.children[i];
-		if (!child) {
-			throw IOException("Invalid Arrow schema: child %lld is null", static_cast<int64_t>(i));
-		}
-		if (!child->name) {
-			throw IOException("Invalid Arrow schema: child %lld has null name", static_cast<int64_t>(i));
-		}
-		names.push_back(child->name);
-		return_types.push_back(ArrowFormatToDuckDBType(child->format));
-	}
+	GetArrowSchemaColumns(result->arrow_schema, return_types, names);
 
 	result->return_types = return_types;
 	result->names = names;
@@ -240,21 +138,6 @@ static unique_ptr<FunctionData> ReadOTLPMetricsSumRustBind(ClientContext &contex
 	return ReadOTLPRustBind(context, input, return_types, names, OTLP_SIGNAL_METRICS_SUM);
 }
 
-static unique_ptr<FunctionData> ReadOTLPMetricsRustBind(ClientContext &context, TableFunctionBindInput &input,
-                                                        vector<LogicalType> &return_types, vector<string> &names) {
-	// Use sum schema as base (has all columns)
-	auto result = ReadOTLPRustBind(context, input, return_types, names, OTLP_SIGNAL_METRICS_SUM);
-
-	// Add metric_type discriminator column
-	AddMetricTypeColumn(return_types, names);
-
-	// Store that this is union mode
-	auto &bind_data = result->CastNoConst<ReadOTLPRustBindData>();
-	bind_data.is_union_metrics = true;
-
-	return result;
-}
-
 // Unsupported metric types - throw on bind with clear error message
 static unique_ptr<FunctionData> ReadOTLPMetricsUnsupportedBind(ClientContext &context, TableFunctionBindInput &input,
                                                                vector<LogicalType> &return_types, vector<string> &names,
@@ -262,6 +145,15 @@ static unique_ptr<FunctionData> ReadOTLPMetricsUnsupportedBind(ClientContext &co
 	throw NotImplementedException("%s metrics not yet supported. "
 	                              "Use read_otlp_metrics_gauge() or read_otlp_metrics_sum() instead.",
 	                              metric_type);
+}
+
+static unique_ptr<FunctionData> ReadOTLPMetricsUnionUnsupportedBind(ClientContext &context,
+                                                                    TableFunctionBindInput &input,
+                                                                    vector<LogicalType> &return_types,
+                                                                    vector<string> &names) {
+	throw NotImplementedException("read_otlp_metrics() is not supported yet because OTLP metrics have multiple "
+	                              "shape-specific schemas. Use read_otlp_metrics_gauge(), read_otlp_metrics_sum(), "
+	                              "read_otlp_metrics_histogram(), or read_otlp_metrics_exp_histogram().");
 }
 
 static unique_ptr<FunctionData> ReadOTLPMetricsHistogramRustBind(ClientContext &context, TableFunctionBindInput &input,
@@ -295,238 +187,23 @@ static void ReadOTLPMetricsUnsupportedScan(ClientContext &context, TableFunction
 
 static unique_ptr<GlobalTableFunctionState> ReadOTLPRustInitGlobal(ClientContext &context,
                                                                    TableFunctionInitInput &input) {
-	return make_uniq<ReadOTLPRustGlobalState>();
+	auto result = make_uniq<ReadOTLPRustGlobalState>();
+	auto &bind_data = input.bind_data->Cast<ReadOTLPRustBindData>();
+	result->file_count = bind_data.files.size();
+	return std::move(result);
 }
 
 static unique_ptr<LocalTableFunctionState> ReadOTLPRustInitLocal(ExecutionContext &context,
                                                                  TableFunctionInitInput &input,
                                                                  GlobalTableFunctionState *global_state) {
 	auto result = make_uniq<ReadOTLPRustLocalState>();
-	auto &bind_data = input.bind_data->CastNoConst<ReadOTLPRustBindData>();
-
-	// Create Rust parser handle
-	OtlpStatus status = otlp_parser_create(bind_data.signal_type, bind_data.format, &result->parser);
-
-	if (status != OTLP_OK) {
-		throw IOException("Failed to create OTLP parser: %s", otlp_status_message(status));
-	}
-	if (!result->parser) {
-		throw IOException("OTLP parser creation succeeded but handle is null - internal error");
-	}
-
+	result->column_ids = input.column_ids;
 	return std::move(result);
-}
-
-// ============================================================================
-// Helper: Convert Arrow array to DuckDB vector
-// ============================================================================
-
-static void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vector &output, idx_t count) {
-	// Get the format string
-	std::string fmt(schema.format ? schema.format : "");
-
-	// Handle null values
-	const uint8_t *null_bitmap = nullptr;
-	if (array.n_buffers > 0 && array.buffers[0]) {
-		null_bitmap = static_cast<const uint8_t *>(array.buffers[0]);
-	}
-
-	auto &mask = FlatVector::Validity(output);
-
-	// String type: utf8 (32-bit offsets)
-	if (fmt == "u") {
-		// UTF-8 string array
-		// Buffer 0: validity, Buffer 1: offsets (int32), Buffer 2: data
-		if (array.n_buffers < 3) {
-			throw IOException("Invalid Arrow utf8 array: expected 3 buffers, got %lld",
-			                  static_cast<int64_t>(array.n_buffers));
-		}
-
-		const int32_t *offsets = static_cast<const int32_t *>(array.buffers[1]);
-		const char *data = static_cast<const char *>(array.buffers[2]);
-
-		auto *string_data = FlatVector::GetData<string_t>(output);
-
-		for (idx_t i = 0; i < count; i++) {
-			idx_t array_idx = i + array.offset;
-
-			// Check null
-			if (null_bitmap && !(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
-				mask.SetInvalid(i);
-				continue;
-			}
-
-			int32_t start = offsets[array_idx];
-			int32_t end = offsets[array_idx + 1];
-			int32_t len = end - start;
-
-			string_data[i] = StringVector::AddString(output, data + start, len);
-		}
-	}
-	// String type: large_utf8 (64-bit offsets)
-	else if (fmt == "U") {
-		// Large UTF-8 string array
-		// Buffer 0: validity, Buffer 1: offsets (int64), Buffer 2: data
-		if (array.n_buffers < 3) {
-			throw IOException("Invalid Arrow large_utf8 array: expected 3 buffers, got %lld",
-			                  static_cast<int64_t>(array.n_buffers));
-		}
-
-		const int64_t *offsets = static_cast<const int64_t *>(array.buffers[1]);
-		const char *data = static_cast<const char *>(array.buffers[2]);
-
-		auto *string_data = FlatVector::GetData<string_t>(output);
-
-		for (idx_t i = 0; i < count; i++) {
-			idx_t array_idx = i + array.offset;
-
-			// Check null
-			if (null_bitmap && !(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
-				mask.SetInvalid(i);
-				continue;
-			}
-
-			int64_t start = offsets[array_idx];
-			int64_t end = offsets[array_idx + 1];
-			int64_t len = end - start;
-
-			string_data[i] = StringVector::AddString(output, data + start, static_cast<idx_t>(len));
-		}
-	}
-	// Integer types
-	else if (fmt == "l") {
-		// INT64
-		if (array.n_buffers < 2) {
-			throw IOException("Invalid Arrow int64 array: expected at least 2 buffers, got %lld",
-			                  static_cast<int64_t>(array.n_buffers));
-		}
-		const int64_t *values = static_cast<const int64_t *>(array.buffers[1]);
-		auto *output_data = FlatVector::GetData<int64_t>(output);
-
-		for (idx_t i = 0; i < count; i++) {
-			idx_t array_idx = i + array.offset;
-			if (null_bitmap && !(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
-				mask.SetInvalid(i);
-				continue;
-			}
-			output_data[i] = values[array_idx];
-		}
-	} else if (fmt == "i") {
-		// INT32
-		if (array.n_buffers < 2) {
-			throw IOException("Invalid Arrow int32 array: expected at least 2 buffers, got %lld",
-			                  static_cast<int64_t>(array.n_buffers));
-		}
-		const int32_t *values = static_cast<const int32_t *>(array.buffers[1]);
-		auto *output_data = FlatVector::GetData<int32_t>(output);
-
-		for (idx_t i = 0; i < count; i++) {
-			idx_t array_idx = i + array.offset;
-			if (null_bitmap && !(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
-				mask.SetInvalid(i);
-				continue;
-			}
-			output_data[i] = values[array_idx];
-		}
-	}
-	// Float types
-	else if (fmt == "g") {
-		// DOUBLE
-		if (array.n_buffers < 2) {
-			throw IOException("Invalid Arrow double array: expected at least 2 buffers, got %lld",
-			                  static_cast<int64_t>(array.n_buffers));
-		}
-		const double *values = static_cast<const double *>(array.buffers[1]);
-		auto *output_data = FlatVector::GetData<double>(output);
-
-		for (idx_t i = 0; i < count; i++) {
-			idx_t array_idx = i + array.offset;
-			if (null_bitmap && !(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
-				mask.SetInvalid(i);
-				continue;
-			}
-			output_data[i] = values[array_idx];
-		}
-	}
-	// Boolean
-	else if (fmt == "b") {
-		if (array.n_buffers < 2) {
-			throw IOException("Invalid Arrow boolean array: expected at least 2 buffers, got %lld",
-			                  static_cast<int64_t>(array.n_buffers));
-		}
-		const uint8_t *values = static_cast<const uint8_t *>(array.buffers[1]);
-		auto *output_data = FlatVector::GetData<bool>(output);
-
-		for (idx_t i = 0; i < count; i++) {
-			idx_t array_idx = i + array.offset;
-			if (null_bitmap && !(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
-				mask.SetInvalid(i);
-				continue;
-			}
-			output_data[i] = (values[array_idx / 8] & (1 << (array_idx % 8))) != 0;
-		}
-	}
-	// Timestamp types
-	// Note: DuckDB's timestamp_t stores microseconds internally.
-	// - Millisecond timestamps (tsm) are converted: val * 1000
-	// - Microsecond timestamps (tsu) are used directly: val
-	// - Nanosecond timestamps (tsn) are truncated: val / 1000 (loses 3 digits precision)
-	else if (fmt.substr(0, 3) == "tsm" || fmt.substr(0, 3) == "tsu" || fmt.substr(0, 3) == "tsn") {
-		if (array.n_buffers < 2) {
-			throw IOException("Invalid Arrow timestamp array: expected at least 2 buffers, got %lld",
-			                  static_cast<int64_t>(array.n_buffers));
-		}
-		// Timestamps are stored as int64
-		const int64_t *values = static_cast<const int64_t *>(array.buffers[1]);
-		auto *output_data = FlatVector::GetData<timestamp_t>(output);
-
-		for (idx_t i = 0; i < count; i++) {
-			idx_t array_idx = i + array.offset;
-			if (null_bitmap && !(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
-				mask.SetInvalid(i);
-				continue;
-			}
-
-			int64_t val = values[array_idx];
-
-			// Convert based on unit
-			if (fmt.substr(0, 3) == "tsm") {
-				// Milliseconds to microseconds
-				output_data[i] = timestamp_t(val * 1000);
-			} else if (fmt.substr(0, 3) == "tsu") {
-				// Already microseconds
-				output_data[i] = timestamp_t(val);
-			} else {
-				// Nanoseconds to microseconds
-				output_data[i] = timestamp_t(val / 1000);
-			}
-		}
-	} else {
-		throw IOException("Unsupported Arrow format '%s' - cannot convert to DuckDB type", fmt.c_str());
-	}
 }
 
 // ============================================================================
 // Scan Function
 // ============================================================================
-
-// Scan function that combines gauge and sum metrics
-static void ReadOTLPMetricsUnionScan(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
-	auto &bind_data = data.bind_data->CastNoConst<ReadOTLPRustBindData>();
-	auto &gstate = data.global_state->Cast<ReadOTLPRustGlobalState>();
-	auto &lstate = data.local_state->Cast<ReadOTLPRustLocalState>();
-	auto &fs = FileSystem::GetFileSystem(context);
-
-	// Suppress unused variable warnings for now
-	(void)bind_data;
-	(void)gstate;
-	(void)lstate;
-	(void)fs;
-
-	// For now, just throw - we'll implement full union later
-	// TODO: Alternate between gauge and sum, add metric_type column
-	throw NotImplementedException("Union metrics scan not yet implemented");
-}
 
 static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
 	auto &bind_data = data.bind_data->CastNoConst<ReadOTLPRustBindData>();
@@ -535,52 +212,22 @@ static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, D
 	auto &fs = FileSystem::GetFileSystem(context);
 
 	while (true) {
-		// If we have an active stream, try to get next batch
-		if (lstate.stream_active) {
-			ArrowArray batch;
-			int err = lstate.current_stream.get_next(&lstate.current_stream, &batch);
-
-			if (err != 0) {
-				const char *msg = lstate.current_stream.get_last_error(&lstate.current_stream);
-				throw IOException("Arrow stream error: %s", msg ? msg : "unknown");
+		if (lstate.batch_active) {
+			if (lstate.current_batch.length < 0) {
+				throw IOException("Invalid Arrow batch: negative row count");
 			}
-
-			if (batch.release != nullptr) {
-				// We have a batch - convert to DuckDB DataChunk
-				idx_t row_count = batch.length;
-
-				if (row_count > 0) {
-					output.SetCardinality(row_count);
-
-					// The batch is a struct array - its children are the columns
-					for (idx_t col_idx = 0; col_idx < output.ColumnCount(); col_idx++) {
-						if (col_idx < (idx_t)batch.n_children) {
-							ArrowArray *col_array = batch.children[col_idx];
-							ArrowSchema *col_schema = bind_data.arrow_schema.children[col_idx];
-							if (!col_array) {
-								throw IOException("Invalid Arrow batch: column %llu array is null",
-								                  static_cast<uint64_t>(col_idx));
-							}
-							if (!col_schema) {
-								throw IOException("Invalid Arrow batch: column %llu schema is null",
-								                  static_cast<uint64_t>(col_idx));
-							}
-							CopyArrowToDuckDB(*col_array, *col_schema, output.data[col_idx], row_count);
-						}
-					}
-				}
-
-				// Release the batch
-				batch.release(&batch);
-
-				if (row_count > 0) {
-					return;
-				}
+			const auto row_count = static_cast<idx_t>(lstate.current_batch.length);
+			const auto remaining = row_count - lstate.batch_offset;
+			const auto count = MinValue<idx_t>(STANDARD_VECTOR_SIZE, remaining);
+			CopyProjectedArrowStructToDataChunk(lstate.current_batch, bind_data.arrow_schema, output, lstate.column_ids,
+			                                    lstate.batch_offset, count);
+			lstate.batch_offset += count;
+			if (lstate.batch_offset >= row_count) {
+				lstate.current_batch.release(&lstate.current_batch);
+				lstate.batch_active = false;
+				lstate.batch_offset = 0;
 			}
-
-			// Stream exhausted
-			lstate.current_stream.release(&lstate.current_stream);
-			lstate.stream_active = false;
+			return;
 		}
 
 		// Get next file
@@ -595,7 +242,10 @@ static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, D
 		auto &path = bind_data.files[file_idx];
 		auto handle = fs.OpenFile(path, FileOpenFlags::FILE_FLAGS_READ);
 
-		// Read entire file (for prototype - streaming would be better)
+		// Whole-file materialization: the entire file is read into file_buffer and the whole
+		// file is transformed into a single ArrowArray held in memory at once (input is capped
+		// at MAX_FILE_SIZE below). This is the prototype approach; a streaming/chunked reader
+		// that incrementally parses and yields batches is the intended future direction.
 		auto file_size = handle->GetFileSize();
 
 		// Limit file size to 100MB for safety
@@ -612,23 +262,112 @@ static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, D
 			                  static_cast<int64_t>(file_size), static_cast<uint64_t>(bytes_read));
 		}
 
-		// Push to Rust parser
-		OtlpStatus status = otlp_parser_push(
-		    lstate.parser, reinterpret_cast<const uint8_t *>(lstate.file_buffer.data()), lstate.file_buffer.size(),
-		    1 // is_final = true
-		);
+		ArrowArray array;
+		ArrowSchema schema;
+		const auto *input_bytes = reinterpret_cast<const uint8_t *>(lstate.file_buffer.data());
+		const auto input_len = lstate.file_buffer.size();
 
-		if (status != OTLP_OK) {
-			const char *err = otlp_parser_last_error(lstate.parser);
-			throw IOException("OTLP parse error on %s: %s", path, err ? err : otlp_status_message(status));
+		switch (bind_data.signal_type) {
+		case OTLP_SIGNAL_LOGS:
+		case OTLP_SIGNAL_TRACES: {
+			// Logs/Traces have a single shape; otlp_transform is the canonical verb for them.
+			OtlpStatus status =
+			    otlp_transform(bind_data.signal_type, bind_data.format, input_bytes, input_len, &array, &schema);
+			if (status != OTLP_OK) {
+				throw IOException("OTLP parse error on %s: %s", path, otlp_status_message(status));
+			}
+			// Schema was cached at bind time; release this copy and keep only the array.
+			if (schema.release) {
+				schema.release(&schema);
+			}
+			break;
+		}
+		case OTLP_SIGNAL_METRICS_GAUGE:
+		case OTLP_SIGNAL_METRICS_SUM:
+		case OTLP_SIGNAL_METRICS_HISTOGRAM:
+		case OTLP_SIGNAL_METRICS_EXP_HISTOGRAM: {
+			// Metrics: one parse yields all four shapes (otlp_transform_metrics_all is the single
+			// canonical metric verb). Keep only the requested shape's array; release every other
+			// present batch's array+schema plus the chosen batch's schema (the cached bind-time
+			// schema is used for conversion).
+			OtlpMetricsArrowBatches batches = {};
+			OtlpStatus status = otlp_transform_metrics_all(bind_data.format, input_bytes, input_len, &batches);
+			if (status != OTLP_OK) {
+				// On failure no batch is present; nothing to release.
+				throw IOException("OTLP parse error on %s: %s", path, otlp_status_message(status));
+			}
+
+			OtlpArrowBatch *chosen = nullptr;
+			switch (bind_data.signal_type) {
+			case OTLP_SIGNAL_METRICS_GAUGE:
+				chosen = &batches.gauge;
+				break;
+			case OTLP_SIGNAL_METRICS_SUM:
+				chosen = &batches.sum;
+				break;
+			case OTLP_SIGNAL_METRICS_HISTOGRAM:
+				chosen = &batches.histogram;
+				break;
+			default: // OTLP_SIGNAL_METRICS_EXP_HISTOGRAM
+				chosen = &batches.exp_histogram;
+				break;
+			}
+
+			// Release helper: free a present batch's array+schema and mark it absent so the
+			// later release_others pass cannot double-free the chosen batch.
+			auto release_batch = [](OtlpArrowBatch &batch) {
+				if (!batch.present) {
+					return;
+				}
+				if (batch.array.release) {
+					batch.array.release(&batch.array);
+				}
+				if (batch.schema.release) {
+					batch.schema.release(&batch.schema);
+				}
+				batch.present = 0;
+			};
+
+			// Keep the chosen array; release its schema (we convert via the cached bind-time
+			// schema). If the chosen shape is absent, leave array unreleasable below.
+			if (chosen->present) {
+				if (chosen->schema.release) {
+					chosen->schema.release(&chosen->schema);
+				}
+				array = chosen->array;
+			} else {
+				// No rows for this shape: synthesize an empty, no-op array.
+				array = {};
+			}
+			// Prevent the chosen batch from being released as an "other" below.
+			chosen->present = 0;
+
+			// Release every remaining present batch (array + schema) so nothing leaks.
+			release_batch(batches.gauge);
+			release_batch(batches.sum);
+			release_batch(batches.histogram);
+			release_batch(batches.exp_histogram);
+			break;
+		}
+		default:
+			throw IOException("Unsupported OTLP signal type for read scan");
 		}
 
-		// Drain batches from Rust
-		status = otlp_parser_drain(lstate.parser, &lstate.current_stream);
-		if (status != OTLP_OK) {
-			throw IOException("Failed to drain OTLP batches: %s", otlp_status_message(status));
+		if (array.length < 0) {
+			if (array.release) {
+				array.release(&array);
+			}
+			throw IOException("Invalid Arrow batch: negative row count");
 		}
-		lstate.stream_active = true;
+		if (array.release && array.length > 0) {
+			lstate.current_batch = array;
+			lstate.batch_active = true;
+			lstate.batch_offset = 0;
+			continue;
+		}
+		if (array.release) {
+			array.release(&array);
+		}
 	}
 }
 
@@ -640,50 +379,47 @@ void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
 	// read_otlp_logs
 	TableFunction logs_func("read_otlp_logs", {LogicalType::VARCHAR}, ReadOTLPRustScan, ReadOTLPLogsRustBind,
 	                        ReadOTLPRustInitGlobal, ReadOTLPRustInitLocal);
-	logs_func.projection_pushdown = false;
+	logs_func.projection_pushdown = true;
 	logs_func.filter_pushdown = false;
 	loader.RegisterFunction(logs_func);
 
 	// read_otlp_traces
 	TableFunction traces_func("read_otlp_traces", {LogicalType::VARCHAR}, ReadOTLPRustScan, ReadOTLPTracesRustBind,
 	                          ReadOTLPRustInitGlobal, ReadOTLPRustInitLocal);
-	traces_func.projection_pushdown = false;
+	traces_func.projection_pushdown = true;
 	traces_func.filter_pushdown = false;
 	loader.RegisterFunction(traces_func);
 
 	// read_otlp_metrics_gauge
 	TableFunction gauge_func("read_otlp_metrics_gauge", {LogicalType::VARCHAR}, ReadOTLPRustScan,
 	                         ReadOTLPMetricsGaugeRustBind, ReadOTLPRustInitGlobal, ReadOTLPRustInitLocal);
-	gauge_func.projection_pushdown = false;
+	gauge_func.projection_pushdown = true;
 	gauge_func.filter_pushdown = false;
 	loader.RegisterFunction(gauge_func);
 
 	// read_otlp_metrics_sum
 	TableFunction sum_func("read_otlp_metrics_sum", {LogicalType::VARCHAR}, ReadOTLPRustScan,
 	                       ReadOTLPMetricsSumRustBind, ReadOTLPRustInitGlobal, ReadOTLPRustInitLocal);
-	sum_func.projection_pushdown = false;
+	sum_func.projection_pushdown = true;
 	sum_func.filter_pushdown = false;
 	loader.RegisterFunction(sum_func);
 
-	// Union metrics (gauge + sum combined)
-	TableFunction metrics_func("read_otlp_metrics", {LogicalType::VARCHAR}, ReadOTLPMetricsUnionScan,
-	                           ReadOTLPMetricsRustBind, ReadOTLPRustInitGlobal, ReadOTLPRustInitLocal);
-	metrics_func.projection_pushdown = false;
-	metrics_func.filter_pushdown = false;
+	TableFunction metrics_func("read_otlp_metrics", {LogicalType::VARCHAR}, ReadOTLPMetricsUnsupportedScan,
+	                           ReadOTLPMetricsUnionUnsupportedBind);
 	loader.RegisterFunction(metrics_func);
 
 	// read_otlp_metrics_exp_histogram
 	TableFunction exp_histogram_func("read_otlp_metrics_exp_histogram", {LogicalType::VARCHAR}, ReadOTLPRustScan,
 	                                 ReadOTLPMetricsExpHistogramRustBind, ReadOTLPRustInitGlobal,
 	                                 ReadOTLPRustInitLocal);
-	exp_histogram_func.projection_pushdown = false;
+	exp_histogram_func.projection_pushdown = true;
 	exp_histogram_func.filter_pushdown = false;
 	loader.RegisterFunction(exp_histogram_func);
 
 	// read_otlp_metrics_histogram
 	TableFunction histogram_func("read_otlp_metrics_histogram", {LogicalType::VARCHAR}, ReadOTLPRustScan,
 	                             ReadOTLPMetricsHistogramRustBind, ReadOTLPRustInitGlobal, ReadOTLPRustInitLocal);
-	histogram_func.projection_pushdown = false;
+	histogram_func.projection_pushdown = true;
 	histogram_func.filter_pushdown = false;
 	loader.RegisterFunction(histogram_func);
 
@@ -693,5 +429,3 @@ void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
 }
 
 } // namespace duckdb
-
-#endif // OTLP_RUST_BACKEND

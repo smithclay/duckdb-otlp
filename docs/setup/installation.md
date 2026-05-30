@@ -1,4 +1,4 @@
-# Installation
+# How to Install the Extension
 
 Install the DuckDB OTLP extension to start querying OpenTelemetry data with SQL.
 
@@ -29,10 +29,12 @@ Try the extension in your browser without installation:
 **[→ Interactive Demo](https://smithclay.github.io/duckdb-otlp/)**
 
 The WASM demo supports:
-- JSON format only (protobuf requires native builds)
+- JSON, JSONL, and protobuf file reads
 - Loading sample OTLP data
 - Running SQL queries in-browser
-- Uploading your own JSONL files
+- Uploading your own files
+
+The live ingest server is available only in native builds.
 
 ## Build from Source
 
@@ -64,7 +66,7 @@ make wasm_eh
 # Output: build/wasm_eh/extension/otlp/otlp.duckdb_extension.wasm
 ```
 
-**Note**: WASM builds support JSON format only. Protobuf parsing requires native builds.
+**Note**: The live ingest server is not available in WASM builds.
 
 ## Verify Installation
 
@@ -75,37 +77,15 @@ Check that the extension loaded successfully:
 SELECT * FROM duckdb_extensions() WHERE extension_name = 'otlp';
 
 -- Test with sample data
-SELECT * FROM read_otlp_options();
-```
-
-## Usage
-
-Once installed, use the table functions to query OTLP data:
-
-```sql
-LOAD otlp;
-
--- Query traces
-SELECT TraceId, SpanName, Duration
-FROM read_otlp_traces('traces.jsonl')
-LIMIT 10;
-
--- Query logs
-SELECT Timestamp, SeverityText, Body
-FROM read_otlp_logs('logs.jsonl')
-WHERE SeverityText = 'ERROR';
-
--- Query metrics
-SELECT Timestamp, MetricName, Value
-FROM read_otlp_metrics_gauge('metrics.jsonl');
+SELECT count(*) FROM read_otlp_logs('test/data/logs_simple.jsonl');
 ```
 
 ## Next Steps
 
-- **Get OTLP Data**: See [Collector Setup](collector.md) to export data from OpenTelemetry Collector
-- **Sample Data**: See [Sample Data](sample-data.md) for test files
-- **Quick Start**: Follow the [Get Started Guide](../get-started.md)
-- **Examples**: Browse the [Cookbook](../guides/cookbook.md)
+- [Get Started](../get-started.md) - install, load, and run first queries.
+- [OpenTelemetry Collector](collector.md) - export OTLP files from the collector.
+- [Sample Data](sample-data.md) - use small test files.
+- [How-to Guides](../guides/README.md) - complete query, export, and dashboard tasks.
 
 ## Troubleshooting
 
@@ -126,16 +106,16 @@ LOAD otlp;
 
 If pre-built binaries aren't available for your platform, [build from source](../../CONTRIBUTING.md).
 
-### WASM Protobuf Errors
+### Live Ingest in WASM
 
 ```
-Error: Protobuf format not supported in WASM builds
+Error: otlp_serve is not implemented for the wasm platform
 ```
 
-WASM builds only support JSON format. Use native builds for protobuf, or convert protobuf files to JSON.
+The HTTP ingest server is native-only. Use a native DuckDB build for `otlp_serve`, `otlp_flush`, `otlp_stop`, and `otlp_server_list`.
 
 ## See Also
 
-- [Collector Setup](collector.md) - Configure OpenTelemetry Collector
+- [How to Configure the OpenTelemetry Collector](collector.md) - export OTLP files
 - [CONTRIBUTING.md](../../CONTRIBUTING.md) - Build instructions
-- [Get Started](../get-started.md) - Quick start tutorial
+- [Get Started](../get-started.md) - first queries and one HTTP ingest request

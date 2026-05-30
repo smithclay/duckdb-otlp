@@ -1,96 +1,61 @@
-# Filtering Logs
+# How to Filter Logs
 
-Learn how to query and filter OpenTelemetry log records using the DuckDB OTLP extension.
+Use `read_otlp_logs(path)` when you need to narrow OTLP log exports by severity, service, time, body text, attributes, or trace correlation.
 
-## Basic Log Filtering
-
-Filter logs by severity level to focus on errors and critical issues:
+## Severity and Service
 
 ```sql
-LOAD otlp;
-
-SELECT Timestamp, ServiceName, SeverityText, Body
-FROM read_otlp_logs('otel-export/*.jsonl')
-WHERE SeverityText IN ('ERROR', 'FATAL')
-ORDER BY Timestamp DESC;
-```
-
-## Filter by Service
-
-Target specific services using resource attributes:
-
-```sql
-SELECT Timestamp, SeverityText, Body
+SELECT timestamp, service_name, severity_text, body
 FROM read_otlp_logs('logs/*.jsonl')
-WHERE ServiceName = 'checkout-service'
-  AND SeverityText = 'ERROR';
+WHERE severity_text IN ('ERROR', 'FATAL')
+ORDER BY timestamp DESC;
 ```
-
-## Filter by Time Range
-
-Query logs within a specific time window:
 
 ```sql
-SELECT Timestamp, ServiceName, Body
+SELECT timestamp, severity_text, body
 FROM read_otlp_logs('logs/*.jsonl')
-WHERE Timestamp >= '2024-01-01 00:00:00'
-  AND Timestamp < '2024-01-02 00:00:00'
-  AND SeverityText = 'ERROR';
+WHERE service_name = 'checkout-service'
+  AND severity_text = 'ERROR';
 ```
 
-## Search Log Body Content
-
-Use pattern matching to find specific messages:
+## Time and Text Search
 
 ```sql
-SELECT Timestamp, ServiceName, Body
+SELECT timestamp, service_name, body
 FROM read_otlp_logs('logs/*.jsonl')
-WHERE Body LIKE '%timeout%'
-  OR Body LIKE '%connection failed%';
+WHERE timestamp >= '2026-05-30 00:00:00'
+  AND timestamp < '2026-05-31 00:00:00'
+  AND body LIKE '%timeout%';
 ```
 
-## Correlate Logs with Traces
-
-Join logs to traces using TraceId and SpanId:
+## Join Logs to Spans
 
 ```sql
 SELECT
-  l.Timestamp,
-  l.ServiceName,
-  l.Body,
-  t.SpanName,
-  t.Duration / 1000000 AS duration_ms
+  l.timestamp,
+  l.service_name,
+  l.body,
+  t.span_name,
+  t.duration / 1000000 AS duration_ms
 FROM read_otlp_logs('logs/*.jsonl') l
 JOIN read_otlp_traces('traces/*.jsonl') t
-  ON l.TraceId = t.TraceId
-  AND l.SpanId = t.SpanId
-WHERE l.SeverityText = 'ERROR';
+  ON l.trace_id = t.trace_id
+ AND l.span_id = t.span_id
+WHERE l.severity_text = 'ERROR';
 ```
 
-## Handle Noisy or Malformed Logs
+## Attributes
 
-Use error handling options to skip invalid log records:
+Attribute columns are JSON strings:
 
 ```sql
-SELECT *
-FROM read_otlp_logs('s3://otel-bucket/logs/*.jsonl', on_error := 'skip')
-WHERE SeverityText IN ('ERROR', 'FATAL');
+SELECT
+  timestamp,
+  service_name,
+  body,
+  json_extract_string(log_attributes, '$."error.type"') AS error_type
+FROM read_otlp_logs('logs/*.jsonl')
+WHERE json_extract_string(resource_attributes, '$."deployment.environment"') = 'prod';
 ```
 
-Check parse diagnostics:
-
-```sql
-SELECT * FROM read_otlp_scan_stats();
-```
-
-See the [Error Handling Guide](error-handling.md) for more details.
-
-## More Examples
-
-For additional recipes and patterns, see the [Cookbook](cookbook.md#filter-noisy-telemetry-during-ingest).
-
-## See Also
-
-- [API Reference](../reference/api.md#logs) - `read_otlp_logs` function signature
-- [Logs Schema](../reference/schemas.md#logs-read_otlp_logs) - All available columns
-- [Error Handling](error-handling.md) - Handle malformed data
+Malformed files fail fast; see [How to handle malformed input](error-handling.md).

@@ -168,24 +168,6 @@ All gauge columns are included, plus the two sum-specific columns above.
 | `exemplars_json` | VARCHAR | Exemplars as JSON array |
 | `aggregation_temporality` | INTEGER | Aggregation temporality (1=delta, 2=cumulative) |
 
-### Creating typed archive tables
-
-```sql
-CREATE TABLE archive_gauge AS
-SELECT * FROM read_otlp_metrics_gauge('otel-export/telemetry.jsonl');
-
-CREATE TABLE archive_sum AS
-SELECT * FROM read_otlp_metrics_sum('otel-export/telemetry.jsonl');
-
-CREATE TABLE archive_histogram AS
-SELECT * FROM read_otlp_metrics_histogram('otel-export/telemetry.jsonl');
-
-CREATE TABLE archive_exp_histogram AS
-SELECT * FROM read_otlp_metrics_exp_histogram('otel-export/telemetry.jsonl');
-```
-
-See the [cookbook](../guides/cookbook.md) for more recipes.
-
 ## Type system notes
 
 - `trace_id` and `span_id` are VARCHAR hex strings. Use `unhex()` to convert to binary if needed.
@@ -195,4 +177,4 @@ See the [cookbook](../guides/cookbook.md) for more recipes.
 
 ---
 
-Looking for end-to-end workflows? Head back to the [cookbook](../guides/cookbook.md). Need help generating telemetry? The [collector setup guide](../setup/collector.md) covers the OpenTelemetry Collector setup.
+For task-oriented queries and exports, use the [how-to guides](../guides/README.md).
