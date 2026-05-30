@@ -1,6 +1,7 @@
 #include "otlp_server.hpp"
 
 #include "duckdb/common/types/blob.hpp"
+#include "duckdb/logging/logger.hpp"
 #include "duckdb/main/appender.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/connection.hpp"
@@ -8,6 +9,7 @@
 #include "duckdb/main/query_result.hpp"
 
 #include "otlp_arrow.hpp"
+#include "otlp_log.hpp"
 
 #ifndef __EMSCRIPTEN__
 #include "httplib.hpp"
@@ -164,19 +166,50 @@ static const char *TableNameForSignal(OtlpSignalType signal_type) {
 OtlpServer::OtlpServer(ClientContext &context, OtlpUri uri_p, OtlpServerConfig config_p)
     : db_ptr(context.db), uri(std::move(uri_p)), config(std::move(config_p)) {
 	ValidateToken(config.token);
-	auto db = db_ptr.lock();
-	if (!db) {
+	if (!db_ptr.lock()) {
 		throw InternalException("Database was closed");
 	}
-	append_connection = make_uniq<Connection>(*db);
-	append_connection->context->config.enable_progress_bar = false;
 	EnsureTargetTables();
+}
+
+Connection &OtlpServer::GetWorkerConnection() {
+	auto tid = std::this_thread::get_id();
+	std::lock_guard<std::mutex> lock(connections_mutex);
+	auto it = worker_connections.find(tid);
+	if (it != worker_connections.end()) {
+		return *it->second;
+	}
+	auto db = db_ptr.lock();
+	if (!db) {
+		throw IOException("Database was closed");
+	}
+	auto con = make_uniq<Connection>(*db);
+	con->context->config.enable_progress_bar = false;
+	auto &ref = *con;
+	// unordered_map keeps element pointers stable across rehash, so `ref` stays
+	// valid after the lock is released and other workers insert their own entries.
+	worker_connections.emplace(tid, std::move(con));
+	return ref;
 }
 
 OtlpServer::~OtlpServer() {
 }
 
+void OtlpServer::LogServerEvent(const string &message) const {
+	auto db = db_ptr.lock();
+	if (!db) {
+		return;
+	}
+	auto &logger = Logger::Get(*db);
+	if (logger.ShouldLog(OtlpLogType::NAME, OtlpLogType::LEVEL)) {
+		logger.WriteLog(OtlpLogType::NAME, OtlpLogType::LEVEL, message);
+	}
+}
+
 void OtlpServer::ValidateToken(const string &token) {
+	// 16 is the deliberate floor for *user-supplied* tokens. Auto-generated tokens
+	// (GenerateRandomToken) carry a full 128 bits of entropy as 32 hex chars; the
+	// lower minimum only bounds how weak a hand-picked token may be.
 	if (token.size() < 16) {
 		throw InvalidInputException("OTLP server token must be at least 16 characters long");
 	}
@@ -184,33 +217,50 @@ void OtlpServer::ValidateToken(const string &token) {
 
 string OtlpServer::GenerateRandomToken(DatabaseInstance &db) {
 	auto encryption_util = db.GetEncryptionUtil(false);
+	if (!encryption_util) {
+		throw IOException("Cannot generate OTLP server token: no encryption/RNG provider is available");
+	}
 	auto metadata =
 	    make_uniq<EncryptionStateMetadata>(EncryptionTypes::GCM, TOKEN_BYTES, EncryptionTypes::EncryptionVersion::NONE);
 	auto rng = encryption_util->CreateEncryptionState(std::move(metadata));
+	if (!rng) {
+		throw IOException("Cannot generate OTLP server token: RNG state could not be created");
+	}
 	data_t bytes[TOKEN_BYTES];
 	rng->GenerateRandomData(bytes, TOKEN_BYTES);
 	return HexEncode(bytes, TOKEN_BYTES);
 }
 
 bool OtlpServer::CheckAuth(const string &authorization, const string &api_key) const {
-	string supplied;
-	// RFC 7235 auth schemes are case-insensitive; exporters/proxies may send "bearer".
+	// Accept the request if EITHER a Bearer token OR an x-api-key matches. Checking
+	// both independently avoids a wrong/malformed Authorization header masking a
+	// valid x-api-key (and vice versa). RFC 7235 schemes are case-insensitive.
 	if (authorization.size() >= 7 && StringUtil::Lower(authorization.substr(0, 7)) == "bearer ") {
-		supplied = authorization.substr(7);
-	} else if (!api_key.empty()) {
-		supplied = api_key;
+		auto bearer = authorization.substr(7);
+		if (!bearer.empty() && TimingSafeEqual(bearer, config.token)) {
+			return true;
+		}
 	}
-	return !supplied.empty() && TimingSafeEqual(supplied, config.token);
+	if (!api_key.empty() && TimingSafeEqual(api_key, config.token)) {
+		return true;
+	}
+	return false;
 }
 
 void OtlpServer::EnsureTargetTables() {
-	std::lock_guard<std::mutex> lock(append_mutex);
+	auto db = db_ptr.lock();
+	if (!db) {
+		throw InternalException("Database was closed");
+	}
+	// Runs once at construction (single-threaded), so a throwaway connection is fine.
+	Connection con(*db);
+	con.context->config.enable_progress_bar = false;
 	for (auto &target : TARGET_TABLES) {
-		CreateOrValidateTable(target.signal_type, target.table_name);
+		CreateOrValidateTable(con, target.signal_type, target.table_name);
 	}
 }
 
-void OtlpServer::CreateOrValidateTable(OtlpSignalType signal_type, const string &table_name) {
+void OtlpServer::CreateOrValidateTable(Connection &con, OtlpSignalType signal_type, const string &table_name) {
 	ArrowSchema arrow_schema;
 	OtlpStatus status = otlp_get_schema(signal_type, &arrow_schema);
 	if (status != OTLP_OK) {
@@ -232,10 +282,10 @@ void OtlpServer::CreateOrValidateTable(OtlpSignalType signal_type, const string 
 				sql += QuoteIdentifier(expected_names[i]) + " " + expected_types[i].ToString();
 			}
 			sql += ")";
-			RunSQL(*append_connection, sql);
+			RunSQL(con, sql);
 		}
 
-		auto result = append_connection->Query("SELECT * FROM " + qualified + " LIMIT 0");
+		auto result = con.Query("SELECT * FROM " + qualified + " LIMIT 0");
 		if (!result || result->HasError()) {
 			throw IOException("Target table %s is not available: %s", qualified,
 			                  result ? result->GetError() : "query failed");
@@ -279,46 +329,57 @@ OtlpIngestResult OtlpServer::Ingest(OtlpRequestKind kind, const string &content_
 	}
 	auto format = FormatFromContentType(content_type);
 
-	std::lock_guard<std::mutex> lock(append_mutex);
+	// Each worker thread owns its Connection, so concurrent requests run in
+	// parallel; this request's transaction is fully isolated and either commits
+	// all signals or rolls them all back.
+	auto &con = GetWorkerConnection();
 	OtlpIngestResult result;
-	RunSQL(*append_connection, "BEGIN TRANSACTION");
+	RunSQL(con, "BEGIN TRANSACTION");
 	try {
-		TransformAndAppend(kind, body, format, result);
-		RunSQL(*append_connection, "COMMIT");
+		TransformAndAppend(con, kind, body, format, result);
+		RunSQL(con, "COMMIT");
 		total_rows.fetch_add(result.rows);
 		return result;
 	} catch (...) {
 		try {
-			RunSQL(*append_connection, "ROLLBACK");
-		} catch (...) {
+			RunSQL(con, "ROLLBACK");
+		} catch (std::exception &rollback_ex) {
+			// The original ingest error is rethrown below; surface the rollback
+			// failure too so a wedged transaction state isn't lost silently.
+			LogServerEvent(StringUtil::Format("ingest rollback failed: %s", rollback_ex.what()));
 		}
 		throw;
 	}
 }
 
-void OtlpServer::TransformAndAppend(OtlpRequestKind request_kind, const string &body, OtlpInputFormat format,
-                                    OtlpIngestResult &result) {
+void OtlpServer::TransformAndAppend(Connection &con, OtlpRequestKind request_kind, const string &body,
+                                    OtlpInputFormat format, OtlpIngestResult &result) {
 	switch (request_kind) {
 	case OtlpRequestKind::LOGS:
-		AppendSignal(OTLP_SIGNAL_LOGS, TableNameForSignal(OTLP_SIGNAL_LOGS), body, format, result);
+		AppendSignal(con, OTLP_SIGNAL_LOGS, TableNameForSignal(OTLP_SIGNAL_LOGS), body, format, result);
 		break;
 	case OtlpRequestKind::TRACES:
-		AppendSignal(OTLP_SIGNAL_TRACES, TableNameForSignal(OTLP_SIGNAL_TRACES), body, format, result);
+		AppendSignal(con, OTLP_SIGNAL_TRACES, TableNameForSignal(OTLP_SIGNAL_TRACES), body, format, result);
 		break;
 	case OtlpRequestKind::METRICS:
-		AppendSignal(OTLP_SIGNAL_METRICS_GAUGE, TableNameForSignal(OTLP_SIGNAL_METRICS_GAUGE), body, format, result);
-		AppendSignal(OTLP_SIGNAL_METRICS_SUM, TableNameForSignal(OTLP_SIGNAL_METRICS_SUM), body, format, result);
-		AppendSignal(OTLP_SIGNAL_METRICS_HISTOGRAM, TableNameForSignal(OTLP_SIGNAL_METRICS_HISTOGRAM), body, format,
+		// TODO(perf): this re-parses `body` once per metric shape (4x). Collapsing to
+		// a single parse requires an otlp2records FFI change that fans one parse out
+		// to all present shapes; tracked as a follow-up (see AGENTS.md Known
+		// Limitations). Kept as 4 calls for now to stay on the stable single-signal FFI.
+		AppendSignal(con, OTLP_SIGNAL_METRICS_GAUGE, TableNameForSignal(OTLP_SIGNAL_METRICS_GAUGE), body, format,
 		             result);
-		AppendSignal(OTLP_SIGNAL_METRICS_EXP_HISTOGRAM, TableNameForSignal(OTLP_SIGNAL_METRICS_EXP_HISTOGRAM), body,
+		AppendSignal(con, OTLP_SIGNAL_METRICS_SUM, TableNameForSignal(OTLP_SIGNAL_METRICS_SUM), body, format, result);
+		AppendSignal(con, OTLP_SIGNAL_METRICS_HISTOGRAM, TableNameForSignal(OTLP_SIGNAL_METRICS_HISTOGRAM), body,
 		             format, result);
+		AppendSignal(con, OTLP_SIGNAL_METRICS_EXP_HISTOGRAM, TableNameForSignal(OTLP_SIGNAL_METRICS_EXP_HISTOGRAM),
+		             body, format, result);
 		break;
 	default:
 		throw InternalException("Unknown OTLP request kind");
 	}
 }
 
-void OtlpServer::AppendSignal(OtlpSignalType signal_type, const string &table_name, const string &body,
+void OtlpServer::AppendSignal(Connection &con, OtlpSignalType signal_type, const string &table_name, const string &body,
                               OtlpInputFormat format, OtlpIngestResult &result) {
 	ArrowArray array;
 	ArrowSchema schema;
@@ -330,7 +391,7 @@ void OtlpServer::AppendSignal(OtlpSignalType signal_type, const string &table_na
 	}
 
 	try {
-		AppendArrowBatch(table_name, array, schema, result);
+		AppendArrowBatch(con, table_name, array, schema, result);
 	} catch (...) {
 		if (array.release) {
 			array.release(&array);
@@ -348,8 +409,8 @@ void OtlpServer::AppendSignal(OtlpSignalType signal_type, const string &table_na
 	}
 }
 
-void OtlpServer::AppendArrowBatch(const string &table_name, const ArrowArray &array, const ArrowSchema &schema,
-                                  OtlpIngestResult &result) {
+void OtlpServer::AppendArrowBatch(Connection &con, const string &table_name, const ArrowArray &array,
+                                  const ArrowSchema &schema, OtlpIngestResult &result) {
 	if (array.length <= 0) {
 		return;
 	}
@@ -358,8 +419,8 @@ void OtlpServer::AppendArrowBatch(const string &table_name, const ArrowArray &ar
 	vector<string> names;
 	GetArrowSchemaColumns(schema, types, names);
 	DataChunk chunk;
-	chunk.Initialize(Allocator::Get(*append_connection->context), types, APPEND_CHUNK_SIZE);
-	Appender appender(*append_connection, config.schema_name, table_name);
+	chunk.Initialize(Allocator::Get(*con.context), types, APPEND_CHUNK_SIZE);
+	Appender appender(con, config.schema_name, table_name);
 
 	for (idx_t offset = 0; offset < static_cast<idx_t>(array.length); offset += APPEND_CHUNK_SIZE) {
 		auto count = MinValue<idx_t>(APPEND_CHUNK_SIZE, static_cast<idx_t>(array.length) - offset);
@@ -391,11 +452,16 @@ static void SetError(duckdb_httplib::Response &res, int status, const string &re
 HttpOtlpServer::HttpOtlpServer(ClientContext &context, const OtlpUri &uri_p, OtlpServerConfig config_p)
     : OtlpServer(context, uri_p, config_p), impl(make_uniq<Impl>()) {
 	impl->server = make_uniq<duckdb_httplib::Server>();
+	// Wide worker pool (mirrors duckdb-quack): each keep-alive connection holds a
+	// worker thread for its lifetime, so we need enough threads to serve many
+	// concurrent exporters at once. Each worker uses its own DuckDB Connection
+	// (see OtlpServer::GetWorkerConnection), so requests parse/append in parallel
+	// and only DuckDB's per-table append lock briefly serializes the commit.
 	impl->server->new_task_queue = [] {
-		return new duckdb_httplib::ThreadPool(1);
+		return new duckdb_httplib::ThreadPool(128);
 	};
-	impl->server->set_keep_alive_max_count(8);
-	impl->server->set_keep_alive_timeout(5);
+	impl->server->set_keep_alive_max_count(128);
+	impl->server->set_keep_alive_timeout(10);
 	impl->server->set_tcp_nodelay(true);
 	impl->server->set_payload_max_length(static_cast<size_t>(config_p.max_body_bytes));
 
@@ -433,8 +499,12 @@ HttpOtlpServer::HttpOtlpServer(ClientContext &context, const OtlpUri &uri_p, Otl
 			} catch (InvalidInputException &ex) {
 				SetError(res, 400, "bad_request", ex.what());
 			} catch (IOException &ex) {
+				// 500-class failures are otherwise only visible in the client's
+				// response body; log them so the operator has a server-side trace.
+				LogServerEvent(StringUtil::Format("ingest I/O error: %s", ex.what()));
 				SetError(res, 500, "internal_error", ex.what());
 			} catch (std::exception &ex) {
+				LogServerEvent(StringUtil::Format("ingest internal error: %s", ex.what()));
 				SetError(res, 500, "internal_error", ex.what());
 			}
 		};
@@ -492,8 +562,24 @@ void HttpOtlpServer::ListenThread(HttpOtlpServer *server) {
 	// exception escape — that would call std::terminate and abort the host process.
 	try {
 		server->impl->server->listen_after_bind();
+	} catch (std::exception &ex) {
+		server->is_running.store(false);
+		server->listener_failed.store(true);
+		{
+			std::lock_guard<std::mutex> lock(server->error_mutex);
+			server->last_error = ex.what();
+		}
+		server->LogServerEvent(
+		    StringUtil::Format("OTLP listener for %s stopped: %s", server->ListenUri().Uri(), ex.what()));
 	} catch (...) {
 		server->is_running.store(false);
+		server->listener_failed.store(true);
+		{
+			std::lock_guard<std::mutex> lock(server->error_mutex);
+			server->last_error = "unknown error in listen loop";
+		}
+		server->LogServerEvent(
+		    StringUtil::Format("OTLP listener for %s stopped: unknown error", server->ListenUri().Uri()));
 	}
 }
 

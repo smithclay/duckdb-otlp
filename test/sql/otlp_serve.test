@@ -1,6 +1,14 @@
 # name: test/sql/otlp_serve.test
 # description: Test OTLP HTTP server lifecycle SQL functions
 # group: [sql]
+#
+# Coverage note: SQLLogicTest cannot issue HTTP POSTs, so this file covers only
+# the lifecycle/bind surface (serve/list/stop, validation, hostname gating,
+# schema/column validation, the is_listening/last_error columns). The ingest hot
+# path — auth (Bearer/x-api-key), content-type -> format, gzip rejection, 413,
+# the 4-signal metrics fan-out, per-request transaction atomicity, and Arrow ->
+# DuckDB conversion under concurrency — is exercised end-to-end by
+# test/manual/otlp_serve_concurrency.py (run manually, ideally under TSan/ASan).
 
 require otlp
 
@@ -26,6 +34,13 @@ FROM otlp_server_list()
 WHERE listen_uri = 'otlp:127.0.0.1:55439';
 ----
 otlp:127.0.0.1:55439	main	0
+
+# a freshly-started server reports itself listening with no error
+query I
+SELECT count(*) FROM otlp_server_list()
+WHERE listen_uri = 'otlp:127.0.0.1:55439' AND is_listening AND last_error IS NULL;
+----
+1
 
 query T
 SELECT status FROM otlp_stop('otlp:127.0.0.1:55439');

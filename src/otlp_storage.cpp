@@ -3,6 +3,8 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
 
+#include <algorithm>
+
 namespace duckdb {
 
 OtlpStorageExtension::OtlpStorageExtension() {
@@ -88,8 +90,13 @@ vector<OtlpStorageExtensionInfo::ServerSnapshot> OtlpStorageExtensionInfo::ListS
 		snap.active_requests = server.ActiveRequests();
 		snap.total_requests = server.TotalRequests();
 		snap.total_rows = server.TotalRows();
+		snap.is_listening = server.IsListening();
+		snap.last_error = server.LastError();
 		result.push_back(std::move(snap));
 	}
+	// servers is an unordered_map; sort for deterministic output order.
+	std::sort(result.begin(), result.end(),
+	          [](const ServerSnapshot &a, const ServerSnapshot &b) { return a.listen_uri < b.listen_uri; });
 	return result;
 }
 

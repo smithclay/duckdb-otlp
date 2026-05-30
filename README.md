@@ -34,6 +34,7 @@ LIMIT 5;
 ## What you can do
 
 - **Analyze production telemetry** - Query OTLP file exports with familiar SQL syntax
+- **Stream live telemetry in** - Run an OTLP/HTTP server and POST exports straight into DuckDB tables
 - **Archive to your data lake** - Convert OpenTelemetry data to Parquet with schemas intact
 - **Debug faster** - Filter logs by severity, find slow traces, aggregate metrics
 - **Integrate with data tools** - Use DuckDB's ecosystem (MotherDuck, Jupyter, DBT, etc.)
@@ -89,6 +90,28 @@ FROM read_otlp_metrics_gauge('metrics/*.jsonl');
 
 **[→ See more examples in the Cookbook](docs/guides/cookbook.md)**
 
+### Stream live OTLP exports into DuckDB
+
+```sql
+-- Start an OTLP/HTTP server (native builds only)
+SELECT listen_url, auth_token
+FROM otlp_serve('otlp:localhost:4318', token := 'dev-token-123456');
+```
+
+```bash
+# Point any OpenTelemetry exporter at it, or POST directly:
+curl -sS http://localhost:4318/v1/logs \
+  -H 'Content-Type: application/x-ndjson' \
+  -H 'Authorization: Bearer dev-token-123456' \
+  --data-binary @test/data/logs_simple.jsonl
+```
+
+```sql
+SELECT count(*) FROM otlp_logs;  -- rows landed live
+```
+
+**[→ Live Ingest Quickstart](docs/quickstart/serve.md)**
+
 ## Limits
 
 Individual files are limited to **100 MB** to prevent memory exhaustion. This applies to entire protobuf files or individual documents in JSONL files.
@@ -104,7 +127,15 @@ Individual files are limited to **100 MB** to prevent memory exhaustion. This ap
 | `read_otlp_metrics_gauge(path)` | Read gauge metrics (16 columns) |
 | `read_otlp_metrics_sum(path)` | Read sum/counter metrics (18 columns) with aggregation temporality |
 
-**[→ Full API Reference](docs/reference/api.md)**
+**Live Ingest** (native builds only)
+
+| Function | What it does |
+|----------|-------------|
+| `otlp_serve([uri], ...)` | Start an OTLP/HTTP server that appends `/v1/logs`, `/v1/traces`, `/v1/metrics` POSTs into DuckDB tables |
+| `otlp_stop(uri)` | Stop a running server |
+| `otlp_server_list()` | List running servers with live request/row counters |
+
+**[→ Full API Reference](docs/reference/api.md)** · **[→ Live Ingest Server](docs/reference/serve.md)**
 
 **Features**
 

@@ -12,6 +12,10 @@ Welcome to the DuckDB OTLP Extension documentation. Find what you need:
 
 → **[Main README](../README.md)** - Quick examples and use cases
 
+**Want to stream live telemetry in?**
+
+→ **[Live Ingest Quickstart](quickstart/serve.md)** - Run the OTLP HTTP server and POST exports straight into DuckDB tables
+
 ## 📚 Guides
 
 Task-based tutorials with real-world examples:
@@ -38,6 +42,7 @@ Detailed technical documentation:
 
 - **[Table Functions](reference/api.md)** - Function signatures and parameters
 - **[Schemas](reference/schemas.md)** - Complete schema reference for traces (25 columns), logs (15 columns), and metrics (16-18 columns)
+- **[Live Ingest Server](reference/serve.md)** - `otlp_serve` / `otlp_stop` / `otlp_server_list`, HTTP endpoints, auth, and concurrency
 
 ## ⚙️ Setup
 

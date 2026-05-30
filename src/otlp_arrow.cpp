@@ -134,8 +134,11 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 
 			int32_t start = offsets[array_idx];
 			int32_t end = offsets[array_idx + 1];
-			int32_t len = end - start;
-			string_data[i] = StringVector::AddString(output, data + start, len);
+			if (start < 0 || end < start) {
+				throw IOException("Invalid Arrow utf8 offsets: start=%lld end=%lld", static_cast<int64_t>(start),
+				                  static_cast<int64_t>(end));
+			}
+			string_data[i] = StringVector::AddString(output, data + start, static_cast<idx_t>(end - start));
 		}
 	} else if (fmt == "U") {
 		if (array.n_buffers < 3) {
@@ -157,8 +160,10 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 
 			int64_t start = offsets[array_idx];
 			int64_t end = offsets[array_idx + 1];
-			int64_t len = end - start;
-			string_data[i] = StringVector::AddString(output, data + start, static_cast<idx_t>(len));
+			if (start < 0 || end < start) {
+				throw IOException("Invalid Arrow large_utf8 offsets: start=%lld end=%lld", start, end);
+			}
+			string_data[i] = StringVector::AddString(output, data + start, static_cast<idx_t>(end - start));
 		}
 	} else if (fmt == "l" || fmt == "L" || fmt == "i" || fmt == "I" || fmt == "s" || fmt == "S" || fmt == "c" ||
 	           fmt == "C") {
@@ -264,6 +269,9 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 			}
 			int64_t start = offset_at(array_idx);
 			int64_t len = offset_at(array_idx + 1) - start;
+			if (start < 0 || len < 0) {
+				throw IOException("Invalid Arrow binary offsets: start=%lld len=%lld", start, len);
+			}
 			string_data[i] = StringVector::AddStringOrBlob(output, data + start, static_cast<idx_t>(len));
 		}
 	} else if (fmt == "b") {
@@ -344,6 +352,9 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 
 		const int64_t first_child = offset_at(0);
 		const int64_t last_child = offset_at(count);
+		if (first_child < 0 || last_child < first_child) {
+			throw IOException("Invalid Arrow list offsets: first=%lld last=%lld", first_child, last_child);
+		}
 		const idx_t child_count = static_cast<idx_t>(last_child - first_child);
 
 		auto *entries = FlatVector::GetData<list_entry_t>(output);
@@ -357,6 +368,9 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 			}
 			int64_t start = offset_at(i);
 			int64_t end = offset_at(i + 1);
+			if (start < first_child || end < start) {
+				throw IOException("Invalid Arrow list row offsets: start=%lld end=%lld", start, end);
+			}
 			entries[i].offset = static_cast<idx_t>(start - first_child);
 			entries[i].length = static_cast<idx_t>(end - start);
 		}

@@ -111,6 +111,9 @@ static void OtlpServe(ClientContext &context, TableFunctionInput &data_p, DataCh
 
 	auto &state = OtlpStorageExtensionInfo::GetState(*context.db);
 	state.CreateServer(context, bind_data.listen_uri, bind_data.config);
+	// Mark finished as soon as the server exists: if any SetValue below throws, a
+	// re-scan must not try to create the (already running) server again.
+	bind_data.finished = true;
 
 	output.SetValue(0, 0, bind_data.listen_uri.Uri());
 	output.SetValue(1, 0, bind_data.listen_uri.Http());
@@ -123,7 +126,6 @@ static void OtlpServe(ClientContext &context, TableFunctionInput &data_p, DataCh
 	output.SetValue(8, 0, "otlp_metrics_histogram");
 	output.SetValue(9, 0, "otlp_metrics_exp_histogram");
 	output.SetCardinality(1);
-	bind_data.finished = true;
 }
 
 TableFunctionSet OtlpServeFunction::GetFunction() {
@@ -173,7 +175,9 @@ TableFunction OtlpStopFunction::GetFunction() {
 }
 
 struct OtlpServerListFunctionData : public TableFunctionData {
-	bool finished = false;
+	bool initialized = false;
+	idx_t offset = 0;
+	vector<OtlpStorageExtensionInfo::ServerSnapshot> snapshots;
 };
 
 static unique_ptr<FunctionData> OtlpServerListBind(ClientContext &context, TableFunctionBindInput &input,
@@ -194,17 +198,24 @@ static unique_ptr<FunctionData> OtlpServerListBind(ClientContext &context, Table
 	return_types.emplace_back(OtlpUBigIntType());
 	names.emplace_back("total_rows");
 	return_types.emplace_back(OtlpUBigIntType());
+	names.emplace_back("is_listening");
+	return_types.emplace_back(OtlpBooleanType());
+	names.emplace_back("last_error");
+	return_types.emplace_back(OtlpVarcharType());
 	return make_uniq<OtlpServerListFunctionData>();
 }
 
 static void OtlpServerList(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
 	auto &bind_data = data_p.bind_data->CastNoConst<OtlpServerListFunctionData>();
-	if (bind_data.finished) {
-		return;
+	// Snapshot once on the first call, then page out STANDARD_VECTOR_SIZE rows per
+	// scan so a large server count never overflows a single DataChunk.
+	if (!bind_data.initialized) {
+		bind_data.snapshots = OtlpStorageExtensionInfo::GetState(*context.db).ListServers();
+		bind_data.initialized = true;
 	}
-	auto snapshots = OtlpStorageExtensionInfo::GetState(*context.db).ListServers();
 	idx_t row = 0;
-	for (auto &s : snapshots) {
+	while (bind_data.offset < bind_data.snapshots.size() && row < STANDARD_VECTOR_SIZE) {
+		auto &s = bind_data.snapshots[bind_data.offset];
 		output.SetValue(0, row, Value(s.listen_uri));
 		output.SetValue(1, row, Value(s.listen_url));
 		output.SetValue(2, row, Value(s.host));
@@ -213,10 +224,12 @@ static void OtlpServerList(ClientContext &context, TableFunctionInput &data_p, D
 		output.SetValue(5, row, Value::UBIGINT(s.active_requests));
 		output.SetValue(6, row, Value::UBIGINT(s.total_requests));
 		output.SetValue(7, row, Value::UBIGINT(s.total_rows));
+		output.SetValue(8, row, Value::BOOLEAN(s.is_listening));
+		output.SetValue(9, row, s.last_error.empty() ? Value(LogicalType::VARCHAR) : Value(s.last_error));
 		row++;
+		bind_data.offset++;
 	}
 	output.SetCardinality(row);
-	bind_data.finished = true;
 }
 
 TableFunction OtlpServerListFunction::GetFunction() {

@@ -30,6 +30,8 @@ public:
 		idx_t active_requests;
 		idx_t total_requests;
 		idx_t total_rows;
+		bool is_listening;
+		string last_error;
 	};
 
 	vector<ServerSnapshot> ListServers();

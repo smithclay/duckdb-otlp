@@ -44,6 +44,17 @@ public:
 	//! teardown joins all workers, which would deadlock.
 	virtual void Close() {};
 
+	//! Whether the server is currently accepting connections. False once the
+	//! listener thread has exited (e.g. an error after a successful bind), so an
+	//! operator can tell a registered server has fallen over.
+	virtual bool IsListening() const {
+		return true;
+	}
+	//! Last fatal listener error, or empty if none.
+	virtual string LastError() const {
+		return string();
+	}
+
 	//! Generate a fresh CSPRNG-backed 128-bit token, hex-encoded (32 chars).
 	static string GenerateRandomToken(DatabaseInstance &db);
 
@@ -74,6 +85,9 @@ protected:
 	OtlpIngestResult Ingest(OtlpRequestKind kind, const string &content_type, const string &content_encoding,
 	                        const string &body);
 	void EnsureTargetTables();
+	//! Write a server-side diagnostic to duckdb_logs under the OTLP log type. No-op
+	//! if the database has been closed. Safe to call from any worker thread.
+	void LogServerEvent(const string &message) const;
 
 protected:
 	std::vector<std::thread> listen_threads;
@@ -82,18 +96,26 @@ protected:
 	std::atomic<idx_t> total_rows {0};
 
 private:
-	void TransformAndAppend(OtlpRequestKind request_kind, const string &body, OtlpInputFormat format,
+	//! Return this worker thread's long-lived Connection, lazily creating one on
+	//! first use. Each httplib worker thread gets its own Connection so requests
+	//! run concurrently; only DuckDB's per-table append lock briefly serializes at
+	//! commit. A Connection is never shared between threads, so no request-path
+	//! mutex is needed and each request's BEGIN/COMMIT is isolated and atomic.
+	Connection &GetWorkerConnection();
+	void TransformAndAppend(Connection &con, OtlpRequestKind request_kind, const string &body, OtlpInputFormat format,
 	                        OtlpIngestResult &result);
-	void AppendSignal(OtlpSignalType signal_type, const string &table_name, const string &body, OtlpInputFormat format,
-	                  OtlpIngestResult &result);
-	void AppendArrowBatch(const string &table_name, const ArrowArray &array, const ArrowSchema &schema,
+	void AppendSignal(Connection &con, OtlpSignalType signal_type, const string &table_name, const string &body,
+	                  OtlpInputFormat format, OtlpIngestResult &result);
+	void AppendArrowBatch(Connection &con, const string &table_name, const ArrowArray &array, const ArrowSchema &schema,
 	                      OtlpIngestResult &result);
-	void CreateOrValidateTable(OtlpSignalType signal_type, const string &table_name);
+	void CreateOrValidateTable(Connection &con, OtlpSignalType signal_type, const string &table_name);
 
 private:
 	weak_ptr<DatabaseInstance> db_ptr;
-	unique_ptr<Connection> append_connection;
-	mutex append_mutex;
+	//! Guards worker_connections structural mutation only (find/insert), not query
+	//! execution — a worker only ever touches its own Connection.
+	mutex connections_mutex;
+	unordered_map<std::thread::id, unique_ptr<Connection>> worker_connections;
 	OtlpUri uri;
 	OtlpServerConfig config;
 };
@@ -103,6 +125,13 @@ public:
 	HttpOtlpServer(ClientContext &context, const OtlpUri &uri, OtlpServerConfig config);
 	void StopAccepting() override;
 	void Close() override;
+	bool IsListening() const override {
+		return is_running.load() && !listener_failed.load();
+	}
+	string LastError() const override {
+		std::lock_guard<std::mutex> lock(error_mutex);
+		return last_error;
+	}
 	~HttpOtlpServer() override;
 
 private:
@@ -112,6 +141,9 @@ private:
 	class Impl;
 	unique_ptr<Impl> impl;
 	std::atomic<bool> is_running {false};
+	std::atomic<bool> listener_failed {false};
+	mutable mutex error_mutex;
+	string last_error;
 };
 
 } // namespace duckdb

@@ -41,6 +41,16 @@ Returns sum/counter metrics (18 columns) with `value`, `aggregation_temporality`
 > - `read_otlp_metrics_exp_histogram(path)` - Exponential histogram metrics
 > - `read_otlp_metrics_summary(path)` - Summary metrics
 
+## Live Ingest
+
+In native builds, the extension can also run an HTTP server that accepts live OTLP/HTTP exports and appends them into DuckDB tables:
+
+- **`otlp_serve([uri], ...)`** - Start the ingest server and create/validate the target tables.
+- **`otlp_stop(uri)`** - Stop the server listening on `uri`.
+- **`otlp_server_list()`** - List running servers with live request/row counters and health.
+
+See the [Serve Reference](serve.md) for parameters, endpoints, auth, and the concurrency model, or the [Live Ingest Quickstart](../quickstart/serve.md) for a `curl` walkthrough.
+
 ## Examples
 
 For practical examples and copy-paste-ready recipes, see the [Cookbook](../guides/cookbook.md).

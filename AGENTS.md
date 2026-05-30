@@ -159,6 +159,10 @@ demo/
 
 ## Known Limitations
 
-- Live OTLP ingestion via gRPC has been removed; only file-based workloads are supported
+- Live OTLP ingestion is supported over **HTTP** (`otlp_serve` / `otlp_stop` / `otlp_server_list`), not gRPC. The HTTP server (`src/otlp_server.cpp`) accepts OTLP/JSON, OTLP/NDJSON, and OTLP/protobuf POSTs to `/v1/logs`, `/v1/traces`, `/v1/metrics` and appends into per-signal tables.
+  - Concurrency model (mirrors `duckdb-quack`): a 128-thread httplib pool with one DuckDB `Connection` per worker thread. Requests parse/convert in parallel; DuckDB's per-table append lock briefly serializes the commit. Each request is its own transaction (all signals commit or roll back together).
+  - A `200` response means the rows were committed (durable per-request). Backpressure today is only `max_body_bytes` plus the pool/keep-alive caps; there is no bounded request queue or `429`/`503` shedding yet (follow-up).
+  - Not available on the wasm build.
+- Metrics ingest re-parses the request body once per metric shape (gauge/sum/histogram/exp_histogram). Collapsing this to a single parse requires an `otlp2records` FFI change and is a tracked follow-up.
 - Summary metrics are not yet supported
 - The union metrics function (`read_otlp_metrics`) is not yet implemented

@@ -11,6 +11,7 @@ The DuckDB OTLP extension is a **table-function extension** that exposes strongl
 The extension provides:
 - Table functions: `read_otlp_traces`, `read_otlp_logs`
 - Metrics functions: `read_otlp_metrics_gauge`, `read_otlp_metrics_sum`
+- Live ingest functions: `otlp_serve`, `otlp_stop`, `otlp_server_list` (native builds only) — see [OTLP HTTP Ingest Server](#otlp-http-ingest-server)
 
 ## How It Works
 
@@ -80,6 +81,39 @@ Parsers populate typed row builders
 DuckDB emits DataChunks with strongly-typed columns
 ```
 
+## OTLP HTTP Ingest Server
+
+Alongside the file readers, the extension can run an embedded HTTP server that accepts live OTLP/HTTP exports and appends them into DuckDB tables. It is registered as a **storage extension** so the running servers are owned by the database and torn down with it. See the [Serve Reference](reference/serve.md) for the user-facing surface.
+
+> Not available in WASM builds. Live ingestion is HTTP-only (no gRPC).
+
+### Components
+
+| Component | Location | Role |
+|-----------|----------|------|
+| `OtlpServer` | `src/otlp_server.cpp` / `src/include/otlp_server.hpp` | Base server: token validation/auth, content-type → format selection, per-request transactions, and Arrow → DuckDB appends into the target tables. |
+| `HttpOtlpServer` | `src/otlp_server.cpp` | `OtlpServer` subclass wrapping httplib. Owns the worker pool and the `/v1/logs`, `/v1/traces`, `/v1/metrics`, and `/healthz` routes; binds the socket synchronously so bind failures surface to the caller. |
+| `OtlpStorageExtensionInfo` | `src/include/otlp_storage.hpp` | Database-scoped registry of running servers (keyed by listen URI). Backs `CreateServer` / `StopServer` / `ListServers`, and stops every server when the database closes. |
+| Lifecycle functions | `src/otlp_start_stop.cpp` | The `otlp_serve`, `otlp_stop`, and `otlp_server_list` table functions that drive the registry. |
+
+### Request flow
+
+```
+Exporter: POST http://localhost:4318/v1/logs  (Bearer token, OTLP body)
+  ↓
+HttpOtlpServer route → CheckAuth (Bearer or x-api-key)
+  ↓
+FormatFromContentType (json / ndjson / protobuf)
+  ↓
+Worker-thread Connection: BEGIN → otlp_transform (FFI) → Appender → COMMIT
+  ↓
+200 {"status":"ok","rows":N,"batches":M}   (rows are committed/durable)
+```
+
+### Concurrency model
+
+Mirrors `duckdb-quack`: a 128-thread httplib pool, with one long-lived DuckDB `Connection` per worker thread (lazily created in `GetWorkerConnection`). Requests parse, convert, and append in parallel; only DuckDB's per-table append lock briefly serializes the commit. Each request is its own transaction, so a `/v1/metrics` POST — which fans out across all four metric-shape tables — commits or rolls back atomically. Backpressure today is bounded only by `max_body_bytes` and the pool / keep-alive caps; there is no `429`/`503` request-shedding yet (a tracked follow-up).
+
 ## Key Design Decisions
 
 ### Schema Design
@@ -141,7 +175,7 @@ Python dependencies (via `uv`):
 
 ## Known Limitations
 
-- Live OTLP ingestion via gRPC has been removed; only file-based workloads are supported
+- Live OTLP ingestion is supported over **HTTP** (`otlp_serve` / `otlp_stop` / `otlp_server_list`), not gRPC. See [OTLP HTTP Ingest Server](#otlp-http-ingest-server). Backpressure is currently bounded only by `max_body_bytes` and the worker-pool / keep-alive caps; there is no `429`/`503` request-shedding yet. The server is not available in WASM builds.
 - **WASM builds support JSON format only**. Protobuf parsing is only available in native builds
 - Protobuf parsing requires linking against the protobuf runtime (available in native builds)
 - Histogram, exponential histogram, and summary metrics are not yet supported

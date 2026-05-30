@@ -5,9 +5,12 @@
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/storage/storage_extension.hpp"
 
+#include "otlp_log.hpp"
 #include "otlp_start_stop.hpp"
 #include "otlp_storage.hpp"
 #include "otlp_uri.hpp"
+
+#include "duckdb/logging/log_manager.hpp"
 
 // Rust backend provides all OTLP functionality
 namespace duckdb {
@@ -23,6 +26,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(OtlpStopFunction::GetFunction());
 	loader.RegisterFunction(OtlpServerListFunction::GetFunction());
 	loader.RegisterFunction(OtlpUriParserFunction::GetFunction());
+
+	loader.GetDatabaseInstance().GetLogManager().RegisterLogType(make_uniq<OtlpLogType>());
 
 	auto ext = duckdb::make_shared_ptr<OtlpStorageExtension>();
 	ext->storage_info = duckdb::make_uniq<OtlpStorageExtensionInfo>();
