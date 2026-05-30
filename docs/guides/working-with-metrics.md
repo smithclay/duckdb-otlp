@@ -1,17 +1,6 @@
-# Working with Metrics
+# How to Work with Metrics
 
-The DuckDB OTLP extension exposes shape-specific metric readers. OTLP metric types have different columns, so `read_otlp_metrics()` is intentionally unsupported for now.
-
-Use:
-
-- `read_otlp_metrics_gauge(path)`
-- `read_otlp_metrics_sum(path)`
-- `read_otlp_metrics_histogram(path)`
-- `read_otlp_metrics_exp_histogram(path)`
-
-`read_otlp_metrics_summary(path)` is registered but not implemented yet.
-
-See the [Schema Reference](../reference/schemas.md#metrics) for complete column details.
+Use the shape-specific metric reader that matches the OTLP metric type you are analyzing. OTLP metric types have different columns, so `read_otlp_metrics()` is intentionally unsupported for now. For complete column details, see the [Schema Reference](../reference/schemas.md#metrics).
 
 ## Query Gauge Metrics
 
@@ -118,4 +107,3 @@ COPY (
 
 - [API Reference](../reference/api.md#metrics)
 - [Schema Reference](../reference/schemas.md#metrics)
-- [How-to Guides](README.md)

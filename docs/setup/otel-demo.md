@@ -1,6 +1,6 @@
-# OpenTelemetry Demo Exports
+# How to Export the OpenTelemetry Demo
 
-Use this when you want real sample telemetry from the OpenTelemetry Demo. For a generic collector config, see [Collector Setup](collector.md).
+Use this when you want real sample telemetry from the OpenTelemetry Demo. For a generic collector config, see [How to Configure the OpenTelemetry Collector](collector.md).
 
 ## 1. Add File Exporters
 

@@ -1,6 +1,6 @@
-# Error Handling
+# How to Handle Malformed Input
 
-The current file readers fail fast on malformed OTLP input. If a file cannot be found, exceeds the 100 MB safety limit, or cannot be parsed as OTLP JSON/JSONL/protobuf, the query raises an error.
+The file readers fail fast on malformed OTLP input. Use the error message to decide whether the problem is file discovery, payload shape, file size, unsupported metric shape, or live-ingest admission.
 
 ```sql
 SELECT * FROM read_otlp_traces('traces.jsonl');

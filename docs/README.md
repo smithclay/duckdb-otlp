@@ -1,43 +1,38 @@
 # Documentation
 
-Welcome to the DuckDB OTLP Extension documentation. Find what you need:
+Use this page to choose the document that matches what you need to do now.
 
-- **[Get Started](get-started.md)** - Install the extension, read sample data, and POST one OTLP log over HTTP
-- **[Main README](../README.md)** - Short overview and quickstart
-- **[Live Ingest Quickstart](quickstart/serve.md)** - Run the OTLP HTTP server and stream live exports into a DuckLake lakehouse (Parquet + catalog), buffered and group-committed
+## Learn by doing
 
-## Guides
+- **[Get Started](get-started.md)** - install the extension, query bundled OTLP files, and POST one log over HTTP.
+- **[Live Ingest Quickstart](quickstart/serve.md)** - stream OTLP/HTTP exports into a DuckLake lakehouse and query the sealed rows.
 
-- **[Analyzing Traces](guides/analyzing-traces.md)** - Find slow requests, trace bottlenecks, analyze service dependencies
-- **[Filtering Logs](guides/filtering-logs.md)** - Debug production issues by querying log exports
-- **[Working with Metrics](guides/working-with-metrics.md)** - Query gauge, sum, histogram, and exponential histogram metrics
-- **[How-to Guides](guides/README.md)** - Task-oriented guides for traces, logs, metrics, Parquet, dashboards, and errors
+## Do a job
 
-## Reference
+- **[How to analyze traces](guides/analyzing-traces.md)** - find slow spans, errors, trace details, and service dependencies.
+- **[How to filter logs](guides/filtering-logs.md)** - query logs by severity, service, time, text, and trace correlation.
+- **[How to work with metrics](guides/working-with-metrics.md)** - query gauge, sum, histogram, and exponential histogram metrics.
+- **[How to export telemetry to Parquet](guides/exporting-to-parquet.md)** - write traces, logs, and metrics to reusable Parquet datasets.
+- **[How to build dashboard tables](guides/building-dashboards.md)** - materialize compact rollups for BI and dashboards.
+- **[How to handle malformed input](guides/error-handling.md)** - diagnose reader and ingest errors.
+- **[How to install the extension](setup/installation.md)** - install from community extensions or build locally.
+- **[How to configure the OpenTelemetry Collector](setup/collector.md)** - write OTLP file exports for DuckDB analysis.
+- **[How to get sample data](setup/sample-data.md)** - use bundled fixtures, download files, or generate your own telemetry.
+- **[How to export the OpenTelemetry Demo](setup/otel-demo.md)** - collect real demo telemetry as OTLP files.
 
-- **[API](reference/api.md)** - File readers and live ingest functions
-- **[Schemas](reference/schemas.md)** - Complete schema reference for traces, logs, gauges, sums, histograms, and exponential histograms
-- **[Live Ingest Server](reference/serve.md)** - `otlp_serve` / `otlp_flush` / `otlp_stop` / `otlp_server_list`, catalog targeting (DuckLake), HTTP endpoints, auth, and the buffered seal/durability model
-- **[Performance Tips](reference/performance.md)** - Short guidance for files, Parquet, globs, and live ingest
+## Look up facts
 
-## Setup
+- **[API Reference](reference/api.md)** - file readers and live ingest functions.
+- **[Schema Reference](reference/schemas.md)** - columns for traces, logs, gauges, sums, histograms, and exponential histograms.
+- **[Live Ingest Reference](reference/serve.md)** - `otlp_serve`, `otlp_flush`, `otlp_stop`, `otlp_server_list`, HTTP endpoints, auth, buffering, and durability.
+- **[Performance Reference](reference/performance.md)** - file formats, projection, file sizes, materialization, and live ingest notes.
 
-- **[Installation](setup/installation.md)** - Install from community or build from source
-- **[OpenTelemetry Collector](setup/collector.md)** - Configure collector to export OTLP files
-- **[Sample Data](setup/sample-data.md)** - Download or generate test data
-- **[OpenTelemetry Demo Exports](setup/otel-demo.md)** - Optional real demo telemetry
+## Understand the design
 
-## Advanced Topics
+- **[Architecture](architecture.md)** - how the file readers, Arrow bridge, schema layer, and HTTP ingest server work.
+- **[Contributing](../CONTRIBUTING.md)** - build, test, and contribute to the project.
 
-- **[Architecture](architecture.md)** - How the extension works internally
-- **[Contributing](../CONTRIBUTING.md)** - Build, test, and contribute to the project
+## Need help?
 
-## Need Help?
-
-- **Questions?** Check [GitHub Discussions](https://github.com/smithclay/duckdb-otlp/discussions)
-- **Found a bug?** [Open an issue](https://github.com/smithclay/duckdb-otlp/issues)
-- **Want to contribute?** See [CONTRIBUTING.md](../CONTRIBUTING.md)
-
----
-
-**Quick Links**: [Main README](../README.md) | [Get Started](get-started.md) | [Live Ingest](quickstart/serve.md) | [GitHub](https://github.com/smithclay/duckdb-otlp)
+- [GitHub Discussions](https://github.com/smithclay/duckdb-otlp/discussions)
+- [Open an issue](https://github.com/smithclay/duckdb-otlp/issues)

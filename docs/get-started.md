@@ -5,7 +5,7 @@ Use the DuckDB OTLP extension to query OpenTelemetry files, then try the native 
 ## Prerequisites
 
 - DuckDB 0.10 or later.
-- A native DuckDB build for protobuf files and live ingest.
+- A native DuckDB build for live ingest.
 - The repository checkout if you want to use the bundled `test/data/` samples:
 
 ```bash
@@ -90,7 +90,7 @@ For durable lakehouse ingest, attach DuckLake and pass `catalog := 'lake'`; see 
 ## Next Steps
 
 - [Live Ingest Quickstart](quickstart/serve.md) - stream OTLP into DuckLake/Parquet.
-- [Collector Setup](setup/collector.md) - export OTLP files from the OpenTelemetry Collector.
+- [How to Configure the OpenTelemetry Collector](setup/collector.md) - export OTLP files from the OpenTelemetry Collector.
 - [How-to Guides](guides/README.md) - common query and export tasks.
 - [API Reference](reference/api.md) - function signatures and capability notes.
 - [Schema Reference](reference/schemas.md) - complete column lists.

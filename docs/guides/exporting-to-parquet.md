@@ -1,4 +1,4 @@
-# Exporting to Parquet
+# How to Export Telemetry to Parquet
 
 Use Parquet when you will query the same telemetry repeatedly or hand it to BI/data tools. After export, DuckDB can read the Parquet files without loading the OTLP extension.
 
@@ -75,4 +75,4 @@ GROUP BY t.span_name, t.duration
 ORDER BY error_count DESC;
 ```
 
-See [DuckDB Parquet docs](https://duckdb.org/docs/data/parquet/overview) and [How-to Guides](README.md).
+See [DuckDB Parquet docs](https://duckdb.org/docs/data/parquet/overview) for Parquet options.

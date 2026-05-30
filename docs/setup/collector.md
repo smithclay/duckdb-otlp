@@ -1,4 +1,4 @@
-# OpenTelemetry Collector Setup
+# How to Configure the OpenTelemetry Collector
 
 Use the OpenTelemetry Collector when you want a standard pipeline that receives OTLP from applications and writes OTLP files for DuckDB analysis.
 
@@ -50,7 +50,7 @@ otelcol-contrib --config collector.yaml
 
 The collector listens on the standard OTLP ports: `4317` for gRPC and `4318` for HTTP. It writes JSONL files under `./otel-export/`.
 
-To generate protobuf files for native DuckDB builds, switch the exporter to `encoding: proto`.
+To generate protobuf files, switch the exporter to `encoding: proto`.
 
 ## Query Exported Files
 
@@ -86,5 +86,5 @@ Point an OTLP/HTTP exporter at `http://localhost:4318` and set `Authorization: B
 
 - [Get Started](../get-started.md)
 - [Live Ingest Quickstart](../quickstart/serve.md)
-- [Sample Data](sample-data.md)
+- [How to Get Sample Data](sample-data.md)
 - [Schema Reference](../reference/schemas.md)

@@ -5,7 +5,7 @@ Use these rules before reaching for deeper tuning.
 ## Prefer the Right Format
 
 - JSON/JSONL is easiest to inspect and works in WASM.
-- Protobuf is smaller and usually faster in native builds.
+- Protobuf is smaller; native builds usually parse it fastest.
 - For repeated queries, convert OTLP exports to Parquet.
 
 ```sql

@@ -49,7 +49,7 @@ For a full walkthrough, including streaming into DuckLake/Parquet, see [Get Star
 - Stream live OTLP/HTTP exports into the default DuckDB catalog or an attached [DuckLake](https://ducklake.select) lakehouse.
 - Convert telemetry exports to Parquet with DuckDB `COPY`.
 - Query local files, globs, S3, HTTP(S), Azure Blob, and GCS paths through DuckDB file systems.
-- Use the browser demo for JSON-only exploration with DuckDB-WASM: [Interactive Demo](https://smithclay.github.io/duckdb-otlp/).
+- Use the browser demo for JSON, JSONL, and protobuf exploration with DuckDB-WASM: [Interactive Demo](https://smithclay.github.io/duckdb-otlp/).
 
 ## Documentation
 
@@ -86,7 +86,7 @@ INSTALL otlp FROM community;
 LOAD otlp;
 ```
 
-For source builds, development commands, and WASM builds, see [CONTRIBUTING.md](CONTRIBUTING.md). WASM supports JSON/JSONL file reads, but not protobuf or the live ingest server.
+For source builds, development commands, and WASM builds, see [CONTRIBUTING.md](CONTRIBUTING.md). WASM supports JSON, JSONL, and protobuf file reads, but not the live ingest server.
 
 ## Limits
 

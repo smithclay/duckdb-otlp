@@ -1,4 +1,4 @@
-# Building Dashboards
+# How to Build Dashboard Tables
 
 For dashboards, first turn raw OTLP files into small, typed tables or Parquet files. Keep the dashboard layer reading compact data, not re-parsing telemetry exports on every refresh.
 

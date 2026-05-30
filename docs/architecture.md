@@ -135,7 +135,7 @@ src/
 ├── function/          # Table function implementations (`read_otlp_*`)
 ├── schema/            # Column layout helpers
 ├── generated/         # Protobuf message stubs (DO NOT EDIT)
-└── wasm/              # Stubs for JSON-only builds
+└── wasm/              # WASM build configuration
 
 test/
 ├── sql/               # SQLLogicTests (primary test format)
@@ -158,7 +158,7 @@ The `src/generated/` directory contains protobuf message stubs generated from Op
 ## Dependencies
 
 Managed via VCPKG:
-- **Protobuf** - Wire format parsing for binary OTLP files (optional for JSON-only builds)
+- **Protobuf** - Wire format parsing for binary OTLP files in builds that include protobuf support
 
 Python dependencies (via `uv`):
 - `black` - Python formatting
@@ -168,8 +168,8 @@ Python dependencies (via `uv`):
 ## Known Limitations
 
 - Live OTLP ingestion is supported over **HTTP** (`otlp_serve` / `otlp_flush` / `otlp_stop` / `otlp_server_list`), not gRPC. See [OTLP HTTP Ingest Server](#otlp-http-ingest-server). Ingest is buffered (a POST returns `202`) and only durable at the next seal; a crash loses buffered-but-unsealed rows (at-most-once). A durable raw-spool journal for at-least-once is a future enhancement. The server is not available in WASM builds.
-- **WASM builds support JSON format only**. Protobuf parsing is only available in native builds
-- Protobuf parsing requires linking against the protobuf runtime (available in native builds)
+- **WASM builds support JSON, JSONL, and protobuf file reads only**. Live ingest is only available in native builds.
+- Protobuf parsing requires the protobuf runtime in builds that include protobuf support.
 - Summary metrics are not yet supported
 - The union metrics function (`read_otlp_metrics`) is not yet implemented; use the shape-specific metric readers
 

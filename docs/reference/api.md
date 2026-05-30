@@ -1,6 +1,6 @@
 # API Reference
 
-This document provides an overview of the DuckDB OTLP extension API. All file readers accept a path or glob pattern and auto-detect OTLP JSON, JSONL, and protobuf in native builds.
+This document provides an overview of the DuckDB OTLP extension API. All file readers accept a path or glob pattern and auto-detect OTLP JSON, JSONL, and protobuf. Live ingest is available only in native builds.
 
 ## Table Functions
 
