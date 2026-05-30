@@ -13,10 +13,10 @@ statement ok
 COPY (
     SELECT '{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"test-service"}},{"key":"host.name","value":{"stringValue":"test-host"}}]},"scopeLogs":[{"scope":{"name":"test-logger"},"logRecords":[{"timeUnixNano":"1640000000000000000","severityNumber":9,"severityText":"INFO","body":{"stringValue":"Application started"},"attributes":[{"key":"event.name","value":{"stringValue":"startup"}}],"traceId":"5B8EFFF798038103D269B633813FC60C","spanId":"EEE19B7EC3C1B174"}]}]}]}' AS line
     FROM range(2049)
-) TO '/tmp/duckdb_otlp_many_logs.jsonl' (FORMAT csv, HEADER false, DELIMITER '\n', QUOTE '', ESCAPE '');
+) TO '__TEST_DIR__/duckdb_otlp_many_logs.jsonl' (FORMAT csv, HEADER false, DELIMITER '\n', QUOTE '', ESCAPE '');
 
 query I
-SELECT COUNT(*) FROM read_otlp_logs('/tmp/duckdb_otlp_many_logs.jsonl');
+SELECT COUNT(*) FROM read_otlp_logs('__TEST_DIR__/duckdb_otlp_many_logs.jsonl');
 ----
 2049
 
