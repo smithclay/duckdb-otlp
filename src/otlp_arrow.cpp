@@ -24,6 +24,12 @@ LogicalType ArrowFormatToDuckDBType(const ArrowSchema &schema) {
 		return LogicalType::TIMESTAMP_NS;
 	}
 
+	// Arrow duration ("tD") -> BIGINT (raw int64 ns), deliberately NOT INTERVAL. DuckDB's
+	// INTERVAL stores {months, days, micros} with no nanosecond field, so its built-in
+	// Duration->INTERVAL path truncates ns to us (micros = ns / 1000). BIGINT keeps full
+	// nanosecond precision and stays directly aggregatable. Deliberate divergence from
+	// OTAP-canonical Duration; do not "simplify" to DuckDB's Arrow converter, which would
+	// regress this column.
 	if (fmt.size() >= 3 && fmt[0] == 't' && fmt[1] == 'D') {
 		return LogicalType::BIGINT;
 	}
@@ -73,6 +79,12 @@ LogicalType ArrowFormatToDuckDBType(const ArrowSchema &schema) {
 		return LogicalType::BLOB;
 	}
 
+	// Arrow FixedSizeBinary ("w:N") -> hex VARCHAR, deliberately NOT BLOB. OTAP encodes
+	// trace_id/span_id as bytes[16]/bytes[8]; we render them as lowercase hex so that
+	// `WHERE trace_id = 'a1b2..'` matches the ids shown in every tracing UI, log line, and
+	// traceparent header. (CopyArrowToDuckDB does the hex rendering.) Deliberate divergence
+	// from OTAP-canonical bytes; do not "simplify" to DuckDB's Arrow converter, which maps
+	// w:N -> BLOB and would regress these columns to raw, un-queryable bytes.
 	if (fmt.size() > 2 && fmt[0] == 'w' && fmt[1] == ':') {
 		return LogicalType::VARCHAR;
 	}
@@ -329,6 +341,8 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 			}
 		}
 	} else if (fmt.size() > 2 && fmt[0] == 'w' && fmt[1] == ':') {
+		// FixedSizeBinary -> lowercase hex VARCHAR (trace_id/span_id). See the type-mapping
+		// note in ArrowFormatToDuckDBType for why this is hex and not a raw BLOB.
 		int width = std::atoi(fmt.c_str() + 2);
 		if (width <= 0) {
 			throw IOException("Invalid Arrow FixedSizeBinary format '%s' - bad width", fmt.c_str());
