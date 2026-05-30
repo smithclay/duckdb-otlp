@@ -49,7 +49,7 @@ SELECT COUNT(*) FROM read_otlp_metrics_sum('test/data/metrics_simple.jsonl');
 # Test zero duration (nulls traces have no duration)
 query I
 SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_nulls.jsonl')
-WHERE duration = 0;
+WHERE duration_time_unix_nano = 0;
 ----
 3
 

@@ -4,18 +4,18 @@
 
 require otlp
 
-# Gauge helper
+# Gauge helper — metrics_simple.jsonl has a double gauge (524288000.0).
 query I
 SELECT COUNT(*) FROM read_otlp_metrics_gauge('test/data/metrics_simple.jsonl');
 ----
 1
 
 query I
-SELECT CAST(value AS BIGINT) FROM read_otlp_metrics_gauge('test/data/metrics_simple.jsonl');
+SELECT CAST(double_value AS BIGINT) FROM read_otlp_metrics_gauge('test/data/metrics_simple.jsonl');
 ----
 524288000
 
-# Sum helper
+# Sum helper — metrics_simple.jsonl has an int sum (42).
 query I
 SELECT COUNT(*) FROM read_otlp_metrics_sum('test/data/metrics_simple.jsonl');
 ----

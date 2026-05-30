@@ -12,7 +12,7 @@ SELECT COUNT(*) FROM read_otlp_metrics_exp_histogram('test/data/metrics_all_type
 
 # Test metric name
 query I
-SELECT metric_name FROM read_otlp_metrics_exp_histogram('test/data/metrics_all_types.jsonl');
+SELECT name FROM read_otlp_metrics_exp_histogram('test/data/metrics_all_types.jsonl');
 ----
 latency.exp
 
@@ -58,9 +58,9 @@ SELECT service_name FROM read_otlp_metrics_exp_histogram('test/data/metrics_all_
 ----
 test-service
 
-# Test metric_unit
+# Test unit
 query I
-SELECT metric_unit FROM read_otlp_metrics_exp_histogram('test/data/metrics_all_types.jsonl');
+SELECT unit FROM read_otlp_metrics_exp_histogram('test/data/metrics_all_types.jsonl');
 ----
 ms
 

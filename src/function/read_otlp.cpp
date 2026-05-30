@@ -24,25 +24,27 @@ namespace duckdb {
 // Helper: Arrow C Data Interface to DuckDB type conversion
 // ============================================================================
 
-static LogicalType ArrowFormatToDuckDBType(const char *format) {
-	if (!format) {
+static LogicalType ArrowSchemaToDuckDBType(const ArrowSchema &schema) {
+	if (!schema.format) {
 		throw IOException("Arrow schema has null format string - indicates FFI error");
 	}
 
-	std::string fmt(format);
+	std::string fmt(schema.format);
 
-	// Timestamp types
+	// Timestamp types (format is "ts<unit>:<tz>"; we ignore tz for naive types)
 	if (fmt.substr(0, 3) == "tsm") {
-		// Timestamp millisecond
 		return LogicalType::TIMESTAMP_MS;
 	}
 	if (fmt.substr(0, 3) == "tsu") {
-		// Timestamp microsecond
 		return LogicalType::TIMESTAMP;
 	}
 	if (fmt.substr(0, 3) == "tsn") {
-		// Timestamp nanosecond
 		return LogicalType::TIMESTAMP_NS;
+	}
+
+	// Duration types ("tD<unit>") — no native DuckDB type, surface raw int64.
+	if (fmt.size() >= 3 && fmt[0] == 't' && fmt[1] == 'D') {
+		return LogicalType::BIGINT;
 	}
 
 	// Integer types
@@ -91,12 +93,28 @@ static LogicalType ArrowFormatToDuckDBType(const char *format) {
 		return LogicalType::VARCHAR;
 	}
 
-	// Binary
+	// Variable-length binary
 	if (fmt == "z" || fmt == "Z") {
 		return LogicalType::BLOB;
 	}
 
-	// Default to VARCHAR for unknown types (including complex types)
+	// FixedSizeBinary ("w:N") — used by otlp2records for trace_id (16) and
+	// span_id (8). We render these as hex strings so SQL can match on them
+	// without an extra cast, matching the pre-0.8 schema.
+	if (fmt.size() > 2 && fmt[0] == 'w' && fmt[1] == ':') {
+		return LogicalType::VARCHAR;
+	}
+
+	// List types — recurse into the single child schema.
+	if (fmt == "+l" || fmt == "+L") {
+		if (schema.n_children != 1 || !schema.children || !schema.children[0]) {
+			throw IOException("Invalid Arrow list schema: expected exactly 1 child");
+		}
+		return LogicalType::LIST(ArrowSchemaToDuckDBType(*schema.children[0]));
+	}
+
+	// Unknown / complex types fall back to VARCHAR; the scan will throw a
+	// clear error if it cannot serialize them.
 	return LogicalType::VARCHAR;
 }
 
@@ -210,7 +228,7 @@ static unique_ptr<FunctionData> ReadOTLPRustBind(ClientContext &context, TableFu
 			throw IOException("Invalid Arrow schema: child %lld has null name", static_cast<int64_t>(i));
 		}
 		names.push_back(child->name);
-		return_types.push_back(ArrowFormatToDuckDBType(child->format));
+		return_types.push_back(ArrowSchemaToDuckDBType(*child));
 	}
 
 	result->return_types = return_types;
@@ -393,33 +411,41 @@ static void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema
 			string_data[i] = StringVector::AddString(output, data + start, static_cast<idx_t>(len));
 		}
 	}
-	// Integer types
-	else if (fmt == "l") {
-		// INT64
+	// Integer types — signed and unsigned, all width-2 buffers (validity + values).
+	else if (fmt == "l" || fmt == "L" || fmt == "i" || fmt == "I") {
 		if (array.n_buffers < 2) {
-			throw IOException("Invalid Arrow int64 array: expected at least 2 buffers, got %lld",
+			throw IOException("Invalid Arrow integer array (%s): expected at least 2 buffers, got %lld", fmt.c_str(),
+			                  static_cast<int64_t>(array.n_buffers));
+		}
+		auto copy_int = [&](auto *typed_values, auto *typed_output) {
+			for (idx_t i = 0; i < count; i++) {
+				idx_t array_idx = i + array.offset;
+				if (null_bitmap && !(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
+					mask.SetInvalid(i);
+					continue;
+				}
+				typed_output[i] = typed_values[array_idx];
+			}
+		};
+		if (fmt == "l") {
+			copy_int(static_cast<const int64_t *>(array.buffers[1]), FlatVector::GetData<int64_t>(output));
+		} else if (fmt == "L") {
+			copy_int(static_cast<const uint64_t *>(array.buffers[1]), FlatVector::GetData<uint64_t>(output));
+		} else if (fmt == "i") {
+			copy_int(static_cast<const int32_t *>(array.buffers[1]), FlatVector::GetData<int32_t>(output));
+		} else {
+			copy_int(static_cast<const uint32_t *>(array.buffers[1]), FlatVector::GetData<uint32_t>(output));
+		}
+	}
+	// Duration types (tDs/tDm/tDu/tDn) — stored as int64; surfaced as BIGINT
+	// raw value since DuckDB has no native Arrow Duration type.
+	else if (fmt.size() >= 3 && fmt[0] == 't' && fmt[1] == 'D') {
+		if (array.n_buffers < 2) {
+			throw IOException("Invalid Arrow duration array: expected at least 2 buffers, got %lld",
 			                  static_cast<int64_t>(array.n_buffers));
 		}
 		const int64_t *values = static_cast<const int64_t *>(array.buffers[1]);
 		auto *output_data = FlatVector::GetData<int64_t>(output);
-
-		for (idx_t i = 0; i < count; i++) {
-			idx_t array_idx = i + array.offset;
-			if (null_bitmap && !(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
-				mask.SetInvalid(i);
-				continue;
-			}
-			output_data[i] = values[array_idx];
-		}
-	} else if (fmt == "i") {
-		// INT32
-		if (array.n_buffers < 2) {
-			throw IOException("Invalid Arrow int32 array: expected at least 2 buffers, got %lld",
-			                  static_cast<int64_t>(array.n_buffers));
-		}
-		const int32_t *values = static_cast<const int32_t *>(array.buffers[1]);
-		auto *output_data = FlatVector::GetData<int32_t>(output);
-
 		for (idx_t i = 0; i < count; i++) {
 			idx_t array_idx = i + array.offset;
 			if (null_bitmap && !(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
@@ -466,41 +492,107 @@ static void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema
 			output_data[i] = (values[array_idx / 8] & (1 << (array_idx % 8))) != 0;
 		}
 	}
-	// Timestamp types
-	// Note: DuckDB's timestamp_t stores microseconds internally.
-	// - Millisecond timestamps (tsm) are converted: val * 1000
-	// - Microsecond timestamps (tsu) are used directly: val
-	// - Nanosecond timestamps (tsn) are truncated: val / 1000 (loses 3 digits precision)
+	// Timestamp types. The destination column's logical type already matches
+	// the unit (set at bind time), so the int64 value is written verbatim.
+	//   tsm → TIMESTAMP_MS (ms),  tsu → TIMESTAMP (μs),  tsn → TIMESTAMP_NS (ns).
 	else if (fmt.substr(0, 3) == "tsm" || fmt.substr(0, 3) == "tsu" || fmt.substr(0, 3) == "tsn") {
 		if (array.n_buffers < 2) {
 			throw IOException("Invalid Arrow timestamp array: expected at least 2 buffers, got %lld",
 			                  static_cast<int64_t>(array.n_buffers));
 		}
-		// Timestamps are stored as int64
 		const int64_t *values = static_cast<const int64_t *>(array.buffers[1]);
-		auto *output_data = FlatVector::GetData<timestamp_t>(output);
-
+		auto *output_data = FlatVector::GetData<int64_t>(output);
 		for (idx_t i = 0; i < count; i++) {
 			idx_t array_idx = i + array.offset;
 			if (null_bitmap && !(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
 				mask.SetInvalid(i);
 				continue;
 			}
-
-			int64_t val = values[array_idx];
-
-			// Convert based on unit
-			if (fmt.substr(0, 3) == "tsm") {
-				// Milliseconds to microseconds
-				output_data[i] = timestamp_t(val * 1000);
-			} else if (fmt.substr(0, 3) == "tsu") {
-				// Already microseconds
-				output_data[i] = timestamp_t(val);
-			} else {
-				// Nanoseconds to microseconds
-				output_data[i] = timestamp_t(val / 1000);
-			}
+			output_data[i] = values[array_idx];
 		}
+	}
+	// FixedSizeBinary ("w:N") — N bytes per row, rendered as lowercase hex
+	// VARCHAR. Used by otlp2records for 16-byte trace_id and 8-byte span_id.
+	else if (fmt.size() > 2 && fmt[0] == 'w' && fmt[1] == ':') {
+		int width = std::atoi(fmt.c_str() + 2);
+		if (width <= 0) {
+			throw IOException("Invalid Arrow FixedSizeBinary format '%s' - bad width", fmt.c_str());
+		}
+		if (array.n_buffers < 2) {
+			throw IOException("Invalid Arrow FixedSizeBinary array: expected 2 buffers, got %lld",
+			                  static_cast<int64_t>(array.n_buffers));
+		}
+		const uint8_t *bytes = static_cast<const uint8_t *>(array.buffers[1]);
+		auto *string_data = FlatVector::GetData<string_t>(output);
+		static const char hex[] = "0123456789abcdef";
+		std::string buf(static_cast<size_t>(width) * 2, '\0');
+		for (idx_t i = 0; i < count; i++) {
+			idx_t array_idx = i + array.offset;
+			if (null_bitmap && !(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
+				mask.SetInvalid(i);
+				continue;
+			}
+			const uint8_t *row = bytes + array_idx * static_cast<size_t>(width);
+			for (int b = 0; b < width; b++) {
+				buf[2 * b] = hex[row[b] >> 4];
+				buf[2 * b + 1] = hex[row[b] & 0x0F];
+			}
+			string_data[i] = StringVector::AddString(output, buf.data(), buf.size());
+		}
+	}
+	// List ("+l" int32 offsets) and LargeList ("+L" int64 offsets). The child
+	// array carries the element values; we recurse to fill the LIST vector's
+	// child entry.
+	else if (fmt == "+l" || fmt == "+L") {
+		const bool large = (fmt == "+L");
+		if (array.n_buffers < 2) {
+			throw IOException("Invalid Arrow list array: expected 2 buffers, got %lld",
+			                  static_cast<int64_t>(array.n_buffers));
+		}
+		if (array.n_children != 1 || !array.children || !array.children[0]) {
+			throw IOException("Invalid Arrow list array: expected exactly 1 child");
+		}
+		if (schema.n_children != 1 || !schema.children || !schema.children[0]) {
+			throw IOException("Invalid Arrow list schema: expected exactly 1 child");
+		}
+		// Read the offset at logical position idx (taking array.offset into account).
+		auto offset_at = [&](idx_t idx) -> int64_t {
+			if (large) {
+				return static_cast<const int64_t *>(array.buffers[1])[array.offset + idx];
+			}
+			return static_cast<const int32_t *>(array.buffers[1])[array.offset + idx];
+		};
+
+		const int64_t first_child = offset_at(0);
+		const int64_t last_child = offset_at(count);
+		const idx_t child_count = static_cast<idx_t>(last_child - first_child);
+
+		// Fill the parent's list_entry_t (offset, length) pairs and validity.
+		auto *entries = FlatVector::GetData<list_entry_t>(output);
+		for (idx_t i = 0; i < count; i++) {
+			idx_t array_idx = i + array.offset;
+			if (null_bitmap && !(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
+				mask.SetInvalid(i);
+				entries[i].offset = 0;
+				entries[i].length = 0;
+				continue;
+			}
+			int64_t start = offset_at(i);
+			int64_t end = offset_at(i + 1);
+			entries[i].offset = static_cast<idx_t>(start - first_child);
+			entries[i].length = static_cast<idx_t>(end - start);
+		}
+
+		// Recurse into the child, using a shifted view so the child starts at
+		// position first_child within its own array.
+		ListVector::Reserve(output, child_count);
+		auto &child_vec = ListVector::GetEntry(output);
+		if (child_count > 0) {
+			ArrowArray child_view = *array.children[0];
+			child_view.offset = array.children[0]->offset + first_child;
+			CopyArrowToDuckDB(child_view, *schema.children[0], child_vec, child_count);
+		}
+		ListVector::SetListSize(output, child_count);
 	} else {
 		throw IOException("Unsupported Arrow format '%s' - cannot convert to DuckDB type", fmt.c_str());
 	}

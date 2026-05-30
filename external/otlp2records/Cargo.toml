@@ -1,6 +1,6 @@
 [package]
 name = "otlp2records-ffi"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 publish = false
 description = "Static FFI staticlib wrapper around the crates.io otlp2records crate"
@@ -17,7 +17,7 @@ crate-type = ["staticlib"]
 ffi = ["otlp2records/ffi"]
 
 [dependencies]
-otlp2records = { version = "0.7.0", default-features = false }
+otlp2records = { version = "0.8.0", default-features = false }
 
 [profile.release]
 opt-level = 3

@@ -12,7 +12,7 @@ SELECT * FROM read_otlp_logs('test/data/logs_simple.jsonl') LIMIT 1;
 query I
 SELECT COUNT(*) FROM (
     SELECT column_name FROM (DESCRIBE SELECT * FROM read_otlp_logs('test/data/logs_simple.jsonl'))
-) WHERE column_name IN ('timestamp', 'service_name', 'severity_number', 'body');
+) WHERE column_name IN ('time_unix_nano', 'service_name', 'severity_number', 'body');
 ----
 4
 
@@ -24,7 +24,7 @@ SELECT * FROM read_otlp_traces('test/data/traces_simple.jsonl') LIMIT 1;
 query I
 SELECT COUNT(*) FROM (
     SELECT column_name FROM (DESCRIBE SELECT * FROM read_otlp_traces('test/data/traces_simple.jsonl'))
-) WHERE column_name IN ('timestamp', 'trace_id', 'span_id', 'span_name', 'service_name');
+) WHERE column_name IN ('start_time_unix_nano', 'trace_id', 'span_id', 'name', 'service_name');
 ----
 5
 

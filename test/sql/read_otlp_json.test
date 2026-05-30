@@ -23,15 +23,15 @@ SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_simple.jsonl');
 # Test traces schema - verify key column types
 query IIIII
 SELECT
-    typeof(timestamp) as ts_type,
+    typeof(start_time_unix_nano) as ts_type,
     typeof(trace_id) as trace_id_type,
     typeof(span_id) as span_id_type,
     typeof(service_name) as service_type,
-    typeof(duration) as duration_type
+    typeof(duration_time_unix_nano) as duration_type
 FROM read_otlp_traces('test/data/traces_simple.jsonl')
 LIMIT 1;
 ----
-TIMESTAMP	VARCHAR	VARCHAR	VARCHAR	BIGINT
+TIMESTAMP_NS	VARCHAR	VARCHAR	VARCHAR	BIGINT
 
 # Test traces content - verify specific values
 query III
@@ -48,7 +48,7 @@ true	true	true
 query I
 SELECT COUNT(*)
 FROM read_otlp_traces('test/data/traces_simple.jsonl')
-WHERE span_name LIKE '%users%';
+WHERE name LIKE '%users%';
 ----
 2
 
@@ -56,7 +56,7 @@ WHERE span_name LIKE '%users%';
 query I
 SELECT COUNT(*)
 FROM read_otlp_traces('test/data/traces_simple.jsonl')
-WHERE duration > 0;
+WHERE duration_time_unix_nano > 0;
 ----
 3
 
@@ -73,14 +73,14 @@ SELECT COUNT(*) FROM read_otlp_logs('test/data/logs_simple.jsonl');
 # Test logs schema - verify key column types
 query IIII
 SELECT
-    typeof(timestamp) as ts_type,
+    typeof(time_unix_nano) as ts_type,
     typeof(service_name) as service_type,
     typeof(severity_text) as severity_type,
     typeof(body) as body_type
 FROM read_otlp_logs('test/data/logs_simple.jsonl')
 LIMIT 1;
 ----
-TIMESTAMP	VARCHAR	VARCHAR	VARCHAR
+TIMESTAMP_NS	VARCHAR	VARCHAR	VARCHAR
 
 # Test logs content - verify specific values
 query II
@@ -121,9 +121,9 @@ SELECT COUNT(*) FROM read_otlp_metrics_gauge('test/data/metrics_simple.jsonl');
 ----
 1
 
-# Test gauge metric value
+# Test gauge metric value (sample is a double, so check double_value)
 query I
-SELECT CAST(value AS BIGINT)
+SELECT CAST(double_value AS BIGINT)
 FROM read_otlp_metrics_gauge('test/data/metrics_simple.jsonl');
 ----
 524288000
@@ -138,9 +138,9 @@ SELECT COUNT(*) FROM read_otlp_metrics_sum('test/data/metrics_simple.jsonl');
 ----
 1
 
-# Test sum metric value
+# Test sum metric value (sample is an int, so check int_value)
 query I
-SELECT CAST(value AS BIGINT)
+SELECT int_value
 FROM read_otlp_metrics_sum('test/data/metrics_simple.jsonl');
 ----
 42

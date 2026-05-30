@@ -24,19 +24,19 @@ FROM read_otlp_traces('test/data/otlp_traces.pb');
 # Test traces schema - verify key column types
 query IIIII
 SELECT
-    typeof(timestamp) as ts_type,
+    typeof(start_time_unix_nano) as ts_type,
     typeof(trace_id) as trace_id_type,
-    typeof(span_name) as name_type,
+    typeof(name) as name_type,
     typeof(service_name) as service_type,
-    typeof(duration) as duration_type
+    typeof(duration_time_unix_nano) as duration_type
 FROM read_otlp_traces('test/data/otlp_traces.pb')
 LIMIT 1;
 ----
-TIMESTAMP	VARCHAR	VARCHAR	VARCHAR	BIGINT
+TIMESTAMP_NS	VARCHAR	VARCHAR	VARCHAR	BIGINT
 
 # Test traces - verify timestamp is extracted from protobuf
 query I
-SELECT timestamp IS NOT NULL
+SELECT start_time_unix_nano IS NOT NULL
 FROM read_otlp_traces('test/data/otlp_traces.pb');
 ----
 true
@@ -71,14 +71,14 @@ FROM read_otlp_logs('test/data/otlp_logs.pb');
 # Test logs schema - verify key column types
 query IIII
 SELECT
-    typeof(timestamp) as ts_type,
+    typeof(time_unix_nano) as ts_type,
     typeof(service_name) as service_type,
     typeof(severity_text) as severity_type,
     typeof(body) as body_type
 FROM read_otlp_logs('test/data/otlp_logs.pb')
 LIMIT 1;
 ----
-TIMESTAMP	VARCHAR	VARCHAR	VARCHAR
+TIMESTAMP_NS	VARCHAR	VARCHAR	VARCHAR
 
 # Test logs - verify service name extraction
 query I
