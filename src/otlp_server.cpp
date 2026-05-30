@@ -291,12 +291,6 @@ bool OtlpServer::CheckAuth(const string &authorization, const string &api_key) c
 	return false;
 }
 
-idx_t OtlpServer::AdmissionReservationBytes(idx_t body_size) const {
-	static constexpr idx_t MIN_RESERVATION_BYTES = 1024;
-	auto base = MaxValue<idx_t>(body_size, MIN_RESERVATION_BYTES);
-	return base;
-}
-
 bool OtlpServer::TryReserveAdmission(idx_t bytes, idx_t &current) {
 	current = admitted_bytes.load();
 	while (true) {
@@ -418,7 +412,7 @@ OtlpIngestResult OtlpServer::Ingest(OtlpRequestKind kind, const string &content_
 	// cannot all pass the check and allocate work beyond max_buffered_bytes. The
 	// reservation moves into the unsealed-row counter when rows are buffered and is
 	// released only after those rows seal; parse/validation failures release it immediately.
-	auto reservation_bytes = AdmissionReservationBytes(body.size());
+	auto reservation_bytes = MaxValue<idx_t>(body.size(), 1024);
 	idx_t admitted_before = 0;
 	if (!TryReserveAdmission(reservation_bytes, admitted_before)) {
 		throw OtlpHttpError(
@@ -429,7 +423,19 @@ OtlpIngestResult OtlpServer::Ingest(OtlpRequestKind kind, const string &content_
 	OtlpIngestResult result;
 	idx_t unclaimed_admission = reservation_bytes;
 	try {
-		TransformAndBuffer(kind, body, format, result, unclaimed_admission);
+		switch (kind) {
+		case OtlpRequestKind::LOGS:
+			BufferSignal(OTLP_SIGNAL_LOGS, body, format, result, unclaimed_admission);
+			break;
+		case OtlpRequestKind::TRACES:
+			BufferSignal(OTLP_SIGNAL_TRACES, body, format, result, unclaimed_admission);
+			break;
+		case OtlpRequestKind::METRICS:
+			BufferMetrics(body, format, result, unclaimed_admission);
+			break;
+		default:
+			throw InternalException("Unknown OTLP request kind");
+		}
 	} catch (...) {
 		ReleaseAdmission(unclaimed_admission);
 		throw;
@@ -437,23 +443,6 @@ OtlpIngestResult OtlpServer::Ingest(OtlpRequestKind kind, const string &content_
 	ReleaseAdmission(unclaimed_admission);
 	total_rows.fetch_add(result.rows);
 	return result;
-}
-
-void OtlpServer::TransformAndBuffer(OtlpRequestKind request_kind, const string &body, OtlpInputFormat format,
-                                    OtlpIngestResult &result, idx_t &admission_bytes) {
-	switch (request_kind) {
-	case OtlpRequestKind::LOGS:
-		BufferSignal(OTLP_SIGNAL_LOGS, body, format, result, admission_bytes);
-		break;
-	case OtlpRequestKind::TRACES:
-		BufferSignal(OTLP_SIGNAL_TRACES, body, format, result, admission_bytes);
-		break;
-	case OtlpRequestKind::METRICS:
-		BufferMetrics(body, format, result, admission_bytes);
-		break;
-	default:
-		throw InternalException("Unknown OTLP request kind");
-	}
 }
 
 OtlpSignalBuffer &OtlpServer::BufferFor(OtlpSignalType signal_type) {
@@ -980,7 +969,7 @@ OtlpServer::OtlpServer(ClientContext &context, const OtlpUri &uri_p, const OtlpS
 		throw;
 	}
 	is_running.store(true);
-	listen_threads.emplace_back(ListenThread, this);
+	listen_thread = std::thread(ListenThread, this);
 }
 
 void OtlpServer::StopAccepting() {
@@ -997,10 +986,8 @@ void OtlpServer::Close() {
 	// listener's exit path inside httplib joins all workers, so a worker
 	// joining the listener would deadlock through that chain.
 	StopAccepting();
-	for (auto &thread : listen_threads) {
-		if (thread.joinable()) {
-			thread.join();
-		}
+	if (listen_thread.joinable()) {
+		listen_thread.join();
 	}
 	// Workers are now joined: stop the sealer and drain the remaining buffer before
 	// the writer connection / database go away. Safe here (controlling thread, not a

@@ -146,14 +146,12 @@ private:
 
 	static void ListenThread(OtlpServer *server);
 
-	std::vector<std::thread> listen_threads;
+	std::thread listen_thread;
 	std::atomic<idx_t> active_requests {0};
 	std::atomic<idx_t> total_requests {0};
 	std::atomic<idx_t> total_rows {0};
 
 	// --- request path (runs on httplib worker threads; buffers, never commits) ---
-	void TransformAndBuffer(OtlpRequestKind request_kind, const string &body, OtlpInputFormat format,
-	                        OtlpIngestResult &result, idx_t &admission_bytes);
 	void BufferSignal(OtlpSignalType signal_type, const string &body, OtlpInputFormat format, OtlpIngestResult &result,
 	                  idx_t &admission_bytes);
 	void BufferMetrics(const string &body, OtlpInputFormat format, OtlpIngestResult &result, idx_t &admission_bytes);
@@ -161,7 +159,6 @@ private:
 	                      idx_t &admission_bytes);
 	void BufferAppend(OtlpSignalBuffer &buf, DataChunk &chunk, idx_t &admission_bytes);
 	OtlpSignalBuffer &BufferFor(OtlpSignalType signal_type);
-	idx_t AdmissionReservationBytes(idx_t body_size) const;
 	bool TryReserveAdmission(idx_t bytes, idx_t &current);
 	void ClaimUnsealedAdmission(idx_t &bytes);
 	void ReleaseAdmission(idx_t bytes);
