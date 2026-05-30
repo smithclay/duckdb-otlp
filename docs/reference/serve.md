@@ -46,7 +46,6 @@ SELECT * FROM otlp_serve('otlp:localhost:4318', catalog := 'lake', token := 'my-
 | `listen_uri` | VARCHAR | The `otlp:` URI the server is bound to. |
 | `listen_url` | VARCHAR | The equivalent `http://` base URL (POST endpoints hang off this). |
 | `auth_token` | VARCHAR | The token clients must present (the value you passed, or the generated one). |
-| `catalog_name` | VARCHAR | Target catalog. Empty for the connection's default catalog. |
 | `schema_name` | VARCHAR | Schema holding the target tables. |
 | `logs_table` | VARCHAR | `otlp_logs` |
 | `traces_table` | VARCHAR | `otlp_traces` |
@@ -54,6 +53,7 @@ SELECT * FROM otlp_serve('otlp:localhost:4318', catalog := 'lake', token := 'my-
 | `metrics_sum_table` | VARCHAR | `otlp_metrics_sum` |
 | `metrics_histogram_table` | VARCHAR | `otlp_metrics_histogram` |
 | `metrics_exp_histogram_table` | VARCHAR | `otlp_metrics_exp_histogram` |
+| `catalog_name` | VARCHAR | Target catalog. Empty for the connection's default catalog. |
 
 Starting a second server on the same URI fails (`OTLP server already exists`). The server's lifetime is tied to the DuckDB `DatabaseInstance`: all servers are stopped automatically when the database closes, but their buffers are **not** sealed at that point (see Durability below) — `otlp_flush`/`otlp_stop` before closing to avoid losing buffered rows.
 

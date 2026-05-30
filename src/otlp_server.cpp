@@ -521,6 +521,9 @@ static int64_t NowUnixMs() {
 
 OtlpIngestResult OtlpServer::SealOnce() {
 	std::lock_guard<std::mutex> writer_lock(writer_mutex);
+	if (!writer_con) {
+		return OtlpIngestResult {};
+	}
 	auto db = db_ptr.lock();
 	if (!db) {
 		return OtlpIngestResult {}; // database closed; nothing we can durably write
@@ -764,7 +767,10 @@ void OtlpServer::ShutdownIngest() {
 		                       "or repeated seal failure)",
 		                       static_cast<uint64_t>(remaining_rows)));
 	}
-	writer_con.reset();
+	{
+		std::lock_guard<std::mutex> writer_lock(writer_mutex);
+		writer_con.reset();
+	}
 }
 
 } // namespace duckdb
