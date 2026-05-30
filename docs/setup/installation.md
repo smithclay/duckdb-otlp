@@ -1,6 +1,6 @@
 # How to Install the Extension
 
-Install the DuckDB OTLP extension to start querying OpenTelemetry data with SQL.
+Install the DuckDB OpenTelemetry Extension to start querying OpenTelemetry data with SQL.
 
 ## Install from Community (Recommended)
 
@@ -85,7 +85,7 @@ SELECT count(*) FROM read_otlp_logs('test/data/logs_simple.jsonl');
 - [Get Started](../get-started.md) - install, load, and run first queries.
 - [OpenTelemetry Collector](collector.md) - export OTLP files from the collector.
 - [Sample Data](sample-data.md) - use small test files.
-- [How-to Guides](../guides/README.md) - complete query, export, and dashboard tasks.
+- [How-to Guides](../guides/README.md) - complete query and export tasks.
 
 ## Troubleshooting
 

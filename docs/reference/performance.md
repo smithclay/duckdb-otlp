@@ -56,10 +56,6 @@ GROUP BY hour, service_name;
 
 ## Live Ingest
 
-Live ingest buffers accepted rows and seals them in batches. Use `otlp_flush` when readers need fresh rows immediately:
+Live ingest buffers accepted rows and commits them in batches automatically. Current native builds commit when the oldest buffered row is about 5 seconds old, or when admitted request-body bytes reach about 64 MiB. `otlp_flush` is an optional low-latency read path for cases where readers need fresh rows immediately while the server keeps running.
 
-```sql
-SELECT * FROM otlp_flush('otlp:localhost:4318');
-```
-
-For DuckLake targets, each seal writes small Parquet files; use DuckLake maintenance separately when file counts need cleanup. See [Live Ingest Reference](serve.md).
+For DuckLake targets, each batch commit writes small Parquet files; use DuckLake maintenance separately when file counts need cleanup. See [Live Ingest Reference](serve.md).

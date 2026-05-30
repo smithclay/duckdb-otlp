@@ -66,7 +66,7 @@ async function initDuckDB() {
         // Try to load the OTLP extension
         try {
             // Load extension directly from URL (DuckDB-Wasm supports loading from full URLs)
-            const extensionUrl = `${window.location.origin}${window.location.pathname}otlp.duckdb_extension.wasm`;
+            const extensionUrl = new URL('otlp.duckdb_extension.wasm', window.location.href).href;
             console.log('Loading extension from:', extensionUrl);
 
             await conn.query(`LOAD "${extensionUrl}";`);

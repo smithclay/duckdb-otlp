@@ -72,7 +72,7 @@ static unique_ptr<FunctionData> OtlpServeBind(ClientContext &context, TableFunct
 
 	if (input.named_parameters.find("catalog") != input.named_parameters.end()) {
 		// Empty catalog = the connection's default catalog. A non-empty value targets
-		// an attached database (e.g. a DuckLake catalog) so OTLP streams into a lakehouse.
+		// an attached writable catalog (e.g. DuckLake or Iceberg) for lakehouse ingest.
 		bind_data->config.catalog_name = input.named_parameters["catalog"].GetValue<string>();
 	}
 	if (input.named_parameters.find("schema") != input.named_parameters.end()) {

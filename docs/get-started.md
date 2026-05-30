@@ -1,6 +1,6 @@
 # Get Started
 
-Use the DuckDB OTLP extension to query OpenTelemetry files, then try the native OTLP/HTTP ingest server.
+Use the DuckDB OpenTelemetry Extension to query OpenTelemetry files, then try the native OTLP/HTTP ingest server.
 
 ## Prerequisites
 
@@ -55,7 +55,7 @@ See the [Schema Reference](reference/schemas.md) for every column emitted by eac
 
 ## 3. Stream One Log over OTLP/HTTP
 
-The ingest server is available in native builds only. It accepts OTLP/HTTP, buffers rows in memory, and commits them on a seal. A POST returning `202` means the rows are accepted but not durable until `otlp_flush` or an automatic seal.
+The ingest server is available in native builds only. It accepts OTLP/HTTP, buffers rows in memory, and commits them in batches. A POST returning `202` means the rows are accepted but not durable until an automatic background commit, a graceful `otlp_stop`, or an optional `otlp_flush`. Current native builds commit automatically when the oldest buffered row is about 5 seconds old, or when admitted request-body bytes reach about 64 MiB.
 
 Start a local server:
 
@@ -70,26 +70,28 @@ Send one OTLP log record:
 curl -sS http://localhost:4318/v1/logs -H 'Authorization: Bearer dev-token-123456' -H 'Content-Type: application/json' -d '{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"curl-demo"}}]},"scopeLogs":[{"logRecords":[{"timeUnixNano":"1704067200000000000","severityText":"INFO","body":{"stringValue":"hello from curl"}}]}]}]}'
 ```
 
-Flush and query the accepted row:
-
-```sql
-SELECT * FROM otlp_flush('otlp:localhost:4318');
-
-SELECT timestamp, service_name, severity_text, body
-FROM otlp_logs;
-```
-
-Stop the server before closing the database:
+Stop the server before closing the database. `otlp_stop` commits remaining buffered rows before it returns:
 
 ```sql
 SELECT status FROM otlp_stop('otlp:localhost:4318');
 ```
 
-For durable lakehouse ingest, attach DuckLake and pass `catalog := 'lake'`; see the [Live Ingest Quickstart](quickstart/serve.md).
+Then query the accepted row:
+
+```sql
+SELECT timestamp, service_name, severity_text, body
+FROM otlp_logs;
+```
+
+You can query while the server is still running after the automatic background commit. Use `otlp_flush` only when you need the latest accepted rows visible immediately.
+
+For durable lakehouse ingest, pass `catalog` to an attached lakehouse catalog; see [Stream to DuckLake](guides/stream-to-ducklake.md) or [Stream to Iceberg](guides/stream-to-iceberg.md).
 
 ## Next Steps
 
-- [Live Ingest Quickstart](quickstart/serve.md) - stream OTLP into DuckLake/Parquet.
+- [Live Ingest Quickstart](quickstart/serve.md) - POST one log record over OTLP/HTTP.
+- [Stream to DuckLake](guides/stream-to-ducklake.md) - stream OTLP into DuckLake/Parquet.
+- [Stream to Iceberg](guides/stream-to-iceberg.md) - stream OTLP into an Iceberg REST catalog.
 - [How to Configure the OpenTelemetry Collector](setup/collector.md) - export OTLP files from the OpenTelemetry Collector.
 - [How-to Guides](guides/README.md) - common query and export tasks.
 - [API Reference](reference/api.md) - function signatures and capability notes.
@@ -114,4 +116,4 @@ SELECT * FROM read_otlp_traces('/full/path/to/traces.jsonl');
 
 **Rows posted to the server are not visible yet**
 
-Call `otlp_flush('otlp:localhost:4318')`. Ingest is buffered, so POST responses are not durable commits.
+Wait for the automatic background commit, or stop the server with `otlp_stop('otlp:localhost:4318')` before closing the database. Use `otlp_flush('otlp:localhost:4318')` only when the server should keep running and readers need the latest accepted rows immediately.

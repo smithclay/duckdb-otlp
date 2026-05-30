@@ -23,7 +23,7 @@ struct OtlpSignalBuffer;
 struct OtlpServerConfig {
 	string token;
 	//! Target catalog (attached database). Empty = the connection's default catalog.
-	//! Set this to an attached DuckLake catalog name to stream OTLP into a lakehouse.
+	//! Set this to an attached writable catalog name for lakehouse ingest.
 	string catalog_name;
 	string schema_name = "main";
 	bool create_tables = true;
@@ -33,6 +33,8 @@ struct OtlpServerConfig {
 	//! Parquet files and write conflicts. seal_target_bytes / seal_max_age_ms are fixed
 	//! internal v0 defaults — deliberately NOT exposed as otlp_serve() named parameters
 	//! until a caller actually needs to tune the seal cadence.
+	//! Explicit otlp_flush is optional; it only requests an immediate seal for fresh
+	//! reads/durability while the server keeps running. otlp_stop performs a final seal.
 	idx_t seal_target_bytes = 64ULL * 1024ULL * 1024ULL; //! seal when admitted bytes reach this
 	int64_t seal_max_age_ms = 5000;                      //! seal when the oldest buffered row is this old
 	//! Backpressure admission cap (over it -> 503). NOTE: this bounds cumulative *admitted

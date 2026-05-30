@@ -1,8 +1,8 @@
-# DuckDB OpenTelemetry (OTLP) Extension
+# DuckDB OpenTelemetry Extension
 
-Query OpenTelemetry traces, logs, and metrics with SQL, or run an embedded OTLP/HTTP endpoint that streams live telemetry into DuckDB or DuckLake.
+Query OpenTelemetry traces, logs, and metrics with SQL, or run an embedded OTLP/HTTP endpoint that streams live telemetry into DuckDB, DuckLake, or Iceberg.
 
-The extension reads OTLP JSON, JSONL, and protobuf file exports from the OpenTelemetry Collector, with row schemas inspired by the [OpenTelemetry ClickHouse exporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/clickhouseexporter/README.md). Native builds also include live HTTP ingest for `/v1/logs`, `/v1/traces`, and `/v1/metrics`.
+`duckdb-otlp` reads OTLP JSON, JSONL, and protobuf file exports from the OpenTelemetry Collector, with row schemas inspired by the [OpenTelemetry ClickHouse exporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/clickhouseexporter/README.md). Native builds also include live HTTP ingest for `/v1/logs`, `/v1/traces`, and `/v1/metrics`.
 
 ## Quickstart
 
@@ -36,31 +36,35 @@ curl -sS http://localhost:4318/v1/logs -H 'Authorization: Bearer dev-token-12345
 ```
 
 ```sql
-SELECT * FROM otlp_flush('otlp:localhost:4318');
-SELECT timestamp, service_name, severity_text, body FROM otlp_logs;
+-- Normal shutdown commits any remaining buffered rows.
 SELECT status FROM otlp_stop('otlp:localhost:4318');
+SELECT timestamp, service_name, severity_text, body FROM otlp_logs;
 ```
 
-For a full walkthrough, including streaming into DuckLake/Parquet, see [Get Started](docs/get-started.md) and the [Live Ingest Quickstart](docs/quickstart/serve.md).
+Live ingest commits buffered rows automatically in the background, currently after about 5 seconds for the oldest buffered row or about 64 MiB of admitted request-body bytes. `otlp_flush` is only needed when you want accepted rows durable/queryable immediately while the server keeps running.
+
+For a full walkthrough, including lakehouse ingest, see the [documentation site](https://smithclay.github.io/duckdb-otlp/).
 
 ## What You Can Do
 
 - Read OTLP traces, logs, gauges, sums/counters, histograms, and exponential histograms from files.
-- Stream live OTLP/HTTP exports into the default DuckDB catalog or an attached [DuckLake](https://ducklake.select) lakehouse.
+- Stream live OTLP/HTTP exports into the default DuckDB catalog, an attached [DuckLake](https://ducklake.select) lakehouse, or an Iceberg REST catalog.
 - Convert telemetry exports to Parquet with DuckDB `COPY`.
 - Query local files, globs, S3, HTTP(S), Azure Blob, and GCS paths through DuckDB file systems.
-- Use the browser demo for JSON, JSONL, and protobuf exploration with DuckDB-WASM: [Interactive Demo](https://smithclay.github.io/duckdb-otlp/).
+- Use the browser demo for JSON, JSONL, and protobuf exploration with DuckDB-WASM: [Interactive Demo](https://smithclay.github.io/duckdb-otlp/demo/).
 
 ## Documentation
 
-- [Documentation Hub](docs/README.md)
-- [Get Started](docs/get-started.md)
-- [Live Ingest Quickstart](docs/quickstart/serve.md)
-- [How-to Guides](docs/guides/README.md)
-- [API Reference](docs/reference/api.md)
-- [Schema Reference](docs/reference/schemas.md)
-- [Live Ingest Reference](docs/reference/serve.md)
-- [Architecture](docs/architecture.md)
+- [Documentation Site](https://smithclay.github.io/duckdb-otlp/)
+- [Get Started](https://smithclay.github.io/duckdb-otlp/get-started/)
+- [Live Ingest Quickstart](https://smithclay.github.io/duckdb-otlp/quickstart/serve/)
+- [Stream to DuckLake](https://smithclay.github.io/duckdb-otlp/guides/stream-to-ducklake/)
+- [Stream to Iceberg](https://smithclay.github.io/duckdb-otlp/guides/stream-to-iceberg/)
+- [How-to Guides](https://smithclay.github.io/duckdb-otlp/guides/)
+- [API Reference](https://smithclay.github.io/duckdb-otlp/reference/api/)
+- [Schema Reference](https://smithclay.github.io/duckdb-otlp/reference/schemas/)
+- [Live Ingest Reference](https://smithclay.github.io/duckdb-otlp/reference/serve/)
+- [Architecture](https://smithclay.github.io/duckdb-otlp/architecture/)
 
 ## API at a Glance
 
@@ -73,8 +77,8 @@ For a full walkthrough, including streaming into DuckLake/Parquet, see [Get Star
 | `read_otlp_metrics_histogram(path)` | Read standard histogram metrics |
 | `read_otlp_metrics_exp_histogram(path)` | Read exponential histogram metrics |
 | `otlp_serve([uri], ...)` | Start a native OTLP/HTTP ingest server |
-| `otlp_flush(uri)` | Force buffered ingest rows to seal into the target catalog |
-| `otlp_stop(uri)` | Stop a server after sealing remaining rows |
+| `otlp_flush(uri)` | Optionally force buffered ingest rows to commit to the target catalog now |
+| `otlp_stop(uri)` | Stop a server after committing remaining rows |
 | `otlp_server_list()` | Inspect running servers and ingest counters |
 
 `read_otlp_metrics` and `read_otlp_metrics_summary` are registered but intentionally unsupported until the extension has stable schemas for those shapes. See the [API Reference](docs/reference/api.md) for details.

@@ -2,7 +2,7 @@
 
 Use the OpenTelemetry Collector when you want a standard pipeline that receives OTLP from applications and writes OTLP files for DuckDB analysis.
 
-For direct HTTP ingestion into DuckDB or DuckLake, see the [Live Ingest Quickstart](../quickstart/serve.md).
+For direct HTTP ingestion into DuckDB, DuckLake, or Iceberg, see the [Live Ingest Quickstart](../quickstart/serve.md), [Stream to DuckLake](../guides/stream-to-ducklake.md), and [Stream to Iceberg](../guides/stream-to-iceberg.md).
 
 ## File Exporter Configuration
 
@@ -86,5 +86,7 @@ Point an OTLP/HTTP exporter at `http://localhost:4318` and set `Authorization: B
 
 - [Get Started](../get-started.md)
 - [Live Ingest Quickstart](../quickstart/serve.md)
+- [Stream to DuckLake](../guides/stream-to-ducklake.md)
+- [Stream to Iceberg](../guides/stream-to-iceberg.md)
 - [How to Get Sample Data](sample-data.md)
 - [Schema Reference](../reference/schemas.md)
