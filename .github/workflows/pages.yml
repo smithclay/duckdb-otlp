@@ -1,4 +1,8 @@
 name: Pages
+#
+# GitHub Pages should be configured with "GitHub Actions" as the source.
+# Pages artifact deploys replace the whole site, so this workflow restores the
+# latest packaged extension repository before uploading the final Pages artifact.
 
 on:
   push:
@@ -18,29 +22,50 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
-    name: build site
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Install, build, and upload site
-        uses: withastro/action@v6
-        env:
-          ASTRO_TELEMETRY_DISABLED: 1
-        with:
-          path: ./site
-          node-version: 24
-
   deploy:
     name: deploy site
-    needs: build
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: Install dependencies
+        working-directory: site
+        run: npm ci
+
+      - name: Build site
+        working-directory: site
+        env:
+          ASTRO_TELEMETRY_DISABLED: 1
+        run: npm run build
+
+      - name: Restore latest extension repository
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          if gh release download --pattern extension-repository.tar.gz --output "${tmp}/extension-repository.tar.gz"; then
+            tar -xzf "${tmp}/extension-repository.tar.gz" -C site/dist
+          else
+            echo "::warning::No extension-repository.tar.gz release asset found; deploying site without extension binaries"
+          fi
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./site/dist
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5

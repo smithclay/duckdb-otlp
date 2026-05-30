@@ -9,9 +9,9 @@
 #   INSTALL otlp FROM 'https://<owner>.github.io/duckdb-otlp';
 #   LOAD otlp;
 #
-# This repository also publishes a browser demo to GitHub Pages. Keep this
-# workflow on the accumulating gh-pages branch instead of actions/deploy-pages,
-# which replaces the whole Pages site on every run.
+# This repository also publishes the Astro docs site to GitHub Pages. Pages
+# artifact deploys replace the whole site, so this workflow builds a complete
+# Pages artifact containing both the site and the extension repository.
 #
 name: Release to GitHub Pages
 
@@ -27,6 +27,8 @@ concurrency:
 permissions:
   actions: read
   contents: write
+  pages: write
+  id-token: write
 
 env:
   EXT_NAME: otlp
@@ -46,10 +48,16 @@ jobs:
       exclude_archs: "wasm_mvp;wasm_threads;linux_amd64_musl"
 
   package:
-    name: Package unsigned binaries
+    name: Package unsigned binaries and deploy site
     runs-on: ubuntu-latest
     needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -63,7 +71,7 @@ jobs:
           shopt -s nullglob
           prefix="${EXT_NAME}-${DUCKDB_VERSION}-extension-"
           found=0
-          mkdir -p _site
+          mkdir -p _extension_repository
           for dir in artifacts/${prefix}*/; do
             arch="$(basename "$dir")"
             arch="${arch#${prefix}}"
@@ -72,7 +80,7 @@ jobs:
               echo "::warning::no ${EXT_NAME}.duckdb_extension in ${dir}, skipping ${arch}"
               continue
             fi
-            out="_site/${DUCKDB_VERSION}/${arch}"
+            out="_extension_repository/${DUCKDB_VERSION}/${arch}"
             mkdir -p "$out"
             # Match the official unsigned packaging: replace any existing
             # signature placeholder with the unsigned 256-byte zero signature,
@@ -97,7 +105,7 @@ jobs:
           PAGES_BASE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
         run: |
           set -euo pipefail
-          mkdir -p _site/extensions
+          mkdir -p _extension_repository/extensions
           {
             echo "<!doctype html><meta charset=utf-8>"
             echo "<title>duckdb-otlp extension repository</title>"
@@ -107,18 +115,47 @@ jobs:
             echo "INSTALL ${EXT_NAME} FROM '${PAGES_BASE_URL}';"
             echo "LOAD ${EXT_NAME};</pre>"
             echo "<h2>Available binaries</h2><ul>"
-            for f in $(cd _site && find "${DUCKDB_VERSION}" -name '*.duckdb_extension.gz' | sort); do
+            for f in $(cd _extension_repository && find "${DUCKDB_VERSION}" -name '*.duckdb_extension.gz' | sort); do
               echo "<li><a href=\"../${f}\">${f}</a></li>"
             done
             echo "</ul>"
-          } > _site/extensions/index.html
-          touch _site/.nojekyll
+          } > _extension_repository/extensions/index.html
+          touch _extension_repository/.nojekyll
 
-      - name: Publish extension repository to gh-pages
-        uses: peaceiris/actions-gh-pages@v3
+      - name: Archive extension repository
+        run: tar -czf extension-repository.tar.gz -C _extension_repository .
+
+      - name: Upload extension repository release asset
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.event.release.tag_name }}" extension-repository.tar.gz --clobber
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: _site
-          publish_branch: gh-pages
-          keep_files: true
-          commit_message: "Deploy unsigned extension binaries to GitHub Pages"
+          node-version: 24
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: Install site dependencies
+        working-directory: site
+        run: npm ci
+
+      - name: Build site
+        working-directory: site
+        env:
+          ASTRO_TELEMETRY_DISABLED: 1
+        run: npm run build
+
+      - name: Add extension repository to site
+        run: tar -xzf extension-repository.tar.gz -C site/dist
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./site/dist
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
