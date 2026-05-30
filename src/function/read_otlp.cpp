@@ -514,26 +514,29 @@ static void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema
 	// FixedSizeBinary ("w:N") — N bytes per row, rendered as lowercase hex
 	// VARCHAR. Used by otlp2records for 16-byte trace_id and 8-byte span_id.
 	else if (fmt.size() > 2 && fmt[0] == 'w' && fmt[1] == ':') {
-		int width = std::atoi(fmt.c_str() + 2);
-		if (width <= 0) {
+		int parsed_width = std::atoi(fmt.c_str() + 2);
+		if (parsed_width <= 0) {
 			throw IOException("Invalid Arrow FixedSizeBinary format '%s' - bad width", fmt.c_str());
 		}
 		if (array.n_buffers < 2) {
 			throw IOException("Invalid Arrow FixedSizeBinary array: expected 2 buffers, got %lld",
 			                  static_cast<int64_t>(array.n_buffers));
 		}
+		// Cast to size_t once so subsequent index math (e.g. 2 * b) stays in
+		// the unsigned type clang-tidy expects for std::string indices.
+		const size_t width = static_cast<size_t>(parsed_width);
 		const uint8_t *bytes = static_cast<const uint8_t *>(array.buffers[1]);
 		auto *string_data = FlatVector::GetData<string_t>(output);
 		static const char hex[] = "0123456789abcdef";
-		std::string buf(static_cast<size_t>(width) * 2, '\0');
+		std::string buf(width * 2, '\0');
 		for (idx_t i = 0; i < count; i++) {
 			idx_t array_idx = i + array.offset;
 			if (null_bitmap && !(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
 				mask.SetInvalid(i);
 				continue;
 			}
-			const uint8_t *row = bytes + array_idx * static_cast<size_t>(width);
-			for (int b = 0; b < width; b++) {
+			const uint8_t *row = bytes + array_idx * width;
+			for (size_t b = 0; b < width; b++) {
 				buf[2 * b] = hex[row[b] >> 4];
 				buf[2 * b + 1] = hex[row[b] & 0x0F];
 			}
