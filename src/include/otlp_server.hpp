@@ -172,6 +172,7 @@ private:
 	bool SealAgeDue() const;
 
 	void CreateOrValidateTable(Connection &con, OtlpSignalType signal_type, const string &table_name);
+	void GetSignalColumns(OtlpSignalType signal_type, vector<LogicalType> &types, vector<string> &names);
 
 private:
 	weak_ptr<DatabaseInstance> db_ptr;

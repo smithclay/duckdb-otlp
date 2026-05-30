@@ -184,6 +184,25 @@ struct OtlpSignalBuffer {
 	}
 };
 
+void OtlpServer::GetSignalColumns(OtlpSignalType signal_type, vector<LogicalType> &types, vector<string> &names) {
+	ArrowSchema arrow_schema;
+	OtlpStatus status = otlp_get_schema(signal_type, &arrow_schema);
+	if (status != OTLP_OK) {
+		throw IOException("Failed to get OTLP schema: %s", otlp_status_message(status));
+	}
+	try {
+		GetArrowSchemaColumns(arrow_schema, types, names);
+	} catch (...) {
+		if (arrow_schema.release) {
+			arrow_schema.release(&arrow_schema);
+		}
+		throw;
+	}
+	if (arrow_schema.release) {
+		arrow_schema.release(&arrow_schema);
+	}
+}
+
 void OtlpServer::InitBuffers() {
 	auto db = db_ptr.lock();
 	if (!db) {
@@ -191,24 +210,9 @@ void OtlpServer::InitBuffers() {
 	}
 	auto &allocator = Allocator::Get(*db);
 	for (auto &target : TARGET_TABLES) {
-		ArrowSchema arrow_schema;
-		OtlpStatus status = otlp_get_schema(target.signal_type, &arrow_schema);
-		if (status != OTLP_OK) {
-			throw IOException("Failed to get OTLP schema: %s", otlp_status_message(status));
-		}
 		vector<LogicalType> types;
-		try {
-			vector<string> names;
-			GetArrowSchemaColumns(arrow_schema, types, names);
-		} catch (...) {
-			if (arrow_schema.release) {
-				arrow_schema.release(&arrow_schema);
-			}
-			throw;
-		}
-		if (arrow_schema.release) {
-			arrow_schema.release(&arrow_schema);
-		}
+		vector<string> names;
+		GetSignalColumns(target.signal_type, types, names);
 		auto collection = make_uniq<ColumnDataCollection>(allocator, types);
 		signal_buffers.push_back(make_uniq<OtlpSignalBuffer>(target.signal_type, target.table_name, std::move(types),
 		                                                     std::move(collection)));
@@ -340,59 +344,42 @@ void OtlpServer::EnsureTargetTables() {
 }
 
 void OtlpServer::CreateOrValidateTable(Connection &con, OtlpSignalType signal_type, const string &table_name) {
-	ArrowSchema arrow_schema;
-	OtlpStatus status = otlp_get_schema(signal_type, &arrow_schema);
-	if (status != OTLP_OK) {
-		throw IOException("Failed to get OTLP schema: %s", otlp_status_message(status));
-	}
+	vector<LogicalType> expected_types;
+	vector<string> expected_names;
+	GetSignalColumns(signal_type, expected_types, expected_names);
 
-	try {
-		vector<LogicalType> expected_types;
-		vector<string> expected_names;
-		GetArrowSchemaColumns(arrow_schema, expected_types, expected_names);
-
-		auto qualified = QualifiedTable(config.catalog_name, config.schema_name, table_name);
-		if (config.create_tables) {
-			string sql = "CREATE TABLE IF NOT EXISTS " + qualified + " (";
-			for (idx_t i = 0; i < expected_names.size(); i++) {
-				if (i > 0) {
-					sql += ", ";
-				}
-				sql += QuoteIdentifier(expected_names[i]) + " " + expected_types[i].ToString();
-			}
-			sql += ")";
-			RunSQL(con, sql);
-		}
-
-		auto result = con.Query("SELECT * FROM " + qualified + " LIMIT 0");
-		if (!result || result->HasError()) {
-			throw IOException("Target table %s is not available: %s", qualified,
-			                  result ? result->GetError() : "query failed");
-		}
-		if (result->names.size() != expected_names.size()) {
-			throw InvalidInputException("Target table %s has %llu columns, expected %llu", qualified,
-			                            static_cast<uint64_t>(result->names.size()),
-			                            static_cast<uint64_t>(expected_names.size()));
-		}
+	auto qualified = QualifiedTable(config.catalog_name, config.schema_name, table_name);
+	if (config.create_tables) {
+		string sql = "CREATE TABLE IF NOT EXISTS " + qualified + " (";
 		for (idx_t i = 0; i < expected_names.size(); i++) {
-			if (result->names[i] != expected_names[i]) {
-				throw InvalidInputException("Target table %s column %llu is %s, expected %s", qualified,
-				                            static_cast<uint64_t>(i), result->names[i], expected_names[i]);
+			if (i > 0) {
+				sql += ", ";
 			}
-			if (result->types[i] != expected_types[i]) {
-				throw InvalidInputException("Target table %s column %s has type %s, expected %s", qualified,
-				                            expected_names[i], result->types[i].ToString(),
-				                            expected_types[i].ToString());
-			}
+			sql += QuoteIdentifier(expected_names[i]) + " " + expected_types[i].ToString();
 		}
-	} catch (...) {
-		if (arrow_schema.release) {
-			arrow_schema.release(&arrow_schema);
-		}
-		throw;
+		sql += ")";
+		RunSQL(con, sql);
 	}
-	if (arrow_schema.release) {
-		arrow_schema.release(&arrow_schema);
+
+	auto result = con.Query("SELECT * FROM " + qualified + " LIMIT 0");
+	if (!result || result->HasError()) {
+		throw IOException("Target table %s is not available: %s", qualified,
+		                  result ? result->GetError() : "query failed");
+	}
+	if (result->names.size() != expected_names.size()) {
+		throw InvalidInputException("Target table %s has %llu columns, expected %llu", qualified,
+		                            static_cast<uint64_t>(result->names.size()),
+		                            static_cast<uint64_t>(expected_names.size()));
+	}
+	for (idx_t i = 0; i < expected_names.size(); i++) {
+		if (result->names[i] != expected_names[i]) {
+			throw InvalidInputException("Target table %s column %llu is %s, expected %s", qualified,
+			                            static_cast<uint64_t>(i), result->names[i], expected_names[i]);
+		}
+		if (result->types[i] != expected_types[i]) {
+			throw InvalidInputException("Target table %s column %s has type %s, expected %s", qualified,
+			                            expected_names[i], result->types[i].ToString(), expected_types[i].ToString());
+		}
 	}
 }
 
