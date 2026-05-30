@@ -192,7 +192,7 @@ Any other content type returns `415`.
 
 ### Content encodings
 
-`Content-Encoding: identity` (or no header) is always accepted. `gzip` and `deflate` are accepted only when the extension is built with zlib support; otherwise they return `415`.
+`Content-Encoding: identity` (or no header), `gzip`, and `deflate` are accepted. Any other content encoding returns `415`.
 
 ## Authentication
 

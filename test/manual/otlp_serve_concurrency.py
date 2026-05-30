@@ -8,7 +8,8 @@ enough for CI opt-in and covers:
   * Bearer and x-api-key auth success
   * missing/bad auth -> 401
   * unsupported content type -> 415
-  * unsupported content encoding -> 415 (and gzip/deflate when OTLP_EXPECT_ZLIB=0)
+  * gzip/deflate content encoding
+  * unsupported content encoding -> 415
   * max_body_bytes -> 413
   * low max_buffered_bytes under concurrency -> some 503s
   * /v1/metrics fanout across all four metric tables
@@ -24,6 +25,7 @@ Run:
 Requires the `duckdb` Python package and a built extension.
 """
 
+import gzip
 import json
 import os
 import sys
@@ -31,6 +33,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import zlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import duckdb
@@ -41,7 +44,6 @@ METRICS_PAYLOAD = os.environ.get("OTLP_METRICS_PAYLOAD", "test/data/metrics_all_
 CONCURRENCY = int(os.environ.get("OTLP_CONCURRENCY", "32"))
 BASE_PORT = int(os.environ.get("OTLP_PORT", "4329"))
 DUCKLAKE_DIR = os.environ.get("OTLP_DUCKLAKE_DIR", "")
-EXPECT_ZLIB = os.environ.get("OTLP_EXPECT_ZLIB", "1") != "0"
 TOKEN = "manual-smoke-token-0123456789"
 
 CONTENT_TYPES = {
@@ -201,15 +203,11 @@ def scenario_auth_and_validation(failures, port):
         f"unsupported content-encoding expected 415, got {status}: {text}",
     )
 
-    if not EXPECT_ZLIB:
-        for encoding in ("gzip", "deflate"):
-            status, text = post(url, body, ctype, auth="bearer", encoding=encoding)
-            print(f"  unsupported content-encoding {encoding}: {status}")
-            require(
-                failures,
-                status == 415,
-                f"{encoding} expected 415 without zlib, got {status}: {text}",
-            )
+    for encoding, compressed_body in (("gzip", gzip.compress(body)), ("deflate", zlib.compress(body))):
+        status, text = post(url, compressed_body, ctype, auth="bearer", encoding=encoding)
+        print(f"  content-encoding {encoding}: {status}")
+        require(failures, status == 202, f"{encoding} expected 202, got {status}: {text}")
+        accepted_rows += rows_from_response(status, text)
 
     flush_server(con, port)
     rows = table_count(con, table_prefix, "otlp_logs")
