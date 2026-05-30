@@ -55,7 +55,9 @@ query I
 SELECT count(*) FROM otlp_server_list()
 WHERE listen_uri = 'otlp:127.0.0.1:55439'
   AND buffered_rows = 0 AND buffered_bytes = 0 AND seals_total = 0
-  AND last_seal_age_ms IS NULL AND seal_last_error IS NULL;
+  AND last_seal_age_ms IS NULL AND seal_last_error IS NULL
+  AND buffer_mode = 'memory' AND disk_buffered_bytes = 0 AND disk_pending_records = 0
+  AND oldest_unsealed_seq IS NULL AND disk_healthy AND disk_last_error IS NULL;
 ----
 1
 
@@ -121,6 +123,32 @@ statement error
 CALL otlp_serve('otlp:127.0.0.1:55455', token := 'dev-token-123456', seal_target_bytes := 1000000, max_buffered_bytes := 1000);
 ----
 must not exceed max_buffered_bytes
+
+# disk buffer params are opt-in and validated before binding a socket
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55456', token := 'dev-token-123456', buffer := 'bogus');
+----
+buffer must be either
+
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55457', token := 'dev-token-123456', buffer := 'disk');
+----
+disk_buffer_dir is required
+
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55458', token := 'dev-token-123456', disk_segment_bytes := 0);
+----
+disk_segment_bytes must be greater than zero
+
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55459', token := 'dev-token-123456', disk_max_bytes := 0);
+----
+disk_max_bytes must be greater than zero
+
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55460', token := 'dev-token-123456', disk_segment_bytes := 2048, disk_max_bytes := 1024);
+----
+disk_max_bytes
 
 # schema must not be empty
 statement error

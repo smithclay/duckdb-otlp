@@ -39,6 +39,18 @@ public:
 		idx_t seals_total;
 		idx_t seal_failures_total;
 		string seal_last_error;
+		string buffer_mode;
+		idx_t disk_buffered_bytes;
+		idx_t disk_segment_bytes;
+		idx_t disk_segments;
+		idx_t disk_pending_records;
+		idx_t journal_writes_total;
+		idx_t journal_fsync_total;
+		idx_t journal_fsync_failures_total;
+		idx_t replay_records_total;
+		int64_t oldest_unsealed_seq;
+		bool disk_healthy;
+		string disk_last_error;
 	};
 
 	vector<ServerSnapshot> ListServers();

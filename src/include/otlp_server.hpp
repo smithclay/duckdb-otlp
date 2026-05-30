@@ -3,12 +3,15 @@
 #include "duckdb.hpp"
 #include "duckdb/common/encryption_state.hpp"
 
+#include "otlp_disk_buffer.hpp"
+#include "otlp_request.hpp"
 #include "otlp_uri.hpp"
 #include "otlp2records.h"
 
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <optional>
 #include <thread>
 
 namespace duckdb {
@@ -19,8 +22,6 @@ class DatabaseInstance;
 class ColumnDataCollection;
 class DataChunk;
 struct OtlpSignalBuffer;
-
-enum class OtlpRequestKind : uint8_t { LOGS, TRACES, METRICS };
 
 struct OtlpServerConfig {
 	string token;
@@ -36,6 +37,8 @@ struct OtlpServerConfig {
 	idx_t seal_target_bytes = 64ULL * 1024ULL * 1024ULL;   //! seal when a signal buffer reaches this
 	int64_t seal_max_age_ms = 5000;                        //! seal when the oldest buffered row is this old
 	idx_t max_buffered_bytes = 512ULL * 1024ULL * 1024ULL; //! hard cap across all signals -> 503
+	OtlpBufferMode buffer = OtlpBufferMode::MEMORY;
+	OtlpDiskBufferConfig disk;
 };
 
 struct OtlpIngestResult {
@@ -112,6 +115,10 @@ public:
 		std::lock_guard<std::mutex> lock(seal_error_mutex);
 		return seal_last_error;
 	}
+	OtlpBufferMode BufferMode() const {
+		return config.buffer;
+	}
+	OtlpDiskBufferStats DiskStats() const;
 
 	//! Force a synchronous seal of all buffered rows (used by otlp_flush). Returns the
 	//! number of rows sealed. When run_checkpoint is set, also compacts the catalog.
@@ -125,6 +132,7 @@ protected:
 	//! Stop the sealer thread and seal any remaining buffered rows before the writer
 	//! connection / database go away. Idempotent; called from Close() and ~OtlpServer().
 	void ShutdownIngest();
+	void ReplayDiskBuffer();
 	//! Write a server-side diagnostic to duckdb_logs under the OTLP log type. No-op
 	//! if the database has been closed. Safe to call from any worker thread.
 	void LogServerEvent(const string &message) const;
@@ -137,14 +145,19 @@ protected:
 
 private:
 	// --- request path (runs on httplib worker threads; buffers, never commits) ---
+	std::optional<DiskRecordId> MaybeJournal(OtlpRequestKind request_kind, const string &content_type,
+	                                         const string &content_encoding, const string &body);
 	void TransformAndBuffer(OtlpRequestKind request_kind, const string &body, OtlpInputFormat format,
-	                        OtlpIngestResult &result, idx_t &admission_bytes);
+	                        OtlpIngestResult &result, idx_t &admission_bytes,
+	                        const std::optional<DiskRecordId> &disk_record_id);
 	void BufferSignal(OtlpSignalType signal_type, const string &body, OtlpInputFormat format, OtlpIngestResult &result,
-	                  idx_t &admission_bytes);
-	void BufferMetrics(const string &body, OtlpInputFormat format, OtlpIngestResult &result, idx_t &admission_bytes);
+	                  idx_t &admission_bytes, const std::optional<DiskRecordId> &disk_record_id);
+	void BufferMetrics(const string &body, OtlpInputFormat format, OtlpIngestResult &result, idx_t &admission_bytes,
+	                   const std::optional<DiskRecordId> &disk_record_id);
 	void AppendArrowBatch(OtlpSignalBuffer &buf, ArrowArray &array, ArrowSchema &schema, OtlpIngestResult &result,
-	                      idx_t &admission_bytes);
-	void BufferAppend(OtlpSignalBuffer &buf, DataChunk &chunk, idx_t &admission_bytes);
+	                      idx_t &admission_bytes, const std::optional<DiskRecordId> &disk_record_id);
+	void BufferAppend(OtlpSignalBuffer &buf, DataChunk &chunk, idx_t &admission_bytes,
+	                  const std::optional<DiskRecordId> &disk_record_id);
 	OtlpSignalBuffer &BufferFor(OtlpSignalType signal_type);
 	idx_t AdmissionReservationBytes(idx_t body_size) const;
 	bool TryReserveAdmission(idx_t bytes, idx_t &current);
@@ -189,6 +202,7 @@ private:
 	std::atomic<int64_t> last_seal_unix_ms {0};
 	mutable mutex seal_error_mutex;
 	string seal_last_error;
+	unique_ptr<OtlpDiskBuffer> disk_buffer;
 };
 
 class HttpOtlpServer : public OtlpServer {

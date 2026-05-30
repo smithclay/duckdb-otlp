@@ -24,9 +24,12 @@ Run:
 Requires the `duckdb` Python package and a built extension.
 """
 
+import argparse
 import json
 import os
+import shutil
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -43,6 +46,7 @@ BASE_PORT = int(os.environ.get("OTLP_PORT", "4329"))
 DUCKLAKE_DIR = os.environ.get("OTLP_DUCKLAKE_DIR", "")
 EXPECT_ZLIB = os.environ.get("OTLP_EXPECT_ZLIB", "1") != "0"
 TOKEN = "manual-smoke-token-0123456789"
+DISK_ROOT = os.environ.get("OTLP_DISK_BUFFER_ROOT", "")
 
 CONTENT_TYPES = {
     ".json": "application/json",
@@ -437,7 +441,95 @@ def scenario_flush_stop_race(failures, port):
     con.close()
 
 
+def scenario_disk_clean_flush(failures, port):
+    disk_root = tempfile.mkdtemp(prefix="otlp-disk-buffer-", dir=DISK_ROOT or None)
+    try:
+        con, catalog, table_prefix = connect("disk_clean_flush")
+        body = load_payload(LOG_PAYLOAD)
+        ctype = content_type_for(LOG_PAYLOAD)
+        base_url = start_server(
+            con,
+            port,
+            catalog=catalog,
+            buffer="disk",
+            disk_buffer_dir=disk_root,
+            seal_max_age_ms=60000,
+        )
+        status, text = post(base_url + "/v1/logs", body, ctype, auth="bearer", timeout=20)
+        accepted_rows = rows_from_response(status, text)
+        print(f"[disk-clean] {status} dir={disk_root}")
+        require(failures, status == 202, f"disk clean POST expected 202, got {status}: {text}")
+        snap = con.execute(
+            "SELECT buffer_mode, disk_pending_records, disk_buffered_bytes, disk_healthy "
+            "FROM otlp_server_list() WHERE listen_uri = ?",
+            [f"otlp:127.0.0.1:{port}"],
+        ).fetchone()
+        require(failures, snap is not None and snap[0] == "disk", f"disk clean wrong buffer snapshot: {snap}")
+        require(failures, snap is not None and snap[1] >= 1, f"disk clean expected pending journal record: {snap}")
+        require(failures, snap is not None and snap[2] > 0, f"disk clean expected pending bytes: {snap}")
+        require(failures, snap is not None and snap[3], f"disk clean expected healthy disk buffer: {snap}")
+
+        flush_server(con, port, checkpoint=bool(catalog))
+        rows = table_count(con, table_prefix, "otlp_logs")
+        require(failures, rows == accepted_rows, f"disk clean table rows {rows} != accepted rows {accepted_rows}")
+        snap = con.execute(
+            "SELECT disk_pending_records, disk_buffered_bytes, oldest_unsealed_seq "
+            "FROM otlp_server_list() WHERE listen_uri = ?",
+            [f"otlp:127.0.0.1:{port}"],
+        ).fetchone()
+        require(failures, snap is not None and snap[0] == 0, f"disk clean expected no pending records: {snap}")
+        require(failures, snap is not None and snap[1] == 0, f"disk clean expected no pending bytes: {snap}")
+        require(failures, snap is not None and snap[2] is None, f"disk clean expected no oldest seq: {snap}")
+        stopped = stop_server(con, port)
+        require(failures, stopped.startswith("Stopped"), f"disk clean stop failed: {stopped}")
+        con.close()
+    finally:
+        shutil.rmtree(disk_root, ignore_errors=True)
+
+
+def scenario_disk_full(failures, port):
+    disk_root = tempfile.mkdtemp(prefix="otlp-disk-full-", dir=DISK_ROOT or None)
+    try:
+        con, catalog, table_prefix = connect("disk_full")
+        body = load_payload(LOG_PAYLOAD)
+        ctype = content_type_for(LOG_PAYLOAD)
+        base_url = start_server(
+            con,
+            port,
+            catalog=catalog,
+            buffer="disk",
+            disk_buffer_dir=disk_root,
+            max_body_bytes=len(body) + 1024,
+            disk_segment_bytes=4096,
+            disk_max_bytes=4096,
+            seal_target_bytes=1 << 30,
+            seal_max_age_ms=60000,
+        )
+        url = base_url + "/v1/logs"
+        statuses = []
+        accepted_rows = 0
+        for _ in range(16):
+            status, text = post(url, body, ctype, auth="bearer", timeout=20)
+            statuses.append(status)
+            accepted_rows += rows_from_response(status, text)
+        print(f"[disk-full] statuses={sorted(set(statuses))} dir={disk_root}")
+        require(failures, 202 in statuses, f"disk full expected at least one 202, got {statuses}")
+        require(failures, 507 in statuses or 503 in statuses, f"disk full expected 507/503, got {statuses}")
+        flush_server(con, port, checkpoint=bool(catalog))
+        rows = table_count(con, table_prefix, "otlp_logs")
+        require(failures, rows == accepted_rows, f"disk full table rows {rows} != accepted rows {accepted_rows}")
+        stopped = stop_server(con, port)
+        require(failures, stopped.startswith("Stopped"), f"disk full stop failed: {stopped}")
+        con.close()
+    finally:
+        shutil.rmtree(disk_root, ignore_errors=True)
+
+
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--disk", action="store_true", help="also run durable disk-buffer scenarios")
+    args = parser.parse_args()
+
     if not os.path.exists(EXTENSION):
         raise SystemExit(f"extension not found: {EXTENSION} (build it first: GEN=ninja make)")
     for path in (LOG_PAYLOAD, METRICS_PAYLOAD):
@@ -453,6 +545,8 @@ def main():
         scenario_stop_under_load,
         scenario_flush_stop_race,
     ]
+    if args.disk:
+        scenarios.extend([scenario_disk_clean_flush, scenario_disk_full])
     for offset, scenario in enumerate(scenarios):
         scenario(failures, BASE_PORT + offset)
 

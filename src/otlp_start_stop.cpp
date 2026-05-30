@@ -105,6 +105,41 @@ static unique_ptr<FunctionData> OtlpServeBind(ClientContext &context, TableFunct
 			throw InvalidInputException("max_buffered_bytes must be greater than zero");
 		}
 	}
+	if (input.named_parameters.find("buffer") != input.named_parameters.end()) {
+		auto buffer = input.named_parameters["buffer"].GetValue<string>();
+		StringUtil::Trim(buffer);
+		buffer = StringUtil::Lower(buffer);
+		if (buffer == "memory") {
+			bind_data->config.buffer = OtlpBufferMode::MEMORY;
+		} else if (buffer == "disk") {
+			bind_data->config.buffer = OtlpBufferMode::DISK;
+		} else {
+			throw InvalidInputException("buffer must be either 'memory' or 'disk'");
+		}
+	}
+	if (input.named_parameters.find("disk_buffer_dir") != input.named_parameters.end()) {
+		bind_data->config.disk.dir = input.named_parameters["disk_buffer_dir"].GetValue<string>();
+	}
+	if (input.named_parameters.find("disk_segment_bytes") != input.named_parameters.end()) {
+		bind_data->config.disk.segment_bytes = input.named_parameters["disk_segment_bytes"].GetValue<idx_t>();
+		if (bind_data->config.disk.segment_bytes == 0) {
+			throw InvalidInputException("disk_segment_bytes must be greater than zero");
+		}
+	}
+	if (input.named_parameters.find("disk_max_bytes") != input.named_parameters.end()) {
+		bind_data->config.disk.max_disk_bytes = input.named_parameters["disk_max_bytes"].GetValue<idx_t>();
+		if (bind_data->config.disk.max_disk_bytes == 0) {
+			throw InvalidInputException("disk_max_bytes must be greater than zero");
+		}
+	}
+	if (bind_data->config.buffer == OtlpBufferMode::DISK && bind_data->config.disk.dir.empty()) {
+		throw InvalidInputException("disk_buffer_dir is required when buffer='disk'");
+	}
+	if (bind_data->config.disk.max_disk_bytes < bind_data->config.disk.segment_bytes) {
+		throw InvalidInputException("disk_max_bytes (%llu) must be greater than or equal to disk_segment_bytes (%llu)",
+		                            static_cast<uint64_t>(bind_data->config.disk.max_disk_bytes),
+		                            static_cast<uint64_t>(bind_data->config.disk.segment_bytes));
+	}
 	if (bind_data->config.seal_target_bytes > bind_data->config.max_buffered_bytes) {
 		throw InvalidInputException("seal_target_bytes (%llu) must not exceed max_buffered_bytes (%llu)",
 		                            static_cast<uint64_t>(bind_data->config.seal_target_bytes),
@@ -175,6 +210,10 @@ TableFunctionSet OtlpServeFunction::GetFunction() {
 	fun.named_parameters["seal_target_bytes"] = OtlpUBigIntType();
 	fun.named_parameters["seal_max_age_ms"] = OtlpBigIntType();
 	fun.named_parameters["max_buffered_bytes"] = OtlpUBigIntType();
+	fun.named_parameters["buffer"] = OtlpVarcharType();
+	fun.named_parameters["disk_buffer_dir"] = OtlpVarcharType();
+	fun.named_parameters["disk_segment_bytes"] = OtlpUBigIntType();
+	fun.named_parameters["disk_max_bytes"] = OtlpUBigIntType();
 	set.AddFunction(fun);
 	fun.arguments.clear();
 	set.AddFunction(fun);
@@ -255,6 +294,30 @@ static unique_ptr<FunctionData> OtlpServerListBind(ClientContext &context, Table
 	return_types.emplace_back(OtlpUBigIntType());
 	names.emplace_back("seal_last_error");
 	return_types.emplace_back(OtlpVarcharType());
+	names.emplace_back("buffer_mode");
+	return_types.emplace_back(OtlpVarcharType());
+	names.emplace_back("disk_buffered_bytes");
+	return_types.emplace_back(OtlpUBigIntType());
+	names.emplace_back("disk_segment_bytes");
+	return_types.emplace_back(OtlpUBigIntType());
+	names.emplace_back("disk_segments");
+	return_types.emplace_back(OtlpUBigIntType());
+	names.emplace_back("disk_pending_records");
+	return_types.emplace_back(OtlpUBigIntType());
+	names.emplace_back("journal_writes_total");
+	return_types.emplace_back(OtlpUBigIntType());
+	names.emplace_back("journal_fsync_total");
+	return_types.emplace_back(OtlpUBigIntType());
+	names.emplace_back("journal_fsync_failures_total");
+	return_types.emplace_back(OtlpUBigIntType());
+	names.emplace_back("replay_records_total");
+	return_types.emplace_back(OtlpUBigIntType());
+	names.emplace_back("oldest_unsealed_seq");
+	return_types.emplace_back(OtlpBigIntType());
+	names.emplace_back("disk_healthy");
+	return_types.emplace_back(OtlpBooleanType());
+	names.emplace_back("disk_last_error");
+	return_types.emplace_back(OtlpVarcharType());
 	return make_uniq<OtlpServerListFunctionData>();
 }
 
@@ -287,6 +350,19 @@ static void OtlpServerList(ClientContext &context, TableFunctionInput &data_p, D
 		output.SetValue(14, row, Value::UBIGINT(s.seals_total));
 		output.SetValue(15, row, Value::UBIGINT(s.seal_failures_total));
 		output.SetValue(16, row, s.seal_last_error.empty() ? Value(LogicalType::VARCHAR) : Value(s.seal_last_error));
+		output.SetValue(17, row, Value(s.buffer_mode));
+		output.SetValue(18, row, Value::UBIGINT(s.disk_buffered_bytes));
+		output.SetValue(19, row, Value::UBIGINT(s.disk_segment_bytes));
+		output.SetValue(20, row, Value::UBIGINT(s.disk_segments));
+		output.SetValue(21, row, Value::UBIGINT(s.disk_pending_records));
+		output.SetValue(22, row, Value::UBIGINT(s.journal_writes_total));
+		output.SetValue(23, row, Value::UBIGINT(s.journal_fsync_total));
+		output.SetValue(24, row, Value::UBIGINT(s.journal_fsync_failures_total));
+		output.SetValue(25, row, Value::UBIGINT(s.replay_records_total));
+		output.SetValue(26, row,
+		                s.oldest_unsealed_seq < 0 ? Value(LogicalType::BIGINT) : Value::BIGINT(s.oldest_unsealed_seq));
+		output.SetValue(27, row, Value::BOOLEAN(s.disk_healthy));
+		output.SetValue(28, row, s.disk_last_error.empty() ? Value(LogicalType::VARCHAR) : Value(s.disk_last_error));
 		row++;
 		bind_data.offset++;
 	}
