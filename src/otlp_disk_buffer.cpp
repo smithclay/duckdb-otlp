@@ -19,6 +19,9 @@ struct DiskSegmentState {
 	idx_t record_count = 0;
 	uint64_t seq_lo = 0;
 	uint64_t seq_hi = 0;
+	// Number of not-yet-checkpointed records still living in this segment. Maintained alongside `pending` so that
+	// SegmentHasPending() is O(1) instead of scanning all pending entries.
+	idx_t pending_count = 0;
 };
 
 struct AppendResult {
@@ -29,15 +32,14 @@ struct AppendResult {
 };
 
 struct Command {
-	enum class Type : uint8_t { APPEND, CHECKPOINT_RECORD, CHECKPOINT_UP_TO, RECOVER_PENDING, STATS, STOP };
+	enum class Type : uint8_t { APPEND, CHECKPOINT_RECORD, CHECKPOINT_SEALED, RECOVER_PENDING, STOP };
 
 	Type type;
 	DiskRecord record;
 	DiskRecordId id;
-	uint64_t sequence = 0;
+	vector<uint64_t> sequences;
 	std::promise<AppendResult> append_reply;
 	std::promise<vector<RecoveredDiskRecord>> recover_reply;
-	std::promise<OtlpDiskBufferStats> stats_reply;
 	std::promise<void> void_reply;
 	bool has_reply = false;
 };
@@ -70,6 +72,10 @@ static string JsonEscape(const string &input) {
 	return result;
 }
 
+// Minimal hand-rolled manifest JSON reader. This naive `"field":` substring search is only safe because every
+// value we write into the manifest is JsonEscape'd, so a literal `"field":` token can never appear inside a string
+// value and be mistaken for a real field. It must therefore ONLY be used on trusted, self-written manifest content
+// (the manifest.json this extension produces) -- never on arbitrary/untrusted JSON.
 static idx_t FindFieldValue(const string &json, const string &field) {
 	auto needle = "\"" + field + "\":";
 	auto pos = json.find(needle);
@@ -218,19 +224,32 @@ public:
 		future.get();
 	}
 
-	void CheckpointUpTo(uint64_t sequence) {
+	void CheckpointSealed(const vector<uint64_t> &sequences) {
 		auto command = make_uniq<Command>();
-		command->type = Command::Type::CHECKPOINT_UP_TO;
-		command->sequence = sequence;
+		command->type = Command::Type::CHECKPOINT_SEALED;
+		command->sequences = sequences;
 		EnqueueBlocking(std::move(command));
 	}
 
+	// Lock-free metrics read. Stats() is called from the DuckDB query thread (otlp_server_list) while the writer
+	// thread runs, so it must never enqueue a command (which would block behind queued appends/fsyncs). All values
+	// are read from atomics the writer thread publishes, plus a brief lock on stats_mutex for the error strings.
 	OtlpDiskBufferStats Stats() {
-		auto command = make_uniq<Command>();
-		command->type = Command::Type::STATS;
-		auto future = command->stats_reply.get_future();
-		EnqueueBlocking(std::move(command));
-		return future.get();
+		OtlpDiskBufferStats stats;
+		stats.buffered_bytes = total_pending_bytes.load(std::memory_order_acquire);
+		stats.segment_bytes = total_segment_bytes.load(std::memory_order_acquire);
+		stats.segments = segment_count.load(std::memory_order_acquire);
+		stats.pending_records = pending_count.load(std::memory_order_acquire);
+		stats.journal_writes_total = journal_writes_total.load(std::memory_order_acquire);
+		stats.journal_fsync_total = journal_fsync_total.load(std::memory_order_acquire);
+		stats.journal_fsync_failures_total = journal_fsync_failures_total.load(std::memory_order_acquire);
+		stats.oldest_unsealed_seq = oldest_unsealed_seq.load(std::memory_order_acquire);
+		stats.healthy = healthy.load(std::memory_order_acquire);
+		{
+			std::lock_guard<std::mutex> lock(stats_mutex);
+			stats.last_error = fatal_error.empty() ? last_error : fatal_error;
+		}
+		return stats;
 	}
 
 	void Shutdown() {
@@ -261,8 +280,8 @@ private:
 		if (shutdown.load()) {
 			throw OtlpDiskBufferException(OtlpDiskBufferErrorType::UNAVAILABLE, "OTLP disk buffer writer is stopped");
 		}
-		if (!fatal_error.empty()) {
-			throw OtlpDiskBufferException(OtlpDiskBufferErrorType::UNAVAILABLE, fatal_error);
+		if (!healthy.load(std::memory_order_acquire)) {
+			throw OtlpDiskBufferException(OtlpDiskBufferErrorType::UNAVAILABLE, FatalError());
 		}
 		if (queue.size() >= OTLP_DISK_WRITER_QUEUE_CAPACITY) {
 			throw OtlpDiskBufferException(OtlpDiskBufferErrorType::QUEUE_FULL, "OTLP disk buffer writer queue is full");
@@ -335,14 +354,11 @@ private:
 						command->void_reply.set_value();
 					}
 					break;
-				case Command::Type::CHECKPOINT_UP_TO:
-					CheckpointUpToInternal(command->sequence);
+				case Command::Type::CHECKPOINT_SEALED:
+					CheckpointSequences(command->sequences);
 					break;
 				case Command::Type::RECOVER_PENDING:
 					command->recover_reply.set_value(RecoverPendingInternal());
-					break;
-				case Command::Type::STATS:
-					command->stats_reply.set_value(StatsInternal());
 					break;
 				case Command::Type::STOP:
 					break;
@@ -361,7 +377,7 @@ private:
 					}
 					command->append_reply.set_value(result);
 				} else if (command->type == Command::Type::CHECKPOINT_RECORD ||
-				           command->type == Command::Type::CHECKPOINT_UP_TO) {
+				           command->type == Command::Type::CHECKPOINT_SEALED) {
 					string message;
 					try {
 						throw;
@@ -377,8 +393,6 @@ private:
 					}
 				} else if (command->type == Command::Type::RECOVER_PENDING) {
 					command->recover_reply.set_exception(std::current_exception());
-				} else if (command->type == Command::Type::STATS) {
-					command->stats_reply.set_exception(std::current_exception());
 				} else if (command->has_reply) {
 					command->void_reply.set_exception(std::current_exception());
 				}
@@ -399,28 +413,47 @@ private:
 			queue_cv.notify_all();
 		}
 
-		vector<EncodedDiskRecord> encoded;
-		encoded.reserve(batch.size());
+		// Encode and write one record at a time so we hold at most a single encoded body in memory (instead of the
+		// whole batch, which could be up to OTLP_DISK_GROUP_COMMIT_RECORDS * max_record_bytes). Only the resulting
+		// per-record AppendResult (an id or an error, no body) is retained across the batch; replies are set after the
+		// single group-commit fsync below, so a record is only reported ok once durable.
+		//
+		// A FULL/QUEUE_FULL/UNAVAILABLE OtlpDiskBufferException is a clean, expected per-record rejection (the record
+		// was not written), so it becomes that record's error result and the batch continues. Any other failure (e.g.
+		// an IO error from WriteAll/Rotate) is fatal: it propagates out so the Run() loop latches it; we first fail
+		// every still-unanswered command's reply so no promise is left broken.
 		auto base_sequence = next_sequence;
-		for (idx_t i = 0; i < batch.size(); i++) {
-			if (batch[i]->record.body.size() > max_record_bytes) {
-				throw OtlpDiskBufferException(OtlpDiskBufferErrorType::FULL,
-				                              StringUtil::Format("OTLP disk buffer record has %llu bytes; max is %llu",
-				                                                 static_cast<uint64_t>(batch[i]->record.body.size()),
-				                                                 static_cast<uint64_t>(max_record_bytes)));
+		next_sequence = base_sequence + batch.size();
+		vector<AppendResult> results(batch.size());
+		try {
+			for (idx_t i = 0; i < batch.size(); i++) {
+				try {
+					auto id = AppendOneEncoded(batch[i]->record, base_sequence + i);
+					results[i].ok = true;
+					results[i].id = id;
+				} catch (OtlpDiskBufferException &ex) {
+					results[i].ok = false;
+					results[i].error_type = ex.type;
+					results[i].error = ex.what();
+				}
 			}
-			encoded.push_back(OtlpDiskEncodeRecord(batch[i]->record, base_sequence + i));
+			SyncAppendIfDirty();
+		} catch (std::exception &ex) {
+			// A non-per-record failure (IO error from WriteAll/Rotate or the group-commit fsync) means nothing in this
+			// batch is durable. Latch the writer fatal and fail every command's reply here so none is left broken; we
+			// deliberately do NOT re-throw because the batch's command was moved into `batch` (the Run() catch could
+			// not answer it anyway).
+			LatchFatal(ex.what());
+			AppendResult failure;
+			failure.error_type = OtlpDiskBufferErrorType::UNAVAILABLE;
+			failure.error = FatalError();
+			for (idx_t i = 0; i < batch.size(); i++) {
+				batch[i]->append_reply.set_value(failure);
+			}
+			return;
 		}
-
-		vector<DiskRecordId> ids;
-		AppendEncoded(encoded, ids);
-		SyncAppendIfDirty();
-		next_sequence = base_sequence + ids.size();
 		for (idx_t i = 0; i < batch.size(); i++) {
-			AppendResult result;
-			result.ok = true;
-			result.id = ids[i];
-			batch[i]->append_reply.set_value(result);
+			batch[i]->append_reply.set_value(results[i]);
 		}
 	}
 
@@ -441,12 +474,14 @@ private:
 				                                static_cast<uint64_t>(scan.valid_len), scan.truncation_error);
 			}
 			max_sequence = MaxValue<uint64_t>(max_sequence, scan.seq_hi);
-			segments[segment] = DiskSegmentState {scan.valid_len, scan.record_count, scan.seq_lo, scan.seq_hi};
-			total_segment_bytes += scan.valid_len;
+			segments[segment] = DiskSegmentState {scan.valid_len, scan.record_count, scan.seq_lo, scan.seq_hi, 0};
+			total_segment_bytes_value += scan.valid_len;
 			for (auto &record : recovered) {
 				auto body_len = record.record.body.size();
 				pending[record.id] = body_len;
-				total_pending_bytes += body_len;
+				seq_to_segment[record.id.sequence] = record.id.segment;
+				segments[segment].pending_count++;
+				total_pending_bytes_value += body_len;
 			}
 		}
 
@@ -472,6 +507,13 @@ private:
 		                                      FileFlags::FILE_FLAGS_FILE_CREATE | FileFlags::FILE_FLAGS_APPEND);
 		next_sequence = MaxValue<uint64_t>(max_sequence + 1, 1);
 		checkpoint_last_sync = std::chrono::steady_clock::now();
+
+		// Publish the recovered state into the lock-free stat mirrors read by Stats().
+		PublishPendingBytes(total_pending_bytes_value);
+		PublishSegmentBytes(total_segment_bytes_value);
+		PublishSegmentCount(segments.size());
+		PublishPendingCount(pending.size());
+		RecomputeOldestUnsealed();
 	}
 
 	unique_ptr<FileHandle> OpenSegmentAppend(uint64_t segment) {
@@ -480,15 +522,23 @@ private:
 		                        FileFlags::FILE_FLAGS_FILE_CREATE | FileFlags::FILE_FLAGS_APPEND);
 	}
 
-	void AppendEncoded(vector<EncodedDiskRecord> &encoded, vector<DiskRecordId> &ids) {
-		idx_t encoded_bytes = 0;
-		for (auto &record : encoded) {
-			encoded_bytes += record.bytes.size();
+	// Encodes a single record at the given sequence and writes it to the active segment (rotating mid-batch if
+	// needed). Performs the per-record oversize/FULL and total-bytes/reclaim checks before writing; throws
+	// OtlpDiskBufferException(FULL) without writing if the record cannot be admitted. Does not fsync (the caller
+	// group-commits via SyncAppendIfDirty()).
+	DiskRecordId AppendOneEncoded(const DiskRecord &record, uint64_t sequence) {
+		if (record.body.size() > max_record_bytes) {
+			throw OtlpDiskBufferException(OtlpDiskBufferErrorType::FULL,
+			                              StringUtil::Format("OTLP disk buffer record has %llu bytes; max is %llu",
+			                                                 static_cast<uint64_t>(record.body.size()),
+			                                                 static_cast<uint64_t>(max_record_bytes)));
 		}
-		auto required_bytes = total_segment_bytes + encoded_bytes;
+		auto encoded = OtlpDiskEncodeRecord(record, sequence);
+
+		auto required_bytes = total_segment_bytes_value + encoded.bytes.size();
 		if (required_bytes > max_total_bytes) {
 			ReclaimCommittedSegments();
-			required_bytes = total_segment_bytes + encoded_bytes;
+			required_bytes = total_segment_bytes_value + encoded.bytes.size();
 		}
 		if (required_bytes > max_total_bytes) {
 			throw OtlpDiskBufferException(OtlpDiskBufferErrorType::FULL,
@@ -497,17 +547,15 @@ private:
 			                                                 static_cast<uint64_t>(max_total_bytes)));
 		}
 
-		for (auto &record : encoded) {
-			auto active_bytes = segments[active_segment].bytes;
-			if (active_bytes > 0 && active_bytes + record.bytes.size() > max_segment_bytes) {
-				SyncAppendIfDirty();
-				Rotate();
-			}
-			auto id = DiskRecordId {active_segment, record.sequence};
-			WriteAll(*active, record.bytes.data(), record.bytes.size());
-			RecordAppended(id, record.body_len, record.bytes.size());
-			ids.push_back(id);
+		auto active_bytes = segments[active_segment].bytes;
+		if (active_bytes > 0 && active_bytes + encoded.bytes.size() > max_segment_bytes) {
+			SyncAppendIfDirty();
+			Rotate();
 		}
+		auto id = DiskRecordId {active_segment, encoded.sequence};
+		WriteAll(*active, encoded.bytes.data(), encoded.bytes.size());
+		RecordAppended(id, encoded.body_len, encoded.bytes.size());
+		return id;
 	}
 
 	void RecordAppended(DiskRecordId id, idx_t body_len, idx_t written) {
@@ -518,12 +566,16 @@ private:
 		state.seq_hi = id.sequence;
 		state.record_count++;
 		state.bytes += written;
-		total_segment_bytes += written;
+		state.pending_count++;
+		PublishSegmentBytes(total_segment_bytes_value + written);
 		pending[id] = body_len;
-		total_pending_bytes += body_len;
+		seq_to_segment[id.sequence] = id.segment;
+		PublishPendingBytes(total_pending_bytes_value + body_len);
+		PublishPendingCount(pending.size());
+		UpdateOldestUnsealed(id.sequence);
 		append_dirty_records++;
 		append_dirty_segments.insert(id.segment);
-		journal_writes_total++;
+		PublishJournalWrites(journal_writes_total_value + 1);
 	}
 
 	void SyncAppendIfDirty() {
@@ -539,14 +591,14 @@ private:
 					                           FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_WRITE);
 					handle->Sync();
 				}
-				journal_fsync_total++;
+				PublishJournalFsync(journal_fsync_total_value + 1);
 			}
 			append_dirty_records = 0;
 			append_dirty_segments.clear();
 		} catch (std::exception &ex) {
-			journal_fsync_failures_total++;
+			PublishJournalFsyncFailures(journal_fsync_failures_total_value + 1);
 			LatchFatal(ex.what());
-			throw OtlpDiskBufferException(OtlpDiskBufferErrorType::UNAVAILABLE, fatal_error);
+			throw OtlpDiskBufferException(OtlpDiskBufferErrorType::UNAVAILABLE, FatalError());
 		}
 	}
 
@@ -557,40 +609,49 @@ private:
 		                                FileFlags::FILE_FLAGS_APPEND | FileFlags::FILE_FLAGS_EXCLUSIVE_CREATE);
 		OtlpDiskSyncDirectory(dir);
 		segments[active_segment] = DiskSegmentState {};
+		PublishSegmentCount(segments.size());
 	}
 
 	void CheckpointRecordInternal(DiskRecordId id) {
 		CheckpointSequences({id.sequence});
 	}
 
-	void CheckpointUpToInternal(uint64_t sequence) {
-		vector<uint64_t> sequences;
-		for (auto &entry : pending) {
-			if (entry.first.sequence <= sequence) {
-				sequences.push_back(entry.first.sequence);
-			}
-		}
-		CheckpointSequences(sequences);
-	}
-
 	void CheckpointSequences(const vector<uint64_t> &sequences) {
 		for (auto sequence : sequences) {
+			// completed.insert dedups: a sequence already checkpointed is a no-op.
 			if (!completed.insert(sequence).second) {
 				continue;
 			}
-			for (auto it = pending.begin(); it != pending.end(); ++it) {
-				if (it->first.sequence == sequence) {
-					total_pending_bytes = total_pending_bytes >= it->second ? total_pending_bytes - it->second : 0;
-					pending.erase(it);
-					break;
-				}
-			}
+			ErasePending(sequence);
 			auto line = std::to_string(sequence) + "\n";
 			WriteAll(*checkpoint, line);
 			checkpoint_dirty_records++;
 		}
+		PublishPendingCount(pending.size());
+		RecomputeOldestUnsealed();
 		SyncCheckpointIfDue(false);
 		ReclaimCommittedSegments();
+	}
+
+	// Removes a single not-yet-checkpointed sequence from `pending`, locating its segment in O(log n) via
+	// seq_to_segment, and keeps the per-segment pending_count and total_pending_bytes mirror in sync.
+	void ErasePending(uint64_t sequence) {
+		auto seg_it = seq_to_segment.find(sequence);
+		if (seg_it == seq_to_segment.end()) {
+			return;
+		}
+		auto segment = seg_it->second;
+		seq_to_segment.erase(seg_it);
+		auto it = pending.find(DiskRecordId {segment, sequence});
+		if (it == pending.end()) {
+			return;
+		}
+		PublishPendingBytes(total_pending_bytes_value >= it->second ? total_pending_bytes_value - it->second : 0);
+		auto seg = segments.find(segment);
+		if (seg != segments.end() && seg->second.pending_count > 0) {
+			seg->second.pending_count--;
+		}
+		pending.erase(it);
 	}
 
 	void SyncCheckpointIfDue(bool force) {
@@ -629,28 +690,6 @@ private:
 		return result;
 	}
 
-	OtlpDiskBufferStats StatsInternal() {
-		OtlpDiskBufferStats stats;
-		stats.buffered_bytes = total_pending_bytes;
-		stats.segment_bytes = total_segment_bytes;
-		stats.segments = segments.size();
-		stats.pending_records = pending.size();
-		stats.journal_writes_total = journal_writes_total;
-		stats.journal_fsync_total = journal_fsync_total;
-		stats.journal_fsync_failures_total = journal_fsync_failures_total;
-		stats.healthy = fatal_error.empty();
-		stats.last_error = fatal_error.empty() ? last_error : fatal_error;
-		if (!pending.empty()) {
-			uint64_t oldest = NumericLimits<uint64_t>::Maximum();
-			for (auto &entry : pending) {
-				oldest = MinValue<uint64_t>(oldest, entry.first.sequence);
-			}
-			stats.oldest_unsealed_seq = oldest > NumericLimits<int64_t>::Maximum() ? NumericLimits<int64_t>::Maximum()
-			                                                                       : static_cast<int64_t>(oldest);
-		}
-		return stats;
-	}
-
 	void ReclaimCommittedSegments() {
 		vector<uint64_t> candidates;
 		for (auto &entry : segments) {
@@ -663,7 +702,7 @@ private:
 			auto path = OtlpDiskSegmentPath(*fs, dir, segment);
 			fs->RemoveFile(path);
 			auto state = segments[segment];
-			total_segment_bytes = total_segment_bytes >= state.bytes ? total_segment_bytes - state.bytes : 0;
+			PublishSegmentBytes(total_segment_bytes_value >= state.bytes ? total_segment_bytes_value - state.bytes : 0);
 			if (state.record_count > 0) {
 				for (auto seq = state.seq_lo; seq <= state.seq_hi; seq++) {
 					auto erased = completed.erase(seq);
@@ -676,6 +715,7 @@ private:
 			segments.erase(segment);
 		}
 		if (!candidates.empty()) {
+			PublishSegmentCount(segments.size());
 			OtlpDiskSyncDirectory(dir);
 		}
 		if (pruned_completed) {
@@ -684,12 +724,8 @@ private:
 	}
 
 	bool SegmentHasPending(uint64_t segment) const {
-		for (auto &entry : pending) {
-			if (entry.first.segment == segment) {
-				return true;
-			}
-		}
-		return false;
+		auto it = segments.find(segment);
+		return it != segments.end() && it->second.pending_count > 0;
 	}
 
 	void RewriteCheckpoint() {
@@ -712,11 +748,74 @@ private:
 	}
 
 	void LatchFatal(const string &message) {
-		std::lock_guard<std::mutex> lock(queue_mutex);
+		std::lock_guard<std::mutex> lock(stats_mutex);
 		if (fatal_error.empty()) {
 			fatal_error = StringUtil::Format("OTLP disk buffer writer for %s entered fatal state: %s",
 			                                 OtlpRequestKindName(kind), message);
+			healthy.store(false, std::memory_order_release);
 		}
+	}
+
+	// Returns the latched fatal error string (empty if none). Only ever read/written by the writer thread except via
+	// Stats(); both paths take stats_mutex.
+	string FatalError() {
+		std::lock_guard<std::mutex> lock(stats_mutex);
+		return fatal_error;
+	}
+
+	// --- Lock-free stat mirrors -------------------------------------------------------------------------------
+	// The writer thread owns the plain `*_value` counters; it publishes each change into the matching atomic via
+	// these helpers (release stores). Stats() reads the atomics with acquire loads from another thread.
+	void PublishPendingBytes(idx_t value) {
+		total_pending_bytes_value = value;
+		total_pending_bytes.store(value, std::memory_order_release);
+	}
+	void PublishSegmentBytes(idx_t value) {
+		total_segment_bytes_value = value;
+		total_segment_bytes.store(value, std::memory_order_release);
+	}
+	void PublishSegmentCount(idx_t value) {
+		segment_count.store(value, std::memory_order_release);
+	}
+	void PublishPendingCount(idx_t value) {
+		pending_count.store(value, std::memory_order_release);
+	}
+	void PublishJournalWrites(idx_t value) {
+		journal_writes_total_value = value;
+		journal_writes_total.store(value, std::memory_order_release);
+	}
+	void PublishJournalFsync(idx_t value) {
+		journal_fsync_total_value = value;
+		journal_fsync_total.store(value, std::memory_order_release);
+	}
+	void PublishJournalFsyncFailures(idx_t value) {
+		journal_fsync_failures_total_value = value;
+		journal_fsync_failures_total.store(value, std::memory_order_release);
+	}
+
+	// Cheap update on append: the just-appended sequence is monotonically increasing, so it can only become the
+	// oldest unsealed sequence when there is currently none tracked.
+	void UpdateOldestUnsealed(uint64_t sequence) {
+		if (oldest_unsealed_seq.load(std::memory_order_acquire) < 0) {
+			auto clamped = sequence > static_cast<uint64_t>(NumericLimits<int64_t>::Maximum())
+			                   ? NumericLimits<int64_t>::Maximum()
+			                   : static_cast<int64_t>(sequence);
+			oldest_unsealed_seq.store(clamped, std::memory_order_release);
+		}
+	}
+
+	// Recompute the oldest unsealed sequence after pending entries are removed. seq_to_segment is ordered, so the
+	// minimum pending sequence is its first key. A slightly stale value is acceptable for a metrics endpoint.
+	void RecomputeOldestUnsealed() {
+		if (seq_to_segment.empty()) {
+			oldest_unsealed_seq.store(-1, std::memory_order_release);
+			return;
+		}
+		auto oldest = seq_to_segment.begin()->first;
+		auto clamped = oldest > static_cast<uint64_t>(NumericLimits<int64_t>::Maximum())
+		                   ? NumericLimits<int64_t>::Maximum()
+		                   : static_cast<int64_t>(oldest);
+		oldest_unsealed_seq.store(clamped, std::memory_order_release);
 	}
 
 private:
@@ -735,15 +834,35 @@ private:
 	std::set<uint64_t> completed;
 	std::map<uint64_t, DiskSegmentState> segments;
 	std::map<DiskRecordId, idx_t> pending;
-	idx_t total_segment_bytes = 0;
-	idx_t total_pending_bytes = 0;
+	// sequence -> segment id for every pending record. Ordered, so its first key is the oldest unsealed sequence and
+	// it gives O(log n) lookup of a sequence's segment without scanning `pending`.
+	std::map<uint64_t, uint64_t> seq_to_segment;
+	// Writer-thread-only authoritative counters. Each is mirrored into the matching atomic below via a Publish*
+	// helper so Stats() can read them lock-free from another thread.
+	idx_t total_segment_bytes_value = 0;
+	idx_t total_pending_bytes_value = 0;
+	idx_t journal_writes_total_value = 0;
+	idx_t journal_fsync_total_value = 0;
+	idx_t journal_fsync_failures_total_value = 0;
 	idx_t append_dirty_records = 0;
 	std::set<uint64_t> append_dirty_segments;
-	idx_t journal_writes_total = 0;
-	idx_t journal_fsync_total = 0;
-	idx_t journal_fsync_failures_total = 0;
 	idx_t checkpoint_dirty_records = 0;
 	std::chrono::steady_clock::time_point checkpoint_last_sync;
+
+	// Lock-free mirrors of the counters above, published (release) by the writer thread and read (acquire) by
+	// Stats() on the query thread. The writer thread is the sole writer, so release/acquire is sufficient.
+	std::atomic<idx_t> total_segment_bytes {0};
+	std::atomic<idx_t> total_pending_bytes {0};
+	std::atomic<idx_t> segment_count {0};
+	std::atomic<idx_t> pending_count {0};
+	std::atomic<idx_t> journal_writes_total {0};
+	std::atomic<idx_t> journal_fsync_total {0};
+	std::atomic<idx_t> journal_fsync_failures_total {0};
+	std::atomic<int64_t> oldest_unsealed_seq {-1};
+	std::atomic<bool> healthy {true};
+
+	// Guards the error strings only; Stats() briefly locks this (never the queue) to read them.
+	std::mutex stats_mutex;
 	string fatal_error;
 	string last_error;
 
@@ -774,8 +893,8 @@ void DiskSegmentWriter::CheckpointRecord(DiskRecordId id) {
 	impl->CheckpointRecord(id);
 }
 
-void DiskSegmentWriter::CheckpointUpTo(uint64_t sequence) {
-	impl->CheckpointUpTo(sequence);
+void DiskSegmentWriter::CheckpointSealed(const vector<uint64_t> &sequences) {
+	impl->CheckpointSealed(sequences);
 }
 
 OtlpDiskBufferStats DiskSegmentWriter::Stats() {
@@ -795,6 +914,7 @@ OtlpDiskBuffer::OtlpDiskBuffer(OtlpDiskBufferConfig config_p, string catalog_nam
 	config.segment_bytes = MaxValue<idx_t>(config.segment_bytes, OTLP_DISK_RECORD_HEADER_BYTES + 1);
 	config.max_disk_bytes = MaxValue<idx_t>(config.max_disk_bytes, config.segment_bytes);
 	EnsureManifest(catalog_name, schema_name);
+	AcquireOwnerLock();
 
 	auto fs = FileSystem::CreateLocal();
 	logs = make_uniq<DiskSegmentWriter>(OtlpRequestKind::LOGS, fs->JoinPath(config.dir, "logs"), config.segment_bytes,
@@ -816,9 +936,8 @@ DiskRecordId OtlpDiskBuffer::Append(OtlpRequestKind kind, const string &content_
 	record.content_type = content_type;
 	record.content_encoding = content_encoding;
 	record.body = body;
-	record.accepted_at_micros =
-	    std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch())
-	        .count();
+	// accepted_at_micros is left 0 here: OtlpDiskEncodeRecord fills a now() fallback when it is 0, making the encode
+	// step the single source of truth for the timestamp.
 	return WriterFor(kind).Append(record);
 }
 
@@ -842,8 +961,8 @@ void OtlpDiskBuffer::CheckpointTerminal(OtlpRequestKind kind, DiskRecordId id) {
 	WriterFor(kind).CheckpointRecord(id);
 }
 
-void OtlpDiskBuffer::CheckpointUpTo(OtlpRequestKind kind, uint64_t sequence) {
-	WriterFor(kind).CheckpointUpTo(sequence);
+void OtlpDiskBuffer::CheckpointSealed(OtlpRequestKind kind, const vector<uint64_t> &sequences) {
+	WriterFor(kind).CheckpointSealed(sequences);
 }
 
 OtlpDiskBufferStats OtlpDiskBuffer::Stats() const {
@@ -868,6 +987,8 @@ void OtlpDiskBuffer::Shutdown() {
 	if (metrics) {
 		metrics->Shutdown();
 	}
+	// Release the OS advisory lock last, after all writers have stopped touching the directory.
+	owner_lock.reset();
 }
 
 DiskSegmentWriter &OtlpDiskBuffer::WriterFor(OtlpRequestKind kind) const {
@@ -880,6 +1001,26 @@ DiskSegmentWriter &OtlpDiskBuffer::WriterFor(OtlpRequestKind kind) const {
 		return *metrics;
 	default:
 		throw InternalException("Unknown OTLP request kind");
+	}
+}
+
+void OtlpDiskBuffer::AcquireOwnerLock() {
+	auto fs = FileSystem::CreateLocal();
+	auto lock_path = fs->JoinPath(config.dir, "OWNER.lock");
+	// DuckDB's LocalFileSystem applies an OS advisory lock (fcntl on POSIX, LockFileEx on Windows) when a
+	// FileLockType is passed to OpenFile, so this is portable across macOS/Linux/Windows. A conflicting lock held
+	// by another otlp_serve instance/process makes OpenFile throw; we surface that as an IOException with a clear
+	// message. The handle (and thus the lock) is held for the lifetime of this OtlpDiskBuffer.
+	try {
+		owner_lock = fs->OpenFile(lock_path, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE |
+		                                         FileLockType::WRITE_LOCK);
+	} catch (std::exception &ex) {
+		throw IOException("OTLP disk buffer directory \"%s\" is already in use by another otlp_serve instance: %s",
+		                  config.dir, ex.what());
+	}
+	if (!owner_lock) {
+		throw IOException("OTLP disk buffer directory \"%s\" is already in use by another otlp_serve instance",
+		                  config.dir);
 	}
 }
 

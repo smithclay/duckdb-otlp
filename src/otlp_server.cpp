@@ -223,7 +223,10 @@ struct OtlpSignalBuffer {
 	idx_t buffered_rows = 0;
 	idx_t buffered_bytes = 0;
 	idx_t admission_bytes = 0;
-	uint64_t max_journaled_seq = 0;
+	//! Disk sequences whose rows are currently buffered in this collection. A request may
+	//! append the same sequence multiple times (AppendArrowBatch chunk loop); duplicates
+	//! are fine — the writer dedups via its `completed` set.
+	vector<uint64_t> journaled_seqs;
 	bool have_unsealed = false;
 	std::chrono::steady_clock::time_point first_unsealed;
 
@@ -724,7 +727,7 @@ void OtlpServer::BufferAppend(OtlpSignalBuffer &buf, DataChunk &chunk, idx_t &ad
 			admission_bytes = 0;
 		}
 		if (disk_record_id.has_value()) {
-			buf.max_journaled_seq = MaxValue<uint64_t>(buf.max_journaled_seq, disk_record_id->sequence);
+			buf.journaled_seqs.push_back(disk_record_id->sequence);
 		}
 		// Cheap running estimate drives the trigger; the exact COPY size is whatever
 		// the buffered chunks hold at seal time.
@@ -759,7 +762,7 @@ OtlpIngestResult OtlpServer::SealOnce(bool run_checkpoint) {
 		idx_t rows = 0;
 		idx_t bytes = 0;
 		idx_t admission_bytes = 0;
-		uint64_t max_journaled_seq = 0;
+		vector<uint64_t> journaled_seqs;
 		bool have_unsealed = false;
 		std::chrono::steady_clock::time_point first_unsealed;
 	};
@@ -775,7 +778,14 @@ OtlpIngestResult OtlpServer::SealOnce(bool run_checkpoint) {
 	std::vector<SealingBuffer> sealing;
 	idx_t total = 0;
 	idx_t sealed_admission_bytes = 0;
-	uint64_t sealed_seq[3] = {0, 0, 0};
+	static_assert(static_cast<uint8_t>(OtlpRequestKind::LOGS) == 0 &&
+	                  static_cast<uint8_t>(OtlpRequestKind::TRACES) == 1 &&
+	                  static_cast<uint8_t>(OtlpRequestKind::METRICS) == 2,
+	              "sealed_seqs indexing assumes LOGS/TRACES/METRICS == 0/1/2");
+	// Exact set of disk sequences pulled into this seal, per request kind. We checkpoint
+	// precisely these after the COMMIT — never a `<= max` watermark, which could wrongly
+	// drop a lower seq that out-of-order appends left un-sealed.
+	vector<uint64_t> sealed_seqs[3];
 	{
 		std::vector<std::unique_lock<std::mutex>> locks;
 		locks.reserve(signal_buffers.size());
@@ -790,20 +800,19 @@ OtlpIngestResult OtlpServer::SealOnce(bool run_checkpoint) {
 			state.rows = buf.buffered_rows;
 			state.bytes = buf.buffered_bytes;
 			state.admission_bytes = buf.admission_bytes;
-			state.max_journaled_seq = buf.max_journaled_seq;
+			state.journaled_seqs = std::move(buf.journaled_seqs);
+			buf.journaled_seqs.clear();
 			state.have_unsealed = buf.have_unsealed;
 			state.first_unsealed = buf.first_unsealed;
 			total += state.rows;
 			sealed_admission_bytes += state.admission_bytes;
-			auto kind = RequestKindForSignal(buf.signal_type);
-			sealed_seq[static_cast<uint8_t>(kind)] =
-			    MaxValue<uint64_t>(sealed_seq[static_cast<uint8_t>(kind)], state.max_journaled_seq);
+			auto kidx = static_cast<uint8_t>(RequestKindForSignal(buf.signal_type));
+			sealed_seqs[kidx].insert(sealed_seqs[kidx].end(), state.journaled_seqs.begin(), state.journaled_seqs.end());
 
 			buf.collection = std::move(fresh[i]);
 			buf.buffered_rows = 0;
 			buf.buffered_bytes = 0;
 			buf.admission_bytes = 0;
-			buf.max_journaled_seq = 0;
 			buf.have_unsealed = false;
 			sealing.push_back(std::move(state));
 		}
@@ -889,7 +898,9 @@ OtlpIngestResult OtlpServer::SealOnce(bool run_checkpoint) {
 				buf.buffered_rows += state.rows;
 				buf.buffered_bytes += state.bytes;
 				buf.admission_bytes += state.admission_bytes;
-				buf.max_journaled_seq = MaxValue<uint64_t>(buf.max_journaled_seq, state.max_journaled_seq);
+				// Order doesn't matter — these are a set of seqs to checkpoint at a later seal.
+				buf.journaled_seqs.insert(buf.journaled_seqs.end(), state.journaled_seqs.begin(),
+				                          state.journaled_seqs.end());
 				buf.have_unsealed = true;
 				// Preserve the original arrival time of restored rows so the age trigger
 				// still fires from their true arrival time across repeated seal failures.
@@ -918,9 +929,9 @@ OtlpIngestResult OtlpServer::SealOnce(bool run_checkpoint) {
 	if (disk_buffer) {
 		try {
 			for (auto kind : {OtlpRequestKind::LOGS, OtlpRequestKind::TRACES, OtlpRequestKind::METRICS}) {
-				auto seq = sealed_seq[static_cast<uint8_t>(kind)];
-				if (seq > 0) {
-					disk_buffer->CheckpointUpTo(kind, seq);
+				auto &seqs = sealed_seqs[static_cast<uint8_t>(kind)];
+				if (!seqs.empty()) {
+					disk_buffer->CheckpointSealed(kind, seqs);
 				}
 			}
 		} catch (std::exception &ex) {
@@ -1053,9 +1064,15 @@ void OtlpServer::ReplayDiskBuffer() {
 		}
 		auto reservation_bytes = AdmissionReservationBytes(recovered.record.body.size());
 		if (reservation_bytes > config.max_buffered_bytes) {
-			throw IOException("OTLP disk buffer replay record has %llu admission bytes but max_buffered_bytes is %llu",
-			                  static_cast<uint64_t>(reservation_bytes),
-			                  static_cast<uint64_t>(config.max_buffered_bytes));
+			// A single oversized record (e.g. the operator lowered max_buffered_bytes/
+			// max_body_bytes since it was journaled) must not permanently brick startup.
+			// Quarantine it like the parse-400 / unsupported-encoding paths so it won't
+			// replay again, then move on.
+			LogServerEvent(StringUtil::Format(
+			    "OTLP disk buffer replay record has %llu admission bytes but max_buffered_bytes is %llu; quarantining",
+			    static_cast<uint64_t>(reservation_bytes), static_cast<uint64_t>(config.max_buffered_bytes)));
+			disk_buffer->CheckpointTerminal(recovered.record.request_kind, recovered.id);
+			continue;
 		}
 		idx_t admitted_before = 0;
 		while (!TryReserveAdmission(reservation_bytes, admitted_before)) {
@@ -1086,9 +1103,10 @@ void OtlpServer::ReplayDiskBuffer() {
 		}
 		ReleaseAdmission(unclaimed_admission);
 		total_rows.fetch_add(result.rows);
+		// Record incrementally so a later throw mid-replay can't lose the partial count.
+		disk_buffer->RecordReplayRecords(1);
 		replayed_records++;
 	}
-	disk_buffer->RecordReplayRecords(replayed_records);
 	if (replayed_records > 0) {
 		LogServerEvent(StringUtil::Format("OTLP disk buffer replayed %llu pending records",
 		                                  static_cast<uint64_t>(replayed_records)));

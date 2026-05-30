@@ -54,7 +54,7 @@ public:
 	DiskRecordId Append(const DiskRecord &record);
 	vector<RecoveredDiskRecord> RecoverPending();
 	void CheckpointRecord(DiskRecordId id);
-	void CheckpointUpTo(uint64_t sequence);
+	void CheckpointSealed(const vector<uint64_t> &sequences);
 	OtlpDiskBufferStats Stats();
 	void Shutdown();
 
@@ -72,7 +72,7 @@ public:
 	                    const string &body);
 	vector<RecoveredDiskRecord> RecoverPending();
 	void CheckpointTerminal(OtlpRequestKind kind, DiskRecordId id);
-	void CheckpointUpTo(OtlpRequestKind kind, uint64_t sequence);
+	void CheckpointSealed(OtlpRequestKind kind, const vector<uint64_t> &sequences);
 	OtlpDiskBufferStats Stats() const;
 	void RecordReplayRecords(idx_t records);
 	void Shutdown();
@@ -80,10 +80,14 @@ public:
 private:
 	DiskSegmentWriter &WriterFor(OtlpRequestKind kind) const;
 	void EnsureManifest(const string &catalog_name, const string &schema_name);
+	void AcquireOwnerLock();
 
 private:
 	OtlpDiskBufferConfig config;
 	idx_t max_record_bytes;
+	// Exclusive OS advisory lock on <dir>/OWNER.lock; held for the lifetime of the buffer so that only one
+	// otlp_serve instance/process may write the segment journals. Released on destruction/Shutdown.
+	unique_ptr<FileHandle> owner_lock;
 	unique_ptr<DiskSegmentWriter> logs;
 	unique_ptr<DiskSegmentWriter> traces;
 	unique_ptr<DiskSegmentWriter> metrics;

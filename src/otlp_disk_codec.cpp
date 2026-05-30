@@ -100,6 +100,13 @@ static bool ReadExactString(FileHandle &handle, string &buffer, idx_t len, bool 
 
 enum class ReadRecordStatus : uint8_t { OK, EOF_REACHED, TORN, CORRUPT };
 
+// Minimal JSON field parser for TRUSTED, self-written record headers only — NOT a general JSON parser.
+// These helpers (FindFieldValue / ParseJson*Field) locate a field via a raw `"<field>":` substring search,
+// which is only safe because every string value emitted by OtlpDiskEncodeRecord is JsonEscape'd at write
+// time. Escaping guarantees a bare `"` (and thus a spurious `"<field>":` token) can never appear inside a
+// value, so the substring lookup cannot be fooled by attacker- or value-controlled content. The `json`
+// argument is always just the header string (never the body), so the search is naturally scoped to the
+// header. Do NOT feed untrusted JSON here, and keep this in lockstep with OtlpDiskEncodeRecord's escaping.
 static idx_t FindFieldValue(const string &json, const string &field) {
 	auto needle = "\"" + field + "\":";
 	auto pos = json.find(needle);
