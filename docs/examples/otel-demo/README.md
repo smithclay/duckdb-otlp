@@ -35,4 +35,4 @@ LOAD otlp;
 SELECT * FROM read_otlp_traces('exports/json/traces.jsonl') LIMIT 10;
 ```
 
-See [OpenTelemetry Demo Exports](../../guides/otel-collector-demo-exports.md).
+See [OpenTelemetry Demo Exports](../../setup/otel-demo.md).

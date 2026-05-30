@@ -58,6 +58,6 @@ See the [Serve Reference](serve.md) for parameters, catalog targeting, endpoints
 
 ## Examples
 
-For practical examples and copy-paste-ready recipes, see the [Cookbook](../guides/cookbook.md).
+For task-oriented examples, see the [How-to Guides](../guides/README.md).
 
 For complete schema details, see the [Schema Reference](schemas.md).

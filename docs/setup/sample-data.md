@@ -31,7 +31,7 @@ curl -LO https://raw.githubusercontent.com/smithclay/duckdb-otlp/main/test/data/
 Use the collector file exporter for application telemetry:
 
 - [Collector Setup](collector.md)
-- [OpenTelemetry Demo Exports](../guides/otel-collector-demo-exports.md)
+- [OpenTelemetry Demo Exports](otel-demo.md)
 
 Use the live ingest server for quick HTTP tests:
 

@@ -118,4 +118,4 @@ COPY (
 
 - [API Reference](../reference/api.md#metrics)
 - [Schema Reference](../reference/schemas.md#metrics)
-- [Cookbook](cookbook.md)
+- [How-to Guides](README.md)

@@ -149,6 +149,17 @@ demo/
 └── samples/           # Sample OTLP files (JSON and Protobuf)
 ```
 
+## Documentation
+
+Follow the Diátaxis documentation framework and keep docs lean:
+
+- **Tutorials**: `README.md`, `docs/get-started.md`, and focused quickstarts such as `docs/quickstart/serve.md`.
+- **How-to guides**: task-oriented docs under `docs/guides/` (for example traces, logs, metrics, Parquet, dashboards, errors). Do not add a separate "cookbook" section.
+- **Reference**: exact API, schema, server contract, and operational limits under `docs/reference/`.
+- **Explanation**: architecture and design context in `docs/architecture.md`.
+
+Prefer one canonical page per topic and link to it instead of duplicating examples. Since this is an early-stage project, do not add backwards-compatibility redirect pages or migration stubs unless explicitly requested.
+
 ## Testing Notes
 
 - SQLLogicTests under `test/sql/` cover JSON parsing, protobuf parsing, option handling, and schema projections.

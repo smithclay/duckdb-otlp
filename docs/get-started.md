@@ -91,7 +91,7 @@ For durable lakehouse ingest, attach DuckLake and pass `catalog := 'lake'`; see 
 
 - [Live Ingest Quickstart](quickstart/serve.md) - stream OTLP into DuckLake/Parquet.
 - [Collector Setup](setup/collector.md) - export OTLP files from the OpenTelemetry Collector.
-- [Cookbook](guides/cookbook.md) - common query and export recipes.
+- [How-to Guides](guides/README.md) - common query and export tasks.
 - [API Reference](reference/api.md) - function signatures and capability notes.
 - [Schema Reference](reference/schemas.md) - complete column lists.
 

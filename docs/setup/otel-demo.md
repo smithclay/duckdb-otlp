@@ -1,6 +1,6 @@
 # OpenTelemetry Demo Exports
 
-Use this when you want real sample telemetry from the OpenTelemetry Demo. For a generic collector config, see [Collector Setup](../setup/collector.md).
+Use this when you want real sample telemetry from the OpenTelemetry Demo. For a generic collector config, see [Collector Setup](collector.md).
 
 ## 1. Add File Exporters
 
@@ -85,22 +85,12 @@ LIMIT 20;
 COPY (
   SELECT * FROM read_otlp_traces('exports/json/traces.jsonl*')
 ) TO 'archives/traces.parquet' (FORMAT PARQUET, COMPRESSION ZSTD);
-
-COPY (
-  SELECT * FROM read_otlp_logs('exports/json/logs.jsonl*')
-) TO 'archives/logs.parquet' (FORMAT PARQUET, COMPRESSION ZSTD);
-
-COPY (
-  SELECT * FROM read_otlp_metrics_gauge('exports/json/metrics.jsonl*')
-) TO 'archives/metrics_gauge.parquet' (FORMAT PARQUET, COMPRESSION ZSTD);
 ```
 
-## Troubleshooting
+Troubleshoot with:
 
 ```bash
 docker compose logs otelcol | grep file
 docker compose exec otelcol ls -la /export/json
 wc -l exports/json/*.jsonl
 ```
-
-Next: [Analyzing Traces](analyzing-traces.md), [Filtering Logs](filtering-logs.md), and [Working with Metrics](working-with-metrics.md).

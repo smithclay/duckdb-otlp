@@ -26,7 +26,7 @@ Collector      Exporter       Extension          Results
    │              │               │                 │
 ```
 
-The extension reads OTLP files (JSON or protobuf), detects the format automatically, and streams strongly-typed rows into DuckDB tables. Schemas match the ClickHouse exporter format for compatibility.
+The extension reads OTLP files (JSON or protobuf), detects the format automatically, and streams strongly-typed rows into DuckDB tables. Schemas use `snake_case` names and are inspired by the OpenTelemetry ClickHouse exporter.
 
 ## Core Components
 
@@ -181,4 +181,3 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for build instructions.
 
 - [API Reference](reference/api.md) - Table function signatures and parameters
 - [Schema Reference](reference/schemas.md) - Complete column layouts
-- [ClickHouse Compatibility](clickhouse-compatibility.md) - Migration guide

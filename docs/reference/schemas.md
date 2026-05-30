@@ -184,7 +184,7 @@ CREATE TABLE archive_exp_histogram AS
 SELECT * FROM read_otlp_metrics_exp_histogram('otel-export/telemetry.jsonl');
 ```
 
-See the [cookbook](../guides/cookbook.md) for more recipes.
+See the [how-to guides](../guides/README.md) for task-oriented examples.
 
 ## Type system notes
 
@@ -195,4 +195,4 @@ See the [cookbook](../guides/cookbook.md) for more recipes.
 
 ---
 
-Looking for end-to-end workflows? Head back to the [cookbook](../guides/cookbook.md). Need help generating telemetry? The [collector setup guide](../setup/collector.md) covers the OpenTelemetry Collector setup.
+Looking for end-to-end workflows? Head to the [how-to guides](../guides/README.md). Need help generating telemetry? The [collector setup guide](../setup/collector.md) covers the OpenTelemetry Collector setup.

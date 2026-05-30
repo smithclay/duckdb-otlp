@@ -75,4 +75,4 @@ WHERE json_extract_string(span_attributes, '$."http.method"') = 'POST'
 ORDER BY duration DESC;
 ```
 
-See [Traces Schema](../reference/schemas.md#traces-read_otlp_traces) and [Cookbook](cookbook.md).
+See [Traces Schema](../reference/schemas.md#traces-read_otlp_traces) and [How-to Guides](README.md).

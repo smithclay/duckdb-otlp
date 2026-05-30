@@ -58,4 +58,4 @@ FROM read_otlp_logs('logs/*.jsonl')
 WHERE json_extract_string(resource_attributes, '$."deployment.environment"') = 'prod';
 ```
 
-Malformed files fail fast; see [Error Handling](error-handling.md). For more recipes, see the [Cookbook](cookbook.md).
+Malformed files fail fast; see [Error Handling](error-handling.md). For more tasks, see [How-to Guides](README.md).

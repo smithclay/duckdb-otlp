@@ -56,7 +56,7 @@ For a full walkthrough, including streaming into DuckLake/Parquet, see [Get Star
 - [Documentation Hub](docs/README.md)
 - [Get Started](docs/get-started.md)
 - [Live Ingest Quickstart](docs/quickstart/serve.md)
-- [Cookbook](docs/guides/cookbook.md)
+- [How-to Guides](docs/guides/README.md)
 - [API Reference](docs/reference/api.md)
 - [Schema Reference](docs/reference/schemas.md)
 - [Live Ingest Reference](docs/reference/serve.md)

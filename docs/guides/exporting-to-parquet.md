@@ -75,4 +75,4 @@ GROUP BY t.span_name, t.duration
 ORDER BY error_count DESC;
 ```
 
-See [DuckDB Parquet docs](https://duckdb.org/docs/data/parquet/overview) and the [Cookbook](cookbook.md).
+See [DuckDB Parquet docs](https://duckdb.org/docs/data/parquet/overview) and [How-to Guides](README.md).

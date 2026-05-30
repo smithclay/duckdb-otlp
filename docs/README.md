@@ -11,7 +11,7 @@ Welcome to the DuckDB OTLP Extension documentation. Find what you need:
 - **[Analyzing Traces](guides/analyzing-traces.md)** - Find slow requests, trace bottlenecks, analyze service dependencies
 - **[Filtering Logs](guides/filtering-logs.md)** - Debug production issues by querying log exports
 - **[Working with Metrics](guides/working-with-metrics.md)** - Query gauge, sum, histogram, and exponential histogram metrics
-- **[Cookbook](guides/cookbook.md)** - Copy-paste recipes for Parquet export, typed metrics, trace analysis, and log filtering
+- **[How-to Guides](guides/README.md)** - Task-oriented guides for traces, logs, metrics, Parquet, dashboards, and errors
 
 ## Reference
 
@@ -25,12 +25,11 @@ Welcome to the DuckDB OTLP Extension documentation. Find what you need:
 - **[Installation](setup/installation.md)** - Install from community or build from source
 - **[OpenTelemetry Collector](setup/collector.md)** - Configure collector to export OTLP files
 - **[Sample Data](setup/sample-data.md)** - Download or generate test data
-- **[OpenTelemetry Demo Exports](guides/otel-collector-demo-exports.md)** - Optional real demo telemetry
+- **[OpenTelemetry Demo Exports](setup/otel-demo.md)** - Optional real demo telemetry
 
 ## Advanced Topics
 
 - **[Architecture](architecture.md)** - How the extension works internally
-- **[ClickHouse Compatibility](clickhouse-compatibility.md)** - Schema mapping and migration guide
 - **[Contributing](../CONTRIBUTING.md)** - Build, test, and contribute to the project
 
 ## Need Help?

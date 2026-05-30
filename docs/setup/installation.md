@@ -105,7 +105,7 @@ FROM read_otlp_metrics_gauge('metrics.jsonl');
 - **Get OTLP Data**: See [Collector Setup](collector.md) to export data from OpenTelemetry Collector
 - **Sample Data**: See [Sample Data](sample-data.md) for test files
 - **Quick Start**: Follow the [Get Started Guide](../get-started.md)
-- **Examples**: Browse the [Cookbook](../guides/cookbook.md)
+- **Examples**: Browse the [How-to Guides](../guides/README.md)
 
 ## Troubleshooting
 
