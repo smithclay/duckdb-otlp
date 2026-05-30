@@ -1,0 +1,39 @@
+# name: test/sql/otlp_serve.test
+# description: Test OTLP HTTP server lifecycle SQL functions
+# group: [sql]
+
+require otlp
+
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55439', token := 'short');
+----
+OTLP server token must be at least 16 characters long
+
+query TTT
+SELECT listen_uri, listen_url, schema_name
+FROM otlp_serve('otlp:127.0.0.1:55439', token := 'dev-token-123456', schema := 'main', create_tables := true);
+----
+otlp:127.0.0.1:55439	http://127.0.0.1:55439	main
+
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55439', token := 'dev-token-123456');
+----
+OTLP server already exists
+
+query TTI
+SELECT listen_uri, schema_name, total_requests
+FROM otlp_server_list()
+WHERE listen_uri = 'otlp:127.0.0.1:55439';
+----
+otlp:127.0.0.1:55439	main	0
+
+query T
+SELECT status FROM otlp_stop('otlp:127.0.0.1:55439');
+----
+Stopped listening on otlp:127.0.0.1:55439
+
+query I
+SELECT count(*) FROM otlp_server_list()
+WHERE listen_uri = 'otlp:127.0.0.1:55439';
+----
+0

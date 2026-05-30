@@ -1,0 +1,210 @@
+#include "otlp_start_stop.hpp"
+
+#include "duckdb/main/client_context.hpp"
+#include "duckdb/main/database.hpp"
+
+#include "otlp_server.hpp"
+#include "otlp_storage.hpp"
+#include "otlp_uri.hpp"
+
+namespace duckdb {
+
+struct OtlpStartStopFunctionData : public TableFunctionData {
+	bool finished = false;
+	OtlpUri listen_uri;
+	OtlpServerConfig config;
+};
+
+static unique_ptr<FunctionData> OtlpServeBind(ClientContext &context, TableFunctionBindInput &input,
+                                              vector<LogicalType> &return_types, vector<string> &names) {
+#ifdef __EMSCRIPTEN__
+	throw NotImplementedException("otlp_serve is not implemented for the wasm platform");
+#endif
+
+	auto bind_data = make_uniq<OtlpStartStopFunctionData>();
+	string listen_uri = "otlp:localhost:4318";
+	if (!input.inputs.empty()) {
+		auto &uri_value = input.inputs[0];
+		if (uri_value.IsNull() || uri_value.GetValue<string>().empty()) {
+			throw InvalidInputException("Invalid OTLP listen URI specified");
+		}
+		listen_uri = uri_value.GetValue<string>();
+	}
+
+	bind_data->listen_uri = OtlpUri(listen_uri);
+
+	auto allow_other_hostname = input.named_parameters.find("allow_other_hostname") != input.named_parameters.end() &&
+	                            input.named_parameters["allow_other_hostname"].GetValue<bool>();
+	if (!allow_other_hostname && !bind_data->listen_uri.IsLocal()) {
+		throw InvalidInputException(
+		    "Only localhost is allowed as an OTLP hostname by default; set allow_other_hostname=true to override");
+	}
+
+	if (input.named_parameters.find("token") != input.named_parameters.end()) {
+		bind_data->config.token = input.named_parameters["token"].GetValue<string>();
+	} else {
+		bind_data->config.token = OtlpServer::GenerateRandomToken(*context.db);
+	}
+	OtlpServer::ValidateToken(bind_data->config.token);
+
+	if (input.named_parameters.find("schema") != input.named_parameters.end()) {
+		bind_data->config.schema_name = input.named_parameters["schema"].GetValue<string>();
+		if (bind_data->config.schema_name.empty()) {
+			throw InvalidInputException("schema must not be empty");
+		}
+	}
+	if (input.named_parameters.find("create_tables") != input.named_parameters.end()) {
+		bind_data->config.create_tables = input.named_parameters["create_tables"].GetValue<bool>();
+	}
+	if (input.named_parameters.find("max_body_bytes") != input.named_parameters.end()) {
+		bind_data->config.max_body_bytes = input.named_parameters["max_body_bytes"].GetValue<idx_t>();
+		if (bind_data->config.max_body_bytes == 0) {
+			throw InvalidInputException("max_body_bytes must be greater than zero");
+		}
+	}
+
+	names.emplace_back("listen_uri");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("listen_url");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("auth_token");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("schema_name");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("logs_table");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("traces_table");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("metrics_gauge_table");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("metrics_sum_table");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("metrics_histogram_table");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("metrics_exp_histogram_table");
+	return_types.emplace_back(LogicalType::VARCHAR);
+
+	return std::move(bind_data);
+}
+
+static void OtlpServe(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &bind_data = data_p.bind_data->CastNoConst<OtlpStartStopFunctionData>();
+	if (bind_data.finished) {
+		return;
+	}
+
+	auto &state = OtlpStorageExtensionInfo::GetState(*context.db);
+	state.CreateServer(context, bind_data.listen_uri, bind_data.config);
+
+	output.SetValue(0, 0, bind_data.listen_uri.Uri());
+	output.SetValue(1, 0, bind_data.listen_uri.Http());
+	output.SetValue(2, 0, bind_data.config.token);
+	output.SetValue(3, 0, bind_data.config.schema_name);
+	output.SetValue(4, 0, "otlp_logs");
+	output.SetValue(5, 0, "otlp_traces");
+	output.SetValue(6, 0, "otlp_metrics_gauge");
+	output.SetValue(7, 0, "otlp_metrics_sum");
+	output.SetValue(8, 0, "otlp_metrics_histogram");
+	output.SetValue(9, 0, "otlp_metrics_exp_histogram");
+	output.SetCardinality(1);
+	bind_data.finished = true;
+}
+
+TableFunctionSet OtlpServeFunction::GetFunction() {
+	TableFunctionSet set("otlp_serve");
+	auto fun = TableFunction("otlp_serve", {LogicalType::VARCHAR}, OtlpServe, OtlpServeBind);
+	fun.named_parameters["token"] = LogicalType::VARCHAR;
+	fun.named_parameters["schema"] = LogicalType::VARCHAR;
+	fun.named_parameters["create_tables"] = LogicalType::BOOLEAN;
+	fun.named_parameters["allow_other_hostname"] = LogicalType::BOOLEAN;
+	fun.named_parameters["max_body_bytes"] = LogicalType::UBIGINT;
+	set.AddFunction(fun);
+	fun.arguments.clear();
+	set.AddFunction(fun);
+	return set;
+}
+
+static unique_ptr<FunctionData> OtlpStopBind(ClientContext &context, TableFunctionBindInput &input,
+                                             vector<LogicalType> &return_types, vector<string> &names) {
+	auto bind_data = make_uniq<OtlpStartStopFunctionData>();
+	auto &uri_value = input.inputs[0];
+	if (uri_value.IsNull() || uri_value.GetValue<string>().empty()) {
+		throw InvalidInputException("Invalid OTLP listen URI specified");
+	}
+	bind_data->listen_uri = OtlpUri(uri_value.GetValue<string>());
+	names.emplace_back("status");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	return std::move(bind_data);
+}
+
+static void OtlpStop(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &bind_data = data_p.bind_data->CastNoConst<OtlpStartStopFunctionData>();
+	if (bind_data.finished) {
+		return;
+	}
+	auto &state = OtlpStorageExtensionInfo::GetState(*context.db);
+	if (state.StopServer(context, bind_data.listen_uri)) {
+		output.SetValue(0, 0, StringUtil::Format("Stopped listening on %s", bind_data.listen_uri.Uri()));
+	} else {
+		output.SetValue(0, 0, StringUtil::Format("No server found listening on %s", bind_data.listen_uri.Uri()));
+	}
+	output.SetCardinality(1);
+	bind_data.finished = true;
+}
+
+TableFunction OtlpStopFunction::GetFunction() {
+	return TableFunction("otlp_stop", {LogicalType::VARCHAR}, OtlpStop, OtlpStopBind);
+}
+
+struct OtlpServerListFunctionData : public TableFunctionData {
+	bool finished = false;
+};
+
+static unique_ptr<FunctionData> OtlpServerListBind(ClientContext &context, TableFunctionBindInput &input,
+                                                   vector<LogicalType> &return_types, vector<string> &names) {
+	names.emplace_back("listen_uri");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("listen_url");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("host");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("port");
+	return_types.emplace_back(LogicalType::USMALLINT);
+	names.emplace_back("schema_name");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("active_requests");
+	return_types.emplace_back(LogicalType::UBIGINT);
+	names.emplace_back("total_requests");
+	return_types.emplace_back(LogicalType::UBIGINT);
+	names.emplace_back("total_rows");
+	return_types.emplace_back(LogicalType::UBIGINT);
+	return make_uniq<OtlpServerListFunctionData>();
+}
+
+static void OtlpServerList(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &bind_data = data_p.bind_data->CastNoConst<OtlpServerListFunctionData>();
+	if (bind_data.finished) {
+		return;
+	}
+	auto snapshots = OtlpStorageExtensionInfo::GetState(*context.db).ListServers();
+	idx_t row = 0;
+	for (auto &s : snapshots) {
+		output.SetValue(0, row, Value(s.listen_uri));
+		output.SetValue(1, row, Value(s.listen_url));
+		output.SetValue(2, row, Value(s.host));
+		output.SetValue(3, row, Value::USMALLINT(s.port));
+		output.SetValue(4, row, Value(s.schema_name));
+		output.SetValue(5, row, Value::UBIGINT(s.active_requests));
+		output.SetValue(6, row, Value::UBIGINT(s.total_requests));
+		output.SetValue(7, row, Value::UBIGINT(s.total_rows));
+		row++;
+	}
+	output.SetCardinality(row);
+	bind_data.finished = true;
+}
+
+TableFunction OtlpServerListFunction::GetFunction() {
+	return TableFunction("otlp_server_list", {}, OtlpServerList, OtlpServerListBind);
+}
+
+} // namespace duckdb

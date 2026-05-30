@@ -12,11 +12,21 @@ project(${TARGET_NAME})
 set(EXTENSION_NAME ${TARGET_NAME}_extension)
 set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
 include_directories(
-  ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/storage
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/function)
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/storage
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/function
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/duckdb/third_party/httplib)
 
 # Extension sources (Rust backend only)
-set(EXTENSION_SOURCES src/storage/otlp_extension.cpp src/function/read_otlp.cpp)
+set(EXTENSION_SOURCES
+    src/storage/otlp_extension.cpp
+    src/function/read_otlp.cpp
+    src/otlp_arrow.cpp
+    src/otlp_uri.cpp
+    src/otlp_server.cpp
+    src/otlp_storage.cpp
+    src/otlp_start_stop.cpp)
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 set_target_properties(${EXTENSION_NAME} PROPERTIES CXX_STANDARD 17
