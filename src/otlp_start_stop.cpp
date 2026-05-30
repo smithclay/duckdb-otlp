@@ -9,6 +9,22 @@
 
 namespace duckdb {
 
+static LogicalType OtlpVarcharType() {
+	return LogicalType(LogicalTypeId::VARCHAR);
+}
+
+static LogicalType OtlpBooleanType() {
+	return LogicalType(LogicalTypeId::BOOLEAN);
+}
+
+static LogicalType OtlpUSmallIntType() {
+	return LogicalType(LogicalTypeId::USMALLINT);
+}
+
+static LogicalType OtlpUBigIntType() {
+	return LogicalType(LogicalTypeId::UBIGINT);
+}
+
 struct OtlpStartStopFunctionData : public TableFunctionData {
 	bool finished = false;
 	OtlpUri listen_uri;
@@ -64,25 +80,25 @@ static unique_ptr<FunctionData> OtlpServeBind(ClientContext &context, TableFunct
 	}
 
 	names.emplace_back("listen_uri");
-	return_types.emplace_back(LogicalType::VARCHAR);
+	return_types.emplace_back(OtlpVarcharType());
 	names.emplace_back("listen_url");
-	return_types.emplace_back(LogicalType::VARCHAR);
+	return_types.emplace_back(OtlpVarcharType());
 	names.emplace_back("auth_token");
-	return_types.emplace_back(LogicalType::VARCHAR);
+	return_types.emplace_back(OtlpVarcharType());
 	names.emplace_back("schema_name");
-	return_types.emplace_back(LogicalType::VARCHAR);
+	return_types.emplace_back(OtlpVarcharType());
 	names.emplace_back("logs_table");
-	return_types.emplace_back(LogicalType::VARCHAR);
+	return_types.emplace_back(OtlpVarcharType());
 	names.emplace_back("traces_table");
-	return_types.emplace_back(LogicalType::VARCHAR);
+	return_types.emplace_back(OtlpVarcharType());
 	names.emplace_back("metrics_gauge_table");
-	return_types.emplace_back(LogicalType::VARCHAR);
+	return_types.emplace_back(OtlpVarcharType());
 	names.emplace_back("metrics_sum_table");
-	return_types.emplace_back(LogicalType::VARCHAR);
+	return_types.emplace_back(OtlpVarcharType());
 	names.emplace_back("metrics_histogram_table");
-	return_types.emplace_back(LogicalType::VARCHAR);
+	return_types.emplace_back(OtlpVarcharType());
 	names.emplace_back("metrics_exp_histogram_table");
-	return_types.emplace_back(LogicalType::VARCHAR);
+	return_types.emplace_back(OtlpVarcharType());
 
 	return std::move(bind_data);
 }
@@ -112,12 +128,12 @@ static void OtlpServe(ClientContext &context, TableFunctionInput &data_p, DataCh
 
 TableFunctionSet OtlpServeFunction::GetFunction() {
 	TableFunctionSet set("otlp_serve");
-	auto fun = TableFunction("otlp_serve", {LogicalType::VARCHAR}, OtlpServe, OtlpServeBind);
-	fun.named_parameters["token"] = LogicalType::VARCHAR;
-	fun.named_parameters["schema"] = LogicalType::VARCHAR;
-	fun.named_parameters["create_tables"] = LogicalType::BOOLEAN;
-	fun.named_parameters["allow_other_hostname"] = LogicalType::BOOLEAN;
-	fun.named_parameters["max_body_bytes"] = LogicalType::UBIGINT;
+	auto fun = TableFunction("otlp_serve", {OtlpVarcharType()}, OtlpServe, OtlpServeBind);
+	fun.named_parameters["token"] = OtlpVarcharType();
+	fun.named_parameters["schema"] = OtlpVarcharType();
+	fun.named_parameters["create_tables"] = OtlpBooleanType();
+	fun.named_parameters["allow_other_hostname"] = OtlpBooleanType();
+	fun.named_parameters["max_body_bytes"] = OtlpUBigIntType();
 	set.AddFunction(fun);
 	fun.arguments.clear();
 	set.AddFunction(fun);
@@ -133,7 +149,7 @@ static unique_ptr<FunctionData> OtlpStopBind(ClientContext &context, TableFuncti
 	}
 	bind_data->listen_uri = OtlpUri(uri_value.GetValue<string>());
 	names.emplace_back("status");
-	return_types.emplace_back(LogicalType::VARCHAR);
+	return_types.emplace_back(OtlpVarcharType());
 	return std::move(bind_data);
 }
 
@@ -153,7 +169,7 @@ static void OtlpStop(ClientContext &context, TableFunctionInput &data_p, DataChu
 }
 
 TableFunction OtlpStopFunction::GetFunction() {
-	return TableFunction("otlp_stop", {LogicalType::VARCHAR}, OtlpStop, OtlpStopBind);
+	return TableFunction("otlp_stop", {OtlpVarcharType()}, OtlpStop, OtlpStopBind);
 }
 
 struct OtlpServerListFunctionData : public TableFunctionData {
@@ -163,21 +179,21 @@ struct OtlpServerListFunctionData : public TableFunctionData {
 static unique_ptr<FunctionData> OtlpServerListBind(ClientContext &context, TableFunctionBindInput &input,
                                                    vector<LogicalType> &return_types, vector<string> &names) {
 	names.emplace_back("listen_uri");
-	return_types.emplace_back(LogicalType::VARCHAR);
+	return_types.emplace_back(OtlpVarcharType());
 	names.emplace_back("listen_url");
-	return_types.emplace_back(LogicalType::VARCHAR);
+	return_types.emplace_back(OtlpVarcharType());
 	names.emplace_back("host");
-	return_types.emplace_back(LogicalType::VARCHAR);
+	return_types.emplace_back(OtlpVarcharType());
 	names.emplace_back("port");
-	return_types.emplace_back(LogicalType::USMALLINT);
+	return_types.emplace_back(OtlpUSmallIntType());
 	names.emplace_back("schema_name");
-	return_types.emplace_back(LogicalType::VARCHAR);
+	return_types.emplace_back(OtlpVarcharType());
 	names.emplace_back("active_requests");
-	return_types.emplace_back(LogicalType::UBIGINT);
+	return_types.emplace_back(OtlpUBigIntType());
 	names.emplace_back("total_requests");
-	return_types.emplace_back(LogicalType::UBIGINT);
+	return_types.emplace_back(OtlpUBigIntType());
 	names.emplace_back("total_rows");
-	return_types.emplace_back(LogicalType::UBIGINT);
+	return_types.emplace_back(OtlpUBigIntType());
 	return make_uniq<OtlpServerListFunctionData>();
 }
 
