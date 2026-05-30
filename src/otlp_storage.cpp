@@ -34,7 +34,7 @@ OtlpServer &OtlpStorageExtensionInfo::CreateServer(ClientContext &context, const
 	if (it != servers.end()) {
 		throw InvalidInputException("OTLP server already exists for %s", key);
 	}
-	auto server = make_shared_ptr<HttpOtlpServer>(context, listen_uri, config);
+	auto server = make_shared_ptr<OtlpServer>(context, listen_uri, config);
 	auto &server_ref = *server;
 	servers.emplace(key, std::move(server));
 	return server_ref;
@@ -124,24 +124,10 @@ vector<OtlpStorageExtensionInfo::ServerSnapshot> OtlpStorageExtensionInfo::ListS
 		snap.is_listening = server.IsListening();
 		snap.last_error = server.LastError();
 		snap.buffered_rows = server.BufferedRows();
-		snap.buffered_bytes = server.BufferedBytes();
 		snap.last_seal_age_ms = server.LastSealAgeMs();
 		snap.seals_total = server.SealsTotal();
 		snap.seal_failures_total = server.SealFailuresTotal();
 		snap.seal_last_error = server.SealLastError();
-		auto disk_stats = server.DiskStats();
-		snap.buffer_mode = server.BufferMode() == OtlpBufferMode::DISK ? "disk" : "memory";
-		snap.disk_buffered_bytes = disk_stats.buffered_bytes;
-		snap.disk_segment_bytes = disk_stats.segment_bytes;
-		snap.disk_segments = disk_stats.segments;
-		snap.disk_pending_records = disk_stats.pending_records;
-		snap.journal_writes_total = disk_stats.journal_writes_total;
-		snap.journal_fsync_total = disk_stats.journal_fsync_total;
-		snap.journal_fsync_failures_total = disk_stats.journal_fsync_failures_total;
-		snap.replay_records_total = disk_stats.replay_records_total;
-		snap.oldest_unsealed_seq = disk_stats.oldest_unsealed_seq;
-		snap.disk_healthy = disk_stats.healthy;
-		snap.disk_last_error = disk_stats.last_error;
 		result.push_back(std::move(snap));
 	}
 	// servers is an unordered_map; sort for deterministic output order.

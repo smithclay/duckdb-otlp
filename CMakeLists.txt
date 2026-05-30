@@ -23,9 +23,6 @@ set(EXTENSION_SOURCES
     src/storage/otlp_extension.cpp
     src/function/read_otlp.cpp
     src/otlp_arrow.cpp
-    src/otlp_disk_buffer.cpp
-    src/otlp_disk_codec.cpp
-    src/otlp_request.cpp
     src/otlp_uri.cpp
     src/otlp_server.cpp
     src/otlp_storage.cpp

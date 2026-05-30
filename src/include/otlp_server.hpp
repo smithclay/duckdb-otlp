@@ -3,7 +3,6 @@
 #include "duckdb.hpp"
 #include "duckdb/common/encryption_state.hpp"
 
-#include "otlp_disk_buffer.hpp"
 #include "otlp_request.hpp"
 #include "otlp_uri.hpp"
 #include "otlp2records.h"
@@ -37,8 +36,6 @@ struct OtlpServerConfig {
 	idx_t seal_target_bytes = 64ULL * 1024ULL * 1024ULL;   //! seal when a signal buffer reaches this
 	int64_t seal_max_age_ms = 5000;                        //! seal when the oldest buffered row is this old
 	idx_t max_buffered_bytes = 512ULL * 1024ULL * 1024ULL; //! hard cap across all signals -> 503
-	OtlpBufferMode buffer = OtlpBufferMode::MEMORY;
-	OtlpDiskBufferConfig disk;
 };
 
 struct OtlpIngestResult {
@@ -48,28 +45,29 @@ struct OtlpIngestResult {
 
 class OtlpServer {
 public:
-	OtlpServer(ClientContext &context, OtlpUri uri, OtlpServerConfig config);
-	virtual ~OtlpServer();
+	OtlpServer(ClientContext &context, const OtlpUri &uri, const OtlpServerConfig &config);
+	~OtlpServer();
 
 	//! Stop accepting new connections (close the listener socket) without joining
 	//! listener threads. Safe to call from a request-handler thread — does not wait
 	//! on httplib's task queue, which would deadlock when the caller is a worker.
-	virtual void StopAccepting() {};
+	void StopAccepting();
 
 	//! Synchronously stop accepting connections and join the listener threads. Must
 	//! NOT be called from a worker / request-handler thread; httplib's listen-loop
 	//! teardown joins all workers, which would deadlock.
-	virtual void Close() {};
+	void Close();
 
 	//! Whether the server is currently accepting connections. False once the
 	//! listener thread has exited (e.g. an error after a successful bind), so an
 	//! operator can tell a registered server has fallen over.
-	virtual bool IsListening() const {
-		return true;
+	bool IsListening() const {
+		return is_running.load() && !listener_failed.load();
 	}
 	//! Last fatal listener error, or empty if none.
-	virtual string LastError() const {
-		return string();
+	string LastError() const {
+		std::lock_guard<std::mutex> lock(error_mutex);
+		return last_error;
 	}
 
 	//! Generate a fresh CSPRNG-backed 128-bit token, hex-encoded (32 chars).
@@ -100,7 +98,6 @@ public:
 		return total_rows.load();
 	}
 	idx_t BufferedRows() const;
-	idx_t BufferedBytes() const;
 	idx_t SealsTotal() const {
 		return seals_total.load();
 	}
@@ -115,16 +112,12 @@ public:
 		std::lock_guard<std::mutex> lock(seal_error_mutex);
 		return seal_last_error;
 	}
-	OtlpBufferMode BufferMode() const {
-		return config.buffer;
-	}
-	OtlpDiskBufferStats DiskStats() const;
 
 	//! Force a synchronous seal of all buffered rows (used by otlp_flush). Returns the
 	//! number of rows sealed. When run_checkpoint is set, also compacts the catalog.
 	OtlpIngestResult FlushNow(bool run_checkpoint);
 
-protected:
+private:
 	bool CheckAuth(const string &authorization, const string &api_key) const;
 	OtlpIngestResult Ingest(OtlpRequestKind kind, const string &content_type, const string &content_encoding,
 	                        const string &body);
@@ -132,32 +125,26 @@ protected:
 	//! Stop the sealer thread and seal any remaining buffered rows before the writer
 	//! connection / database go away. Idempotent; called from Close() and ~OtlpServer().
 	void ShutdownIngest();
-	void ReplayDiskBuffer();
 	//! Write a server-side diagnostic to duckdb_logs under the OTLP log type. No-op
 	//! if the database has been closed. Safe to call from any worker thread.
 	void LogServerEvent(const string &message) const;
 
-protected:
+	static void ListenThread(OtlpServer *server);
+
 	std::vector<std::thread> listen_threads;
 	std::atomic<idx_t> active_requests {0};
 	std::atomic<idx_t> total_requests {0};
 	std::atomic<idx_t> total_rows {0};
 
-private:
 	// --- request path (runs on httplib worker threads; buffers, never commits) ---
-	std::optional<DiskRecordId> MaybeJournal(OtlpRequestKind request_kind, const string &content_type,
-	                                         const string &content_encoding, const string &body);
 	void TransformAndBuffer(OtlpRequestKind request_kind, const string &body, OtlpInputFormat format,
-	                        OtlpIngestResult &result, idx_t &admission_bytes,
-	                        const std::optional<DiskRecordId> &disk_record_id);
+	                        OtlpIngestResult &result, idx_t &admission_bytes);
 	void BufferSignal(OtlpSignalType signal_type, const string &body, OtlpInputFormat format, OtlpIngestResult &result,
-	                  idx_t &admission_bytes, const std::optional<DiskRecordId> &disk_record_id);
-	void BufferMetrics(const string &body, OtlpInputFormat format, OtlpIngestResult &result, idx_t &admission_bytes,
-	                   const std::optional<DiskRecordId> &disk_record_id);
+	                  idx_t &admission_bytes);
+	void BufferMetrics(const string &body, OtlpInputFormat format, OtlpIngestResult &result, idx_t &admission_bytes);
 	void AppendArrowBatch(OtlpSignalBuffer &buf, ArrowArray &array, ArrowSchema &schema, OtlpIngestResult &result,
-	                      idx_t &admission_bytes, const std::optional<DiskRecordId> &disk_record_id);
-	void BufferAppend(OtlpSignalBuffer &buf, DataChunk &chunk, idx_t &admission_bytes,
-	                  const std::optional<DiskRecordId> &disk_record_id);
+	                      idx_t &admission_bytes);
+	void BufferAppend(OtlpSignalBuffer &buf, DataChunk &chunk, idx_t &admission_bytes);
 	OtlpSignalBuffer &BufferFor(OtlpSignalType signal_type);
 	idx_t AdmissionReservationBytes(idx_t body_size) const;
 	bool TryReserveAdmission(idx_t bytes, idx_t &current);
@@ -182,8 +169,8 @@ private:
 	// each OtlpSignalBuffer carries its own mutex and mutable counters.
 	std::vector<unique_ptr<OtlpSignalBuffer>> signal_buffers;
 	//! Payload-byte admission counter for in-flight and unsealed accepted requests.
-	//! This enforces max_buffered_bytes under concurrency; row-width estimates below
-	//! remain only for operator visibility and seal-size triggers.
+	//! The single real byte counter: enforces max_buffered_bytes under concurrency and
+	//! drives the seal size trigger (seal_target_bytes).
 	std::atomic<idx_t> admitted_bytes {0};
 
 	// Single serialized writer + background sealer. writer_mutex serializes SealOnce
@@ -202,27 +189,8 @@ private:
 	std::atomic<int64_t> last_seal_unix_ms {0};
 	mutable mutex seal_error_mutex;
 	string seal_last_error;
-	unique_ptr<OtlpDiskBuffer> disk_buffer;
-};
 
-class HttpOtlpServer : public OtlpServer {
-public:
-	HttpOtlpServer(ClientContext &context, const OtlpUri &uri, const OtlpServerConfig &config);
-	void StopAccepting() override;
-	void Close() override;
-	bool IsListening() const override {
-		return is_running.load() && !listener_failed.load();
-	}
-	string LastError() const override {
-		std::lock_guard<std::mutex> lock(error_mutex);
-		return last_error;
-	}
-	~HttpOtlpServer() override;
-
-private:
-	static void ListenThread(HttpOtlpServer *server);
-
-private:
+	// --- HTTP transport (httplib). PIMPL so httplib.hpp stays out of this header. ---
 	class Impl;
 	unique_ptr<Impl> impl;
 	std::atomic<bool> is_running {false};

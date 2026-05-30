@@ -164,50 +164,6 @@ static bool IsUnsupportedEncoding(const string &content_encoding) {
 	return true;
 }
 
-static const char *TableNameForSignal(OtlpSignalType signal_type) {
-	for (auto &target : TARGET_TABLES) {
-		if (target.signal_type == signal_type) {
-			return target.table_name;
-		}
-	}
-	throw InternalException("Unknown OTLP signal type");
-}
-
-static OtlpRequestKind RequestKindForSignal(OtlpSignalType signal_type) {
-	switch (signal_type) {
-	case OTLP_SIGNAL_LOGS:
-		return OtlpRequestKind::LOGS;
-	case OTLP_SIGNAL_TRACES:
-		return OtlpRequestKind::TRACES;
-	case OTLP_SIGNAL_METRICS_GAUGE:
-	case OTLP_SIGNAL_METRICS_SUM:
-	case OTLP_SIGNAL_METRICS_HISTOGRAM:
-	case OTLP_SIGNAL_METRICS_EXP_HISTOGRAM:
-		return OtlpRequestKind::METRICS;
-	default:
-		throw InternalException("Unknown OTLP signal type");
-	}
-}
-
-//! Rough per-row byte estimate used only to drive the size-based seal trigger and the
-//! backpressure cap. Exactness doesn't matter; it just needs to be cheap and monotonic.
-static idx_t EstimateRowWidth(const vector<LogicalType> &types) {
-	idx_t width = 0;
-	for (auto &type : types) {
-		switch (type.InternalType()) {
-		case PhysicalType::VARCHAR:
-		case PhysicalType::LIST:
-		case PhysicalType::STRUCT:
-			width += 32; // variable-length: assume a small heap payload per row
-			break;
-		default:
-			width += GetTypeIdSize(type.InternalType());
-			break;
-		}
-	}
-	return width == 0 ? 1 : width;
-}
-
 } // namespace
 
 //! In-memory buffer for one OTLP signal table. The metadata fields are immutable
@@ -217,51 +173,19 @@ struct OtlpSignalBuffer {
 	const OtlpSignalType signal_type;
 	const string table_name;
 	const vector<LogicalType> types;
-	const idx_t row_width;
 	std::mutex mutex;
 	unique_ptr<ColumnDataCollection> collection;
 	idx_t buffered_rows = 0;
-	idx_t buffered_bytes = 0;
 	idx_t admission_bytes = 0;
-	//! Disk sequences whose rows are currently buffered in this collection. A request may
-	//! append the same sequence multiple times (AppendArrowBatch chunk loop); duplicates
-	//! are fine — the writer dedups via its `completed` set.
-	vector<uint64_t> journaled_seqs;
 	bool have_unsealed = false;
 	std::chrono::steady_clock::time_point first_unsealed;
 
-	OtlpSignalBuffer(OtlpSignalType signal_type_p, string table_name_p, vector<LogicalType> types_p, idx_t row_width_p,
+	OtlpSignalBuffer(OtlpSignalType signal_type_p, string table_name_p, vector<LogicalType> types_p,
 	                 unique_ptr<ColumnDataCollection> collection_p)
 	    : signal_type(signal_type_p), table_name(std::move(table_name_p)), types(std::move(types_p)),
-	      row_width(row_width_p), collection(std::move(collection_p)) {
+	      collection(std::move(collection_p)) {
 	}
 };
-
-OtlpServer::OtlpServer(ClientContext &context, OtlpUri uri_p, OtlpServerConfig config_p)
-    : db_ptr(context.db), uri(std::move(uri_p)), config(std::move(config_p)) {
-	ValidateToken(config.token);
-	auto db = db_ptr.lock();
-	if (!db) {
-		throw InternalException("Database was closed");
-	}
-	EnsureTargetTables();
-	InitBuffers();
-	// One dedicated writer connection; the single sealer thread is the only thing
-	// that ever commits, so concurrent DuckLake writes never conflict.
-	writer_con = make_uniq<Connection>(*db);
-	writer_con->context->config.enable_progress_bar = false;
-#ifndef __EMSCRIPTEN__
-	if (config.buffer == OtlpBufferMode::DISK) {
-		disk_buffer =
-		    make_uniq<OtlpDiskBuffer>(config.disk, config.catalog_name, config.schema_name, config.max_body_bytes);
-	}
-#else
-	if (config.buffer == OtlpBufferMode::DISK) {
-		throw NotImplementedException("otlp_serve buffer='disk' is not supported for the wasm platform");
-	}
-#endif
-	StartSealer();
-}
 
 void OtlpServer::InitBuffers() {
 	auto db = db_ptr.lock();
@@ -288,19 +212,14 @@ void OtlpServer::InitBuffers() {
 		if (arrow_schema.release) {
 			arrow_schema.release(&arrow_schema);
 		}
-		auto row_width = EstimateRowWidth(types);
 		auto collection = make_uniq<ColumnDataCollection>(allocator, types);
 		signal_buffers.push_back(make_uniq<OtlpSignalBuffer>(target.signal_type, target.table_name, std::move(types),
-		                                                     row_width, std::move(collection)));
+		                                                     std::move(collection)));
 	}
 }
 
 void OtlpServer::StartSealer() {
 	sealer_thread = std::thread([this] { SealerLoop(); });
-}
-
-OtlpServer::~OtlpServer() {
-	ShutdownIngest();
 }
 
 int64_t OtlpServer::LastSealAgeMs() const {
@@ -321,22 +240,6 @@ idx_t OtlpServer::BufferedRows() const {
 		rows += buf->buffered_rows;
 	}
 	return rows;
-}
-
-idx_t OtlpServer::BufferedBytes() const {
-	idx_t bytes = 0;
-	for (auto &buf : signal_buffers) {
-		std::lock_guard<std::mutex> lock(buf->mutex);
-		bytes += buf->buffered_bytes;
-	}
-	return bytes;
-}
-
-OtlpDiskBufferStats OtlpServer::DiskStats() const {
-	if (config.buffer != OtlpBufferMode::DISK || !disk_buffer) {
-		return OtlpDiskBufferStats {};
-	}
-	return disk_buffer->Stats();
 }
 
 void OtlpServer::LogServerEvent(const string &message) const {
@@ -517,29 +420,10 @@ OtlpIngestResult OtlpServer::Ingest(OtlpRequestKind kind, const string &content_
 		                            static_cast<uint64_t>(admitted_before), static_cast<uint64_t>(reservation_bytes)));
 	}
 
-	// Disk mode durably journals the raw request before parse. The single sealer
-	// still owns catalog commits; after a successful commit it checkpoints the
-	// journal watermark so acknowledged records stop replaying.
 	OtlpIngestResult result;
 	idx_t unclaimed_admission = reservation_bytes;
-	std::optional<DiskRecordId> disk_record_id;
 	try {
-		disk_record_id = MaybeJournal(kind, content_type, content_encoding, body);
-		try {
-			TransformAndBuffer(kind, body, format, result, unclaimed_admission, disk_record_id);
-		} catch (OtlpHttpError &ex) {
-			if (disk_record_id.has_value() && ex.status == 400 && disk_buffer) {
-				try {
-					disk_buffer->CheckpointTerminal(kind, disk_record_id.value());
-				} catch (std::exception &checkpoint_ex) {
-					throw OtlpHttpError(
-					    503,
-					    StringUtil::Format("OTLP disk buffer terminal checkpoint failed: %s", checkpoint_ex.what()),
-					    10);
-				}
-			}
-			throw;
-		}
+		TransformAndBuffer(kind, body, format, result, unclaimed_admission);
 	} catch (...) {
 		ReleaseAdmission(unclaimed_admission);
 		throw;
@@ -549,41 +433,17 @@ OtlpIngestResult OtlpServer::Ingest(OtlpRequestKind kind, const string &content_
 	return result;
 }
 
-std::optional<DiskRecordId> OtlpServer::MaybeJournal(OtlpRequestKind request_kind, const string &content_type,
-                                                     const string &content_encoding, const string &body) {
-	if (config.buffer != OtlpBufferMode::DISK) {
-		return std::nullopt;
-	}
-	if (!disk_buffer) {
-		throw OtlpHttpError(503, "OTLP disk buffer is not initialized", 10);
-	}
-	try {
-		return disk_buffer->Append(request_kind, content_type, content_encoding, body);
-	} catch (OtlpDiskBufferException &ex) {
-		switch (ex.type) {
-		case OtlpDiskBufferErrorType::FULL:
-			throw OtlpHttpError(507, ex.what());
-		case OtlpDiskBufferErrorType::QUEUE_FULL:
-			throw OtlpHttpError(503, ex.what(), 5);
-		case OtlpDiskBufferErrorType::UNAVAILABLE:
-		default:
-			throw OtlpHttpError(503, ex.what(), 10);
-		}
-	}
-}
-
 void OtlpServer::TransformAndBuffer(OtlpRequestKind request_kind, const string &body, OtlpInputFormat format,
-                                    OtlpIngestResult &result, idx_t &admission_bytes,
-                                    const std::optional<DiskRecordId> &disk_record_id) {
+                                    OtlpIngestResult &result, idx_t &admission_bytes) {
 	switch (request_kind) {
 	case OtlpRequestKind::LOGS:
-		BufferSignal(OTLP_SIGNAL_LOGS, body, format, result, admission_bytes, disk_record_id);
+		BufferSignal(OTLP_SIGNAL_LOGS, body, format, result, admission_bytes);
 		break;
 	case OtlpRequestKind::TRACES:
-		BufferSignal(OTLP_SIGNAL_TRACES, body, format, result, admission_bytes, disk_record_id);
+		BufferSignal(OTLP_SIGNAL_TRACES, body, format, result, admission_bytes);
 		break;
 	case OtlpRequestKind::METRICS:
-		BufferMetrics(body, format, result, admission_bytes, disk_record_id);
+		BufferMetrics(body, format, result, admission_bytes);
 		break;
 	default:
 		throw InternalException("Unknown OTLP request kind");
@@ -600,8 +460,7 @@ OtlpSignalBuffer &OtlpServer::BufferFor(OtlpSignalType signal_type) {
 }
 
 void OtlpServer::BufferSignal(OtlpSignalType signal_type, const string &body, OtlpInputFormat format,
-                              OtlpIngestResult &result, idx_t &admission_bytes,
-                              const std::optional<DiskRecordId> &disk_record_id) {
+                              OtlpIngestResult &result, idx_t &admission_bytes) {
 	auto &buf = BufferFor(signal_type);
 	ArrowArray array;
 	ArrowSchema schema;
@@ -621,7 +480,7 @@ void OtlpServer::BufferSignal(OtlpSignalType signal_type, const string &body, Ot
 		}
 	};
 	try {
-		AppendArrowBatch(buf, array, schema, result, admission_bytes, disk_record_id);
+		AppendArrowBatch(buf, array, schema, result, admission_bytes);
 	} catch (...) {
 		release();
 		throw;
@@ -630,7 +489,7 @@ void OtlpServer::BufferSignal(OtlpSignalType signal_type, const string &body, Ot
 }
 
 void OtlpServer::BufferMetrics(const string &body, OtlpInputFormat format, OtlpIngestResult &result,
-                               idx_t &admission_bytes, const std::optional<DiskRecordId> &disk_record_id) {
+                               idx_t &admission_bytes) {
 	OtlpMetricsArrowBatches batches = {};
 	OtlpStatus status =
 	    otlp_transform_metrics_all(format, reinterpret_cast<const uint8_t *>(body.data()), body.size(), &batches);
@@ -662,19 +521,19 @@ void OtlpServer::BufferMetrics(const string &body, OtlpInputFormat format, OtlpI
 	try {
 		if (batches.gauge.present) {
 			AppendArrowBatch(BufferFor(OTLP_SIGNAL_METRICS_GAUGE), batches.gauge.array, batches.gauge.schema, result,
-			                 admission_bytes, disk_record_id);
+			                 admission_bytes);
 		}
 		if (batches.sum.present) {
 			AppendArrowBatch(BufferFor(OTLP_SIGNAL_METRICS_SUM), batches.sum.array, batches.sum.schema, result,
-			                 admission_bytes, disk_record_id);
+			                 admission_bytes);
 		}
 		if (batches.histogram.present) {
 			AppendArrowBatch(BufferFor(OTLP_SIGNAL_METRICS_HISTOGRAM), batches.histogram.array,
-			                 batches.histogram.schema, result, admission_bytes, disk_record_id);
+			                 batches.histogram.schema, result, admission_bytes);
 		}
 		if (batches.exp_histogram.present) {
 			AppendArrowBatch(BufferFor(OTLP_SIGNAL_METRICS_EXP_HISTOGRAM), batches.exp_histogram.array,
-			                 batches.exp_histogram.schema, result, admission_bytes, disk_record_id);
+			                 batches.exp_histogram.schema, result, admission_bytes);
 		}
 	} catch (...) {
 		release_all();
@@ -684,8 +543,7 @@ void OtlpServer::BufferMetrics(const string &body, OtlpInputFormat format, OtlpI
 }
 
 void OtlpServer::AppendArrowBatch(OtlpSignalBuffer &buf, ArrowArray &array, ArrowSchema &schema,
-                                  OtlpIngestResult &result, idx_t &admission_bytes,
-                                  const std::optional<DiskRecordId> &disk_record_id) {
+                                  OtlpIngestResult &result, idx_t &admission_bytes) {
 	if (array.length <= 0) {
 		return;
 	}
@@ -699,19 +557,17 @@ void OtlpServer::AppendArrowBatch(OtlpSignalBuffer &buf, ArrowArray &array, Arro
 		auto count = MinValue<idx_t>(APPEND_CHUNK_SIZE, static_cast<idx_t>(array.length) - offset);
 		chunk.Reset();
 		CopyArrowStructToDataChunk(array, schema, chunk, offset, count);
-		BufferAppend(buf, chunk, admission_bytes, disk_record_id);
+		BufferAppend(buf, chunk, admission_bytes);
 		result.rows += count;
 		result.batches++;
 	}
 }
 
-void OtlpServer::BufferAppend(OtlpSignalBuffer &buf, DataChunk &chunk, idx_t &admission_bytes,
-                              const std::optional<DiskRecordId> &disk_record_id) {
+void OtlpServer::BufferAppend(OtlpSignalBuffer &buf, DataChunk &chunk, idx_t &admission_bytes) {
 	auto rows = chunk.size();
 	if (rows == 0) {
 		return;
 	}
-	bool size_trigger = false;
 	{
 		std::lock_guard<std::mutex> lock(buf.mutex);
 		buf.collection->Append(chunk);
@@ -719,22 +575,15 @@ void OtlpServer::BufferAppend(OtlpSignalBuffer &buf, DataChunk &chunk, idx_t &ad
 			buf.have_unsealed = true;
 			buf.first_unsealed = std::chrono::steady_clock::now();
 		}
-		auto added = rows * buf.row_width;
 		buf.buffered_rows += rows;
-		buf.buffered_bytes += added;
 		if (admission_bytes > 0) {
 			buf.admission_bytes += admission_bytes;
 			admission_bytes = 0;
 		}
-		if (disk_record_id.has_value()) {
-			buf.journaled_seqs.push_back(disk_record_id->sequence);
-		}
-		// Cheap running estimate drives the trigger; the exact COPY size is whatever
-		// the buffered chunks hold at seal time.
-		size_trigger =
-		    buf.buffered_bytes >= config.seal_target_bytes || admitted_bytes.load() >= config.seal_target_bytes;
 	}
-	if (size_trigger) {
+	// The single real byte counter (admitted-and-not-yet-sealed body bytes) drives the
+	// size trigger; the exact COPY size is whatever the buffered chunks hold at seal time.
+	if (admitted_bytes.load() >= config.seal_target_bytes) {
 		RequestSeal();
 	}
 }
@@ -760,11 +609,7 @@ OtlpIngestResult OtlpServer::SealOnce(bool run_checkpoint) {
 	struct SealingBuffer {
 		unique_ptr<ColumnDataCollection> collection;
 		idx_t rows = 0;
-		idx_t bytes = 0;
 		idx_t admission_bytes = 0;
-		vector<uint64_t> journaled_seqs;
-		bool have_unsealed = false;
-		std::chrono::steady_clock::time_point first_unsealed;
 	};
 
 	std::vector<unique_ptr<ColumnDataCollection>> fresh;
@@ -778,14 +623,6 @@ OtlpIngestResult OtlpServer::SealOnce(bool run_checkpoint) {
 	std::vector<SealingBuffer> sealing;
 	idx_t total = 0;
 	idx_t sealed_admission_bytes = 0;
-	static_assert(static_cast<uint8_t>(OtlpRequestKind::LOGS) == 0 &&
-	                  static_cast<uint8_t>(OtlpRequestKind::TRACES) == 1 &&
-	                  static_cast<uint8_t>(OtlpRequestKind::METRICS) == 2,
-	              "sealed_seqs indexing assumes LOGS/TRACES/METRICS == 0/1/2");
-	// Exact set of disk sequences pulled into this seal, per request kind. We checkpoint
-	// precisely these after the COMMIT — never a `<= max` watermark, which could wrongly
-	// drop a lower seq that out-of-order appends left un-sealed.
-	vector<uint64_t> sealed_seqs[3];
 	{
 		std::vector<std::unique_lock<std::mutex>> locks;
 		locks.reserve(signal_buffers.size());
@@ -798,20 +635,12 @@ OtlpIngestResult OtlpServer::SealOnce(bool run_checkpoint) {
 			SealingBuffer state;
 			state.collection = std::move(buf.collection);
 			state.rows = buf.buffered_rows;
-			state.bytes = buf.buffered_bytes;
 			state.admission_bytes = buf.admission_bytes;
-			state.journaled_seqs = std::move(buf.journaled_seqs);
-			buf.journaled_seqs.clear();
-			state.have_unsealed = buf.have_unsealed;
-			state.first_unsealed = buf.first_unsealed;
 			total += state.rows;
 			sealed_admission_bytes += state.admission_bytes;
-			auto kidx = static_cast<uint8_t>(RequestKindForSignal(buf.signal_type));
-			sealed_seqs[kidx].insert(sealed_seqs[kidx].end(), state.journaled_seqs.begin(), state.journaled_seqs.end());
 
 			buf.collection = std::move(fresh[i]);
 			buf.buffered_rows = 0;
-			buf.buffered_bytes = 0;
 			buf.admission_bytes = 0;
 			buf.have_unsealed = false;
 			sealing.push_back(std::move(state));
@@ -878,7 +707,9 @@ OtlpIngestResult OtlpServer::SealOnce(bool run_checkpoint) {
 		}
 		// Restore the un-sealed rows ahead of whatever workers buffered during the COPY,
 		// so nothing is lost and order is preserved. Only the old (swapped-out) rows are
-		// re-counted; the live rows were already counted as they were appended.
+		// re-counted; the live rows were already counted as they were appended. Resetting
+		// first_unsealed to now loses precise row age across consecutive seal failures,
+		// which is acceptable — the age trigger just restarts its clock.
 		{
 			std::vector<std::unique_lock<std::mutex>> locks;
 			locks.reserve(signal_buffers.size());
@@ -891,30 +722,12 @@ OtlpIngestResult OtlpServer::SealOnce(bool run_checkpoint) {
 					continue;
 				}
 				auto &buf = *signal_buffers[i];
-				auto live_have_unsealed = buf.have_unsealed;
-				auto live_first_unsealed = buf.first_unsealed;
 				state.collection->Combine(*buf.collection); // old rows, then live rows
 				buf.collection = std::move(state.collection);
 				buf.buffered_rows += state.rows;
-				buf.buffered_bytes += state.bytes;
 				buf.admission_bytes += state.admission_bytes;
-				// Order doesn't matter — these are a set of seqs to checkpoint at a later seal.
-				buf.journaled_seqs.insert(buf.journaled_seqs.end(), state.journaled_seqs.begin(),
-				                          state.journaled_seqs.end());
 				buf.have_unsealed = true;
-				// Preserve the original arrival time of restored rows so the age trigger
-				// still fires from their true arrival time across repeated seal failures.
-				if (state.have_unsealed) {
-					if (live_have_unsealed && live_first_unsealed < state.first_unsealed) {
-						buf.first_unsealed = live_first_unsealed;
-					} else {
-						buf.first_unsealed = state.first_unsealed;
-					}
-				} else if (live_have_unsealed) {
-					buf.first_unsealed = live_first_unsealed;
-				} else {
-					buf.first_unsealed = std::chrono::steady_clock::now();
-				}
+				buf.first_unsealed = std::chrono::steady_clock::now();
 			}
 		}
 		seal_failures_total.fetch_add(1);
@@ -924,19 +737,6 @@ OtlpIngestResult OtlpServer::SealOnce(bool run_checkpoint) {
 		}
 		LogServerEvent(StringUtil::Format("seal failed: %s", msg));
 		throw;
-	}
-
-	if (disk_buffer) {
-		try {
-			for (auto kind : {OtlpRequestKind::LOGS, OtlpRequestKind::TRACES, OtlpRequestKind::METRICS}) {
-				auto &seqs = sealed_seqs[static_cast<uint8_t>(kind)];
-				if (!seqs.empty()) {
-					disk_buffer->CheckpointSealed(kind, seqs);
-				}
-			}
-		} catch (std::exception &ex) {
-			LogServerEvent(StringUtil::Format("OTLP disk buffer checkpoint failed after seal commit: %s", ex.what()));
-		}
 	}
 
 	ReleaseAdmission(sealed_admission_bytes);
@@ -1024,7 +824,7 @@ void OtlpServer::ShutdownIngest() {
 	if (sealer_thread.joinable()) {
 		sealer_thread.join();
 	}
-	// Final drain. On the explicit otlp_stop / ~HttpOtlpServer path the listener+workers
+	// Final drain. On the explicit otlp_stop / ~OtlpServer path the listener+workers
 	// are already joined and the controlling thread still holds the database alive, so
 	// SealOnce can write and nothing is lost. On the implicit DB-teardown path
 	// (~OtlpStorageExtensionInfo) db_ptr is already expired, so SealOnce is a no-op and
@@ -1044,78 +844,12 @@ void OtlpServer::ShutdownIngest() {
 		                       "or repeated seal failure)",
 		                       static_cast<uint64_t>(remaining_rows)));
 	}
-	if (disk_buffer) {
-		disk_buffer->Shutdown();
-	}
 	writer_con.reset();
-}
-
-void OtlpServer::ReplayDiskBuffer() {
-	if (config.buffer != OtlpBufferMode::DISK || !disk_buffer) {
-		return;
-	}
-	auto pending = disk_buffer->RecoverPending();
-	idx_t replayed_records = 0;
-	for (auto &recovered : pending) {
-		auto format = FormatFromContentType(recovered.record.content_type);
-		if (IsUnsupportedEncoding(recovered.record.content_encoding)) {
-			disk_buffer->CheckpointTerminal(recovered.record.request_kind, recovered.id);
-			continue;
-		}
-		auto reservation_bytes = AdmissionReservationBytes(recovered.record.body.size());
-		if (reservation_bytes > config.max_buffered_bytes) {
-			// A single oversized record (e.g. the operator lowered max_buffered_bytes/
-			// max_body_bytes since it was journaled) must not permanently brick startup.
-			// Quarantine it like the parse-400 / unsupported-encoding paths so it won't
-			// replay again, then move on.
-			LogServerEvent(StringUtil::Format(
-			    "OTLP disk buffer replay record has %llu admission bytes but max_buffered_bytes is %llu; quarantining",
-			    static_cast<uint64_t>(reservation_bytes), static_cast<uint64_t>(config.max_buffered_bytes)));
-			disk_buffer->CheckpointTerminal(recovered.record.request_kind, recovered.id);
-			continue;
-		}
-		idx_t admitted_before = 0;
-		while (!TryReserveAdmission(reservation_bytes, admitted_before)) {
-			auto sealed = SealOnce(false);
-			if (sealed.rows == 0) {
-				throw IOException(
-				    "OTLP disk buffer replay could not reserve %llu bytes (%llu currently admitted); seal made no "
-				    "progress",
-				    static_cast<uint64_t>(reservation_bytes), static_cast<uint64_t>(admitted_before));
-			}
-		}
-		idx_t unclaimed_admission = reservation_bytes;
-		OtlpIngestResult result;
-		try {
-			std::optional<DiskRecordId> disk_record_id(recovered.id);
-			TransformAndBuffer(recovered.record.request_kind, recovered.record.body, format, result,
-			                   unclaimed_admission, disk_record_id);
-		} catch (OtlpHttpError &ex) {
-			ReleaseAdmission(unclaimed_admission);
-			if (ex.status == 400) {
-				disk_buffer->CheckpointTerminal(recovered.record.request_kind, recovered.id);
-				continue;
-			}
-			throw;
-		} catch (...) {
-			ReleaseAdmission(unclaimed_admission);
-			throw;
-		}
-		ReleaseAdmission(unclaimed_admission);
-		total_rows.fetch_add(result.rows);
-		// Record incrementally so a later throw mid-replay can't lose the partial count.
-		disk_buffer->RecordReplayRecords(1);
-		replayed_records++;
-	}
-	if (replayed_records > 0) {
-		LogServerEvent(StringUtil::Format("OTLP disk buffer replayed %llu pending records",
-		                                  static_cast<uint64_t>(replayed_records)));
-	}
 }
 
 #ifndef __EMSCRIPTEN__
 
-class HttpOtlpServer::Impl {
+class OtlpServer::Impl {
 public:
 	unique_ptr<duckdb_httplib::Server> server;
 };
@@ -1133,9 +867,21 @@ static void SetError(duckdb_httplib::Response &res, int status, const string &re
 	SetJson(res, status, "{\"error\":\"" + JsonEscape(reason) + "\",\"message\":\"" + JsonEscape(message) + "\"}");
 }
 
-HttpOtlpServer::HttpOtlpServer(ClientContext &context, const OtlpUri &uri_p, const OtlpServerConfig &config_p)
-    : OtlpServer(context, uri_p, config_p), impl(make_uniq<Impl>()) {
-	ReplayDiskBuffer();
+OtlpServer::OtlpServer(ClientContext &context, const OtlpUri &uri_p, const OtlpServerConfig &config_p)
+    : db_ptr(context.db), uri(uri_p), config(config_p), impl(make_uniq<Impl>()) {
+	ValidateToken(config.token);
+	auto db = db_ptr.lock();
+	if (!db) {
+		throw InternalException("Database was closed");
+	}
+	EnsureTargetTables();
+	InitBuffers();
+	// One dedicated writer connection; the single sealer thread is the only thing
+	// that ever commits, so concurrent DuckLake writes never conflict.
+	writer_con = make_uniq<Connection>(*db);
+	writer_con->context->config.enable_progress_bar = false;
+	StartSealer();
+
 	impl->server = make_uniq<duckdb_httplib::Server>();
 	// Wide worker pool (mirrors duckdb-quack): each keep-alive connection holds a
 	// worker thread for its lifetime, so we need enough threads to serve many
@@ -1148,7 +894,7 @@ HttpOtlpServer::HttpOtlpServer(ClientContext &context, const OtlpUri &uri_p, con
 	impl->server->set_keep_alive_max_count(128);
 	impl->server->set_keep_alive_timeout(10);
 	impl->server->set_tcp_nodelay(true);
-	impl->server->set_payload_max_length(static_cast<size_t>(config_p.max_body_bytes));
+	impl->server->set_payload_max_length(static_cast<size_t>(config.max_body_bytes));
 
 	impl->server->Get("/healthz", [](const duckdb_httplib::Request &, duckdb_httplib::Response &res) {
 		SetJson(res, 200, "{\"status\":\"ok\"}");
@@ -1174,8 +920,8 @@ HttpOtlpServer::HttpOtlpServer(ClientContext &context, const OtlpUri &uri_p, con
 				} else {
 					auto result = Ingest(kind, req.get_header_value("Content-Type"),
 					                     req.get_header_value("Content-Encoding"), req.body);
-					// 202 Accepted: memory mode means parsed + buffered; disk mode
-					// also means the request body is fsynced to the disk buffer.
+					// 202 Accepted: rows are parsed + buffered in memory, not yet durable.
+					// They commit at the next seal (otlp_flush / otlp_stop force one).
 					SetJson(res, 202,
 					        StringUtil::Format("{\"status\":\"buffered\",\"rows\":%llu,\"batches\":%llu}",
 					                           static_cast<uint64_t>(result.rows),
@@ -1201,21 +947,30 @@ HttpOtlpServer::HttpOtlpServer(ClientContext &context, const OtlpUri &uri_p, con
 	impl->server->Post("/v1/traces", post_handler(OtlpRequestKind::TRACES));
 	impl->server->Post("/v1/metrics", post_handler(OtlpRequestKind::METRICS));
 
-	if (!impl->server->is_valid()) {
-		throw IOException("Failed to instantiate OTLP HTTP server at %s / %s", uri_p.Uri(), uri_p.Http());
-	}
-	// Bind synchronously here so that bind() failures (e.g. EADDRINUSE) propagate
-	// to the caller of otlp_serve() rather than being lost on the listener thread.
-	if (!impl->server->bind_to_port(uri_p.Host(), uri_p.Port())) {
-		throw IOException("Failed to bind OTLP HTTP server to %s (address in use, permission denied, or invalid host/"
-		                  "port)",
-		                  uri_p.Http());
+	// The sealer thread is already running. If bind fails (e.g. EADDRINUSE) this object
+	// is not fully constructed, so ~OtlpServer() won't run — stop the sealer here so a
+	// joinable std::thread is never destroyed (which would std::terminate the process).
+	try {
+		if (!impl->server->is_valid()) {
+			throw IOException("Failed to instantiate OTLP HTTP server at %s / %s", uri.Uri(), uri.Http());
+		}
+		// Bind synchronously here so that bind() failures (e.g. EADDRINUSE) propagate
+		// to the caller of otlp_serve() rather than being lost on the listener thread.
+		if (!impl->server->bind_to_port(uri.Host(), uri.Port())) {
+			throw IOException(
+			    "Failed to bind OTLP HTTP server to %s (address in use, permission denied, or invalid host/"
+			    "port)",
+			    uri.Http());
+		}
+	} catch (...) {
+		ShutdownIngest();
+		throw;
 	}
 	is_running.store(true);
 	listen_threads.emplace_back(ListenThread, this);
 }
 
-void HttpOtlpServer::StopAccepting() {
+void OtlpServer::StopAccepting() {
 	// Closes the listening socket only. Idempotent. Safe to call from a
 	// request-handler thread — does not wait on httplib's task queue.
 	if (is_running.exchange(false)) {
@@ -1223,7 +978,7 @@ void HttpOtlpServer::StopAccepting() {
 	}
 }
 
-void HttpOtlpServer::Close() {
+void OtlpServer::Close() {
 	// Stops accepting new connections AND joins the listener threads (NOT the
 	// httplib worker pool). Must not be called from a worker thread — the
 	// listener's exit path inside httplib joins all workers, so a worker
@@ -1240,14 +995,14 @@ void HttpOtlpServer::Close() {
 	ShutdownIngest();
 }
 
-HttpOtlpServer::~HttpOtlpServer() {
+OtlpServer::~OtlpServer() {
 	try {
-		HttpOtlpServer::Close();
+		Close();
 	} catch (std::exception &) {
 	}
 }
 
-void HttpOtlpServer::ListenThread(HttpOtlpServer *server) {
+void OtlpServer::ListenThread(OtlpServer *server) {
 	// The socket is already bound (synchronously, in the constructor); this only
 	// runs the accept loop. Catch everything so the listener thread never lets an
 	// exception escape — that would call std::terminate and abort the host process.
@@ -1276,23 +1031,23 @@ void HttpOtlpServer::ListenThread(HttpOtlpServer *server) {
 
 #else
 
-class HttpOtlpServer::Impl {};
+class OtlpServer::Impl {};
 
-HttpOtlpServer::HttpOtlpServer(ClientContext &context, const OtlpUri &uri_p, const OtlpServerConfig &config_p)
-    : OtlpServer(context, uri_p, config_p), impl(make_uniq<Impl>()) {
+OtlpServer::OtlpServer(ClientContext &context, const OtlpUri &uri_p, const OtlpServerConfig &config_p)
+    : db_ptr(context.db), uri(uri_p), config(config_p), impl(make_uniq<Impl>()) {
 	throw NotImplementedException("otlp_serve is not implemented for the wasm platform");
 }
 
-void HttpOtlpServer::StopAccepting() {
+void OtlpServer::StopAccepting() {
 }
 
-void HttpOtlpServer::Close() {
+void OtlpServer::Close() {
 }
 
-HttpOtlpServer::~HttpOtlpServer() {
+OtlpServer::~OtlpServer() {
 }
 
-void HttpOtlpServer::ListenThread(HttpOtlpServer *server) {
+void OtlpServer::ListenThread(OtlpServer *server) {
 }
 
 #endif

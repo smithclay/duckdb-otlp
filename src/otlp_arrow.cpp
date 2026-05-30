@@ -3,6 +3,7 @@
 #include "duckdb/common/exception.hpp"
 
 #include <cstdlib>
+#include <cstring>
 
 namespace duckdb {
 
@@ -172,9 +173,15 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 			                  static_cast<int64_t>(array.n_buffers));
 		}
 		auto copy_int = [&](auto *typed_values, auto *typed_output) {
+			if (!null_bitmap) {
+				// No nulls: Arrow buffer layout is bit-identical to the DuckDB FlatVector
+				// layout for fixed-width integers, so a single memcpy replaces the loop.
+				memcpy(typed_output, typed_values + array.offset, count * sizeof(*typed_output));
+				return;
+			}
 			for (idx_t i = 0; i < count; i++) {
 				idx_t array_idx = i + array.offset;
-				if (null_bitmap && !(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
+				if (!(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
 					mask.SetInvalid(i);
 					continue;
 				}
@@ -205,13 +212,17 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 		}
 		const int64_t *values = static_cast<const int64_t *>(array.buffers[1]);
 		auto *output_data = FlatVector::GetData<int64_t>(output);
-		for (idx_t i = 0; i < count; i++) {
-			idx_t array_idx = i + array.offset;
-			if (null_bitmap && !(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
-				mask.SetInvalid(i);
-				continue;
+		if (!null_bitmap) {
+			memcpy(output_data, values + array.offset, count * sizeof(int64_t));
+		} else {
+			for (idx_t i = 0; i < count; i++) {
+				idx_t array_idx = i + array.offset;
+				if (!(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
+					mask.SetInvalid(i);
+					continue;
+				}
+				output_data[i] = values[array_idx];
 			}
-			output_data[i] = values[array_idx];
 		}
 	} else if (fmt == "g") {
 		if (array.n_buffers < 2) {
@@ -221,13 +232,17 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 		const double *values = static_cast<const double *>(array.buffers[1]);
 		auto *output_data = FlatVector::GetData<double>(output);
 
-		for (idx_t i = 0; i < count; i++) {
-			idx_t array_idx = i + array.offset;
-			if (null_bitmap && !(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
-				mask.SetInvalid(i);
-				continue;
+		if (!null_bitmap) {
+			memcpy(output_data, values + array.offset, count * sizeof(double));
+		} else {
+			for (idx_t i = 0; i < count; i++) {
+				idx_t array_idx = i + array.offset;
+				if (!(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
+					mask.SetInvalid(i);
+					continue;
+				}
+				output_data[i] = values[array_idx];
 			}
-			output_data[i] = values[array_idx];
 		}
 	} else if (fmt == "f") {
 		if (array.n_buffers < 2) {
@@ -237,13 +252,17 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 		const float *values = static_cast<const float *>(array.buffers[1]);
 		auto *output_data = FlatVector::GetData<float>(output);
 
-		for (idx_t i = 0; i < count; i++) {
-			idx_t array_idx = i + array.offset;
-			if (null_bitmap && !(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
-				mask.SetInvalid(i);
-				continue;
+		if (!null_bitmap) {
+			memcpy(output_data, values + array.offset, count * sizeof(float));
+		} else {
+			for (idx_t i = 0; i < count; i++) {
+				idx_t array_idx = i + array.offset;
+				if (!(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
+					mask.SetInvalid(i);
+					continue;
+				}
+				output_data[i] = values[array_idx];
 			}
-			output_data[i] = values[array_idx];
 		}
 	} else if (fmt == "z" || fmt == "Z") {
 		// Variable-size binary -> BLOB. Same buffer layout as utf8 (validity, offsets,
@@ -297,13 +316,17 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 		}
 		const int64_t *values = static_cast<const int64_t *>(array.buffers[1]);
 		auto *output_data = FlatVector::GetData<int64_t>(output);
-		for (idx_t i = 0; i < count; i++) {
-			idx_t array_idx = i + array.offset;
-			if (null_bitmap && !(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
-				mask.SetInvalid(i);
-				continue;
+		if (!null_bitmap) {
+			memcpy(output_data, values + array.offset, count * sizeof(int64_t));
+		} else {
+			for (idx_t i = 0; i < count; i++) {
+				idx_t array_idx = i + array.offset;
+				if (!(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
+					mask.SetInvalid(i);
+					continue;
+				}
+				output_data[i] = values[array_idx];
 			}
-			output_data[i] = values[array_idx];
 		}
 	} else if (fmt.size() > 2 && fmt[0] == 'w' && fmt[1] == ':') {
 		int width = std::atoi(fmt.c_str() + 2);
