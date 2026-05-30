@@ -12,19 +12,19 @@ SELECT COUNT(*) FROM read_otlp_metrics_histogram('test/data/metrics_all_types.js
 
 # Test metric name
 query I
-SELECT metric_name FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
+SELECT name FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
 ----
 latency.hist
 
 # Test metric description
 query I
-SELECT metric_description FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
+SELECT description FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
 ----
 Latency
 
-# Test metric_unit
+# Test unit
 query I
-SELECT metric_unit FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
+SELECT unit FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
 ----
 ms
 
@@ -40,17 +40,17 @@ SELECT sum FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl')
 ----
 250.0
 
-# Test bucket_counts (JSON array)
+# Test bucket_counts (typed UBIGINT list in 0.8)
 query I
 SELECT bucket_counts FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
 ----
-[5,10,15,12,8]
+[5, 10, 15, 12, 8]
 
-# Test explicit_bounds (JSON array)
+# Test explicit_bounds (typed DOUBLE list in 0.8)
 query I
 SELECT explicit_bounds FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
 ----
-[5.0,10.0,20.0,50.0]
+[5.0, 10.0, 20.0, 50.0]
 
 # Test service_name extraction
 query I

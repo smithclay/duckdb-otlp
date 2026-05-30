@@ -86,7 +86,7 @@ FROM traces, logs;
 
 # Test window functions (DuckDB may parallelize)
 query I
-SELECT COUNT(DISTINCT span_name)
+SELECT COUNT(DISTINCT name)
 FROM read_otlp_traces('test/data/traces_*.jsonl');
 ----
 8
@@ -97,8 +97,8 @@ FROM read_otlp_traces('test/data/traces_*.jsonl');
 query I
 SELECT COUNT(*) FROM (
     SELECT
-        span_name,
-        (SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_simple.jsonl') WHERE span_name = t.span_name) as same_name_count
+        name,
+        (SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_simple.jsonl') WHERE name = t.name) as same_name_count
     FROM read_otlp_traces('test/data/traces_simple.jsonl') t
 );
 ----

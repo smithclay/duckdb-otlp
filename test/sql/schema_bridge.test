@@ -7,11 +7,13 @@ require otlp
 #
 # Test 1: Copy gauge metrics from read_otlp_metrics_gauge()
 #
+# metrics_simple.jsonl gauge is a double (524288000.0) so int_value is NULL.
 
 statement ok
 CREATE TABLE archive_gauge_from_file AS
-SELECT timestamp, service_name, metric_name, metric_description, metric_unit,
-       resource_attributes, scope_name, scope_version, metric_attributes, value
+SELECT time_unix_nano, service_name, name, description, unit,
+       resource_attributes, scope_name, scope_version, metric_attributes,
+       int_value, double_value
 FROM read_otlp_metrics_gauge('test/data/metrics_simple.jsonl');
 
 query I
@@ -20,19 +22,20 @@ SELECT COUNT(*) FROM archive_gauge_from_file;
 1
 
 query I
-SELECT CAST(value AS BIGINT) FROM archive_gauge_from_file;
+SELECT CAST(double_value AS BIGINT) FROM archive_gauge_from_file;
 ----
 524288000
 
 #
 # Test 2: Copy sum metrics from read_otlp_metrics_sum()
 #
+# metrics_simple.jsonl sum is an int (42) so double_value is NULL.
 
 statement ok
 CREATE TABLE archive_sum_from_file AS
-SELECT timestamp, service_name, metric_name, metric_description, metric_unit,
+SELECT time_unix_nano, service_name, name, description, unit,
        resource_attributes, scope_name, scope_version, metric_attributes,
-       value, aggregation_temporality, is_monotonic
+       int_value, double_value, aggregation_temporality, is_monotonic
 FROM read_otlp_metrics_sum('test/data/metrics_simple.jsonl');
 
 query I
@@ -51,7 +54,7 @@ true
 
 statement ok
 CREATE TABLE logs_table AS
-SELECT timestamp, severity_text, body
+SELECT time_unix_nano, severity_text, body
 FROM read_otlp_logs('test/data/logs_simple.jsonl');
 
 query I
@@ -65,7 +68,7 @@ SELECT COUNT(*) FROM logs_table;
 
 statement ok
 CREATE TABLE traces_table AS
-SELECT timestamp, span_name, service_name, duration
+SELECT start_time_unix_nano, name, service_name, duration_time_unix_nano
 FROM read_otlp_traces('test/data/traces_simple.jsonl');
 
 query I

@@ -41,10 +41,10 @@ WHERE trace_id IS NULL AND span_id IS NULL;
 ----
 3
 
-# Test logs with zero severity
+# Test logs with unspecified severity (NULL in 0.8 — used to map to 0 in 0.7).
 query I
 SELECT COUNT(*) FROM read_otlp_logs('test/data/logs_nulls.jsonl')
-WHERE severity_number = 0;
+WHERE severity_number IS NULL;
 ----
 1
 
@@ -78,7 +78,7 @@ SELECT COUNT(*) FROM read_otlp_traces('test/data/single_trace.jsonl');
 
 # Verify single trace content
 query II
-SELECT trace_id, span_name
+SELECT trace_id, name
 FROM read_otlp_traces('test/data/single_trace.jsonl');
 ----
 00000000000000000000000000000001	single_span
