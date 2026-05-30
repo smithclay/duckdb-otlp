@@ -1,5 +1,8 @@
 {
     "dependencies": [
-        "zlib"
+        {
+            "name": "zlib",
+            "platform": "!emscripten"
+        }
     ]
 }
