@@ -326,8 +326,8 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 			}
 			const uint8_t *row = bytes + array_idx * static_cast<size_t>(width);
 			for (int b = 0; b < width; b++) {
-				buf[2 * b] = hex[row[b] >> 4];
-				buf[2 * b + 1] = hex[row[b] & 0x0F];
+				buf[2 * static_cast<size_t>(b)] = hex[row[b] >> 4];
+				buf[2 * static_cast<size_t>(b) + 1] = hex[row[b] & 0x0F];
 			}
 			string_data[i] = StringVector::AddString(output, buf.data(), buf.size());
 		}
@@ -410,7 +410,7 @@ void CopyArrowStructToDataChunk(const ArrowArray &array, const ArrowSchema &sche
 			throw IOException("Invalid Arrow batch: column %llu schema is null", static_cast<uint64_t>(col_idx));
 		}
 		ArrowArray col_view = *col_array;
-		col_view.offset = col_array->offset + offset;
+		col_view.offset = col_array->offset + static_cast<int64_t>(offset);
 		CopyArrowToDuckDB(col_view, *col_schema, output.data[col_idx], count);
 	}
 }

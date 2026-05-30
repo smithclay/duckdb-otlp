@@ -1,6 +1,7 @@
 # name: test/sql/otlp_serve.test
 # description: Test OTLP HTTP server lifecycle SQL functions
 # group: [sql]
+
 #
 # Coverage note: SQLLogicTest cannot issue HTTP POSTs, so this file covers only
 # the lifecycle/bind surface (serve/list/stop, validation, hostname gating,

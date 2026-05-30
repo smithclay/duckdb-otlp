@@ -449,7 +449,7 @@ static void SetError(duckdb_httplib::Response &res, int status, const string &re
 	SetJson(res, status, "{\"error\":\"" + JsonEscape(reason) + "\",\"message\":\"" + JsonEscape(message) + "\"}");
 }
 
-HttpOtlpServer::HttpOtlpServer(ClientContext &context, const OtlpUri &uri_p, OtlpServerConfig config_p)
+HttpOtlpServer::HttpOtlpServer(ClientContext &context, const OtlpUri &uri_p, const OtlpServerConfig &config_p)
     : OtlpServer(context, uri_p, config_p), impl(make_uniq<Impl>()) {
 	impl->server = make_uniq<duckdb_httplib::Server>();
 	// Wide worker pool (mirrors duckdb-quack): each keep-alive connection holds a
@@ -525,7 +525,7 @@ HttpOtlpServer::HttpOtlpServer(ClientContext &context, const OtlpUri &uri_p, Otl
 		                  uri_p.Http());
 	}
 	is_running.store(true);
-	listen_threads.push_back(std::thread(ListenThread, this));
+	listen_threads.emplace_back(ListenThread, this);
 }
 
 void HttpOtlpServer::StopAccepting() {
@@ -587,8 +587,8 @@ void HttpOtlpServer::ListenThread(HttpOtlpServer *server) {
 
 class HttpOtlpServer::Impl {};
 
-HttpOtlpServer::HttpOtlpServer(ClientContext &context, const OtlpUri &uri_p, OtlpServerConfig config_p)
-    : OtlpServer(context, uri_p, std::move(config_p)), impl(make_uniq<Impl>()) {
+HttpOtlpServer::HttpOtlpServer(ClientContext &context, const OtlpUri &uri_p, const OtlpServerConfig &config_p)
+    : OtlpServer(context, uri_p, config_p), impl(make_uniq<Impl>()) {
 	throw NotImplementedException("otlp_serve is not implemented for the wasm platform");
 }
 

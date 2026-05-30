@@ -122,7 +122,7 @@ private:
 
 class HttpOtlpServer : public OtlpServer {
 public:
-	HttpOtlpServer(ClientContext &context, const OtlpUri &uri, OtlpServerConfig config);
+	HttpOtlpServer(ClientContext &context, const OtlpUri &uri, const OtlpServerConfig &config);
 	void StopAccepting() override;
 	void Close() override;
 	bool IsListening() const override {
