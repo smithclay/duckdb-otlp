@@ -1,12 +1,12 @@
 # DuckDB OpenTelemetry Extension
 
-Query OpenTelemetry traces, logs, and metrics with SQL, or run an embedded OTLP/HTTP endpoint that streams live telemetry into DuckDB, DuckLake, or Iceberg.
+Query OpenTelemetry traces, logs, and metrics with SQL, or run an embedded HTTP endpoint that streams live telemetry into a local or remote DuckDB, DuckLake, or Iceberg catalog.
 
-`duckdb-otlp` reads OTLP JSON, JSONL, and protobuf file exports from the OpenTelemetry Collector, with row schemas inspired by the [OpenTelemetry ClickHouse exporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/clickhouseexporter/README.md). Native builds also include live HTTP ingest for `/v1/logs`, `/v1/traces`, and `/v1/metrics`.
+`duckdb-otlp` reads OTLP JSON, JSONL, and protobuf file exports from the OpenTelemetry Collector. Native builds also include live HTTP ingest for `/v1/logs`, `/v1/traces`, and `/v1/metrics`.
 
 ## Quickstart
 
-Install and load the extension:
+Install and load the extension in a `duckdb` v1.5.3 or higher session:
 
 ```sql
 INSTALL otlp FROM community;
@@ -16,27 +16,28 @@ LOAD otlp;
 Read OTLP data from files:
 
 ```sql
-SELECT timestamp, service_name, severity_text, body
-FROM read_otlp_logs('test/data/logs_simple.jsonl');
+SELECT timestamp, service_name, severity_text, body FROM read_otlp_logs('https://github.com/smithclay/duckdb-otlp/raw/refs/heads/main/test/data/otlp_logs.pb');
 
-SELECT trace_id, span_name, duration / 1000000 AS duration_ms
-FROM read_otlp_traces('test/data/traces_simple.jsonl')
-ORDER BY duration DESC;
+SELECT trace_id, span_name, duration / 1000000 AS duration_ms FROM read_otlp_traces('https://github.com/smithclay/duckdb-otlp/raw/refs/heads/main/test/data/otlp_traces.pb') ORDER BY duration DESC;
 ```
 
-Stream one OTLP log into DuckDB over HTTP:
+Send one OTLP log into DuckDB over the embedded HTTP service:
 
 ```sql
-SELECT listen_url
-FROM otlp_serve('otlp:localhost:4318', token := 'dev-token-123456');
+-- Start the server
+otlp_serve('otlp:localhost:4318', token := 'dev-token-123456');
 ```
+
+In a separate window:
 
 ```bash
 curl -sS http://localhost:4318/v1/logs -H 'Authorization: Bearer dev-token-123456' -H 'Content-Type: application/json' -d '{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"curl-demo"}}]},"scopeLogs":[{"logRecords":[{"timeUnixNano":"1704067200000000000","severityText":"INFO","body":{"stringValue":"hello from curl"}}]}]}]}'
 ```
 
+Back in duckdb:
+
 ```sql
--- Normal shutdown commits any remaining buffered rows.
+-- Stop server, flush all buffered data.
 SELECT status FROM otlp_stop('otlp:localhost:4318');
 SELECT timestamp, service_name, severity_text, body FROM otlp_logs;
 ```
@@ -44,6 +45,10 @@ SELECT timestamp, service_name, severity_text, body FROM otlp_logs;
 Live ingest commits buffered rows automatically in the background, currently after about 5 seconds for the oldest buffered row or about 64 MiB of admitted request-body bytes. `otlp_flush` is only needed when you want accepted rows durable/queryable immediately while the server keeps running.
 
 For a full walkthrough, including lakehouse ingest, see the [documentation site](https://smithclay.github.io/duckdb-otlp/).
+
+## Schema
+
+Schema is are generally aligned with a normalized version of [OpenTelemetry Arrow Data model](https://github.com/open-telemetry/otel-arrow/blob/main/docs/data_model.md) as of extension release `v0.5.0`. There are breaking schema changes between `v0.4.0` and `v0.5.0` releases.
 
 ## What You Can Do
 
@@ -59,6 +64,7 @@ For a full walkthrough, including lakehouse ingest, see the [documentation site]
 - [Get Started](https://smithclay.github.io/duckdb-otlp/get-started/)
 - [Live Ingest Quickstart](https://smithclay.github.io/duckdb-otlp/quickstart/serve/)
 - [Stream to DuckLake](https://smithclay.github.io/duckdb-otlp/guides/stream-to-ducklake/)
+- [Store Claude Code or Codex Traces in Local DuckLake](https://smithclay.github.io/duckdb-otlp/guides/store-agent-traces-local-ducklake/)
 - [Stream to Iceberg](https://smithclay.github.io/duckdb-otlp/guides/stream-to-iceberg/)
 - [How-to Guides](https://smithclay.github.io/duckdb-otlp/guides/)
 - [API Reference](https://smithclay.github.io/duckdb-otlp/reference/api/)
