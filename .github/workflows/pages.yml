@@ -173,17 +173,48 @@ jobs:
         if: needs.extension-package.result == 'success'
         run: tar -xzf _extension_repository_artifact/extension-repository.tar.gz -C site/dist
 
-      - name: Restore latest extension repository release asset
+      - name: Restore latest extension repository
         if: needs.extension-package.result == 'skipped'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           tmp="$(mktemp -d)"
-          if gh release download --pattern extension-repository.tar.gz --output "${tmp}/extension-repository.tar.gz"; then
+          restored=0
+
+          while read -r run_id; do
+            [ -n "$run_id" ] || continue
+            artifact_id="$(
+              gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts" \
+                --jq '.artifacts[] | select(.name == "extension-repository" and (.expired | not)) | .id' \
+                | head -n 1
+            )"
+            [ -n "$artifact_id" ] || continue
+            if gh run download "$run_id" --name extension-repository --dir "$tmp/artifact"; then
+              tar -xzf "$tmp/artifact/extension-repository.tar.gz" -C site/dist
+              restored=1
+              echo "Restored extension repository from workflow run ${run_id}"
+              break
+            fi
+            rm -rf "$tmp/artifact"
+          done < <(
+            gh run list \
+              --workflow "${GITHUB_WORKFLOW}" \
+              --branch "${GITHUB_REF_NAME}" \
+              --status success \
+              --limit 20 \
+              --json databaseId \
+              --jq '.[].databaseId'
+          )
+
+          if [ "$restored" -eq 0 ] && gh release download --pattern extension-repository.tar.gz --output "${tmp}/extension-repository.tar.gz"; then
             tar -xzf "${tmp}/extension-repository.tar.gz" -C site/dist
-          else
-            echo "::warning::No extension-repository.tar.gz release asset found; deploying site without extension binaries"
+            restored=1
+            echo "Restored extension repository from release asset"
+          fi
+
+          if [ "$restored" -eq 0 ]; then
+            echo "::warning::No extension repository artifact found; deploying site without extension binaries"
           fi
 
       - name: Upload Pages artifact
