@@ -1,0 +1,4 @@
+*
+!docker/
+!docker/duckdb-otlp-server/
+!docker/duckdb-otlp-server/entrypoint.sh
