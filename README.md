@@ -1,10 +1,8 @@
 # DuckDB OpenTelemetry Extension
 
-Query OpenTelemetry traces, logs, and metrics with SQL, or run an embedded HTTP endpoint that streams live telemetry into a local or remote DuckDB, DuckLake, or Iceberg catalog.
+DuckDB extension that makes it easy to query and store OpenTelemetry traces, logs, and metrics with SQL.
 
-`duckdb-otlp` reads OTLP JSON, JSONL, and protobuf file exports from the OpenTelemetry Collector. Native builds also include live HTTP ingest for `/v1/logs`, `/v1/traces`, and `/v1/metrics`.
-
-Goal of this extension is to make it very easy to stream OpenTelemetry data to [DuckLake](https://smithclay.github.io/duckdb-otlp/guides/stream-to-ducklake/), [Amazon S3 Tables](https://smithclay.github.io/duckdb-otlp/guides/stream-to-s3-tables/) or [Cloudflare R2 Data Catalog](https://smithclay.github.io/duckdb-otlp/guides/stream-to-r2-data-catalog/): all runs in duckdb, no extra dependencies or sidecards needed.
+Though the extension's embedded HTTP server, you can now stream live telemetry—like traces from [Claude Code or Codex](https://smithclay.github.io/duckdb-otlp/guides/store-agent-traces-local-ducklake/)—into a local or remote DuckDB using Quack, [DuckLake](https://smithclay.github.io/duckdb-otlp/guides/stream-to-ducklake/), or Iceberg catalogs like [Amazon S3 Tables](https://smithclay.github.io/duckdb-otlp/guides/stream-to-s3-tables/) or [Cloudflare R2 Data Catalog](https://smithclay.github.io/duckdb-otlp/guides/stream-to-r2-data-catalog/).
 
 ## Quickstart
 
