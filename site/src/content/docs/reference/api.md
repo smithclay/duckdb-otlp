@@ -56,7 +56,7 @@ In native builds, the extension can also run an HTTP server that accepts live OT
 - **`otlp_stop(uri)`** - Stop the server listening on `uri` (commits remaining rows first).
 - **`otlp_server_list()`** - List running servers with live counters, buffer state, and health.
 
-See the [Serve Reference](../serve/) for parameters, catalog targeting, endpoints, auth, and buffered commit behavior. For task-oriented walkthroughs, start with the [Live Ingest Quickstart](../../quickstart/serve/), [Stream to DuckLake](../../guides/stream-to-ducklake/), or [Stream to Iceberg](../../guides/stream-to-iceberg/).
+See the [Serve Reference](../serve/) for parameters, catalog targeting, endpoints, auth, and buffered commit behavior. For task-oriented walkthroughs, start with the [Live Ingest Quickstart](../../quickstart/serve/), [Stream to DuckLake](../../guides/stream-to-ducklake/), or [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/).
 
 ## Examples
 

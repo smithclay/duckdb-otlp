@@ -37,6 +37,11 @@ struct OtlpServerConfig {
 	//! reads/durability while the server keeps running. otlp_stop performs a final seal.
 	idx_t seal_target_bytes = 64ULL * 1024ULL * 1024ULL; //! seal when admitted bytes reach this
 	int64_t seal_max_age_ms = 5000;                      //! seal when the oldest buffered row is this old
+	//! Successful automatic row-seals into a named catalog may occasionally be followed
+	//! by internal best-effort catalog-native maintenance (`CHECKPOINT <catalog>`) when
+	//! recent ingress and pending bytes leave ample admission headroom. This is
+	//! deliberately not user-configurable and is skipped for explicit otlp_flush and
+	//! shutdown drains so those calls remain durability/seal operations.
 	//! Backpressure admission cap (over it -> 503). NOTE: this bounds cumulative *admitted
 	//! request-body bytes* (each request reserves max(body_size, 1024) input bytes), NOT
 	//! decoded buffer heap — decoded columnar size differs from the encoded/compressed
@@ -167,9 +172,10 @@ private:
 	void InitBuffers();
 	void StartSealer();
 	void SealerLoop();
-	OtlpIngestResult SealOnce();
+	OtlpIngestResult SealOnce(bool allow_maintenance);
 	void RequestSeal();
 	bool SealAgeDue() const;
+	void MaybeRunCatalogMaintenance(idx_t sealed_rows, idx_t sealed_admission_bytes);
 
 	void CreateOrValidateTable(Connection &con, OtlpSignalType signal_type, const string &table_name);
 	void GetSignalColumns(OtlpSignalType signal_type, vector<LogicalType> &types, vector<string> &names);
@@ -207,6 +213,13 @@ private:
 	std::atomic<int64_t> last_seal_unix_ms {0};
 	mutable mutex seal_error_mutex;
 	string seal_last_error;
+
+	enum class CatalogMaintenanceState { PENDING, SUPPORTED, DISABLED };
+	CatalogMaintenanceState catalog_maintenance_state = CatalogMaintenanceState::PENDING;
+	idx_t catalog_maintenance_row_seals_since_attempt = 0;
+	std::chrono::steady_clock::time_point catalog_maintenance_last_attempt = std::chrono::steady_clock::now();
+	std::chrono::steady_clock::time_point catalog_maintenance_last_row_seal = std::chrono::steady_clock::now();
+	double catalog_maintenance_ingress_rate_bytes_per_ms = 0;
 
 	// --- HTTP transport (httplib). PIMPL so httplib.hpp stays out of this header. ---
 	class Impl;

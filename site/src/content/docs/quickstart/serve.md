@@ -84,5 +84,5 @@ FROM otlp_logs;
 ## Next steps
 
 - **[Stream to DuckLake](../../guides/stream-to-ducklake/)** - land OTLP rows in Parquet files tracked by DuckLake.
-- **[Stream to Iceberg](../../guides/stream-to-iceberg/)** - land OTLP rows in an attached Iceberg REST catalog.
+- **[Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/)** - land OTLP rows in Amazon S3 Tables as an Iceberg catalog.
 - **[Live Ingest Reference](../../reference/serve/)** - all parameters, endpoints, auth, status codes, buffering, and durability.

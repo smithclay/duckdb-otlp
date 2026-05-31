@@ -6,7 +6,7 @@ The extension can run an embedded HTTP server that accepts live OTLP/HTTP export
 
 > **Not available in WASM builds.** The server requires the native extension. Live ingestion is HTTP-only (no gRPC).
 
-For a copy-pasteable walkthrough, see the [Live Ingest Quickstart](../../quickstart/serve/). For lakehouse examples, see [Stream to DuckLake](../../guides/stream-to-ducklake/) and [Stream to Iceberg](../../guides/stream-to-iceberg/). For how it works internally, see [Architecture](../../architecture/#otlp-http-ingest-server).
+For a copy-pasteable walkthrough, see the [Live Ingest Quickstart](../../quickstart/serve/). For lakehouse examples, see [Stream to DuckLake](../../guides/stream-to-ducklake/) and [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/). For how it works internally, see [Architecture](../../architecture/#otlp-http-ingest-server).
 
 ## Functions
 
@@ -15,7 +15,7 @@ The extension registers four lifecycle functions:
 | Function | What it does |
 |----------|-------------|
 | `otlp_serve([uri], ...)` | Start an HTTP server and create/validate target tables. Returns one row describing the listener. |
-| `otlp_flush(uri)` | Optionally force a synchronous commit of buffered rows. Returns commit stats. |
+| `otlp_flush(uri)` | Optionally force a synchronous commit of buffered rows. Returns commit stats. It does not force catalog maintenance. |
 | `otlp_stop(uri)` | Stop the server listening on `uri` (commits remaining rows first). Returns a status string. |
 | `otlp_server_list()` | List all running servers with live counters, buffer state, and health. |
 
@@ -61,7 +61,7 @@ Starting a second server on the same URI fails (`OTLP server already exists`). T
 
 ### `otlp_flush(uri)`
 
-Forces a **synchronous commit**: the server's in-memory buffer is written to the target in one transaction before the function returns. This is optional for normal ingest because the background writer commits automatically and `otlp_stop` performs a final commit. Use `otlp_flush` only when readers need the latest accepted rows immediately while the server stays running.
+Forces a **synchronous commit**: the server's in-memory buffer is written to the target in one transaction before the function returns. This is optional for normal ingest because the background writer commits automatically and `otlp_stop` performs a final commit. Use `otlp_flush` only when readers need the latest accepted rows immediately while the server stays running. `otlp_flush` is a durability/read-freshness operation; it does not promise immediate compaction or other catalog maintenance.
 
 ```sql
 -- Force a commit
@@ -150,8 +150,10 @@ CALL otlp_serve('otlp:localhost:4318', catalog := 'lake');
 SELECT count(*) FROM lake.main.otlp_logs;
 ```
 
-Each batch commit writes **one Parquet data file per signal** plus one DuckLake snapshot — see [Durability and background commits](#durability-and-background-commits).
-- **Iceberg REST catalog** (`catalog := '<attached_db>'`): rows stream into tables in an attached writable Iceberg REST catalog. Attach the catalog with DuckDB's `iceberg` extension, create the target schema, then pass the catalog and schema to `otlp_serve`; see [Stream to Iceberg](../../guides/stream-to-iceberg/).
+Each batch commit writes **one Parquet data file per signal** plus one DuckLake snapshot. After a conservative number of successful automatic row-seals, `duckdb-otlp` may run best-effort catalog-native maintenance with DuckDB's non-force `CHECKPOINT lake` when recent ingest rate and pending bytes leave ample admission headroom; DuckLake owns the actual policy through its settings such as `auto_compact`, retention, inlining, and target file size. See [Durability and background commits](#durability-and-background-commits).
+
+- **Iceberg REST catalog** (`catalog := '<attached_db>'`): rows stream into tables in an attached writable Iceberg REST catalog. Attach the catalog with DuckDB's `iceberg` extension, create the target schema, then pass the catalog and schema to `otlp_serve`; see [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/) for the Amazon S3 Tables provider path.
+  DuckDB's Iceberg REST catalog docs do not currently document a useful `CHECKPOINT` maintenance path. The internal maintenance probe uses generic `CHECKPOINT <catalog>` only; if the catalog reports checkpointing as unsupported, automatic maintenance is disabled for that server and ingest durability continues normally.
 
 ## URI scheme
 
@@ -238,6 +240,7 @@ Ingest is **buffered and committed in batches** for every target. This avoids pe
    - the oldest buffered row reaches the internal age limit, currently about 5 seconds, or
    - an explicit [`otlp_flush`](#otlp_flushuri-).
 3. For a DuckLake target, each batch commit writes **one Parquet data file per signal** plus one snapshot.
+4. For named catalogs, successful automatic row-seals may occasionally be followed by best-effort, non-force `CHECKPOINT <catalog>` outside the ingest transaction when recent ingest rate and pending bytes leave ample admission headroom. This is internal scheduling, not a public management layer. The default catalog is skipped, explicit `otlp_flush`, sustained high ingest, high pending buffered bytes, and shutdown drains do not trigger it; unsupported checkpoint implementations are logged once and disabled for that server.
 
 **Durability contract:**
 
@@ -249,7 +252,7 @@ Ingest is **buffered and committed in batches** for every target. This avoids pe
 
 **Backpressure:** if admitting a request would exceed `max_buffered_bytes` (default 512 MiB) across in-flight and uncommitted accepted payloads, the POST returns `503` before parse/transform work. Clients should retry with backoff.
 
-**Keeping DuckLake tidy:** each batch commit leaves a small Parquet file per signal. DuckLake compaction is separate from `otlp_flush`; run DuckLake maintenance explicitly when file counts need cleanup.
+**Keeping DuckLake tidy:** each batch commit can leave a small Parquet file per signal. For DuckLake, the server now periodically gives the catalog a chance to run its own maintenance through DuckDB's catalog-native `CHECKPOINT` machinery when recent ingest leaves enough admission headroom. This is best effort: it is not run after every seal, it is not part of the ingest transaction, and a maintenance failure does not roll back rows that were already committed. `otlp_flush` still only forces ingest durability and does not promise immediate compaction.
 
 ## Concurrency model
 
@@ -261,23 +264,24 @@ Ingest is **buffered and committed in batches** for every target. This avoids pe
 `make test` cannot issue HTTP POSTs, so the SQL logic tests cover only the lifecycle surface. To exercise the ingest hot path (auth, content-type handling, the metrics fan-out, buffering + batch commits, and Arrow → DuckDB conversion under concurrency), run the manual concurrency harness:
 
 ```bash
-uv run python test/manual/otlp_serve_concurrency.py
+uv run --script test/manual/otlp_serve_concurrency.py
 
 # Override the payload / concurrency:
 OTLP_PAYLOAD=test/data/logs_simple.jsonl OTLP_CONCURRENCY=64 \
-    uv run python test/manual/otlp_serve_concurrency.py
+    uv run --script test/manual/otlp_serve_concurrency.py
 
-# Exercise the DuckLake path (writes Parquet under the given dir):
+# Exercise the DuckLake path (writes Parquet under the given dir and checks the
+# automatic catalog-maintenance event):
 OTLP_DUCKLAKE_DIR=/tmp/otlp_lake \
-    uv run python test/manual/otlp_serve_concurrency.py
+    uv run --script test/manual/otlp_serve_concurrency.py
 ```
 
-It covers auth and validation errors, low-buffer backpressure, metrics fanout, stop-under-load, and concurrent flush/stop, then reconciles accepted rows against committed row counts. Run it against a TSan/ASan build to catch races.
+It covers auth and validation errors, low-buffer backpressure, metrics fanout, stop-under-load, concurrent flush/stop, and the optional local DuckLake maintenance checkpoint event, then reconciles accepted rows against committed row counts. Run it against a TSan/ASan build to catch races.
 
 ## See also
 
 - [Live Ingest Quickstart](../../quickstart/serve/) — POST one log to the default catalog with `curl`.
 - [Stream to DuckLake](../../guides/stream-to-ducklake/) — write live OTLP rows to DuckLake.
-- [Stream to Iceberg](../../guides/stream-to-iceberg/) — write live OTLP rows to an Iceberg REST catalog.
+- [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/) — write live OTLP rows to Amazon S3 Tables as an Iceberg catalog.
 - [Architecture](../../architecture/#otlp-http-ingest-server) — buffer, background writer, and `otlp_flush` internals.
 - [Schema Reference](../schemas/) — columns of the target tables.

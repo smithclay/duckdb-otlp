@@ -16,7 +16,7 @@ Start here for `duckdb-otlp`: installation, file readers, live ingest, the brows
 - **[How to filter logs](guides/filtering-logs/)** - query logs by severity, service, time, text, and trace correlation.
 - **[How to work with metrics](guides/working-with-metrics/)** - query gauge, sum, histogram, and exponential histogram metrics.
 - **[How to stream to DuckLake](guides/stream-to-ducklake/)** - land OTLP/HTTP rows in Parquet files tracked by DuckLake.
-- **[How to stream to Iceberg](guides/stream-to-iceberg/)** - land OTLP/HTTP rows in an attached Iceberg REST catalog.
+- **[How to stream to Amazon S3 Tables](guides/stream-to-s3-tables/)** - land OTLP/HTTP rows in Amazon S3 Tables as an Iceberg catalog.
 - **[How to export telemetry to Parquet](guides/exporting-to-parquet/)** - write traces, logs, and metrics to reusable Parquet datasets.
 - **[How to handle malformed input](guides/error-handling/)** - diagnose reader and ingest errors.
 

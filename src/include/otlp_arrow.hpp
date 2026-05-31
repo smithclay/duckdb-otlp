@@ -7,7 +7,13 @@
 
 namespace duckdb {
 
-void GetArrowSchemaColumns(const ArrowSchema &schema, vector<LogicalType> &return_types, vector<string> &names);
+struct OtlpArrowSchemaOptions {
+	bool timestamp_ns_as_timestamp = false;
+	bool unsigned_as_signed = true;
+};
+
+void GetArrowSchemaColumns(const ArrowSchema &schema, vector<LogicalType> &return_types, vector<string> &names,
+                           const OtlpArrowSchemaOptions &options = OtlpArrowSchemaOptions());
 
 void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vector &output, idx_t count);
 

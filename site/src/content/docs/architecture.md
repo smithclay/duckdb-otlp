@@ -94,6 +94,7 @@ Worker thread: reserve admission bytes -> otlp_transform (FFI) -> convert -> app
 
 Background writer (trigger: internal size/age threshold; optional otlp_flush)
   → one transaction → for DuckLake: one Parquet data file per signal + one snapshot → COMMIT
+  → after conservative automatic row-seal cadence when there is admission headroom: best-effort CHECKPOINT <catalog> outside the ingest transaction
 ```
 
 ### Batch commit model and durability
@@ -102,7 +103,7 @@ A single background writer commits the buffer to the target catalog when any tri
 
 - A `202` is **not durable**; rows become durable at the next automatic background commit, on `otlp_stop`, or immediately on `otlp_flush`. A crash loses buffered-but-uncommitted rows (at-most-once for that window).
 - `otlp_stop` and `otlp_flush` commit remaining buffered rows before returning, so those lose nothing. **A plain database/connection close does NOT commit buffered rows** — the shutdown drain runs after the DuckDB instance is torn down (when `db_ptr` can no longer write), so buffered rows can be dropped. Prefer `otlp_stop` before closing the database; use `otlp_flush` only when the server should stay running but readers need durable rows now. (A durable raw-spool journal / earlier shutdown hook for at-least-once is a tracked follow-up.)
-- DuckLake compaction is a separate catalog-maintenance operation; `otlp_flush` only commits buffered ingest rows.
+- After successful automatic row-seals into a named catalog, the writer may occasionally run non-force `CHECKPOINT <catalog>` as best-effort catalog-native maintenance when recent ingest rate and pending bytes leave ample admission headroom. This happens after the ingest transaction commits, never inside it. The default catalog is skipped, sustained high ingest and high pending buffered bytes defer it, explicit `otlp_flush` and shutdown drains do not trigger it, and unsupported catalog implementations are logged once and disabled for that server. DuckLake uses this hook to apply its own maintenance policy; `duckdb-otlp` does not implement a custom compaction planner.
 
 ### Concurrency model
 

@@ -53,7 +53,7 @@ Schema is are generally aligned with a normalized version of [OpenTelemetry Arro
 ## What You Can Do
 
 - Read OTLP traces, logs, gauges, sums/counters, histograms, and exponential histograms from files.
-- Stream live OTLP/HTTP exports into the default DuckDB catalog, an attached [DuckLake](https://ducklake.select) lakehouse, or an Iceberg REST catalog.
+- Stream live OTLP/HTTP exports into the default DuckDB catalog, an attached [DuckLake](https://ducklake.select) lakehouse, or an Iceberg REST catalog such as Amazon S3 Tables.
 - Convert telemetry exports to Parquet with DuckDB `COPY`.
 - Query local files, globs, S3, HTTP(S), Azure Blob, and GCS paths through DuckDB file systems.
 - Use the browser demo for JSON, JSONL, and protobuf exploration with DuckDB-WASM: [Interactive Demo](https://smithclay.github.io/duckdb-otlp/demo/).
@@ -65,7 +65,7 @@ Schema is are generally aligned with a normalized version of [OpenTelemetry Arro
 - [Live Ingest Quickstart](https://smithclay.github.io/duckdb-otlp/quickstart/serve/)
 - [Stream to DuckLake](https://smithclay.github.io/duckdb-otlp/guides/stream-to-ducklake/)
 - [Store Claude Code or Codex Traces in Local DuckLake](https://smithclay.github.io/duckdb-otlp/guides/store-agent-traces-local-ducklake/)
-- [Stream to Iceberg](https://smithclay.github.io/duckdb-otlp/guides/stream-to-iceberg/)
+- [Stream to Amazon S3 Tables](https://smithclay.github.io/duckdb-otlp/guides/stream-to-s3-tables/)
 - [How-to Guides](https://smithclay.github.io/duckdb-otlp/guides/)
 - [API Reference](https://smithclay.github.io/duckdb-otlp/reference/api/)
 - [Schema Reference](https://smithclay.github.io/duckdb-otlp/reference/schemas/)

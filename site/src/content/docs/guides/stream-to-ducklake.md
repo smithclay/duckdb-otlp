@@ -100,7 +100,7 @@ SELECT status FROM otlp_stop('otlp:localhost:4318');
 
 `otlp_stop` commits remaining buffered rows before returning. A plain database or connection close stops the server but does not commit buffered rows, so stop the server before closing DuckDB. Use `otlp_flush('otlp:localhost:4318')` only when readers need the latest accepted rows immediately while the server keeps running.
 
-DuckLake file compaction is separate from `otlp_flush`; run DuckLake maintenance when file counts need cleanup.
+DuckLake maintenance is best-effort automatic for live ingest: after a conservative number of successful automatic row-seals, `duckdb-otlp` runs non-force `CHECKPOINT lake` outside the ingest transaction when recent ingest rate and pending bytes leave ample admission headroom, then lets DuckLake apply its own policy. This is not a `duckdb-otlp` compaction layer, and `otlp_flush` still only forces ingest durability; it does not promise immediate compaction.
 
 ## See also
 

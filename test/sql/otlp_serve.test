@@ -28,6 +28,16 @@ CALL otlp_flush('otlp:127.0.0.1:55439', checkpoint := true);
 ----
 Invalid named parameter "checkpoint"
 
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55439', token := 'dev-token-123456', catalog_maintenance_interval := 1);
+----
+Invalid named parameter "catalog_maintenance_interval"
+
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55439', token := 'dev-token-123456', checkpoint_interval := 1);
+----
+Invalid named parameter "checkpoint_interval"
+
 query TTT
 SELECT listen_uri, listen_url, schema_name
 FROM otlp_serve('otlp:127.0.0.1:55439', token := 'dev-token-123456', schema := 'main', create_tables := true);
