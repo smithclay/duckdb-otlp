@@ -60,4 +60,4 @@ GROUP BY hour, service_name;
 
 Live ingest buffers accepted rows and commits them in batches automatically. Current native builds commit when the oldest buffered row is about 5 seconds old, or when admitted request-body bytes reach about 64 MiB. `otlp_flush` is an optional low-latency read path for cases where readers need fresh rows immediately while the server keeps running.
 
-For DuckLake targets, each batch commit writes small Parquet files; use DuckLake maintenance separately when file counts need cleanup. See [Live Ingest Reference](../serve/).
+For named catalog targets, successful automatic row-seals may occasionally be followed by best-effort catalog-native `CHECKPOINT <catalog>` outside the ingest transaction when recent ingest rate and pending bytes leave ample admission headroom. This is conservative internal scheduling: it is skipped for the default catalog, sustained high ingest, high pending buffered bytes, explicit `otlp_flush`, and shutdown drains. DuckLake uses this checkpoint hook for its own maintenance policy; unsupported catalog implementations are logged and disabled for that server. See [Live Ingest Reference](../serve/).

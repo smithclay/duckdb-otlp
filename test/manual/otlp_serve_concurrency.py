@@ -1,4 +1,10 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.9"
+# dependencies = [
+#   "duckdb==1.5.3",
+# ]
+# ///
 """Manual HTTP hot-path coverage for the OTLP ingest server.
 
 This is intentionally outside `make test`: SQLLogicTest cannot drive concurrent
@@ -15,14 +21,18 @@ enough for CI opt-in and covers:
   * /v1/metrics fanout across all four metric tables
   * stop-under-load final drain
   * concurrent otlp_flush plus otlp_stop
+  * local DuckLake automatic catalog-maintenance checkpoint event (opt-in)
 
 Run:
 
-    uv run python test/manual/otlp_serve_concurrency.py
+    uv run --script test/manual/otlp_serve_concurrency.py
     OTLP_EXTENSION=build/release/extension/otlp/otlp.duckdb_extension \\
-        OTLP_CONCURRENCY=64 uv run python test/manual/otlp_serve_concurrency.py
+        OTLP_CONCURRENCY=64 uv run --script test/manual/otlp_serve_concurrency.py
+    OTLP_DUCKLAKE_DIR=/tmp/otlp_lake \\
+        uv run --script test/manual/otlp_serve_concurrency.py
 
-Requires the `duckdb` Python package and a built extension.
+Requires a built extension; `uv` resolves the DuckDB Python dependency from the
+inline script metadata.
 """
 
 import gzip
@@ -45,6 +55,12 @@ CONCURRENCY = int(os.environ.get("OTLP_CONCURRENCY", "32"))
 BASE_PORT = int(os.environ.get("OTLP_PORT", "4329"))
 DUCKLAKE_DIR = os.environ.get("OTLP_DUCKLAKE_DIR", "")
 TOKEN = "manual-smoke-token-0123456789"
+
+CATALOG_MAINTENANCE_TEST_ENV = (
+    "DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE",
+    "DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE_ROW_SEAL_INTERVAL",
+    "DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE_MIN_INTERVAL_MS",
+)
 
 CONTENT_TYPES = {
     ".json": "application/json",
@@ -165,6 +181,22 @@ def table_count(con, table_prefix, table_name):
 def require(failures, condition, message):
     if not condition:
         failures.append(message)
+
+
+def enable_catalog_maintenance_test_overrides():
+    previous = {name: os.environ.get(name) for name in CATALOG_MAINTENANCE_TEST_ENV}
+    os.environ["DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE"] = "1"
+    os.environ["DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE_ROW_SEAL_INTERVAL"] = "1"
+    os.environ["DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE_MIN_INTERVAL_MS"] = "0"
+    return previous
+
+
+def restore_env(previous):
+    for name, value in previous.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
 
 
 def scenario_auth_and_validation(failures, port):
@@ -430,6 +462,79 @@ def scenario_flush_stop_race(failures, port):
     con.close()
 
 
+def scenario_ducklake_catalog_maintenance_event(failures, port):
+    if not DUCKLAKE_DIR:
+        print("[ducklake-maint] skipped (set OTLP_DUCKLAKE_DIR)")
+        return
+
+    previous_env = enable_catalog_maintenance_test_overrides()
+    con = None
+    try:
+        con, catalog, table_prefix = connect("catalog_maintenance")
+        con.execute("CALL enable_logging('OTLP')")
+        body = load_payload(LOG_PAYLOAD)
+        ctype = content_type_for(LOG_PAYLOAD)
+        base_url = start_server(con, port, catalog=catalog)
+        status, text = post(base_url + "/v1/logs", body, ctype, auth="bearer", timeout=20)
+        accepted_rows = rows_from_response(status, text)
+        print(f"[ducklake-maint] {status} catalog={catalog}")
+        require(failures, status == 202, f"DuckLake maintenance POST expected 202, got {status}: {text}")
+
+        maintenance_events = 0
+        rows = 0
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            rows = table_count(con, table_prefix, "otlp_logs")
+            maintenance_events = con.execute(
+                """
+                SELECT count(*)
+                FROM duckdb_logs
+                WHERE type = 'OTLP'
+                  AND message LIKE '%catalog maintenance checkpoint succeeded%'
+                  AND message LIKE ?
+                """,
+                [f"%catalog={catalog}%"],
+            ).fetchone()[0]
+            if rows == accepted_rows and maintenance_events > 0:
+                break
+            time.sleep(0.25)
+
+        print(f"  accepted_rows={accepted_rows} table_rows={rows} maintenance_events={maintenance_events}")
+        if maintenance_events == 0:
+            log_rows = con.execute(
+                """
+                SELECT type, message
+                FROM duckdb_logs
+                WHERE type = 'OTLP'
+                ORDER BY timestamp
+                """
+            ).fetchall()
+            print(f"  otlp_logs={log_rows}")
+        require(
+            failures,
+            rows == accepted_rows,
+            f"DuckLake maintenance table rows {rows} != accepted rows {accepted_rows}",
+        )
+        require(
+            failures,
+            maintenance_events > 0,
+            "DuckLake automatic catalog maintenance checkpoint event was not logged",
+        )
+        flush_status, flush_rows, _, flush_error = flush_server(con, port)
+        require(
+            failures,
+            flush_status == "sealed" and flush_rows == 0 and not flush_error,
+            f"DuckLake maintenance flush should only find already-sealed rows, got "
+            f"{(flush_status, flush_rows, flush_error)}",
+        )
+        stopped = stop_server(con, port)
+        require(failures, stopped.startswith("Stopped"), f"DuckLake maintenance stop failed: {stopped}")
+    finally:
+        if con is not None:
+            con.close()
+        restore_env(previous_env)
+
+
 def main():
     if not os.path.exists(EXTENSION):
         raise SystemExit(f"extension not found: {EXTENSION} (build it first: GEN=ninja make)")
@@ -445,6 +550,7 @@ def main():
         scenario_metrics_fanout,
         scenario_stop_under_load,
         scenario_flush_stop_race,
+        scenario_ducklake_catalog_maintenance_event,
     ]
     for offset, scenario in enumerate(scenarios):
         scenario(failures, BASE_PORT + offset)

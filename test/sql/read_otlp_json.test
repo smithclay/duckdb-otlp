@@ -60,6 +60,16 @@ WHERE duration_time_unix_nano > 0;
 ----
 3
 
+# Test unsigned OTLP counters are exposed as signed SQL integers for catalog compatibility
+query II
+SELECT
+    typeof(dropped_attributes_count),
+    typeof(flags)
+FROM read_otlp_traces('test/data/traces_simple.jsonl')
+LIMIT 1;
+----
+INTEGER	INTEGER
+
 #
 # Logs Tests
 #

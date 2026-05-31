@@ -50,7 +50,7 @@ export default defineConfig({
             { label: 'Work with Metrics', link: '/guides/working-with-metrics/' },
             { label: 'Stream to DuckLake', link: '/guides/stream-to-ducklake/' },
             { label: 'Store Agent Traces in DuckLake', link: '/guides/store-agent-traces-local-ducklake/' },
-            { label: 'Stream to Iceberg', link: '/guides/stream-to-iceberg/' },
+            { label: 'Stream to S3 Tables', link: '/guides/stream-to-s3-tables/' },
             { label: 'Export to Parquet', link: '/guides/exporting-to-parquet/' },
             { label: 'Error Handling', link: '/guides/error-handling/' },
           ],

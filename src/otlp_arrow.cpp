@@ -4,10 +4,11 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 
 namespace duckdb {
 
-static LogicalType ArrowFormatToDuckDBType(const ArrowSchema &schema) {
+static LogicalType ArrowFormatToDuckDBType(const ArrowSchema &schema, const OtlpArrowSchemaOptions &options) {
 	if (!schema.format) {
 		throw IOException("Arrow schema has null format string - indicates FFI error");
 	}
@@ -21,6 +22,9 @@ static LogicalType ArrowFormatToDuckDBType(const ArrowSchema &schema) {
 		return LogicalType::TIMESTAMP;
 	}
 	if (fmt.substr(0, 3) == "tsn") {
+		if (options.timestamp_ns_as_timestamp) {
+			return LogicalType::TIMESTAMP;
+		}
 		return LogicalType::TIMESTAMP_NS;
 	}
 
@@ -48,16 +52,16 @@ static LogicalType ArrowFormatToDuckDBType(const ArrowSchema &schema) {
 	}
 
 	if (fmt == "L") {
-		return LogicalType::UBIGINT;
+		return options.unsigned_as_signed ? LogicalType::BIGINT : LogicalType::UBIGINT;
 	}
 	if (fmt == "I") {
-		return LogicalType::UINTEGER;
+		return options.unsigned_as_signed ? LogicalType::INTEGER : LogicalType::UINTEGER;
 	}
 	if (fmt == "S") {
-		return LogicalType::USMALLINT;
+		return options.unsigned_as_signed ? LogicalType::INTEGER : LogicalType::USMALLINT;
 	}
 	if (fmt == "C") {
-		return LogicalType::UTINYINT;
+		return options.unsigned_as_signed ? LogicalType::INTEGER : LogicalType::UTINYINT;
 	}
 
 	if (fmt == "g") {
@@ -93,13 +97,14 @@ static LogicalType ArrowFormatToDuckDBType(const ArrowSchema &schema) {
 		if (schema.n_children != 1 || !schema.children || !schema.children[0]) {
 			throw IOException("Invalid Arrow list schema: expected exactly 1 child");
 		}
-		return LogicalType::LIST(ArrowFormatToDuckDBType(*schema.children[0]));
+		return LogicalType::LIST(ArrowFormatToDuckDBType(*schema.children[0], options));
 	}
 
 	return LogicalType::VARCHAR;
 }
 
-void GetArrowSchemaColumns(const ArrowSchema &schema, vector<LogicalType> &return_types, vector<string> &names) {
+void GetArrowSchemaColumns(const ArrowSchema &schema, vector<LogicalType> &return_types, vector<string> &names,
+                           const OtlpArrowSchemaOptions &options) {
 	if (schema.n_children > 0 && !schema.children) {
 		throw IOException("Invalid Arrow schema: children array is null");
 	}
@@ -112,7 +117,7 @@ void GetArrowSchemaColumns(const ArrowSchema &schema, vector<LogicalType> &retur
 			throw IOException("Invalid Arrow schema: child %lld has null name", static_cast<int64_t>(i));
 		}
 		names.push_back(child->name);
-		return_types.push_back(ArrowFormatToDuckDBType(*child));
+		return_types.push_back(ArrowFormatToDuckDBType(*child, options));
 	}
 }
 
@@ -134,6 +139,48 @@ static void CopyFixedWidth(const ArrowArray &array, const uint8_t *null_bitmap, 
 			continue;
 		}
 		output_data[i] = values[array_idx];
+	}
+}
+
+template <class SOURCE, class TARGET>
+static void CopyUnsignedToSigned(const ArrowArray &array, const uint8_t *null_bitmap, Vector &output, idx_t count,
+                                 const char *fmt) {
+	const SOURCE *values = static_cast<const SOURCE *>(array.buffers[1]);
+	TARGET *output_data = FlatVector::GetData<TARGET>(output);
+	auto &mask = FlatVector::Validity(output);
+	const auto max_value = static_cast<SOURCE>(std::numeric_limits<TARGET>::max());
+	for (idx_t i = 0; i < count; i++) {
+		idx_t array_idx = i + array.offset;
+		if (null_bitmap && !(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
+			mask.SetInvalid(i);
+			continue;
+		}
+		auto value = values[array_idx];
+		if (value > max_value) {
+			throw IOException("Unsigned Arrow value in format '%s' exceeds DuckDB signed integer range", fmt);
+		}
+		output_data[i] = static_cast<TARGET>(value);
+	}
+}
+
+static void CopyTimestampNs(const ArrowArray &array, const uint8_t *null_bitmap, Vector &output, idx_t count) {
+	if (output.GetType().id() == LogicalTypeId::TIMESTAMP_NS) {
+		CopyFixedWidth<int64_t>(array, null_bitmap, output, count);
+		return;
+	}
+	if (output.GetType().id() != LogicalTypeId::TIMESTAMP) {
+		throw IOException("Arrow timestamp_ns cannot be copied into DuckDB type %s", output.GetType().ToString());
+	}
+	const int64_t *values = static_cast<const int64_t *>(array.buffers[1]);
+	auto *output_data = FlatVector::GetData<timestamp_t>(output);
+	auto &mask = FlatVector::Validity(output);
+	for (idx_t i = 0; i < count; i++) {
+		idx_t array_idx = i + array.offset;
+		if (null_bitmap && !(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
+			mask.SetInvalid(i);
+			continue;
+		}
+		output_data[i] = timestamp_t(values[array_idx] / 1000);
 	}
 }
 
@@ -208,19 +255,35 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 		if (fmt == "l") {
 			CopyFixedWidth<int64_t>(array, null_bitmap, output, count);
 		} else if (fmt == "L") {
-			CopyFixedWidth<uint64_t>(array, null_bitmap, output, count);
+			if (output.GetType().id() == LogicalTypeId::UBIGINT) {
+				CopyFixedWidth<uint64_t>(array, null_bitmap, output, count);
+			} else {
+				CopyUnsignedToSigned<uint64_t, int64_t>(array, null_bitmap, output, count, fmt.c_str());
+			}
 		} else if (fmt == "i") {
 			CopyFixedWidth<int32_t>(array, null_bitmap, output, count);
 		} else if (fmt == "I") {
-			CopyFixedWidth<uint32_t>(array, null_bitmap, output, count);
+			if (output.GetType().id() == LogicalTypeId::UINTEGER) {
+				CopyFixedWidth<uint32_t>(array, null_bitmap, output, count);
+			} else {
+				CopyUnsignedToSigned<uint32_t, int32_t>(array, null_bitmap, output, count, fmt.c_str());
+			}
 		} else if (fmt == "s") {
 			CopyFixedWidth<int16_t>(array, null_bitmap, output, count);
 		} else if (fmt == "S") {
-			CopyFixedWidth<uint16_t>(array, null_bitmap, output, count);
+			if (output.GetType().id() == LogicalTypeId::USMALLINT) {
+				CopyFixedWidth<uint16_t>(array, null_bitmap, output, count);
+			} else {
+				CopyUnsignedToSigned<uint16_t, int32_t>(array, null_bitmap, output, count, fmt.c_str());
+			}
 		} else if (fmt == "c") {
 			CopyFixedWidth<int8_t>(array, null_bitmap, output, count);
 		} else { // "C"
-			CopyFixedWidth<uint8_t>(array, null_bitmap, output, count);
+			if (output.GetType().id() == LogicalTypeId::UTINYINT) {
+				CopyFixedWidth<uint8_t>(array, null_bitmap, output, count);
+			} else {
+				CopyUnsignedToSigned<uint8_t, int32_t>(array, null_bitmap, output, count, fmt.c_str());
+			}
 		}
 	} else if (fmt.size() >= 3 && fmt[0] == 't' && fmt[1] == 'D') {
 		if (array.n_buffers < 2) {
@@ -290,7 +353,11 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 			throw IOException("Invalid Arrow timestamp array: expected at least 2 buffers, got %lld",
 			                  static_cast<int64_t>(array.n_buffers));
 		}
-		CopyFixedWidth<int64_t>(array, null_bitmap, output, count);
+		if (fmt.substr(0, 3) == "tsn") {
+			CopyTimestampNs(array, null_bitmap, output, count);
+		} else {
+			CopyFixedWidth<int64_t>(array, null_bitmap, output, count);
+		}
 	} else if (fmt.size() > 2 && fmt[0] == 'w' && fmt[1] == ':') {
 		// FixedSizeBinary -> lowercase hex VARCHAR (trace_id/span_id). See the type-mapping
 		// note in ArrowFormatToDuckDBType for why this is hex and not a raw BLOB.

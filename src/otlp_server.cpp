@@ -17,6 +17,7 @@
 #include "otlp_server_internal.hpp"
 
 #include <chrono>
+#include <cstdlib>
 
 namespace duckdb {
 
@@ -24,6 +25,13 @@ namespace {
 
 static constexpr idx_t TOKEN_BYTES = 16;
 static constexpr idx_t APPEND_CHUNK_SIZE = STANDARD_VECTOR_SIZE;
+//! Internal best-effort maintenance cadence. Catalog-native CHECKPOINT can add its
+//! own commit for catalogs that implement it, so keep it well below seal cadence.
+static constexpr idx_t CATALOG_MAINTENANCE_ROW_SEAL_INTERVAL = 32;
+static constexpr int64_t CATALOG_MAINTENANCE_MIN_INTERVAL_MS = 5 * 60 * 1000;
+static constexpr int64_t CATALOG_MAINTENANCE_HEADROOM_MS = 60 * 1000;
+static constexpr double CATALOG_MAINTENANCE_HEADROOM_FRACTION = 0.5;
+static constexpr double CATALOG_MAINTENANCE_RATE_EWMA_ALPHA = 0.5;
 
 struct OtlpTargetTable {
 	OtlpSignalType signal_type;
@@ -70,6 +78,40 @@ static string QualifiedTable(const string &catalog_name, const string &schema_na
 	}
 	qualified += QuoteIdentifier(schema_name) + "." + QuoteIdentifier(table_name);
 	return qualified;
+}
+
+static bool IsUnsupportedCatalogMaintenanceError(const string &message) {
+	auto lower = StringUtil::Lower(message);
+	return (lower.find("checkpoint") != string::npos &&
+	        (lower.find("not implemented") != string::npos || lower.find("not supported") != string::npos ||
+	         lower.find("does not support") != string::npos || lower.find("unsupported") != string::npos)) ||
+	       lower.find("checkpoint is only supported") != string::npos;
+}
+
+static bool CatalogMaintenanceTestOverridesEnabled() {
+	auto value = std::getenv("DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE");
+	return value && string(value) == "1";
+}
+
+template <class T>
+static T GetCatalogMaintenanceTestOverride(const char *name, T fallback, bool allow_zero = false) {
+	if (!CatalogMaintenanceTestOverridesEnabled()) {
+		return fallback;
+	}
+	auto value = std::getenv(name);
+	if (!value || value[0] == '\0') {
+		return fallback;
+	}
+	try {
+		size_t pos = 0;
+		auto parsed = std::stoull(value, &pos);
+		if (pos != string(value).size() || (!allow_zero && parsed == 0)) {
+			return fallback;
+		}
+		return static_cast<T>(parsed);
+	} catch (...) {
+		return fallback;
+	}
 }
 
 static void RunSQL(Connection &connection, const string &sql) {
@@ -128,7 +170,9 @@ void OtlpServer::GetSignalColumns(OtlpSignalType signal_type, vector<LogicalType
 		throw IOException("Failed to get OTLP schema: %s", otlp_status_message(status));
 	}
 	try {
-		GetArrowSchemaColumns(arrow_schema, types, names);
+		OtlpArrowSchemaOptions options;
+		options.timestamp_ns_as_timestamp = true;
+		GetArrowSchemaColumns(arrow_schema, types, names, options);
 	} catch (...) {
 		if (arrow_schema.release) {
 			arrow_schema.release(&arrow_schema);
@@ -519,7 +563,7 @@ static int64_t NowUnixMs() {
 	    .count();
 }
 
-OtlpIngestResult OtlpServer::SealOnce() {
+OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 	std::lock_guard<std::mutex> writer_lock(writer_mutex);
 	if (!writer_con) {
 		return OtlpIngestResult {};
@@ -682,7 +726,73 @@ OtlpIngestResult OtlpServer::SealOnce() {
 	}
 	LogServerEvent(StringUtil::Format("seal: catalog=%s rows=%llu batches=%llu", config.catalog_name,
 	                                  static_cast<uint64_t>(result.rows), static_cast<uint64_t>(result.batches)));
+	if (allow_maintenance) {
+		MaybeRunCatalogMaintenance(result.rows, sealed_admission_bytes);
+	}
 	return result;
+}
+
+void OtlpServer::MaybeRunCatalogMaintenance(idx_t sealed_rows, idx_t sealed_admission_bytes) {
+	if (sealed_rows == 0 || config.catalog_name.empty() ||
+	    catalog_maintenance_state == CatalogMaintenanceState::DISABLED || !writer_con) {
+		return;
+	}
+	catalog_maintenance_row_seals_since_attempt++;
+	auto now = std::chrono::steady_clock::now();
+	auto seal_elapsed_ms = std::max<int64_t>(
+	    1, std::chrono::duration_cast<std::chrono::milliseconds>(now - catalog_maintenance_last_row_seal).count());
+	catalog_maintenance_last_row_seal = now;
+	auto seal_rate_bytes_per_ms = static_cast<double>(sealed_admission_bytes) / static_cast<double>(seal_elapsed_ms);
+	catalog_maintenance_ingress_rate_bytes_per_ms =
+	    catalog_maintenance_ingress_rate_bytes_per_ms == 0
+	        ? seal_rate_bytes_per_ms
+	        : (CATALOG_MAINTENANCE_RATE_EWMA_ALPHA * seal_rate_bytes_per_ms) +
+	              ((1 - CATALOG_MAINTENANCE_RATE_EWMA_ALPHA) * catalog_maintenance_ingress_rate_bytes_per_ms);
+
+	auto elapsed_ms =
+	    std::chrono::duration_cast<std::chrono::milliseconds>(now - catalog_maintenance_last_attempt).count();
+	auto row_seal_interval = GetCatalogMaintenanceTestOverride<idx_t>(
+	    "DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE_ROW_SEAL_INTERVAL", CATALOG_MAINTENANCE_ROW_SEAL_INTERVAL);
+	auto min_interval_ms = GetCatalogMaintenanceTestOverride<int64_t>(
+	    "DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE_MIN_INTERVAL_MS", CATALOG_MAINTENANCE_MIN_INTERVAL_MS, true);
+	if (catalog_maintenance_row_seals_since_attempt < row_seal_interval || elapsed_ms < min_interval_ms) {
+		return;
+	}
+	auto pending_bytes = admitted_bytes.load();
+	auto headroom_bytes = pending_bytes >= config.max_buffered_bytes ? 0 : config.max_buffered_bytes - pending_bytes;
+	auto projected_bytes = catalog_maintenance_ingress_rate_bytes_per_ms * CATALOG_MAINTENANCE_HEADROOM_MS;
+	if (projected_bytes > static_cast<double>(headroom_bytes) * CATALOG_MAINTENANCE_HEADROOM_FRACTION) {
+		// Maintenance is best-effort. Only run it when recent ingress would still leave
+		// ample admission headroom during a long catalog CHECKPOINT.
+		return;
+	}
+
+	catalog_maintenance_row_seals_since_attempt = 0;
+	catalog_maintenance_last_attempt = now;
+	try {
+		RunSQL(*writer_con, "CHECKPOINT " + QuoteIdentifier(config.catalog_name));
+		catalog_maintenance_state = CatalogMaintenanceState::SUPPORTED;
+		LogServerEvent(StringUtil::Format("catalog maintenance checkpoint succeeded: catalog=%s", config.catalog_name));
+	} catch (...) {
+		string msg;
+		try {
+			throw;
+		} catch (std::exception &ex) {
+			msg = ex.what();
+		} catch (...) {
+			msg = "unknown (non-std) exception during catalog maintenance checkpoint";
+		}
+		if (IsUnsupportedCatalogMaintenanceError(msg)) {
+			catalog_maintenance_state = CatalogMaintenanceState::DISABLED;
+			LogServerEvent(
+			    StringUtil::Format("catalog maintenance checkpoint unsupported for catalog=%s; disabling automatic "
+			                       "catalog maintenance for this server: %s",
+			                       config.catalog_name, msg));
+		} else {
+			LogServerEvent(StringUtil::Format("catalog maintenance checkpoint failed: catalog=%s error=%s",
+			                                  config.catalog_name, msg));
+		}
+	}
 }
 
 void OtlpServer::SealerLoop() {
@@ -704,7 +814,7 @@ void OtlpServer::SealerLoop() {
 		}
 		if (due) {
 			try {
-				SealOnce();
+				SealOnce(true);
 			} catch (...) {
 				// Already logged + buffers restored (SealOnce catches all); back off.
 				std::this_thread::sleep_for(std::chrono::milliseconds(250));
@@ -735,7 +845,7 @@ bool OtlpServer::SealAgeDue() const {
 }
 
 OtlpIngestResult OtlpServer::FlushNow() {
-	return SealOnce();
+	return SealOnce(false);
 }
 
 void OtlpServer::ShutdownIngest() {
@@ -755,7 +865,7 @@ void OtlpServer::ShutdownIngest() {
 	// need durable rows immediately while the server keeps running.
 	for (int attempt = 0; attempt < 3 && BufferedRows() > 0; attempt++) {
 		try {
-			SealOnce();
+			SealOnce(false);
 		} catch (...) {
 			LogServerEvent("final seal attempt failed during shutdown");
 		}

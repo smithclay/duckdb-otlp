@@ -4,31 +4,34 @@ Query OpenTelemetry traces, logs, and metrics with SQL, or run an embedded HTTP 
 
 `duckdb-otlp` reads OTLP JSON, JSONL, and protobuf file exports from the OpenTelemetry Collector. Native builds also include live HTTP ingest for `/v1/logs`, `/v1/traces`, and `/v1/metrics`.
 
+Goal of this extension is to make it very easy to stream OpenTelemetry data to [DuckLake](https://smithclay.github.io/duckdb-otlp/guides/stream-to-ducklake/), [Amazon S3 Tables](https://smithclay.github.io/duckdb-otlp/guides/stream-to-s3-tables/) or [Cloudflare R2 Data Catalog](https://smithclay.github.io/duckdb-otlp/guides/stream-to-r2-data-catalog/): all runs in duckdb, no extra dependencies or sidecards needed.
+
 ## Quickstart
 
-Install and load the extension in a `duckdb` v1.5.3 or higher session:
+Install and load the extension in a `duckdb` v1.5.3 or higher:
 
 ```sql
 INSTALL otlp FROM community;
 LOAD otlp;
 ```
 
-Read OTLP data from files:
+Read OTLP protobuf/JSON data from public URLs, local files, or object storage buckets:
 
 ```sql
+INSTALL httpfs; LOAD httpfs;
 SELECT timestamp, service_name, severity_text, body FROM read_otlp_logs('https://github.com/smithclay/duckdb-otlp/raw/refs/heads/main/test/data/otlp_logs.pb');
 
 SELECT trace_id, span_name, duration / 1000000 AS duration_ms FROM read_otlp_traces('https://github.com/smithclay/duckdb-otlp/raw/refs/heads/main/test/data/otlp_traces.pb') ORDER BY duration DESC;
 ```
 
-Send one OTLP log into DuckDB over the embedded HTTP service:
+You can also start a server to accept OpenTelemetry data directly from other sources like instrumented code, AI agents like [Claude Code or Codex](https://smithclay.github.io/duckdb-otlp/guides/store-agent-traces-local-ducklake/), or OpenTelemetery Collectors:
 
 ```sql
 -- Start the server
 otlp_serve('otlp:localhost:4318', token := 'dev-token-123456');
 ```
 
-In a separate window:
+To test it out, just send a simple hello world log in OTLP/HTTP format with cURL:
 
 ```bash
 curl -sS http://localhost:4318/v1/logs -H 'Authorization: Bearer dev-token-123456' -H 'Content-Type: application/json' -d '{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"curl-demo"}}]},"scopeLogs":[{"logRecords":[{"timeUnixNano":"1704067200000000000","severityText":"INFO","body":{"stringValue":"hello from curl"}}]}]}]}'
@@ -53,7 +56,7 @@ Schema is are generally aligned with a normalized version of [OpenTelemetry Arro
 ## What You Can Do
 
 - Read OTLP traces, logs, gauges, sums/counters, histograms, and exponential histograms from files.
-- Stream live OTLP/HTTP exports into the default DuckDB catalog, an attached [DuckLake](https://ducklake.select) lakehouse, or an Iceberg REST catalog.
+- Stream live OTLP/HTTP exports into the default DuckDB catalog, an attached [DuckLake](https://ducklake.select) lakehouse, or an Iceberg REST catalog such as Amazon S3 Tables or Cloudflare R2 Data Catalog.
 - Convert telemetry exports to Parquet with DuckDB `COPY`.
 - Query local files, globs, S3, HTTP(S), Azure Blob, and GCS paths through DuckDB file systems.
 - Use the browser demo for JSON, JSONL, and protobuf exploration with DuckDB-WASM: [Interactive Demo](https://smithclay.github.io/duckdb-otlp/demo/).
@@ -64,8 +67,9 @@ Schema is are generally aligned with a normalized version of [OpenTelemetry Arro
 - [Get Started](https://smithclay.github.io/duckdb-otlp/get-started/)
 - [Live Ingest Quickstart](https://smithclay.github.io/duckdb-otlp/quickstart/serve/)
 - [Stream to DuckLake](https://smithclay.github.io/duckdb-otlp/guides/stream-to-ducklake/)
+- [Stream to Amazon S3 Tables](https://smithclay.github.io/duckdb-otlp/guides/stream-to-s3-tables/)
+- [Stream to Cloudflare R2 Data Catalog](https://smithclay.github.io/duckdb-otlp/guides/stream-to-r2-data-catalog/)
 - [Store Claude Code or Codex Traces in Local DuckLake](https://smithclay.github.io/duckdb-otlp/guides/store-agent-traces-local-ducklake/)
-- [Stream to Iceberg](https://smithclay.github.io/duckdb-otlp/guides/stream-to-iceberg/)
 - [How-to Guides](https://smithclay.github.io/duckdb-otlp/guides/)
 - [API Reference](https://smithclay.github.io/duckdb-otlp/reference/api/)
 - [Schema Reference](https://smithclay.github.io/duckdb-otlp/reference/schemas/)

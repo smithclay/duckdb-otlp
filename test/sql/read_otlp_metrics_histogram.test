@@ -34,6 +34,13 @@ SELECT count FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl
 ----
 50
 
+# Test unsigned OTLP counts are exposed as signed SQL integers for catalog compatibility
+query II
+SELECT typeof(count), typeof(bucket_counts)
+FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
+----
+BIGINT	BIGINT[]
+
 # Test sum value
 query R
 SELECT sum FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');

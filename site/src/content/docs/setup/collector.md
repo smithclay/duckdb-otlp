@@ -4,7 +4,7 @@ title: "How to Configure the OpenTelemetry Collector"
 
 Use the OpenTelemetry Collector when you want a standard pipeline that receives OTLP from applications and writes OTLP files for DuckDB analysis.
 
-For direct HTTP ingestion into DuckDB, DuckLake, or Iceberg, see the [Live Ingest Quickstart](../../quickstart/serve/), [Stream to DuckLake](../../guides/stream-to-ducklake/), and [Stream to Iceberg](../../guides/stream-to-iceberg/).
+For direct HTTP ingestion into DuckDB, DuckLake, Amazon S3 Tables, or Cloudflare R2 Data Catalog, see the [Live Ingest Quickstart](../../quickstart/serve/), [Stream to DuckLake](../../guides/stream-to-ducklake/), [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/), and [Stream to Cloudflare R2 Data Catalog](../../guides/stream-to-r2-data-catalog/).
 
 ## File Exporter Configuration
 
@@ -89,6 +89,7 @@ Point an OTLP/HTTP exporter at `http://localhost:4318` and set `Authorization: B
 - [Get Started](../../get-started/)
 - [Live Ingest Quickstart](../../quickstart/serve/)
 - [Stream to DuckLake](../../guides/stream-to-ducklake/)
-- [Stream to Iceberg](../../guides/stream-to-iceberg/)
+- [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/)
+- [Stream to Cloudflare R2 Data Catalog](../../guides/stream-to-r2-data-catalog/)
 - [How to Get Sample Data](../sample-data/)
 - [Schema Reference](../../reference/schemas/)

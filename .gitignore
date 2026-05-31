@@ -9,6 +9,7 @@ testext
 vcpkg
 vcpkg_installed
 otlp:*
+.env
 
 # Python
 __pycache__/
