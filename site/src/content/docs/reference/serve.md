@@ -6,7 +6,7 @@ The extension can run an embedded HTTP server that accepts live OTLP/HTTP export
 
 > **Not available in WASM builds.** The server requires the native extension. Live ingestion is HTTP-only (no gRPC).
 
-For a copy-pasteable walkthrough, see the [Live Ingest Quickstart](../../quickstart/serve/). For lakehouse examples, see [Stream to DuckLake](../../guides/stream-to-ducklake/) and [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/). For how it works internally, see [Architecture](../../architecture/#otlp-http-ingest-server).
+For a copy-pasteable walkthrough, see the [Live Ingest Quickstart](../../quickstart/serve/). For lakehouse examples, see [Stream to DuckLake](../../guides/stream-to-ducklake/), [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/), and [Stream to Cloudflare R2 Data Catalog](../../guides/stream-to-r2-data-catalog/). For how it works internally, see [Architecture](../../architecture/#otlp-http-ingest-server).
 
 ## Functions
 
@@ -152,7 +152,7 @@ SELECT count(*) FROM lake.main.otlp_logs;
 
 Each batch commit writes **one Parquet data file per signal** plus one DuckLake snapshot. After a conservative number of successful automatic row-seals, `duckdb-otlp` may run best-effort catalog-native maintenance with DuckDB's non-force `CHECKPOINT lake` when recent ingest rate and pending bytes leave ample admission headroom; DuckLake owns the actual policy through its settings such as `auto_compact`, retention, inlining, and target file size. See [Durability and background commits](#durability-and-background-commits).
 
-- **Iceberg REST catalog** (`catalog := '<attached_db>'`): rows stream into tables in an attached writable Iceberg REST catalog. Attach the catalog with DuckDB's `iceberg` extension, create the target schema, then pass the catalog and schema to `otlp_serve`; see [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/) for the Amazon S3 Tables provider path.
+- **Iceberg REST catalog** (`catalog := '<attached_db>'`): rows stream into tables in an attached writable Iceberg REST catalog. Attach the catalog with DuckDB's `iceberg` extension, create the target schema, then pass the catalog and schema to `otlp_serve`; see [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/) and [Stream to Cloudflare R2 Data Catalog](../../guides/stream-to-r2-data-catalog/) for managed provider paths.
   DuckDB's Iceberg REST catalog docs do not currently document a useful `CHECKPOINT` maintenance path. The internal maintenance probe uses generic `CHECKPOINT <catalog>` only; if the catalog reports checkpointing as unsupported, automatic maintenance is disabled for that server and ingest durability continues normally.
 
 ## URI scheme
@@ -283,5 +283,6 @@ It covers auth and validation errors, low-buffer backpressure, metrics fanout, s
 - [Live Ingest Quickstart](../../quickstart/serve/) — POST one log to the default catalog with `curl`.
 - [Stream to DuckLake](../../guides/stream-to-ducklake/) — write live OTLP rows to DuckLake.
 - [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/) — write live OTLP rows to Amazon S3 Tables as an Iceberg catalog.
+- [Stream to Cloudflare R2 Data Catalog](../../guides/stream-to-r2-data-catalog/) — write live OTLP rows to Cloudflare R2 Data Catalog as an Iceberg catalog.
 - [Architecture](../../architecture/#otlp-http-ingest-server) — buffer, background writer, and `otlp_flush` internals.
 - [Schema Reference](../schemas/) — columns of the target tables.
