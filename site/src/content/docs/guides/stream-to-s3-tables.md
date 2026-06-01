@@ -2,13 +2,13 @@
 title: "How to Stream OTLP to Amazon S3 Tables"
 ---
 
-Use `otlp_serve(..., catalog := 's3tables')` to stream OTLP/HTTP exports into an Iceberg catalog hosted by **Amazon S3 Tables**.
+Run the `duckdb-otlp` Docker image in `s3-tables` mode to stream OTLP/HTTP exports into an Iceberg catalog hosted by **Amazon S3 Tables**. The container initializes DuckDB, loads the required extensions, attaches the S3 Tables table bucket, starts the ingest server, and commits accepted rows in batches.
 
 This guide is specifically for **Amazon S3 Tables**, the managed AWS service with table buckets and an Iceberg REST catalog endpoint. It is not the same as writing Iceberg metadata and Parquet files to an ordinary `s3://` bucket.
 
-> Requires the native extension. Live ingestion is HTTP-only and is not available in WASM builds.
+> Live ingestion is OTLP/HTTP on port `4318`. The ingest server is not available in WASM builds.
 
-## Create the S3 Tables resources
+## Create S3 Tables resources
 
 Choose a region and an AWS CLI profile that can create CloudFormation and S3 Tables resources:
 
@@ -94,83 +94,39 @@ export TABLE_BUCKET_ARN="$(
     --query "Stacks[0].Outputs[?OutputKey=='TableBucketArn'].OutputValue | [0]" \
     --output text
 )"
-
-echo "$TABLE_BUCKET_ARN"
 ```
 
-## Start DuckDB with AWS credentials
+## Configure
 
-DuckDB signs S3 Tables requests with AWS credentials. The most reliable local-dev path is to export your AWS CLI profile into the current shell and let DuckDB read the `env` credential chain:
+Create `s3tables.env`:
+
+```ini
+DUCKDB_MODE=s3-tables
+DUCKDB_OTLP_TOKEN=dev-token-123456
+
+DUCKDB_CATALOG=s3tables
+DUCKDB_SCHEMA=otlp
+
+AWS_REGION=us-west-2
+AWS_PROFILE=cli-dev
+S3_TABLES_BUCKET_ARN=<table-bucket-arn>
+```
+
+Replace `<table-bucket-arn>` with the `TABLE_BUCKET_ARN` value from CloudFormation.
+
+## Start the server
+
+Mount your AWS config read-only so DuckDB can use the configured profile:
 
 ```bash
-eval "$(aws configure export-credentials --profile "$AWS_PROFILE" --format env)"
-duckdb s3tables-otlp.duckdb
+docker run --rm --name duckdb-otlp \
+  --env-file s3tables.env \
+  -p 4318:4318 \
+  -v "$HOME/.aws:/root/.aws:ro" \
+  ghcr.io/smithclay/duckdb-otlp:latest
 ```
 
-The `eval` command puts temporary AWS credentials in this shell's environment for DuckDB. Do not paste the exported values into logs or source files.
-
-## Attach Amazon S3 Tables as an Iceberg catalog
-
-In DuckDB, install and load the extensions, create an AWS signing secret, and attach the S3 Tables table bucket as an Iceberg catalog:
-
-```sql
-INSTALL otlp FROM community;
-LOAD otlp;
-
-INSTALL iceberg;
-INSTALL aws;
-INSTALL httpfs;
-
-LOAD iceberg;
-LOAD aws;
-LOAD httpfs;
-
-CREATE OR REPLACE SECRET s3_tables_secret (
-  TYPE s3,
-  PROVIDER credential_chain,
-  CHAIN env,
-  REGION 'us-west-2'
-);
-
-ATTACH '<table-bucket-arn>' AS s3tables (
-  TYPE iceberg,
-  ENDPOINT_TYPE s3_tables
-);
-
-CREATE SCHEMA IF NOT EXISTS s3tables.otlp;
-```
-
-Replace `<table-bucket-arn>` with the `TABLE_BUCKET_ARN` value from CloudFormation, for example:
-
-```sql
-ATTACH 'arn:aws:s3tables:us-west-2:<aws-account-id>:bucket/duckdb-otlp-s3tables-<aws-account-id>-us-west-2'
-AS s3tables (
-  TYPE iceberg,
-  ENDPOINT_TYPE s3_tables
-);
-```
-
-The important pieces are:
-
-- `TYPE iceberg` because S3 Tables exposes an Iceberg REST catalog.
-- `ENDPOINT_TYPE s3_tables` because this is the Amazon S3 Tables service.
-- The attach string is the **S3 Tables table bucket ARN**, not a plain S3 bucket URL.
-
-## Start the ingest server
-
-Start the OTLP/HTTP server and target the attached S3 Tables catalog:
-
-```sql
-SELECT listen_url, catalog_name, schema_name
-FROM otlp_serve(
-  'otlp:localhost:4318',
-  catalog := 's3tables',
-  schema := 'otlp',
-  token := 'dev-token-123456'
-);
-```
-
-`otlp_serve` creates these Iceberg tables in the S3 Tables namespace if they do not already exist:
+The container creates these Iceberg tables in the S3 Tables namespace if they do not already exist:
 
 - `s3tables.otlp.otlp_logs`
 - `s3tables.otlp.otlp_traces`
@@ -178,8 +134,6 @@ FROM otlp_serve(
 - `s3tables.otlp.otlp_metrics_sum`
 - `s3tables.otlp.otlp_metrics_histogram`
 - `s3tables.otlp.otlp_metrics_exp_histogram`
-
-Leave this DuckDB session running while clients send OTLP/HTTP requests.
 
 ## POST a log record
 
@@ -198,64 +152,55 @@ curl -sS http://localhost:4318/v1/logs \
 {"status":"buffered","rows":1,"batches":1}
 ```
 
-Rows are accepted before they are durable. They commit automatically in the background, on graceful `otlp_stop`, or immediately on optional `otlp_flush`.
+Rows are accepted before they are durable. They commit automatically in the background, on graceful shutdown, or immediately after an explicit flush.
 
 ## Query committed rows
 
-For a deterministic check, force a synchronous commit:
+Flush and query through the running container:
 
-```sql
-SELECT * FROM otlp_flush('otlp:localhost:4318');
-```
+```bash
+docker exec duckdb-otlp sh -c \
+  "printf '%s\n' \
+    \"SELECT * FROM otlp_flush('otlp:0.0.0.0:4318');\" \
+    \"SELECT service_name, severity_text, body\" \
+    \"FROM s3tables.otlp.otlp_logs\" \
+    \"WHERE service_name = 's3-tables-demo'\" \
+    \"ORDER BY timestamp DESC\" \
+    \"LIMIT 5;\" \
+    > /tmp/duckdb-otlp.sql"
 
-Then query the Iceberg table hosted by Amazon S3 Tables:
-
-```sql
-SELECT
-  service_name,
-  severity_text,
-  body,
-  resource_attributes,
-  log_attributes
-FROM s3tables.otlp.otlp_logs
-WHERE service_name = 's3-tables-demo'
-ORDER BY timestamp DESC
-LIMIT 5;
-```
-
-To inspect buffer and commit counters:
-
-```sql
-SELECT
-  catalog_name,
-  schema_name,
-  total_rows,
-  buffered_rows,
-  last_seal_age_ms AS last_commit_age_ms,
-  seals_total AS commits_total
-FROM otlp_server_list();
+docker logs --tail 80 duckdb-otlp
 ```
 
 ## Stop cleanly
 
-```sql
-SELECT status FROM otlp_stop('otlp:localhost:4318');
+If you plan to delete the S3 Tables resources immediately, skip this step and use [Clean up](#clean-up) instead.
+
+```bash
+docker stop duckdb-otlp
 ```
 
-`otlp_stop` commits remaining buffered rows before returning. A plain database or connection close stops the server but does not commit buffered rows, so stop the server before closing DuckDB.
+The image sends `otlp_stop('otlp:0.0.0.0:4318')` during shutdown, so remaining buffered rows are committed before the process exits.
 
 ## Clean up
 
 Drop the Iceberg tables before deleting the CloudFormation stack; S3 Tables table buckets cannot be removed while tables remain:
 
-```sql
-DROP TABLE IF EXISTS s3tables.otlp.otlp_logs;
-DROP TABLE IF EXISTS s3tables.otlp.otlp_traces;
-DROP TABLE IF EXISTS s3tables.otlp.otlp_metrics_gauge;
-DROP TABLE IF EXISTS s3tables.otlp.otlp_metrics_sum;
-DROP TABLE IF EXISTS s3tables.otlp.otlp_metrics_histogram;
-DROP TABLE IF EXISTS s3tables.otlp.otlp_metrics_exp_histogram;
-DETACH s3tables;
+```bash
+docker exec duckdb-otlp sh -c \
+  "printf '%s\n' \
+    \"SELECT status FROM otlp_stop('otlp:0.0.0.0:4318');\" \
+    \"DROP TABLE IF EXISTS s3tables.otlp.otlp_logs;\" \
+    \"DROP TABLE IF EXISTS s3tables.otlp.otlp_traces;\" \
+    \"DROP TABLE IF EXISTS s3tables.otlp.otlp_metrics_gauge;\" \
+    \"DROP TABLE IF EXISTS s3tables.otlp.otlp_metrics_sum;\" \
+    \"DROP TABLE IF EXISTS s3tables.otlp.otlp_metrics_histogram;\" \
+    \"DROP TABLE IF EXISTS s3tables.otlp.otlp_metrics_exp_histogram;\" \
+    \"DETACH s3tables;\" \
+    > /tmp/duckdb-otlp.sql"
+
+docker logs --tail 80 duckdb-otlp
+docker stop duckdb-otlp
 ```
 
 Then delete the S3 Tables table bucket and namespace stack:
@@ -275,10 +220,9 @@ aws cloudformation wait stack-delete-complete \
 ## Notes
 
 - Use `ENDPOINT_TYPE s3_tables` for Amazon S3 Tables. For an ordinary S3 bucket containing Iceberg files, use a different Iceberg catalog setup.
-- DuckDB uses a `TYPE s3` secret here for AWS request signing. The attached catalog is still an Iceberg catalog.
+- DuckDB uses a `TYPE s3` secret for AWS request signing. The attached catalog is still an Iceberg catalog.
 - S3 Tables accepts Iceberg `TIMESTAMP` columns, not DuckDB's `TIMESTAMP_NS` type. Live ingest tables therefore store OTLP timestamp columns as DuckDB `TIMESTAMP` with microsecond precision.
 - OTLP count and flag fields use signed SQL integer types so the created tables stay compatible with Iceberg catalogs that do not accept DuckDB unsigned integer types.
-- Use `create_tables := false` only when all six target tables already exist with the exact DuckDB-visible columns and types expected by `duckdb-otlp`.
 - DuckDB's Iceberg REST catalog docs do not currently document a useful `CHECKPOINT` maintenance path such as manifest rewrite or snapshot expiration. `duckdb-otlp` only probes the generic DuckDB `CHECKPOINT <catalog>` hook on its internal maintenance cadence; if the catalog reports checkpointing as unsupported, automatic maintenance is disabled for that server and normal ingest/flush/stop durability behavior is unchanged.
 
 ## See also

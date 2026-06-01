@@ -18,7 +18,6 @@ Start here for `duckdb-otlp`: installation, file readers, live ingest, the brows
 - **[How to stream to DuckLake](guides/stream-to-ducklake/)** - land OTLP/HTTP rows in Parquet files tracked by DuckLake.
 - **[How to stream to Amazon S3 Tables](guides/stream-to-s3-tables/)** - land OTLP/HTTP rows in Amazon S3 Tables as an Iceberg catalog.
 - **[How to stream to Cloudflare R2 Data Catalog](guides/stream-to-r2-data-catalog/)** - land OTLP/HTTP rows in Cloudflare R2 Data Catalog as an Iceberg catalog.
-- **[How to benchmark disposable catalog ingest](guides/benchmark-disposable-catalogs/)** - compare local Docker ingest against disposable catalog and storage backends.
 - **[How to export telemetry to Parquet](guides/exporting-to-parquet/)** - write traces, logs, and metrics to reusable Parquet datasets.
 - **[How to handle malformed input](guides/error-handling/)** - diagnose reader and ingest errors.
 

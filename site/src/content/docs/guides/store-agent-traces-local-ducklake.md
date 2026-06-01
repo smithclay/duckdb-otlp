@@ -21,6 +21,8 @@ Start the published server image:
 docker run --rm --name duckdb-otlp \
   -p 4318:4318 \
   -v duckdb-otlp-ducklake:/data \
+  -e DUCKDB_MODE=local-ducklake \
+  -e DUCKLAKE_NAME=lake \
   -e DUCKDB_OTLP_TOKEN=dev-otlp-token-123456 \
   ghcr.io/smithclay/duckdb-otlp:latest
 ```

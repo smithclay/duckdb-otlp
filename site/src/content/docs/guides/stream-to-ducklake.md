@@ -2,38 +2,38 @@
 title: "How to Stream OTLP to DuckLake"
 ---
 
-Use `otlp_serve(..., catalog := 'lake')` to stream OTLP/HTTP exports into a DuckLake lakehouse. The extension buffers accepted rows and commits them in batches, so a busy ingest stream writes fewer Parquet files than one file per request.
+Run the `duckdb-otlp` Docker image in `local-ducklake` mode to stream OTLP/HTTP exports into a local DuckLake lakehouse. The container initializes DuckDB, loads the required extensions, attaches DuckLake, starts the ingest server, and commits accepted rows in batches.
 
-> Requires the native extension. Live ingestion is HTTP-only and is not available in WASM builds.
+> Live ingestion is OTLP/HTTP on port `4318`. The ingest server is not available in WASM builds.
 
-## Attach DuckLake
+## Configure
 
-Start DuckDB and attach a DuckLake catalog:
+Create `.env`:
 
-```sql
-INSTALL otlp FROM community;
-LOAD otlp;
+```ini
+DUCKDB_MODE=local-ducklake
+DUCKDB_OTLP_TOKEN=dev-token-123456
 
-INSTALL ducklake;
-LOAD ducklake;
-
-ATTACH 'ducklake:metadata.ducklake' AS lake (DATA_PATH 'otlp_data/');
+DUCKLAKE_NAME=lake
+DUCKLAKE_CATALOG_PATH=/data/ducklake/catalog.duckdb
+DUCKLAKE_DATA_PATH=/data/ducklake/storage
 ```
 
-The `metadata.ducklake` file stores the catalog metadata. The `otlp_data/` directory stores Parquet data files.
+`DUCKLAKE_CATALOG_PATH` stores DuckLake metadata. `DUCKLAKE_DATA_PATH` stores Parquet data files.
 
-## Start the ingest server
+## Start the server
 
-```sql
-SELECT listen_url, auth_token, catalog_name
-FROM otlp_serve(
-  'otlp:localhost:4318',
-  catalog := 'lake',
-  token := 'dev-token-123456'
-);
+```bash
+mkdir -p data
+
+docker run --rm --name duckdb-otlp \
+  --env-file .env \
+  -p 4318:4318 \
+  -v "$(pwd)/data:/data" \
+  ghcr.io/smithclay/duckdb-otlp:latest
 ```
 
-`otlp_serve` creates the target tables in `lake.main` if they do not already exist:
+The container creates the target tables in `lake.main` if they do not already exist:
 
 - `otlp_logs`
 - `otlp_traces`
@@ -42,7 +42,7 @@ FROM otlp_serve(
 - `otlp_metrics_histogram`
 - `otlp_metrics_exp_histogram`
 
-Leave this DuckDB session running while clients send OTLP/HTTP requests.
+Leave the container running while clients send OTLP/HTTP requests.
 
 ## POST logs
 
@@ -65,42 +65,33 @@ curl -sS http://localhost:4318/v1/logs \
 
 ## Query committed rows
 
-Rows are accepted before they are durable. They commit automatically in the background, currently when the oldest buffered row is about 5 seconds old or when admitted request-body bytes reach about 64 MiB.
+Rows are accepted before they are durable. They commit automatically in the background, on graceful shutdown, or immediately after an explicit flush.
 
-To inspect buffer and commit counters:
+Flush and query through the running container:
 
-```sql
-SELECT
-  catalog_name,
-  total_rows,
-  buffered_rows,
-  last_seal_age_ms AS last_commit_age_ms,
-  seals_total AS commits_total
-FROM otlp_server_list();
-```
+```bash
+docker exec duckdb-otlp sh -c \
+  "printf '%s\n' \
+    \"SELECT * FROM otlp_flush('otlp:0.0.0.0:4318');\" \
+    \"SELECT count(*) AS logs FROM lake.main.otlp_logs;\" \
+    \"SELECT timestamp, service_name, severity_text, body\" \
+    \"FROM lake.main.otlp_logs\" \
+    \"ORDER BY timestamp DESC\" \
+    \"LIMIT 20;\" \
+    > /tmp/duckdb-otlp.sql"
 
-When `buffered_rows` returns to `0`, accepted rows have been committed.
-
-Query the DuckLake tables:
-
-```sql
-SELECT count(*) FROM lake.main.otlp_logs;
-
-SELECT timestamp, service_name, severity_text, body
-FROM lake.main.otlp_logs
-ORDER BY timestamp DESC
-LIMIT 20;
+docker logs --tail 80 duckdb-otlp
 ```
 
 ## Stop cleanly
 
-```sql
-SELECT status FROM otlp_stop('otlp:localhost:4318');
+```bash
+docker stop duckdb-otlp
 ```
 
-`otlp_stop` commits remaining buffered rows before returning. A plain database or connection close stops the server but does not commit buffered rows, so stop the server before closing DuckDB. Use `otlp_flush('otlp:localhost:4318')` only when readers need the latest accepted rows immediately while the server keeps running.
+The image sends `otlp_stop('otlp:0.0.0.0:4318')` during shutdown, so remaining buffered rows are committed before the process exits.
 
-DuckLake maintenance is best-effort automatic for live ingest: after a conservative number of successful automatic row-seals, `duckdb-otlp` runs non-force `CHECKPOINT lake` outside the ingest transaction when recent ingest rate and pending bytes leave ample admission headroom, then lets DuckLake apply its own policy. This is not a `duckdb-otlp` compaction layer, and `otlp_flush` still only forces ingest durability; it does not promise immediate compaction.
+DuckLake maintenance is best-effort automatic for live ingest: after a conservative number of successful automatic row-seals, `duckdb-otlp` runs non-force `CHECKPOINT lake` outside the ingest transaction when recent ingest rate and pending bytes leave ample admission headroom, then lets DuckLake apply its own policy. `otlp_flush` only forces ingest durability; it does not promise immediate compaction.
 
 ## See also
 

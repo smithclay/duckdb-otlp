@@ -2,13 +2,13 @@
 title: "How to Stream OTLP to Cloudflare R2 Data Catalog"
 ---
 
-Use `otlp_serve(..., catalog := 'r2catalog')` to stream OTLP/HTTP exports into an Iceberg catalog hosted by **Cloudflare R2 Data Catalog**.
+Run the `duckdb-otlp` Docker image in `r2-data-catalog` mode to stream OTLP/HTTP exports into an Iceberg catalog hosted by **Cloudflare R2 Data Catalog**. The container initializes DuckDB, loads the required extensions, attaches the R2 Data Catalog warehouse, starts the ingest server, and commits accepted rows in batches.
 
 This guide is specifically for **R2 Data Catalog**, the managed Cloudflare service that exposes an Iceberg REST catalog for an R2 bucket. It is not the same as writing Iceberg metadata and Parquet files to an ordinary R2 bucket through the S3-compatible API.
 
-> Requires the native extension. Live ingestion is HTTP-only and is not available in WASM builds.
+> Live ingestion is OTLP/HTTP on port `4318`. The ingest server is not available in WASM builds.
 
-## Create the R2 Data Catalog resources
+## Create R2 Data Catalog resources
 
 Choose a bucket name and a Cloudflare account/token that can create R2 buckets and enable R2 Data Catalog:
 
@@ -32,7 +32,7 @@ Enable R2 Data Catalog on the bucket:
 wrangler r2 bucket catalog enable "$R2_BUCKET_NAME"
 ```
 
-Wrangler prints the two values DuckDB needs:
+Wrangler prints the catalog values DuckDB needs:
 
 ```text
 Catalog URI: 'https://catalog.cloudflarestorage.com/<account-id>/<bucket-name>'
@@ -46,83 +46,37 @@ export R2_CATALOG_URI="https://catalog.cloudflarestorage.com/${CLOUDFLARE_ACCOUN
 export R2_WAREHOUSE="${CLOUDFLARE_ACCOUNT_ID}_${R2_BUCKET_NAME}"
 ```
 
-You can inspect the catalog status later with:
+You also need an R2 S3-compatible access key pair that can write objects to the bucket. Save those values as `CLOUDFLARE_ACCESS_KEY_ID` and `CLOUDFLARE_SECRET_ACCESS_KEY` in the next step.
+
+## Configure
+
+Create `cloudflare.env`:
+
+```ini
+DUCKDB_MODE=r2-data-catalog
+DUCKDB_OTLP_TOKEN=dev-token-123456
+
+DUCKDB_CATALOG=r2catalog
+DUCKDB_SCHEMA=otlp
+
+CLOUDFLARE_ACCOUNT_ID=<account-id>
+CLOUDFLARE_R2_BUCKET=<bucket-name>
+CLOUDFLARE_ACCESS_KEY_ID=<r2-s3-access-key-id>
+CLOUDFLARE_SECRET_ACCESS_KEY=<r2-s3-secret-access-key>
+CLOUDFLARE_CATALOG_URI=https://catalog.cloudflarestorage.com/<account-id>/<bucket-name>
+CLOUDFLARE_CATALOG_TOKEN=<r2-admin-read-write-token>
+```
+
+## Start the server
 
 ```bash
-wrangler r2 bucket catalog get "$R2_BUCKET_NAME"
+docker run --rm --name duckdb-otlp \
+  --env-file cloudflare.env \
+  -p 4318:4318 \
+  ghcr.io/smithclay/duckdb-otlp:latest
 ```
 
-## Start DuckDB with the Cloudflare token
-
-Start DuckDB from the shell where `CLOUDFLARE_API_TOKEN` is set:
-
-```bash
-duckdb r2-data-catalog-otlp.duckdb
-```
-
-DuckDB reads the token from the environment in the next step. Keeping it in an environment variable avoids pasting the token into SQL history.
-
-## Attach R2 Data Catalog as an Iceberg catalog
-
-In DuckDB, install and load the extensions, create an Iceberg secret, and attach the R2 Data Catalog warehouse:
-
-```sql
-INSTALL otlp FROM community;
-LOAD otlp;
-
-INSTALL iceberg;
-INSTALL httpfs;
-
-LOAD iceberg;
-LOAD httpfs;
-
-SET VARIABLE r2_token = getenv('CLOUDFLARE_API_TOKEN');
-
-CREATE OR REPLACE SECRET r2_secret (
-  TYPE ICEBERG,
-  TOKEN getvariable('r2_token')
-);
-
-ATTACH '<warehouse-name>' AS r2catalog (
-  TYPE ICEBERG,
-  ENDPOINT '<catalog-uri>'
-);
-
-CREATE SCHEMA IF NOT EXISTS r2catalog.otlp;
-```
-
-Replace `<warehouse-name>` and `<catalog-uri>` with the values from Wrangler, for example:
-
-```sql
-ATTACH '1234567890abcdef1234567890abcdef_duckdb-otlp-r2catalog-1234567890abcdef1234567890abcdef'
-AS r2catalog (
-  TYPE ICEBERG,
-  ENDPOINT 'https://catalog.cloudflarestorage.com/1234567890abcdef1234567890abcdef/duckdb-otlp-r2catalog-1234567890abcdef1234567890abcdef'
-);
-```
-
-The important pieces are:
-
-- `TYPE ICEBERG` in the secret because DuckDB sends the Cloudflare token to the Iceberg REST catalog.
-- `TYPE ICEBERG` in the `ATTACH` because R2 Data Catalog exposes an Iceberg REST catalog.
-- `ENDPOINT` is the **Catalog URI** from Wrangler.
-- The attach string is the **Warehouse** from Wrangler, not an `r2://` or `s3://` path.
-
-## Start the ingest server
-
-Start the OTLP/HTTP server and target the attached R2 Data Catalog:
-
-```sql
-SELECT listen_url, catalog_name, schema_name
-FROM otlp_serve(
-  'otlp:localhost:4318',
-  catalog := 'r2catalog',
-  schema := 'otlp',
-  token := 'dev-token-123456'
-);
-```
-
-`otlp_serve` creates these Iceberg tables in the R2 Data Catalog namespace if they do not already exist:
+The container creates these Iceberg tables in the R2 Data Catalog namespace if they do not already exist:
 
 - `r2catalog.otlp.otlp_logs`
 - `r2catalog.otlp.otlp_traces`
@@ -130,8 +84,6 @@ FROM otlp_serve(
 - `r2catalog.otlp.otlp_metrics_sum`
 - `r2catalog.otlp.otlp_metrics_histogram`
 - `r2catalog.otlp.otlp_metrics_exp_histogram`
-
-Leave this DuckDB session running while clients send OTLP/HTTP requests.
 
 ## POST a log record
 
@@ -150,64 +102,55 @@ curl -sS http://localhost:4318/v1/logs \
 {"status":"buffered","rows":1,"batches":1}
 ```
 
-Rows are accepted before they are durable. They commit automatically in the background, on graceful `otlp_stop`, or immediately on optional `otlp_flush`.
+Rows are accepted before they are durable. They commit automatically in the background, on graceful shutdown, or immediately after an explicit flush.
 
 ## Query committed rows
 
-For a deterministic check, force a synchronous commit:
+Flush and query through the running container:
 
-```sql
-SELECT * FROM otlp_flush('otlp:localhost:4318');
-```
+```bash
+docker exec duckdb-otlp sh -c \
+  "printf '%s\n' \
+    \"SELECT * FROM otlp_flush('otlp:0.0.0.0:4318');\" \
+    \"SELECT service_name, severity_text, body\" \
+    \"FROM r2catalog.otlp.otlp_logs\" \
+    \"WHERE service_name = 'r2-data-catalog-demo'\" \
+    \"ORDER BY timestamp DESC\" \
+    \"LIMIT 5;\" \
+    > /tmp/duckdb-otlp.sql"
 
-Then query the Iceberg table hosted by R2 Data Catalog:
-
-```sql
-SELECT
-  service_name,
-  severity_text,
-  body,
-  resource_attributes,
-  log_attributes
-FROM r2catalog.otlp.otlp_logs
-WHERE service_name = 'r2-data-catalog-demo'
-ORDER BY time_unix_nano DESC
-LIMIT 5;
-```
-
-To inspect buffer and commit counters:
-
-```sql
-SELECT
-  catalog_name,
-  schema_name,
-  total_rows,
-  buffered_rows,
-  last_seal_age_ms AS last_commit_age_ms,
-  seals_total AS commits_total
-FROM otlp_server_list();
+docker logs --tail 80 duckdb-otlp
 ```
 
 ## Stop cleanly
 
-```sql
-SELECT status FROM otlp_stop('otlp:localhost:4318');
+If you plan to delete the R2 Data Catalog resources immediately, skip this step and use [Clean up](#clean-up) instead.
+
+```bash
+docker stop duckdb-otlp
 ```
 
-`otlp_stop` commits remaining buffered rows before returning. A plain database or connection close stops the server but does not commit buffered rows, so stop the server before closing DuckDB.
+The image sends `otlp_stop('otlp:0.0.0.0:4318')` during shutdown, so remaining buffered rows are committed before the process exits.
 
 ## Clean up
 
 Drop the Iceberg tables before disabling the catalog and deleting the R2 bucket:
 
-```sql
-DROP TABLE IF EXISTS r2catalog.otlp.otlp_logs;
-DROP TABLE IF EXISTS r2catalog.otlp.otlp_traces;
-DROP TABLE IF EXISTS r2catalog.otlp.otlp_metrics_gauge;
-DROP TABLE IF EXISTS r2catalog.otlp.otlp_metrics_sum;
-DROP TABLE IF EXISTS r2catalog.otlp.otlp_metrics_histogram;
-DROP TABLE IF EXISTS r2catalog.otlp.otlp_metrics_exp_histogram;
-DETACH r2catalog;
+```bash
+docker exec duckdb-otlp sh -c \
+  "printf '%s\n' \
+    \"SELECT status FROM otlp_stop('otlp:0.0.0.0:4318');\" \
+    \"DROP TABLE IF EXISTS r2catalog.otlp.otlp_logs;\" \
+    \"DROP TABLE IF EXISTS r2catalog.otlp.otlp_traces;\" \
+    \"DROP TABLE IF EXISTS r2catalog.otlp.otlp_metrics_gauge;\" \
+    \"DROP TABLE IF EXISTS r2catalog.otlp.otlp_metrics_sum;\" \
+    \"DROP TABLE IF EXISTS r2catalog.otlp.otlp_metrics_histogram;\" \
+    \"DROP TABLE IF EXISTS r2catalog.otlp.otlp_metrics_exp_histogram;\" \
+    \"DETACH r2catalog;\" \
+    > /tmp/duckdb-otlp.sql"
+
+docker logs --tail 80 duckdb-otlp
+docker stop duckdb-otlp
 ```
 
 Then disable the catalog and delete the bucket:
@@ -243,7 +186,6 @@ wrangler r2 bucket delete "$R2_BUCKET_NAME"
 - DuckDB uses a `TYPE ICEBERG` secret here for the Cloudflare API token. Do not use DuckDB's `TYPE s3` secret for R2 Data Catalog attachment.
 - R2 Data Catalog accepts Iceberg `TIMESTAMP` columns, not DuckDB's `TIMESTAMP_NS` type. Live ingest tables therefore store OTLP timestamp columns as DuckDB `TIMESTAMP` with microsecond precision.
 - OTLP count and flag fields use signed SQL integer types so the created tables stay compatible with Iceberg catalogs that do not accept DuckDB unsigned integer types.
-- Use `create_tables := false` only when all six target tables already exist with the exact DuckDB-visible columns and types expected by `duckdb-otlp`.
 - R2 Data Catalog has its own table maintenance features such as compaction and snapshot expiration. `duckdb-otlp` only probes the generic DuckDB `CHECKPOINT <catalog>` hook on its internal maintenance cadence; if the catalog reports checkpointing as unsupported, automatic maintenance is disabled for that server and normal ingest/flush/stop durability behavior is unchanged.
 
 ## See also
