@@ -59,7 +59,7 @@ NEON_DATABASE_URL=postgresql://...
 
 `CLOUDFLARE_ACCOUNT_ID` is optional when `wrangler whoami` can infer a single account. The Cloudflare token must be able to create/delete R2 buckets, enable/disable R2 Data Catalog, and list/delete R2 objects. The R2 access key pair is passed into DuckDB as an S3-compatible secret for DuckLake data files.
 
-The runner defaults to `AWS_PROFILE=cli-dev` when no AWS profile is set. `AWS_REGION` is optional when the AWS CLI profile has a configured region. The runner creates and deletes the CloudFormation stack for S3 Tables from the host, then exports temporary AWS credentials from the active profile and passes them into the container so DuckDB can sign S3 Tables requests.
+The runner defaults to `AWS_PROFILE=cli-dev` when no AWS profile is set. `AWS_REGION` is optional when the AWS CLI profile has a configured region. The runner creates and deletes the CloudFormation stack for S3 Tables from the host, then exports temporary credentials from that profile for the container. You do not need to put AWS access keys in `.env`.
 
 For Neon, set `NEON_DATABASE_URL` if you already have a disposable PostgreSQL database. Otherwise the runner tries to create a temporary branch with `neonctl` using `NEON_PROJECT_ID`, then deletes that branch during cleanup.
 
@@ -115,7 +115,7 @@ The Markdown report includes:
 
 ## Validate setup without running load
 
-Use `--dry-run` to render scenario SQL and planned resource names without starting the Docker container or sending OTLP data:
+Use `--dry-run` to render planned Docker mode environment and resource names without starting the Docker container or sending OTLP data:
 
 ```bash
 uv run python scripts/benchmark_catalog_ingest.py \

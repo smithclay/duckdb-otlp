@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Run disposable duckdb-otlp catalog ingest benchmarks.
 
-The harness starts the published duckdb-otlp Docker image with scenario-specific
-SQL, sends OTLP/HTTP log batches at a target rate, records Docker CPU/memory
-samples, queries commit counters through the container control FIFO, and writes a
+The harness starts the published duckdb-otlp Docker image with DUCKDB_MODE,
+sends OTLP/HTTP log batches at a target rate, records Docker CPU/memory samples,
+queries commit counters through the container control FIFO, and writes a
 consolidated JSON/Markdown report.
 """
 
@@ -79,8 +79,8 @@ class ScenarioContext:
     dry_run: bool = False
     catalog: str = "lake"
     schema: str = "otlp"
-    setup_sql: str = ""
     docker_env: dict[str, str] = field(default_factory=dict)
+    docker_volumes: list[tuple[str, str, str]] = field(default_factory=list)
     resources: dict[str, Any] = field(default_factory=dict)
     cleanup: list[tuple[str, Any]] = field(default_factory=list)
 
@@ -145,6 +145,7 @@ def first_env(env: dict[str, str], *names: str) -> str | None:
 def r2_access_key(env: dict[str, str]) -> str | None:
     return first_env(
         env,
+        "CLOUDFLARE_ACCESS_KEY_ID",
         "R2_ACCESS_KEY_ID",
         "CLOUDFLARE_S3_ACCESS_KEY_ID",
         "CLOUDFLARE_R2_ACCESS_KEY_ID",
@@ -155,6 +156,7 @@ def r2_access_key(env: dict[str, str]) -> str | None:
 def r2_secret_key(env: dict[str, str]) -> str | None:
     return first_env(
         env,
+        "CLOUDFLARE_SECRET_ACCESS_KEY",
         "R2_SECRET_ACCESS_KEY",
         "CLOUDFLARE_S3_SECRET_ACCESS_KEY",
         "CLOUDFLARE_R2_SECRET_ACCESS_KEY",
@@ -354,44 +356,6 @@ def free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def docker_shell(setup_sql: str, listen_uri: str) -> str:
-    return f"""set -eu
-CONTROL_FIFO="${{DUCKDB_OTLP_CONTROL_FIFO:-/tmp/duckdb-otlp.sql}}"
-DATABASE="${{DUCKDB_OTLP_DATABASE:-:memory:}}"
-rm -f "$CONTROL_FIFO"
-mkfifo "$CONTROL_FIFO"
-duckdb -unsigned "$DATABASE" < "$CONTROL_FIFO" &
-duckdb_pid=$!
-exec 3> "$CONTROL_FIFO"
-cat >&3 <<'SQL'
-{setup_sql}
-SQL
-echo "duckdb-otlp benchmark listener started at {listen_uri}"
-stop_server() {{
-    echo "stopping duckdb-otlp benchmark listener"
-    printf "%s\\n" "SELECT status FROM otlp_stop('{listen_uri}');" ".quit" >&3 || true
-    wait "$duckdb_pid" || true
-}}
-trap stop_server INT TERM
-wait "$duckdb_pid"
-"""
-
-
-def common_server_sql(catalog: str, schema: str, token: str) -> str:
-    return f"""
-LOAD otlp;
-CREATE SCHEMA IF NOT EXISTS {catalog}.{schema};
-SELECT listen_url, auth_token, catalog_name, schema_name
-FROM otlp_serve(
-    'otlp:0.0.0.0:4318',
-    catalog := {sql_quote(catalog)},
-    schema := {sql_quote(schema)},
-    token := {sql_quote(token)},
-    allow_other_hostname := true
-);
-"""
-
-
 def cf_api(
     ctx: ScenarioContext,
     method: str,
@@ -533,37 +497,44 @@ def r2_data_catalog_setup(ctx: ScenarioContext) -> None:
     catalog_uri = f"https://catalog.cloudflarestorage.com/{account_id}/{bucket}"
     warehouse = f"{account_id}_{bucket}"
     ctx.resources.update({"r2_bucket": bucket, "r2_catalog_uri": catalog_uri, "r2_warehouse": warehouse})
-    ctx.docker_env["CLOUDFLARE_API_TOKEN"] = ctx.env["CLOUDFLARE_API_TOKEN"]
-    ctx.setup_sql = f"""
-INSTALL iceberg;
-INSTALL httpfs;
-LOAD iceberg;
-LOAD httpfs;
-LOAD otlp;
-CREATE OR REPLACE SECRET r2_secret (
-  TYPE ICEBERG,
-  TOKEN {sql_quote(ctx.env["CLOUDFLARE_API_TOKEN"])}
-);
-ATTACH {sql_quote(warehouse)} AS lake (
-  TYPE ICEBERG,
-  ENDPOINT {sql_quote(catalog_uri)},
-  SECRET r2_secret
-);
-"""
+    r2_storage_secret_sql(ctx)
+    ctx.docker_env.update(
+        {
+            "DUCKDB_MODE": "r2-data-catalog",
+            "CLOUDFLARE_ACCOUNT_ID": account_id,
+            "CLOUDFLARE_R2_BUCKET": bucket,
+            "CLOUDFLARE_CATALOG_URI": catalog_uri,
+            "CLOUDFLARE_CATALOG_TOKEN": ctx.env["CLOUDFLARE_API_TOKEN"],
+            "CLOUDFLARE_WAREHOUSE": warehouse,
+        }
+    )
 
 
 def local_ducklake_setup(ctx: ScenarioContext) -> None:
     metadata_path = "/tmp/duckdb-otlp-bench.ducklake"
     data_path = "/tmp/duckdb-otlp-bench-files/"
     ctx.resources.update({"metadata_path": metadata_path, "data_path": data_path})
-    ctx.setup_sql = f"""
-INSTALL ducklake;
-LOAD ducklake;
-LOAD otlp;
-ATTACH 'ducklake:{metadata_path}' AS lake (
-  DATA_PATH {sql_quote(data_path)}
-);
-"""
+    ctx.docker_env.update(
+        {
+            "DUCKDB_MODE": "local-ducklake",
+            "DUCKLAKE_NAME": ctx.catalog,
+            "DUCKLAKE_CATALOG_PATH": metadata_path,
+            "DUCKLAKE_DATA_PATH": data_path,
+        }
+    )
+
+
+def pass_aws_credentials_to_container(ctx: ScenarioContext, profile: str | None, region: str) -> None:
+    ctx.docker_env["AWS_REGION"] = region
+    ctx.docker_env["AWS_DEFAULT_REGION"] = region
+    if profile:
+        if not ctx.dry_run:
+            ctx.docker_env.update(aws_export_credentials(ctx.env, profile))
+        return
+
+    for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_SECURITY_TOKEN"):
+        if ctx.env.get(key):
+            ctx.docker_env[key] = ctx.env[key]
 
 
 def aws_export_credentials(env: dict[str, str], profile: str | None = None) -> dict[str, str]:
@@ -640,7 +611,6 @@ def s3_tables_setup(ctx: ScenarioContext) -> None:
     template.write_text(s3_tables_template())
     if ctx.dry_run:
         table_bucket_arn = f"arn:aws:s3tables:{region}:{account}:bucket/{table_bucket}"
-        docker_aws = {}
     else:
         run_cmd(
             aws_cli(
@@ -676,10 +646,6 @@ def s3_tables_setup(ctx: ScenarioContext) -> None:
             ),
             env=ctx.env,
         ).stdout.strip()
-        docker_aws = aws_export_credentials(ctx.env, profile)
-    docker_aws["AWS_REGION"] = region
-    docker_aws["AWS_DEFAULT_REGION"] = region
-    ctx.docker_env.update(docker_aws)
     ctx.resources.update(
         {
             "aws_profile": profile or "default",
@@ -689,62 +655,29 @@ def s3_tables_setup(ctx: ScenarioContext) -> None:
             "s3_tables_bucket_arn": table_bucket_arn,
         }
     )
-    ctx.setup_sql = f"""
-INSTALL iceberg;
-INSTALL aws;
-INSTALL httpfs;
-LOAD iceberg;
-LOAD aws;
-LOAD httpfs;
-LOAD otlp;
-CREATE OR REPLACE SECRET s3_tables_secret (
-  TYPE s3,
-  PROVIDER credential_chain,
-  CHAIN env,
-  REGION {sql_quote(region)}
-);
-ATTACH {sql_quote(table_bucket_arn)} AS lake (
-  TYPE iceberg,
-  ENDPOINT_TYPE s3_tables
-);
-"""
+    pass_aws_credentials_to_container(ctx, profile, region)
+    ctx.docker_env.update(
+        {
+            "DUCKDB_MODE": "s3-tables",
+            "S3_TABLES_BUCKET_ARN": table_bucket_arn,
+        }
+    )
 
 
 def r2_storage_secret_sql(ctx: ScenarioContext) -> str:
-    access_key = first_env(
-        ctx.env,
-        "R2_ACCESS_KEY_ID",
-        "CLOUDFLARE_S3_ACCESS_KEY_ID",
-        "CLOUDFLARE_R2_ACCESS_KEY_ID",
-        "CLOUDFLARE_S3_KEY_ID",
-    )
-    secret_key = first_env(
-        ctx.env,
-        "R2_SECRET_ACCESS_KEY",
-        "CLOUDFLARE_S3_SECRET_ACCESS_KEY",
-        "CLOUDFLARE_R2_SECRET_ACCESS_KEY",
-        "CLOUDFLARE_S3_SECRET_KEY",
-    )
+    access_key = r2_access_key(ctx.env)
+    secret_key = r2_secret_key(ctx.env)
     if not access_key or not secret_key:
         raise BenchError(
             "missing R2 S3 credentials; set R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY "
             "or CLOUDFLARE_S3_ACCESS_KEY_ID/CLOUDFLARE_S3_SECRET_ACCESS_KEY"
         )
-    endpoint = urllib.parse.urlparse(r2_s3_endpoint(ctx)).netloc or r2_s3_endpoint(ctx)
     ctx.docker_env["R2_ACCESS_KEY_ID"] = access_key
     ctx.docker_env["R2_SECRET_ACCESS_KEY"] = secret_key
-    return f"""
-INSTALL httpfs;
-LOAD httpfs;
-CREATE OR REPLACE SECRET r2_storage (
-  TYPE s3,
-  KEY_ID getenv('R2_ACCESS_KEY_ID'),
-  SECRET getenv('R2_SECRET_ACCESS_KEY'),
-  REGION 'auto',
-  ENDPOINT {sql_quote(endpoint)},
-  URL_STYLE 'path'
-);
-"""
+    ctx.docker_env["CLOUDFLARE_ACCESS_KEY_ID"] = access_key
+    ctx.docker_env["CLOUDFLARE_SECRET_ACCESS_KEY"] = secret_key
+    ctx.docker_env["CLOUDFLARE_R2_ENDPOINT"] = r2_s3_endpoint(ctx)
+    return ""
 
 
 def neon_connection_string(ctx: ScenarioContext) -> tuple[str, str | None]:
@@ -851,6 +784,9 @@ def r2_neon_ducklake_setup(ctx: ScenarioContext) -> None:
     ctx.resources.update({"neon_branch_id": branch_id})
     ctx.docker_env.update(
         {
+            "DUCKDB_MODE": "r2-neon-ducklake",
+            "CLOUDFLARE_R2_BUCKET": bucket,
+            "CLOUDFLARE_R2_PREFIX": prefix,
             "NEON_PGHOST": pg["host"],
             "NEON_PGPORT": pg["port"],
             "NEON_PGDATABASE": pg["database"],
@@ -859,30 +795,7 @@ def r2_neon_ducklake_setup(ctx: ScenarioContext) -> None:
             "NEON_PGSSLMODE": pg["sslmode"],
         }
     )
-    ctx.setup_sql = f"""
-INSTALL ducklake;
-INSTALL postgres;
-LOAD ducklake;
-LOAD postgres;
-LOAD otlp;
-{r2_storage_secret_sql(ctx)}
-CREATE OR REPLACE SECRET postgres_secret (
-  TYPE postgres,
-  HOST getenv('NEON_PGHOST'),
-  PORT getenv('NEON_PGPORT'),
-  DATABASE getenv('NEON_PGDATABASE'),
-  USER getenv('NEON_PGUSER'),
-  PASSWORD getenv('NEON_PGPASSWORD'),
-  SSLMODE getenv('NEON_PGSSLMODE')
-);
-CREATE OR REPLACE SECRET ducklake_secret (
-  TYPE ducklake,
-  METADATA_PATH '',
-  DATA_PATH {sql_quote(f's3://{bucket}/{prefix}')},
-  METADATA_PARAMETERS MAP {{'TYPE': 'postgres', 'SECRET': 'postgres_secret'}}
-);
-ATTACH 'ducklake:ducklake_secret' AS lake;
-"""
+    r2_storage_secret_sql(ctx)
 
 
 def parse_postgres_url(url: str) -> dict[str, str]:
@@ -905,15 +818,15 @@ def r2_local_ducklake_setup(ctx: ScenarioContext) -> None:
     prefix = f"bench/{ctx.run_id}/"
     ctx.resources.update({"r2_bucket": bucket, "r2_prefix": prefix})
     preflight_r2_s3_write(ctx, bucket, prefix)
-    ctx.setup_sql = f"""
-INSTALL ducklake;
-LOAD ducklake;
-LOAD otlp;
-{r2_storage_secret_sql(ctx)}
-ATTACH 'ducklake:/tmp/duckdb-otlp-bench.ducklake' AS lake (
-  DATA_PATH {sql_quote(f's3://{bucket}/{prefix}')}
-);
-"""
+    r2_storage_secret_sql(ctx)
+    ctx.docker_env.update(
+        {
+            "DUCKDB_MODE": "r2-local-ducklake",
+            "CLOUDFLARE_R2_BUCKET": bucket,
+            "CLOUDFLARE_R2_PREFIX": prefix,
+            "DUCKLAKE_CATALOG_PATH": "/tmp/duckdb-otlp-bench.ducklake",
+        }
+    )
 
 
 SETUP_BY_SCENARIO = {
@@ -926,17 +839,26 @@ SETUP_BY_SCENARIO = {
 
 
 def start_container(ctx: ScenarioContext) -> None:
+    configure_container_env(ctx)
     require_program("docker")
     run_cmd(["docker", "rm", "-f", ctx.container_name], check=False)
+    args = docker_run_args(ctx)
+    run_cmd(args)
+
+
+def configure_container_env(ctx: ScenarioContext) -> None:
     ctx.docker_env.update(
         {
-            "DUCKDB_OTLP_CATALOG_TYPE": "custom",
-            "DUCKDB_OTLP_SETUP_SQL": ctx.setup_sql,
-            "DUCKDB_OTLP_CATALOG": ctx.catalog,
-            "DUCKDB_OTLP_SCHEMA": ctx.schema,
+            "DUCKDB_CATALOG": ctx.catalog,
+            "DUCKDB_SCHEMA": ctx.schema,
+            "DUCKDB_DATABASE": "/tmp/duckdb-otlp-bench-control.duckdb",
             "DUCKDB_OTLP_TOKEN": ctx.token,
+            "OTEL_HTTP_ADDR": "0.0.0.0:4318",
         }
     )
+
+
+def docker_run_args(ctx: ScenarioContext) -> list[str]:
     args = [
         "docker",
         "run",
@@ -948,11 +870,13 @@ def start_container(ctx: ScenarioContext) -> None:
     ]
     if ctx.platform:
         args[2:2] = ["--platform", ctx.platform]
+    for source, target, mode in ctx.docker_volumes:
+        args.extend(["-v", f"{source}:{target}:{mode}"])
     for key, value in sorted(ctx.docker_env.items()):
         if value:
             args.extend(["-e", f"{key}={value}"])
     args.append(ctx.image)
-    run_cmd(args)
+    return args
 
 
 def wait_for_health(port: int, timeout: float = 300) -> None:
@@ -1342,8 +1266,16 @@ def run_scenario(
     try:
         eprint(f"[{name}] preparing disposable resources")
         SETUP_BY_SCENARIO[name](ctx)
+        configure_container_env(ctx)
         if args.dry_run:
-            result.update({"status": "dry-run", "setup_sql": ctx.setup_sql, "resources": ctx.resources})
+            result.update(
+                {
+                    "status": "dry-run",
+                    "docker_env": json.loads(redact_text(json.dumps(ctx.docker_env, sort_keys=True), ctx.env)),
+                    "docker_volumes": ctx.docker_volumes,
+                    "resources": ctx.resources,
+                }
+            )
             cleanup(ctx, drop=False)
             return result
         eprint(f"[{name}] starting {ctx.image}")

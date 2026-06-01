@@ -41,7 +41,7 @@ LABEL org.opencontainers.image.title="duckdb-otlp server" \
       org.opencontainers.image.description="DuckDB OTLP/HTTP ingest server with mode-based DuckDB catalog initialization" \
       org.opencontainers.image.source="https://github.com/smithclay/duckdb-otlp"
 
-EXPOSE 4317 4318
+EXPOSE 4318
 VOLUME ["/data"]
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=3 \
     CMD curl -fsS http://127.0.0.1:4318/healthz >/dev/null || exit 1

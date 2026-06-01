@@ -10,6 +10,7 @@ vcpkg
 vcpkg_installed
 otlp:*
 .env
+output/
 
 # Python
 __pycache__/

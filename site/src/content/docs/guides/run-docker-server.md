@@ -4,7 +4,7 @@ title: "How to Run the Docker Server Image"
 
 The Docker image starts the existing DuckDB `otlp_serve` server and initializes the selected catalog/storage backend from environment variables. It does not require users to run DuckDB setup SQL by hand.
 
-> The native extension currently serves OTLP/HTTP on `4318`; it does not implement OTLP/gRPC on `4317` yet. Mapping `4317` is harmless for future compatibility, but send telemetry to the OTLP/HTTP endpoints on `4318`.
+> The native extension currently serves OTLP/HTTP on `4318`; it does not implement OTLP/gRPC.
 
 ## Local DuckLake quickstart
 
@@ -32,7 +32,6 @@ Start the container:
 ```bash
 docker run --rm \
   --env-file .env \
-  -p 4317:4317 \
   -p 4318:4318 \
   -v "$(pwd)/data:/data" \
   ghcr.io/smithclay/duckdb-otlp:latest
@@ -51,7 +50,6 @@ DUCKDB_OTLP_TOKEN=dev-otlp-token-123456
 
 CLOUDFLARE_ACCOUNT_ID=...
 CLOUDFLARE_R2_BUCKET=...
-CLOUDFLARE_R2_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
 CLOUDFLARE_ACCESS_KEY_ID=...
 CLOUDFLARE_SECRET_ACCESS_KEY=...
 CLOUDFLARE_CATALOG_URI=https://catalog.cloudflarestorage.com/<account-id>/<bucket>
@@ -63,7 +61,6 @@ Start the container:
 ```bash
 docker run --rm \
   --env-file cloudflare.env \
-  -p 4317:4317 \
   -p 4318:4318 \
   ghcr.io/smithclay/duckdb-otlp:latest
 ```
@@ -98,12 +95,11 @@ Common variables:
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `DUCKDB_MODE` | legacy mode when unset | Mode-based startup. |
-| `DUCKDB_DATABASE` | `/data/duckdb-otlp-control.duckdb` with `DUCKDB_MODE`; legacy `:memory:` when unset | DuckDB database opened by the server process. Do not set this to the same catalog name as the mode catalog. |
+| `DUCKDB_MODE` | required | Mode-based startup. |
+| `DUCKDB_DATABASE` | `/data/duckdb-otlp-control.duckdb` | DuckDB database opened by the server process. Do not set this to the same catalog name as the mode catalog. |
 | `DUCKDB_SCHEMA` | mode-specific | Schema for OTLP tables. |
 | `DUCKDB_OTLP_TOKEN` | `dev-otlp-token-123456` | Bearer token for OTLP/HTTP POSTs. Must be at least 16 characters. |
 | `OTEL_HTTP_ADDR` | `0.0.0.0:4318` | HTTP bind address used to build the `otlp:` listen URI. |
-| `OTEL_GRPC_ADDR` | `0.0.0.0:4317` | Reserved for future gRPC support; not served today. |
 | `DRY_RUN` | `0` | Set to `1` to validate config, print planned SQL, and exit without starting the server. |
 
 Local DuckLake:
@@ -120,12 +116,12 @@ Cloudflare R2 Data Catalog:
 | --- | --- | --- |
 | `CLOUDFLARE_ACCOUNT_ID` | yes | Cloudflare account ID. |
 | `CLOUDFLARE_R2_BUCKET` | yes | R2 bucket with Data Catalog enabled. Also accepts `R2_BUCKET_NAME` or `R2_BUCKET`. |
-| `CLOUDFLARE_R2_ENDPOINT` | yes unless derived from account | R2 S3-compatible endpoint. |
+| `CLOUDFLARE_R2_ENDPOINT` | no | Optional R2 S3-compatible endpoint override. Defaults to `<account-id>.r2.cloudflarestorage.com`. |
 | `CLOUDFLARE_ACCESS_KEY_ID` | yes | R2 S3 access key. Also accepts benchmark aliases such as `R2_ACCESS_KEY_ID`. |
 | `CLOUDFLARE_SECRET_ACCESS_KEY` | yes | R2 S3 secret key. Also accepts benchmark aliases such as `R2_SECRET_ACCESS_KEY`. |
 | `CLOUDFLARE_CATALOG_URI` | yes | R2 Data Catalog URI from Wrangler. |
 | `CLOUDFLARE_CATALOG_TOKEN` | yes | R2 Data Catalog API token. Also accepts `CLOUDFLARE_API_TOKEN`. |
-| `CLOUDFLARE_WAREHOUSE` | derived | Iceberg warehouse string. Defaults to `<account-id>_<bucket>`. |
+| `CLOUDFLARE_WAREHOUSE` | no | Optional Iceberg warehouse override. Defaults to `<account-id>_<bucket>`. |
 
 Amazon S3 Tables:
 
@@ -133,8 +129,7 @@ Amazon S3 Tables:
 | --- | --- | --- |
 | `S3_TABLES_BUCKET_ARN` | yes | S3 Tables bucket ARN. Also accepts `S3_TABLES_TABLE_BUCKET_ARN` or `TABLE_BUCKET_ARN`. |
 | `AWS_REGION` | derived from ARN when possible | AWS region. Also accepts `AWS_DEFAULT_REGION`. |
-| `AWS_PROFILE` | optional | AWS profile for DuckDB's credential chain. Mount `~/.aws` into the container when using this path. |
-| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | optional | Direct AWS credential-chain environment variables. |
+| `AWS_PROFILE` | optional | AWS profile for local Docker runs when `~/.aws` is mounted into the container. The benchmark runner exports temporary credentials from this profile for the container. |
 
 Cloudflare R2 DuckLake modes:
 
@@ -145,16 +140,7 @@ Cloudflare R2 DuckLake modes:
 
 ## AWS profile credentials
 
-For S3 Tables, direct temporary credentials work:
-
-```bash
-docker run --rm \
-  --env-file s3tables.env \
-  -p 4318:4318 \
-  ghcr.io/smithclay/duckdb-otlp:latest
-```
-
-You can also pass an AWS profile and mount the AWS config directory:
+For local Docker runs, pass an AWS profile and mount the AWS config directory:
 
 ```bash
 docker run --rm \
@@ -199,19 +185,16 @@ mode_emit_sql() {
 
 Then add the mode name to `SUPPORTED_MODES` in `docker/duckdb-otlp-server/entrypoint.sh` and document it in `.env.example`. Keep secrets in environment variables and reference them from SQL with `getenv('NAME')`.
 
-## Backwards compatibility
-
-When `DUCKDB_MODE` is unset, the image keeps the previous `DUCKDB_OTLP_CATALOG_TYPE` behavior, including `ducklake`, `local-ducklake`, `motherduck`, `custom`, and `none|default`. Existing uses of `DUCKDB_OTLP_SETUP_SQL` and `DUCKDB_OTLP_SETUP_SQL_FILE` continue to work.
-
 ## Troubleshooting
 
 - Invalid mode: the entrypoint fails before starting DuckDB and prints the supported `DUCKDB_MODE` values.
+- Missing mode: set `DUCKDB_MODE`; the image no longer accepts ad hoc setup SQL at startup.
 - Missing credentials: only variables required by the selected mode are validated.
 - Catalog name conflict: do not use a `DUCKLAKE_NAME` or `DUCKDB_CATALOG` equal to the basename of `DUCKDB_DATABASE`; DuckDB already uses that name for the opened database.
 - Permission errors: for local DuckLake, ensure the mounted `/data` directory is writable by the container.
 - Volume surprises: without `-v "$(pwd)/data:/data"`, local DuckLake data is stored inside the container filesystem and disappears with `--rm`.
 - Extension install failures: the image pre-installs common extensions at build time, but startup still runs `INSTALL` defensively. Check network/proxy settings if building the image yourself.
-- No gRPC listener: use OTLP/HTTP endpoints on port `4318`; gRPC is not implemented in the native extension yet.
+- No gRPC listener: use OTLP/HTTP endpoints on port `4318`.
 
 ## See also
 
