@@ -16,7 +16,7 @@ const {
 } = Astro.props;
 
 const selectColumns = includeTimestamp
-  ? 'timestamp, service_name, severity_text, body'
+  ? 'time_unix_nano, service_name, severity_text, body'
   : 'service_name, severity_text, body';
 
 const intro = ownershipNote
@@ -29,7 +29,7 @@ const queryCommand = `docker exec duckdb-otlp sh -c \\
     \\"SELECT ${selectColumns}\\" \\
     \\"FROM ${table}\\" \\
     \\"WHERE service_name = '${serviceName}'\\" \\
-    \\"ORDER BY timestamp DESC\\" \\
+    \\"ORDER BY time_unix_nano DESC\\" \\
     \\"LIMIT 5;\\" \\
     > /tmp/duckdb-otlp.sql"
 

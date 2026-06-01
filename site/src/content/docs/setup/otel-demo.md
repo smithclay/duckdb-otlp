@@ -94,9 +94,9 @@ Flush buffered telemetry and query the running `duckdb-otlp` container:
 docker exec duckdb-otlp sh -c \
   "printf '%s\n' \
     \"SELECT * FROM otlp_flush('otlp:0.0.0.0:4318');\" \
-    \"SELECT service_name, span_name, count(*) AS spans\" \
+    \"SELECT service_name, name, count(*) AS spans\" \
     \"FROM lake.main.otlp_traces\" \
-    \"GROUP BY service_name, span_name\" \
+    \"GROUP BY service_name, name\" \
     \"ORDER BY spans DESC\" \
     \"LIMIT 20;\" \
     > /tmp/duckdb-otlp.sql"
@@ -109,9 +109,9 @@ Inspect recent logs:
 ```bash
 docker exec duckdb-otlp sh -c \
   "printf '%s\n' \
-    \"SELECT timestamp, service_name, severity_text, body\" \
+    \"SELECT time_unix_nano, service_name, severity_text, body\" \
     \"FROM lake.main.otlp_logs\" \
-    \"ORDER BY timestamp DESC\" \
+    \"ORDER BY time_unix_nano DESC\" \
     \"LIMIT 20;\" \
     > /tmp/duckdb-otlp.sql"
 

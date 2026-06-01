@@ -69,13 +69,13 @@ SELECT status FROM otlp_stop('otlp:localhost:4318');
 Now query the accepted row:
 
 ```sql
-SELECT timestamp, service_name, severity_text, body
+SELECT time_unix_nano, service_name, severity_text, body
 FROM otlp_logs;
 ```
 
 ```text
 ┌─────────────────────┬──────────────┬───────────────┬─────────────────┐
-│      timestamp      │ service_name │ severity_text │      body       │
+│   time_unix_nano    │ service_name │ severity_text │      body       │
 ├─────────────────────┼──────────────┼───────────────┼─────────────────┤
 │ 2024-01-01 00:00:00 │ curl-demo    │ INFO          │ hello from curl │
 └─────────────────────┴──────────────┴───────────────┴─────────────────┘

@@ -221,7 +221,6 @@ emit_quack_sql() {
 
     quack_listen_sql="$(sql_quote "$QUACK_LISTEN_URI")"
     cat <<SQL
-INSTALL quack;
 LOAD quack;
 SELECT listen_uri, auth_token
 FROM quack_serve(
@@ -251,17 +250,38 @@ write_boot_sql() {
     emit_quack_sql >> "$BOOT_SQL"
 }
 
+http_probe() {
+    curl -fsS --max-time 2 "$1" >/dev/null 2>&1
+}
+
+# Wait until the server is actually accepting requests, not merely until the
+# DuckDB process is alive. A slow remote ATTACH (R2/Iceberg/Neon) can keep the
+# process up long before otlp_serve binds, and a hang would never bind at all,
+# so probe /healthz (and the Quack endpoint when enabled) for real readiness.
+# Boot SQL runs with `.bail on`, so a failed statement exits the process and is
+# caught by the kill -0 check below.
 wait_for_duckdb_startup() {
+    otlp_port="${OTEL_HTTP_ADDR##*:}"
+    quack_port="${QUACK_HTTP_ADDR##*:}"
+    otlp_health_url="http://127.0.0.1:${otlp_port:-4318}/healthz"
+    quack_health_url="http://127.0.0.1:${quack_port:-9494}/"
+    deadline_tries=$((STARTUP_TIMEOUT_SECS * 4))
     tries=0
-    while [ "$tries" -lt 20 ]; do
+    while [ "$tries" -lt "$deadline_tries" ]; do
         if ! kill -0 "$duckdb_pid" 2>/dev/null; then
             wait "$duckdb_pid" || true
             return 1
         fi
+        if http_probe "$otlp_health_url"; then
+            if ! is_truthy "$QUACK_ENABLED" || http_probe "$quack_health_url"; then
+                return 0
+            fi
+        fi
         tries=$((tries + 1))
         sleep 0.25
     done
-    return 0
+    error "Timed out after ${STARTUP_TIMEOUT_SECS}s waiting for DuckDB to accept requests"
+    return 1
 }
 
 run_duckdb() {
@@ -321,14 +341,15 @@ fi
 
 DATABASE="${DUCKDB_DATABASE:-/data/duckdb-otlp-control.duckdb}"
 OTEL_HTTP_ADDR="${OTEL_HTTP_ADDR:-0.0.0.0:4318}"
+STARTUP_TIMEOUT_SECS="${DUCKDB_OTLP_STARTUP_TIMEOUT:-60}"
 LISTEN_URI="${DUCKDB_OTLP_LISTEN_URI:-otlp:${OTEL_HTTP_ADDR}}"
 TOKEN="${OTEL_AUTH_TOKEN:-${DUCKDB_OTLP_TOKEN:-$DEFAULT_TOKEN}}"
 QUACK_ENABLED="${DUCKDB_QUACK_ENABLED:-${QUACK_ENABLED:-0}}"
 QUACK_HTTP_ADDR="${DUCKDB_QUACK_ADDR:-${QUACK_HTTP_ADDR:-0.0.0.0:9494}}"
 QUACK_LISTEN_URI="${DUCKDB_QUACK_LISTEN_URI:-quack:${QUACK_HTTP_ADDR}}"
-QUACK_TOKEN_VAR="$(first_set_var DUCKDB_QUACK_TOKEN QUACK_AUTH_TOKEN OTEL_AUTH_TOKEN DUCKDB_OTLP_TOKEN || true)"
+QUACK_TOKEN_VAR="$(first_set_var DUCKDB_QUACK_TOKEN QUACK_AUTH_TOKEN || true)"
 if is_truthy "$QUACK_ENABLED" && [ -z "$QUACK_TOKEN_VAR" ]; then
-    fail "DUCKDB_QUACK_ENABLED=1 requires an explicit Quack token. Set DUCKDB_QUACK_TOKEN, QUACK_AUTH_TOKEN, OTEL_AUTH_TOKEN, or DUCKDB_OTLP_TOKEN."
+    fail "DUCKDB_QUACK_ENABLED=1 requires a dedicated Quack token. Set DUCKDB_QUACK_TOKEN or QUACK_AUTH_TOKEN. The Quack endpoint grants full SQL read/write to every attached catalog, so it does not reuse the OTLP ingest token."
 fi
 if [ -n "$QUACK_TOKEN_VAR" ]; then
     QUACK_TOKEN="$(get_var "$QUACK_TOKEN_VAR")"
@@ -360,6 +381,11 @@ log ""
 log "OTLP HTTP: ${OTEL_HTTP_ADDR}"
 if is_truthy "$QUACK_ENABLED"; then
     log "Quack: ${QUACK_LISTEN_URI}"
+    log ""
+    log "WARNING: Quack grants full SQL read/write access to every attached"
+    log "         catalog over an unencrypted connection, guarded only by the"
+    log "         Quack token. Keep ${QUACK_LISTEN_URI} on a trusted network and"
+    log "         terminate TLS at a proxy before exposing it publicly."
 else
     log "Quack: disabled"
 fi

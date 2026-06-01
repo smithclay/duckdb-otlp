@@ -29,27 +29,27 @@ The table functions accept local paths, globs, and DuckDB-supported remote file 
 ```sql
 SELECT
     trace_id,
-    span_name,
-    duration / 1000000 AS duration_ms
+    name,
+    duration_time_unix_nano / 1000000 AS duration_ms
 FROM read_otlp_traces('test/data/traces_simple.jsonl')
-ORDER BY duration DESC;
+ORDER BY duration_time_unix_nano DESC;
 ```
 
 ```sql
-SELECT timestamp, service_name, severity_text, body
+SELECT time_unix_nano, service_name, severity_text, body
 FROM read_otlp_logs('test/data/logs_simple.jsonl')
 WHERE severity_text = 'ERROR';
 ```
 
 ```sql
-SELECT timestamp, metric_name, value
+SELECT time_unix_nano, name, coalesce(double_value, int_value::DOUBLE) AS value
 FROM read_otlp_metrics_gauge('test/data/metrics_simple.jsonl');
 ```
 
 Histogram metrics use typed readers too:
 
 ```sql
-SELECT metric_name, count, sum, bucket_counts, explicit_bounds
+SELECT name, count, sum, bucket_counts, explicit_bounds
 FROM read_otlp_metrics_histogram('test/data/metrics_simple.jsonl');
 ```
 
@@ -81,7 +81,7 @@ SELECT status FROM otlp_stop('otlp:localhost:4318');
 Then query the accepted row:
 
 ```sql
-SELECT timestamp, service_name, severity_text, body
+SELECT time_unix_nano, service_name, severity_text, body
 FROM otlp_logs;
 ```
 

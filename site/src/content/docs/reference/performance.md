@@ -17,7 +17,7 @@ COPY (
 
 SELECT count(*)
 FROM read_parquet('warehouse/traces.parquet')
-WHERE duration > 1000000000;
+WHERE duration_time_unix_nano > 1000000000;
 ```
 
 ## Read Less Data
@@ -25,10 +25,10 @@ WHERE duration > 1000000000;
 Project only the columns you need and avoid broad globs:
 
 ```sql
-SELECT trace_id, span_name, duration
+SELECT trace_id, name, duration_time_unix_nano
 FROM read_otlp_traces('data/2026-05-30/*.jsonl')
 WHERE service_name = 'api-gateway'
-  AND duration > 1000000000;
+  AND duration_time_unix_nano > 1000000000;
 ```
 
 The file readers support projection pushdown. Filter pushdown is not currently enabled, so narrower files and Parquet conversion matter for large repeated scans.
@@ -48,10 +48,10 @@ rotation:
 ```sql
 CREATE TABLE hourly_stats AS
 SELECT
-  date_trunc('hour', timestamp) AS hour,
+  date_trunc('hour', start_time_unix_nano) AS hour,
   service_name,
   count(*) AS span_count,
-  avg(duration) / 1000000 AS avg_ms
+  avg(duration_time_unix_nano) / 1000000 AS avg_ms
 FROM read_otlp_traces('traces/*.jsonl')
 GROUP BY hour, service_name;
 ```

@@ -115,10 +115,10 @@ Mirrors `duckdb-quack`'s worker pool but inverts the writer: a 128-thread httpli
 
 The table functions emit schemas inspired by the OpenTelemetry ClickHouse exporter, with all column names in `snake_case`:
 
-- **Traces**: 25 columns covering identifiers, scope metadata, resource attributes, events, links, and computed duration
-- **Logs**: 15 columns with severity, body, resource/scope maps, and trace correlation fields
-- **Metrics (gauge)**: 16 columns with timestamp, service info, metric metadata, and value
-- **Metrics (sum)**: 18 columns (gauge columns plus aggregation temporality and is_monotonic)
+- **Traces**: 24 columns covering identifiers, scope metadata, resource attributes, events, links, and computed duration
+- **Logs**: 18 columns with severity, body, resource/scope maps, and trace correlation fields
+- **Metrics (gauge)**: 17 columns with timestamp, service info, metric metadata, and numeric value fields
+- **Metrics (sum)**: 19 columns (gauge columns plus aggregation temporality and is_monotonic)
 - **Metrics (histogram)**: 22 columns with counts, sum, min/max, explicit bounds, and bucket counts
 - **Metrics (exponential histogram)**: 27 columns with scale, zero bucket, and positive/negative bucket data
 

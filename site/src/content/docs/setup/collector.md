@@ -84,9 +84,9 @@ Flush buffered telemetry and query through the running `duckdb-otlp` container:
 docker exec duckdb-otlp sh -c \
   "printf '%s\n' \
     \"SELECT * FROM otlp_flush('otlp:0.0.0.0:4318');\" \
-    \"SELECT service_name, span_name, count(*) AS spans\" \
+    \"SELECT service_name, name, count(*) AS spans\" \
     \"FROM lake.main.otlp_traces\" \
-    \"GROUP BY service_name, span_name\" \
+    \"GROUP BY service_name, name\" \
     \"ORDER BY spans DESC\" \
     \"LIMIT 20;\" \
     > /tmp/duckdb-otlp.sql"
@@ -150,16 +150,16 @@ To generate protobuf files, switch the exporter to `encoding: proto`.
 INSTALL otlp FROM community;
 LOAD otlp;
 
-SELECT trace_id, span_name, duration
+SELECT trace_id, name, duration_time_unix_nano
 FROM read_otlp_traces('otel-export/*.jsonl')
-ORDER BY timestamp DESC
+ORDER BY start_time_unix_nano DESC
 LIMIT 20;
 
-SELECT timestamp, severity_text, body
+SELECT time_unix_nano, severity_text, body
 FROM read_otlp_logs('otel-export/*.jsonl')
 WHERE severity_text IN ('ERROR', 'FATAL');
 
-SELECT timestamp, metric_name, value
+SELECT time_unix_nano, name, coalesce(double_value, int_value::DOUBLE) AS value
 FROM read_otlp_metrics_gauge('otel-export/*.jsonl');
 ```
 

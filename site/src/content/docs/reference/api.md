@@ -12,7 +12,7 @@ The extension provides the following table functions for reading OTLP data:
 
 **`read_otlp_traces(path)`**
 
-Streams trace spans with identifiers, attributes, events, and links. See the [schema reference](../schemas/#traces-read_otlp_traces) for all 25 columns.
+Streams trace spans with identifiers, attributes, events, and links. See the [schema reference](../schemas/#traces-read_otlp_traces) for all 24 columns.
 
 **Parameters:**
 - `path` (VARCHAR): File path or glob pattern. DuckDB file systems provide local, S3, HTTP(S), Azure, and GCS access.
@@ -21,7 +21,7 @@ Streams trace spans with identifiers, attributes, events, and links. See the [sc
 
 **`read_otlp_logs(path)`**
 
-Reads log records with severity, body, and trace correlation. See the [schema reference](../schemas/#logs-read_otlp_logs) for all 15 columns.
+Reads log records with severity, body, and trace correlation. See the [schema reference](../schemas/#logs-read_otlp_logs) for all 18 columns.
 
 **Parameters:** Same as `read_otlp_traces`
 
@@ -29,11 +29,11 @@ Reads log records with severity, body, and trace correlation. See the [schema re
 
 **`read_otlp_metrics_gauge(path)`**
 
-Returns gauge metrics (16 columns). See the [schema reference](../schemas/#gauge-metrics-read_otlp_metrics_gauge) for details.
+Returns gauge metrics (17 columns). See the [schema reference](../schemas/#gauge-metrics-read_otlp_metrics_gauge) for details.
 
 **`read_otlp_metrics_sum(path)`**
 
-Returns sum/counter metrics (18 columns) with `value`, `aggregation_temporality`, and `is_monotonic`. See the [schema reference](../schemas/#sum-metrics-read_otlp_metrics_sum) for details.
+Returns sum/counter metrics (19 columns) with `int_value`, `double_value`, `aggregation_temporality`, and `is_monotonic`. See the [schema reference](../schemas/#sum-metrics-read_otlp_metrics_sum) for details.
 
 **`read_otlp_metrics_histogram(path)`**
 

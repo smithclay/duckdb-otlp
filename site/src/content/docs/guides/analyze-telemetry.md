@@ -21,14 +21,14 @@ Find slow server operations:
 
 ```sql
 SELECT
-  span_name,
+  name,
   service_name,
   count(*) AS span_count,
-  avg(duration) / 1000000 AS avg_ms,
-  percentile_cont(0.95) WITHIN GROUP (ORDER BY duration) / 1000000 AS p95_ms
+  avg(duration_time_unix_nano) / 1000000 AS avg_ms,
+  percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_time_unix_nano) / 1000000 AS p95_ms
 FROM read_otlp_traces('traces/*.jsonl')
-WHERE span_kind = 2
-GROUP BY span_name, service_name
+WHERE kind = 2
+GROUP BY name, service_name
 ORDER BY p95_ms DESC
 LIMIT 20;
 ```
@@ -39,13 +39,13 @@ Drill into the slowest trace:
 WITH target AS (
   SELECT trace_id
   FROM read_otlp_traces('traces/*.jsonl')
-  ORDER BY duration DESC
+  ORDER BY duration_time_unix_nano DESC
   LIMIT 1
 )
-SELECT span_id, parent_span_id, service_name, span_name, duration / 1000000 AS duration_ms
+SELECT span_id, parent_span_id, service_name, name, duration_time_unix_nano / 1000000 AS duration_ms
 FROM read_otlp_traces('traces/*.jsonl')
 WHERE trace_id = (SELECT trace_id FROM target)
-ORDER BY timestamp;
+ORDER BY start_time_unix_nano;
 ```
 
 See [Traces Schema](../../reference/schemas/#traces-read_otlp_traces) for span fields, status codes, attributes, events, and links.
@@ -55,10 +55,10 @@ See [Traces Schema](../../reference/schemas/#traces-read_otlp_traces) for span f
 Find recent errors:
 
 ```sql
-SELECT timestamp, service_name, severity_text, body
+SELECT time_unix_nano, service_name, severity_text, body
 FROM read_otlp_logs('logs/*.jsonl')
 WHERE severity_text IN ('ERROR', 'FATAL')
-ORDER BY timestamp DESC
+ORDER BY time_unix_nano DESC
 LIMIT 100;
 ```
 
@@ -66,17 +66,17 @@ Join error logs back to spans:
 
 ```sql
 SELECT
-  l.timestamp,
+  l.time_unix_nano,
   l.service_name,
   l.body,
-  t.span_name,
-  t.duration / 1000000 AS duration_ms
+  t.name,
+  t.duration_time_unix_nano / 1000000 AS duration_ms
 FROM read_otlp_logs('logs/*.jsonl') l
 JOIN read_otlp_traces('traces/*.jsonl') t
   ON l.trace_id = t.trace_id
  AND l.span_id = t.span_id
 WHERE l.severity_text = 'ERROR'
-ORDER BY l.timestamp DESC;
+ORDER BY l.time_unix_nano DESC;
 ```
 
 See [Logs Schema](../../reference/schemas/#logs-read_otlp_logs) for severity, body, resource attributes, scope fields, and trace correlation columns.
@@ -87,14 +87,14 @@ Aggregate gauge metrics over time:
 
 ```sql
 SELECT
-  date_trunc('hour', timestamp) AS hour,
+  date_trunc('hour', time_unix_nano) AS hour,
   service_name,
-  metric_name,
-  avg(value) AS avg_value,
-  max(value) AS max_value
+  name,
+  avg(coalesce(double_value, int_value::DOUBLE)) AS avg_value,
+  max(coalesce(double_value, int_value::DOUBLE)) AS max_value
 FROM read_otlp_metrics_gauge('metrics/*.jsonl')
-WHERE metric_name = 'system.cpu.utilization'
-GROUP BY hour, service_name, metric_name
+WHERE name = 'system.cpu.utilization'
+GROUP BY hour, service_name, name
 ORDER BY hour DESC;
 ```
 
@@ -102,16 +102,16 @@ Inspect histogram metrics:
 
 ```sql
 SELECT
-  timestamp,
+  time_unix_nano,
   service_name,
-  metric_name,
+  name,
   count,
   sum,
   bucket_counts,
   explicit_bounds
 FROM read_otlp_metrics_histogram('metrics/*.jsonl')
-WHERE metric_name = 'http.server.duration'
-ORDER BY timestamp DESC
+WHERE name = 'http.server.duration'
+ORDER BY time_unix_nano DESC
 LIMIT 50;
 ```
 
@@ -122,7 +122,7 @@ Metric shapes have different columns, so choose the shape-specific reader. See [
 Resource, scope, and signal attributes are JSON strings. Use DuckDB JSON functions to filter nested keys:
 
 ```sql
-SELECT timestamp, service_name, body
+SELECT time_unix_nano, service_name, body
 FROM read_otlp_logs('logs/*.jsonl')
 WHERE json_extract_string(resource_attributes, '$."deployment.environment"') = 'prod';
 ```

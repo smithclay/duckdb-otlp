@@ -45,6 +45,13 @@ LABEL org.opencontainers.image.title="duckdb-otlp server" \
 EXPOSE 4318 9494
 VOLUME ["/data"]
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:4318/healthz >/dev/null || exit 1
+    CMD sh -c 'otlp_port="${OTEL_HTTP_ADDR##*:}"; \
+        curl -fsS "http://127.0.0.1:${otlp_port:-4318}/healthz" >/dev/null || exit 1; \
+        case "${DUCKDB_QUACK_ENABLED:-${QUACK_ENABLED:-0}}" in \
+          1|true|TRUE|yes|YES|on|ON) \
+            quack_addr="${DUCKDB_QUACK_ADDR:-${QUACK_HTTP_ADDR:-0.0.0.0:9494}}"; \
+            quack_port="${quack_addr##*:}"; \
+            curl -fsS "http://127.0.0.1:${quack_port:-9494}/" >/dev/null || exit 1 ;; \
+        esac'
 
 ENTRYPOINT ["duckdb-otlp-server"]

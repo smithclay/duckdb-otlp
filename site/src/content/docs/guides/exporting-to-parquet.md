@@ -22,10 +22,10 @@ COPY (
 Query later:
 
 ```sql
-SELECT trace_id, span_name, duration / 1000000 AS duration_ms
+SELECT trace_id, name, duration_time_unix_nano / 1000000 AS duration_ms
 FROM read_parquet('warehouse/traces.parquet')
-WHERE duration >= 1000000000
-ORDER BY duration DESC;
+WHERE duration_time_unix_nano >= 1000000000
+ORDER BY duration_time_unix_nano DESC;
 ```
 
 ## Metrics
@@ -54,7 +54,7 @@ COPY (
 
 ```sql
 COPY (
-  SELECT *, date_trunc('day', timestamp) AS partition_date
+  SELECT *, date_trunc('day', start_time_unix_nano) AS partition_date
   FROM read_otlp_traces('traces/*.jsonl')
 ) TO 'warehouse/traces' (
   FORMAT PARQUET,
@@ -67,13 +67,13 @@ COPY (
 
 ```sql
 SELECT
-  t.span_name,
-  t.duration / 1000000 AS duration_ms,
+  t.name,
+  t.duration_time_unix_nano / 1000000 AS duration_ms,
   count(l.body) AS error_count
 FROM read_parquet('warehouse/traces.parquet') t
 LEFT JOIN read_parquet('warehouse/error_logs.parquet') l
   ON t.trace_id = l.trace_id
-GROUP BY t.span_name, t.duration
+GROUP BY t.name, t.duration_time_unix_nano
 ORDER BY error_count DESC;
 ```
 
