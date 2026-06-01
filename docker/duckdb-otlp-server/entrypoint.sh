@@ -37,6 +37,9 @@ Useful common settings:
   DUCKDB_DATABASE=/data/duckdb-otlp-control.duckdb
   OTEL_HTTP_ADDR=0.0.0.0:4318
   DUCKDB_OTLP_TOKEN=change-me-at-least-16-chars
+  DUCKDB_QUACK_ENABLED=0
+  DUCKDB_QUACK_ADDR=0.0.0.0:9494
+  DUCKDB_QUACK_TOKEN=required-when-quack-enabled
   DRY_RUN=1
 EOF
 }
@@ -211,6 +214,24 @@ FROM otlp_serve(
 SQL
 }
 
+emit_quack_sql() {
+    if ! is_truthy "$QUACK_ENABLED"; then
+        return
+    fi
+
+    quack_listen_sql="$(sql_quote "$QUACK_LISTEN_URI")"
+    cat <<SQL
+INSTALL quack;
+LOAD quack;
+SELECT listen_uri, auth_token
+FROM quack_serve(
+    ${quack_listen_sql},
+    token := getenv('DUCKDB_QUACK_EFFECTIVE_TOKEN'),
+    allow_other_hostname := true
+);
+SQL
+}
+
 print_extensions() {
     if [ -z "${MODE_EXTENSIONS:-}" ]; then
         return
@@ -227,6 +248,7 @@ write_boot_sql() {
     printf '.bail on\n' > "$BOOT_SQL"
     mode_emit_sql >> "$BOOT_SQL"
     emit_server_sql >> "$BOOT_SQL"
+    emit_quack_sql >> "$BOOT_SQL"
 }
 
 wait_for_duckdb_startup() {
@@ -262,6 +284,9 @@ run_duckdb() {
 
     stop_server() {
         log "Stopping duckdb-otlp..."
+        if is_truthy "$QUACK_ENABLED"; then
+            printf "CALL quack_stop('%s');\n" "$(sql_escape "$QUACK_LISTEN_URI")" >&3 || true
+        fi
         printf "SELECT status FROM otlp_stop('%s');\n.quit\n" "$(sql_escape "$LISTEN_URI")" >&3 || true
         wait "$duckdb_pid" || true
     }
@@ -298,6 +323,18 @@ DATABASE="${DUCKDB_DATABASE:-/data/duckdb-otlp-control.duckdb}"
 OTEL_HTTP_ADDR="${OTEL_HTTP_ADDR:-0.0.0.0:4318}"
 LISTEN_URI="${DUCKDB_OTLP_LISTEN_URI:-otlp:${OTEL_HTTP_ADDR}}"
 TOKEN="${OTEL_AUTH_TOKEN:-${DUCKDB_OTLP_TOKEN:-$DEFAULT_TOKEN}}"
+QUACK_ENABLED="${DUCKDB_QUACK_ENABLED:-${QUACK_ENABLED:-0}}"
+QUACK_HTTP_ADDR="${DUCKDB_QUACK_ADDR:-${QUACK_HTTP_ADDR:-0.0.0.0:9494}}"
+QUACK_LISTEN_URI="${DUCKDB_QUACK_LISTEN_URI:-quack:${QUACK_HTTP_ADDR}}"
+QUACK_TOKEN_VAR="$(first_set_var DUCKDB_QUACK_TOKEN QUACK_AUTH_TOKEN OTEL_AUTH_TOKEN DUCKDB_OTLP_TOKEN || true)"
+if is_truthy "$QUACK_ENABLED" && [ -z "$QUACK_TOKEN_VAR" ]; then
+    fail "DUCKDB_QUACK_ENABLED=1 requires an explicit Quack token. Set DUCKDB_QUACK_TOKEN, QUACK_AUTH_TOKEN, OTEL_AUTH_TOKEN, or DUCKDB_OTLP_TOKEN."
+fi
+if [ -n "$QUACK_TOKEN_VAR" ]; then
+    QUACK_TOKEN="$(get_var "$QUACK_TOKEN_VAR")"
+else
+    QUACK_TOKEN=""
+fi
 
 # shellcheck source=/dev/null
 . "$mode_script"
@@ -307,6 +344,11 @@ validate_catalog_does_not_shadow_database
 
 mkdir -p "$DATA_DIR"
 export DUCKDB_OTLP_EFFECTIVE_TOKEN="$TOKEN"
+export DUCKDB_QUACK_EFFECTIVE_TOKEN="$QUACK_TOKEN"
+
+if is_truthy "$QUACK_ENABLED"; then
+    MODE_EXTENSIONS="${MODE_EXTENSIONS:-} quack"
+fi
 
 write_boot_sql
 
@@ -316,6 +358,11 @@ log "Mode: ${MODE}"
 log "Database: ${DATABASE}"
 log ""
 log "OTLP HTTP: ${OTEL_HTTP_ADDR}"
+if is_truthy "$QUACK_ENABLED"; then
+    log "Quack: ${QUACK_LISTEN_URI}"
+else
+    log "Quack: disabled"
+fi
 log ""
 print_extensions
 

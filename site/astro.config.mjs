@@ -46,6 +46,7 @@ export default defineConfig({
             { label: 'Overview', link: '/guides/' },
             { label: 'Analyze Telemetry', link: '/guides/analyze-telemetry/' },
             { label: 'Stream to Local DuckLake', link: '/guides/stream-to-local-ducklake/' },
+            { label: 'Query with Quack', link: '/guides/query-with-quack/' },
             { label: 'Stream to Remote DuckLake', link: '/guides/stream-to-remote-ducklake/' },
             { label: 'Store Agent Traces in DuckLake', link: '/guides/store-agent-traces-local-ducklake/' },
             { label: 'Stream to S3 Tables', link: '/guides/stream-to-s3-tables/' },

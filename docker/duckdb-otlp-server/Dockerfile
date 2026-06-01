@@ -29,6 +29,7 @@ RUN duckdb -unsigned -c "INSTALL ducklake;" \
     && duckdb -unsigned -c "INSTALL httpfs;" \
     && duckdb -unsigned -c "INSTALL aws;" \
     && duckdb -unsigned -c "INSTALL postgres;" \
+    && duckdb -unsigned -c "INSTALL quack;" \
     && duckdb -unsigned -c "INSTALL otlp FROM 'https://smithclay.github.io/duckdb-otlp';"
 
 COPY docker/duckdb-otlp-server/entrypoint.sh /usr/local/bin/duckdb-otlp-server
@@ -41,7 +42,7 @@ LABEL org.opencontainers.image.title="duckdb-otlp server" \
       org.opencontainers.image.description="DuckDB OTLP/HTTP ingest server with mode-based DuckDB catalog initialization" \
       org.opencontainers.image.source="https://github.com/smithclay/duckdb-otlp"
 
-EXPOSE 4318
+EXPOSE 4318 9494
 VOLUME ["/data"]
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=3 \
     CMD curl -fsS http://127.0.0.1:4318/healthz >/dev/null || exit 1
