@@ -288,11 +288,10 @@ run_duckdb() {
     rm -f "$CONTROL_FIFO"
     mkfifo "$CONTROL_FIFO"
 
-    duckdb -unsigned "$DATABASE" < "$CONTROL_FIFO" &
+    duckdb -unsigned -init "$BOOT_SQL" "$DATABASE" < "$CONTROL_FIFO" &
     duckdb_pid=$!
 
     exec 3> "$CONTROL_FIFO"
-    cat "$BOOT_SQL" >&3
 
     if ! wait_for_duckdb_startup; then
         error "DuckDB initialization failed"
