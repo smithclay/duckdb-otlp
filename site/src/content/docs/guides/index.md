@@ -7,6 +7,7 @@ Use these when you already know the task you want to complete.
 - [How to analyze traces](analyzing-traces/)
 - [How to filter logs](filtering-logs/)
 - [How to work with metrics](working-with-metrics/)
+- [How to run the Docker server image](run-docker-server/)
 - [How to stream to DuckLake](stream-to-ducklake/)
 - [How to store agent traces in local DuckLake](store-agent-traces-local-ducklake/)
 - [How to stream to Amazon S3 Tables](stream-to-s3-tables/)
