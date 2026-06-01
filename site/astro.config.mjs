@@ -51,6 +51,7 @@ export default defineConfig({
             { label: 'Stream to DuckLake', link: '/guides/stream-to-ducklake/' },
             { label: 'Store Agent Traces in DuckLake', link: '/guides/store-agent-traces-local-ducklake/' },
             { label: 'Stream to S3 Tables', link: '/guides/stream-to-s3-tables/' },
+            { label: 'Stream to R2 Data Catalog', link: '/guides/stream-to-r2-data-catalog/' },
             { label: 'Export to Parquet', link: '/guides/exporting-to-parquet/' },
             { label: 'Error Handling', link: '/guides/error-handling/' },
           ],
