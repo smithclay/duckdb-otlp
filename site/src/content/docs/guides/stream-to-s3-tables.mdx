@@ -2,7 +2,13 @@
 title: "How to Stream OTLP to Amazon S3 Tables"
 ---
 
-Run the `duckdb-otlp` Docker image in `s3-tables` mode to stream OTLP/HTTP exports into an Iceberg catalog hosted by **Amazon S3 Tables**. The container initializes DuckDB, loads the required extensions, attaches the S3 Tables table bucket, starts the ingest server, and commits accepted rows in batches.
+import PostLogRecord from '../../../components/docs/PostLogRecord.astro';
+import QueryCommittedRows from '../../../components/docs/QueryCommittedRows.astro';
+import StopCleanly from '../../../components/docs/StopCleanly.astro';
+
+This guide shows you how to run the `duckdb-otlp` Docker image in `s3-tables` mode and stream OTLP/HTTP exports into an Iceberg catalog hosted by **Amazon S3 Tables**.
+
+The container initializes DuckDB, loads the required extensions, attaches the S3 Tables table bucket, starts the ingest server, and commits accepted rows in batches.
 
 This guide is specifically for **Amazon S3 Tables**, the managed AWS service with table buckets and an Iceberg REST catalog endpoint. It is not the same as writing Iceberg metadata and Parquet files to an ordinary `s3://` bucket.
 
@@ -135,52 +141,18 @@ The container creates these Iceberg tables in the S3 Tables namespace if they do
 - `s3tables.otlp.otlp_metrics_histogram`
 - `s3tables.otlp.otlp_metrics_exp_histogram`
 
-## POST a log record
+<PostLogRecord
+  serviceName="s3-tables-demo"
+  message="hello from Amazon S3 Tables"
+  guide="stream-to-s3-tables"
+/>
 
-In another terminal:
+<QueryCommittedRows
+  table="s3tables.otlp.otlp_logs"
+  serviceName="s3-tables-demo"
+/>
 
-```bash
-curl -sS http://localhost:4318/v1/logs \
-  -H 'Authorization: Bearer dev-token-123456' \
-  -H 'Content-Type: application/json' \
-  -d '{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"s3-tables-demo"}},{"key":"deployment.environment","value":{"stringValue":"docs"}}]},"scopeLogs":[{"scope":{"name":"duckdb-otlp-guide"},"logRecords":[{"timeUnixNano":"1704067200000000000","observedTimeUnixNano":"1704067200123456789","severityNumber":9,"severityText":"INFO","body":{"stringValue":"hello from Amazon S3 Tables"},"attributes":[{"key":"guide","value":{"stringValue":"stream-to-s3-tables"}}]}]}]}]}'
-```
-
-**Response:**
-
-```json
-{"status":"buffered","rows":1,"batches":1}
-```
-
-Rows are accepted before they are durable. They commit automatically in the background, on graceful shutdown, or immediately after an explicit flush.
-
-## Query committed rows
-
-Flush and query through the running container:
-
-```bash
-docker exec duckdb-otlp sh -c \
-  "printf '%s\n' \
-    \"SELECT * FROM otlp_flush('otlp:0.0.0.0:4318');\" \
-    \"SELECT service_name, severity_text, body\" \
-    \"FROM s3tables.otlp.otlp_logs\" \
-    \"WHERE service_name = 's3-tables-demo'\" \
-    \"ORDER BY timestamp DESC\" \
-    \"LIMIT 5;\" \
-    > /tmp/duckdb-otlp.sql"
-
-docker logs --tail 80 duckdb-otlp
-```
-
-## Stop cleanly
-
-If you plan to delete the S3 Tables resources immediately, skip this step and use [Clean up](#clean-up) instead.
-
-```bash
-docker stop duckdb-otlp
-```
-
-The image sends `otlp_stop('otlp:0.0.0.0:4318')` during shutdown, so remaining buffered rows are committed before the process exits.
+<StopCleanly cleanupTarget="S3 Tables" />
 
 ## Clean up
 
@@ -217,13 +189,14 @@ aws cloudformation wait stack-delete-complete \
   --stack-name "$STACK_NAME"
 ```
 
-## Notes
+## Troubleshooting
 
-- Use `ENDPOINT_TYPE s3_tables` for Amazon S3 Tables. For an ordinary S3 bucket containing Iceberg files, use a different Iceberg catalog setup.
-- DuckDB uses a `TYPE s3` secret for AWS request signing. The attached catalog is still an Iceberg catalog.
-- S3 Tables accepts Iceberg `TIMESTAMP` columns, not DuckDB's `TIMESTAMP_NS` type. Live ingest tables therefore store OTLP timestamp columns as DuckDB `TIMESTAMP` with microsecond precision.
-- OTLP count and flag fields use signed SQL integer types so the created tables stay compatible with Iceberg catalogs that do not accept DuckDB unsigned integer types.
-- DuckDB's Iceberg REST catalog docs do not currently document a useful `CHECKPOINT` maintenance path such as manifest rewrite or snapshot expiration. `duckdb-otlp` only probes the generic DuckDB `CHECKPOINT <catalog>` hook on its internal maintenance cadence; if the catalog reports checkpointing as unsupported, automatic maintenance is disabled for that server and normal ingest/flush/stop durability behavior is unchanged.
+- If startup cannot find AWS credentials, confirm `AWS_PROFILE` in `s3tables.env` matches a profile in the mounted `$HOME/.aws` directory.
+- If attachment fails, confirm `S3_TABLES_BUCKET_ARN` is the table bucket ARN from CloudFormation, not an `s3://` path.
+- If no rows appear after a `202` response, run the flush command before querying.
+- If stack deletion fails, rerun [Clean up](#clean-up) while the container is still running, then delete the CloudFormation stack again.
+- S3 Tables stores live ingest timestamp columns with microsecond precision because the Iceberg catalog does not accept DuckDB `TIMESTAMP_NS` columns.
+- If catalog checkpointing is reported as unsupported, no action is required; ingest, flush, and stop durability behavior is unchanged.
 
 ## See also
 
@@ -231,4 +204,3 @@ aws cloudformation wait stack-delete-complete \
 - [DuckDB Iceberg REST catalog docs](https://duckdb.org/docs/current/core_extensions/iceberg/iceberg_rest_catalogs)
 - [DuckDB + S3 Tables walkthrough by Thomas Krizsan](https://blog.pesky.moe/posts/2026-04-01-duckdb-s3/)
 - [Live Ingest Reference](../../reference/serve/)
-- [Live Ingest Quickstart](../../quickstart/serve/)

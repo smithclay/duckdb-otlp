@@ -1,0 +1,43 @@
+---
+import { Code } from '@astrojs/starlight/components';
+
+interface Props {
+  table: string;
+  serviceName: string;
+  includeTimestamp?: boolean;
+  ownershipNote?: string;
+}
+
+const {
+  table,
+  serviceName,
+  includeTimestamp = false,
+  ownershipNote,
+} = Astro.props;
+
+const selectColumns = includeTimestamp
+  ? 'timestamp, service_name, severity_text, body'
+  : 'service_name, severity_text, body';
+
+const intro = ownershipNote
+  ? `Flush and query through the running container. ${ownershipNote}`
+  : 'Flush and query through the running container:';
+
+const queryCommand = `docker exec duckdb-otlp sh -c \\
+  "printf '%s\\n' \\
+    \\"SELECT * FROM otlp_flush('otlp:0.0.0.0:4318');\\" \\
+    \\"SELECT ${selectColumns}\\" \\
+    \\"FROM ${table}\\" \\
+    \\"WHERE service_name = '${serviceName}'\\" \\
+    \\"ORDER BY timestamp DESC\\" \\
+    \\"LIMIT 5;\\" \\
+    > /tmp/duckdb-otlp.sql"
+
+docker logs --tail 80 duckdb-otlp`;
+---
+
+<h2 id="query-committed-rows">Query committed rows</h2>
+
+<p>{intro}</p>
+
+<Code code={queryCommand} lang="bash" />

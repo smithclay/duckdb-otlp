@@ -2,7 +2,7 @@
 title: "Schema Reference"
 ---
 
-The extension emits strongly-typed tables inspired by the [OpenTelemetry ClickHouse exporter schema](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/clickhouseexporter). All column names use `snake_case`.
+The extension emits strongly-typed tables inspired by the [OpenTelemetry ClickHouse exporter schema](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/clickhouseexporter), while also trying to conform at the field level with the [OpenTelemetry Arrow data model](https://github.com/open-telemetry/otel-arrow/blob/main/docs/data_model.md). All column names use `snake_case`.
 
 | Table function | Columns | Notes |
 | --- | --- | --- |

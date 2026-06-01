@@ -83,7 +83,8 @@ FROM otlp_logs;
 
 ## Next steps
 
-- **[Stream to DuckLake](../../guides/stream-to-ducklake/)** - land OTLP rows in Parquet files tracked by DuckLake.
+- **[Stream to Local DuckLake](../../guides/stream-to-local-ducklake/)** - land OTLP rows in local Parquet files tracked by DuckLake.
+- **[Stream to Remote DuckLake](../../guides/stream-to-remote-ducklake/)** - land OTLP rows in DuckLake with Neon and R2.
 - **[Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/)** - land OTLP rows in Amazon S3 Tables as an Iceberg catalog.
 - **[Stream to Cloudflare R2 Data Catalog](../../guides/stream-to-r2-data-catalog/)** - land OTLP rows in Cloudflare R2 Data Catalog as an Iceberg catalog.
 - **[Live Ingest Reference](../../reference/serve/)** - all parameters, endpoints, auth, status codes, buffering, and durability.

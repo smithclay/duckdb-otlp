@@ -4,10 +4,9 @@ title: "How-to Guides"
 
 Use these when you already know the task you want to complete.
 
-- [How to analyze traces](analyzing-traces/)
-- [How to filter logs](filtering-logs/)
-- [How to work with metrics](working-with-metrics/)
-- [How to stream to DuckLake](stream-to-ducklake/)
+- [How to analyze telemetry](analyze-telemetry/)
+- [How to stream to local DuckLake](stream-to-local-ducklake/)
+- [How to stream to remote DuckLake](stream-to-remote-ducklake/)
 - [How to store agent traces in local DuckLake](store-agent-traces-local-ducklake/)
 - [How to stream to Amazon S3 Tables](stream-to-s3-tables/)
 - [How to stream to Cloudflare R2 Data Catalog](stream-to-r2-data-catalog/)

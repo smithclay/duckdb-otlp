@@ -87,12 +87,13 @@ FROM otlp_logs;
 
 You can query while the server is still running after the automatic background commit. Use `otlp_flush` only when you need the latest accepted rows visible immediately.
 
-For durable lakehouse ingest, pass `catalog` to an attached lakehouse catalog; see [Stream to DuckLake](../guides/stream-to-ducklake/), [Stream to Amazon S3 Tables](../guides/stream-to-s3-tables/), or [Stream to Cloudflare R2 Data Catalog](../guides/stream-to-r2-data-catalog/).
+For durable lakehouse ingest, pass `catalog` to an attached lakehouse catalog; see [Stream to Local DuckLake](../guides/stream-to-local-ducklake/), [Stream to Remote DuckLake](../guides/stream-to-remote-ducklake/), [Stream to Amazon S3 Tables](../guides/stream-to-s3-tables/), or [Stream to Cloudflare R2 Data Catalog](../guides/stream-to-r2-data-catalog/).
 
 ## Next Steps
 
 - [Live Ingest Quickstart](../quickstart/serve/) - POST one log record over OTLP/HTTP.
-- [Stream to DuckLake](../guides/stream-to-ducklake/) - stream OTLP into DuckLake/Parquet.
+- [Stream to Local DuckLake](../guides/stream-to-local-ducklake/) - stream OTLP into local DuckLake/Parquet.
+- [Stream to Remote DuckLake](../guides/stream-to-remote-ducklake/) - stream OTLP into DuckLake with Neon and R2.
 - [Stream to Amazon S3 Tables](../guides/stream-to-s3-tables/) - stream OTLP into Amazon S3 Tables as an Iceberg catalog.
 - [Stream to Cloudflare R2 Data Catalog](../guides/stream-to-r2-data-catalog/) - stream OTLP into Cloudflare R2 Data Catalog as an Iceberg catalog.
 - [How to Configure the OpenTelemetry Collector](../setup/collector/) - export OTLP files from the OpenTelemetry Collector.

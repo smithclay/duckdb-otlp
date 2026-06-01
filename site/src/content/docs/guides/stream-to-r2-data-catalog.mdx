@@ -2,7 +2,13 @@
 title: "How to Stream OTLP to Cloudflare R2 Data Catalog"
 ---
 
-Run the `duckdb-otlp` Docker image in `r2-data-catalog` mode to stream OTLP/HTTP exports into an Iceberg catalog hosted by **Cloudflare R2 Data Catalog**. The container initializes DuckDB, loads the required extensions, attaches the R2 Data Catalog warehouse, starts the ingest server, and commits accepted rows in batches.
+import PostLogRecord from '../../../components/docs/PostLogRecord.astro';
+import QueryCommittedRows from '../../../components/docs/QueryCommittedRows.astro';
+import StopCleanly from '../../../components/docs/StopCleanly.astro';
+
+This guide shows you how to run the `duckdb-otlp` Docker image in `r2-data-catalog` mode and stream OTLP/HTTP exports into an Iceberg catalog hosted by **Cloudflare R2 Data Catalog**.
+
+The container initializes DuckDB, loads the required extensions, attaches the R2 Data Catalog warehouse, starts the ingest server, and commits accepted rows in batches.
 
 This guide is specifically for **R2 Data Catalog**, the managed Cloudflare service that exposes an Iceberg REST catalog for an R2 bucket. It is not the same as writing Iceberg metadata and Parquet files to an ordinary R2 bucket through the S3-compatible API.
 
@@ -85,52 +91,18 @@ The container creates these Iceberg tables in the R2 Data Catalog namespace if t
 - `r2catalog.otlp.otlp_metrics_histogram`
 - `r2catalog.otlp.otlp_metrics_exp_histogram`
 
-## POST a log record
+<PostLogRecord
+  serviceName="r2-data-catalog-demo"
+  message="hello from Cloudflare R2 Data Catalog"
+  guide="stream-to-r2-data-catalog"
+/>
 
-In another terminal:
+<QueryCommittedRows
+  table="r2catalog.otlp.otlp_logs"
+  serviceName="r2-data-catalog-demo"
+/>
 
-```bash
-curl -sS http://localhost:4318/v1/logs \
-  -H 'Authorization: Bearer dev-token-123456' \
-  -H 'Content-Type: application/json' \
-  -d '{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"r2-data-catalog-demo"}},{"key":"deployment.environment","value":{"stringValue":"docs"}}]},"scopeLogs":[{"scope":{"name":"duckdb-otlp-guide"},"logRecords":[{"timeUnixNano":"1704067200000000000","observedTimeUnixNano":"1704067200123456789","severityNumber":9,"severityText":"INFO","body":{"stringValue":"hello from Cloudflare R2 Data Catalog"},"attributes":[{"key":"guide","value":{"stringValue":"stream-to-r2-data-catalog"}}]}]}]}]}'
-```
-
-**Response:**
-
-```json
-{"status":"buffered","rows":1,"batches":1}
-```
-
-Rows are accepted before they are durable. They commit automatically in the background, on graceful shutdown, or immediately after an explicit flush.
-
-## Query committed rows
-
-Flush and query through the running container:
-
-```bash
-docker exec duckdb-otlp sh -c \
-  "printf '%s\n' \
-    \"SELECT * FROM otlp_flush('otlp:0.0.0.0:4318');\" \
-    \"SELECT service_name, severity_text, body\" \
-    \"FROM r2catalog.otlp.otlp_logs\" \
-    \"WHERE service_name = 'r2-data-catalog-demo'\" \
-    \"ORDER BY timestamp DESC\" \
-    \"LIMIT 5;\" \
-    > /tmp/duckdb-otlp.sql"
-
-docker logs --tail 80 duckdb-otlp
-```
-
-## Stop cleanly
-
-If you plan to delete the R2 Data Catalog resources immediately, skip this step and use [Clean up](#clean-up) instead.
-
-```bash
-docker stop duckdb-otlp
-```
-
-The image sends `otlp_stop('otlp:0.0.0.0:4318')` during shutdown, so remaining buffered rows are committed before the process exits.
+<StopCleanly cleanupTarget="R2 Data Catalog" />
 
 ## Clean up
 
@@ -179,14 +151,15 @@ curl -fsS \
 wrangler r2 bucket delete "$R2_BUCKET_NAME"
 ```
 
-## Notes
+## Troubleshooting
 
-- R2 Data Catalog is currently a Cloudflare open beta.
-- R2 Data Catalog does not currently support R2 buckets in a non-default jurisdiction.
-- DuckDB uses a `TYPE ICEBERG` secret here for the Cloudflare API token. Do not use DuckDB's `TYPE s3` secret for R2 Data Catalog attachment.
-- R2 Data Catalog accepts Iceberg `TIMESTAMP` columns, not DuckDB's `TIMESTAMP_NS` type. Live ingest tables therefore store OTLP timestamp columns as DuckDB `TIMESTAMP` with microsecond precision.
-- OTLP count and flag fields use signed SQL integer types so the created tables stay compatible with Iceberg catalogs that do not accept DuckDB unsigned integer types.
-- R2 Data Catalog has its own table maintenance features such as compaction and snapshot expiration. `duckdb-otlp` only probes the generic DuckDB `CHECKPOINT <catalog>` hook on its internal maintenance cadence; if the catalog reports checkpointing as unsupported, automatic maintenance is disabled for that server and normal ingest/flush/stop durability behavior is unchanged.
+- If startup cannot attach the catalog, confirm `CLOUDFLARE_CATALOG_URI`, `CLOUDFLARE_CATALOG_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, and `CLOUDFLARE_R2_BUCKET` all refer to the same bucket.
+- If startup attaches the catalog but cannot write files, confirm `CLOUDFLARE_ACCESS_KEY_ID` and `CLOUDFLARE_SECRET_ACCESS_KEY` can write objects to the R2 bucket.
+- If no rows appear after a `202` response, run the flush command before querying.
+- If bucket deletion reports that the bucket is not empty, delete the remaining catalog objects as shown in [Clean up](#clean-up), then retry `wrangler r2 bucket delete`.
+- R2 Data Catalog currently does not support R2 buckets in a non-default jurisdiction.
+- R2 Data Catalog stores live ingest timestamp columns with microsecond precision because the Iceberg catalog does not accept DuckDB `TIMESTAMP_NS` columns.
+- If catalog checkpointing is reported as unsupported, no action is required; ingest, flush, and stop durability behavior is unchanged.
 
 ## See also
 
@@ -194,4 +167,3 @@ wrangler r2 bucket delete "$R2_BUCKET_NAME"
 - [Cloudflare R2 Data Catalog management docs](https://developers.cloudflare.com/r2/data-catalog/manage-catalogs/)
 - [DuckDB Iceberg REST catalog docs](https://duckdb.org/docs/current/core_extensions/iceberg/iceberg_rest_catalogs)
 - [Live Ingest Reference](../../reference/serve/)
-- [Live Ingest Quickstart](../../quickstart/serve/)

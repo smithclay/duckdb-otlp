@@ -86,7 +86,7 @@ SELECT count(*) FROM read_otlp_logs('test/data/logs_simple.jsonl');
 
 - [Get Started](../../get-started/) - install, load, and run first queries.
 - [OpenTelemetry Collector](../collector/) - export OTLP files from the collector.
-- [Sample Data](../sample-data/) - use small test files.
+- [OpenTelemetry Demo](../otel-demo/) - stream realistic demo telemetry into local DuckLake.
 - [How-to Guides](../../guides/) - complete query and export tasks.
 
 ## Troubleshooting

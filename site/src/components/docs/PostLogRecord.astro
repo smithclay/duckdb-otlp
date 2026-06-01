@@ -1,0 +1,69 @@
+---
+import { Code } from '@astrojs/starlight/components';
+
+interface Props {
+  serviceName: string;
+  message: string;
+  guide: string;
+  token?: string;
+}
+
+const {
+  serviceName,
+  message,
+  guide,
+  token = 'dev-token-123456',
+} = Astro.props;
+
+const payload = JSON.stringify({
+  resourceLogs: [
+    {
+      resource: {
+        attributes: [
+          { key: 'service.name', value: { stringValue: serviceName } },
+          { key: 'deployment.environment', value: { stringValue: 'docs' } },
+        ],
+      },
+      scopeLogs: [
+        {
+          scope: { name: 'duckdb-otlp-guide' },
+          logRecords: [
+            {
+              timeUnixNano: '1704067200000000000',
+              observedTimeUnixNano: '1704067200123456789',
+              severityNumber: 9,
+              severityText: 'INFO',
+              body: { stringValue: message },
+              attributes: [
+                { key: 'guide', value: { stringValue: guide } },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  ],
+});
+
+const curlCommand = `curl -sS http://localhost:4318/v1/logs \\
+  -H 'Authorization: Bearer ${token}' \\
+  -H 'Content-Type: application/json' \\
+  -d '${payload}'`;
+
+const response = '{"status":"buffered","rows":1,"batches":1}';
+---
+
+<h2 id="post-a-log-record">POST a log record</h2>
+
+<p>In another terminal:</p>
+
+<Code code={curlCommand} lang="bash" />
+
+<p><strong>Response:</strong></p>
+
+<Code code={response} lang="json" />
+
+<p>
+  Rows are accepted before they are durable. They commit automatically in the
+  background, on graceful shutdown, or immediately after an explicit flush.
+</p>

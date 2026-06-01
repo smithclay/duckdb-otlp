@@ -15,15 +15,21 @@ Create a Docker volume for DuckLake metadata and Parquet data:
 docker volume create duckdb-otlp-ducklake
 ```
 
+Create `.env`:
+
+```ini
+DUCKDB_MODE=local-ducklake
+DUCKLAKE_NAME=lake
+DUCKDB_OTLP_TOKEN=dev-otlp-token-123456
+```
+
 Start the published server image:
 
 ```bash
 docker run --rm --name duckdb-otlp \
+  --env-file .env \
   -p 4318:4318 \
   -v duckdb-otlp-ducklake:/data \
-  -e DUCKDB_MODE=local-ducklake \
-  -e DUCKLAKE_NAME=lake \
-  -e DUCKDB_OTLP_TOKEN=dev-otlp-token-123456 \
   ghcr.io/smithclay/duckdb-otlp:latest
 ```
 
@@ -33,7 +39,7 @@ This starts `duckdb-otlp` at `http://localhost:4318`. OTLP/HTTP traces are accep
 http://localhost:4318/v1/traces
 ```
 
-The local token in this guide is:
+The token in `.env` is:
 
 ```text
 dev-otlp-token-123456
@@ -157,5 +163,5 @@ The image sends `otlp_stop('otlp:0.0.0.0:4318')` to DuckDB during shutdown so re
 
 ## See also
 
-- [How to stream to DuckLake](../stream-to-ducklake/)
+- [How to stream to local DuckLake](../stream-to-local-ducklake/)
 - [Live Ingest Reference](../../reference/serve/)

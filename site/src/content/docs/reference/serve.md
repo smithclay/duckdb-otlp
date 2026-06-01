@@ -6,7 +6,7 @@ The extension can run an embedded HTTP server that accepts live OTLP/HTTP export
 
 > **Not available in WASM builds.** The server requires the native extension. Live ingestion is HTTP-only (no gRPC).
 
-For a copy-pasteable walkthrough, see the [Live Ingest Quickstart](../../quickstart/serve/). For lakehouse examples, see [Stream to DuckLake](../../guides/stream-to-ducklake/), [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/), and [Stream to Cloudflare R2 Data Catalog](../../guides/stream-to-r2-data-catalog/). For how it works internally, see [Architecture](../../architecture/#otlp-http-ingest-server).
+For a copy-pasteable walkthrough, see the [Live Ingest Quickstart](../../quickstart/serve/). For lakehouse examples, see [Stream to Local DuckLake](../../guides/stream-to-local-ducklake/), [Stream to Remote DuckLake](../../guides/stream-to-remote-ducklake/), [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/), and [Stream to Cloudflare R2 Data Catalog](../../guides/stream-to-r2-data-catalog/). For how it works internally, see [Architecture](../../architecture/#otlp-http-ingest-server).
 
 ## Functions
 
@@ -281,7 +281,8 @@ It covers auth and validation errors, low-buffer backpressure, metrics fanout, s
 ## See also
 
 - [Live Ingest Quickstart](../../quickstart/serve/) — POST one log to the default catalog with `curl`.
-- [Stream to DuckLake](../../guides/stream-to-ducklake/) — write live OTLP rows to DuckLake.
+- [Stream to Local DuckLake](../../guides/stream-to-local-ducklake/) — write live OTLP rows to local DuckLake.
+- [Stream to Remote DuckLake](../../guides/stream-to-remote-ducklake/) — write live OTLP rows to DuckLake with Neon and R2.
 - [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/) — write live OTLP rows to Amazon S3 Tables as an Iceberg catalog.
 - [Stream to Cloudflare R2 Data Catalog](../../guides/stream-to-r2-data-catalog/) — write live OTLP rows to Cloudflare R2 Data Catalog as an Iceberg catalog.
 - [Architecture](../../architecture/#otlp-http-ingest-server) — buffer, background writer, and `otlp_flush` internals.

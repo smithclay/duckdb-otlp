@@ -1,0 +1,74 @@
+---
+title: "How to Stream OTLP to Local DuckLake"
+---
+
+import PostLogRecord from '../../../components/docs/PostLogRecord.astro';
+import QueryCommittedRows from '../../../components/docs/QueryCommittedRows.astro';
+import StopCleanly from '../../../components/docs/StopCleanly.astro';
+
+This guide shows you how to run the `duckdb-otlp` Docker image in `local-ducklake` mode and stream OTLP/HTTP exports into a local DuckLake lakehouse.
+
+The container initializes DuckDB, loads the required extensions, attaches DuckLake, starts the ingest server, and commits accepted rows in batches.
+
+> Live ingestion is OTLP/HTTP on port `4318`. The ingest server is not available in WASM builds.
+
+## Configure
+
+Create `.env`:
+
+```ini
+DUCKDB_MODE=local-ducklake
+DUCKDB_OTLP_TOKEN=dev-token-123456
+
+DUCKLAKE_NAME=lake
+DUCKLAKE_CATALOG_PATH=/data/ducklake/catalog.duckdb
+DUCKLAKE_DATA_PATH=/data/ducklake/storage
+```
+
+`DUCKLAKE_CATALOG_PATH` stores DuckLake metadata. `DUCKLAKE_DATA_PATH` stores Parquet data files.
+
+## Start the server
+
+```bash
+mkdir -p data
+
+docker run --rm --name duckdb-otlp \
+  --env-file .env \
+  -p 4318:4318 \
+  -v "$(pwd)/data:/data" \
+  ghcr.io/smithclay/duckdb-otlp:latest
+```
+
+The container creates the target tables in `lake.main` if they do not already exist:
+
+- `otlp_logs`
+- `otlp_traces`
+- `otlp_metrics_gauge`
+- `otlp_metrics_sum`
+- `otlp_metrics_histogram`
+- `otlp_metrics_exp_histogram`
+
+Leave the container running while clients send OTLP/HTTP requests.
+
+<PostLogRecord
+  serviceName="local-ducklake-demo"
+  message="hello from local DuckLake"
+  guide="stream-to-local-ducklake"
+/>
+
+<QueryCommittedRows
+  table="lake.main.otlp_logs"
+  serviceName="local-ducklake-demo"
+  includeTimestamp
+  ownershipNote="The server process owns the DuckLake catalog while it runs, so send inspection SQL to the container control file."
+/>
+
+<StopCleanly />
+
+`otlp_flush` is only for ingest durability. Use DuckDB or DuckLake maintenance commands separately if you need immediate compaction.
+
+## See also
+
+- [DuckLake documentation](https://ducklake.select/)
+- [How to stream to remote DuckLake](../stream-to-remote-ducklake/)
+- [Live Ingest Reference](../../reference/serve/)

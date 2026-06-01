@@ -37,7 +37,6 @@ export default defineConfig({
           items: [
             { label: 'Installation', link: '/setup/installation/' },
             { label: 'Collector', link: '/setup/collector/' },
-            { label: 'Sample Data', link: '/setup/sample-data/' },
             { label: 'OpenTelemetry Demo', link: '/setup/otel-demo/' },
           ],
         },
@@ -45,10 +44,9 @@ export default defineConfig({
           label: 'Guides',
           items: [
             { label: 'Overview', link: '/guides/' },
-            { label: 'Analyze Traces', link: '/guides/analyzing-traces/' },
-            { label: 'Filter Logs', link: '/guides/filtering-logs/' },
-            { label: 'Work with Metrics', link: '/guides/working-with-metrics/' },
-            { label: 'Stream to DuckLake', link: '/guides/stream-to-ducklake/' },
+            { label: 'Analyze Telemetry', link: '/guides/analyze-telemetry/' },
+            { label: 'Stream to Local DuckLake', link: '/guides/stream-to-local-ducklake/' },
+            { label: 'Stream to Remote DuckLake', link: '/guides/stream-to-remote-ducklake/' },
             { label: 'Store Agent Traces in DuckLake', link: '/guides/store-agent-traces-local-ducklake/' },
             { label: 'Stream to S3 Tables', link: '/guides/stream-to-s3-tables/' },
             { label: 'Stream to R2 Data Catalog', link: '/guides/stream-to-r2-data-catalog/' },
