@@ -2,7 +2,7 @@
 
 DuckDB extension for querying and storing OpenTelemetry traces, logs, and metrics with SQL.
 
-The embedded HTTP server streams live telemetry, including traces from [Claude Code or Codex](https://smithclay.github.io/duckdb-otlp/guides/store-agent-traces-local-ducklake/), into local DuckDB files, [DuckLake](https://smithclay.github.io/duckdb-otlp/guides/stream-to-ducklake/), or Iceberg catalogs such as [Amazon S3 Tables](https://smithclay.github.io/duckdb-otlp/guides/stream-to-s3-tables/) and [Cloudflare R2 Data Catalog](https://smithclay.github.io/duckdb-otlp/guides/stream-to-r2-data-catalog/).
+As of v0.5, the extension has an embedded HTTP server that lets you stream live telemetry into local parquet files, [DuckLake](https://smithclay.github.io/duckdb-otlp/guides/stream-to-ducklake/), or Iceberg catalogs like [Amazon S3 Tables](https://smithclay.github.io/duckdb-otlp/guides/stream-to-s3-tables/) and [Cloudflare R2 Data Catalog](https://smithclay.github.io/duckdb-otlp/guides/stream-to-r2-data-catalog/).
 
 ## Quickstart: Read OpenTelemetry data
 
@@ -26,13 +26,14 @@ SELECT trace_id, span_name, duration / 1000000 AS duration_ms FROM read_otlp_tra
 
 You can start a server that accepts OpenTelemetry data from instrumented code, AI agents such as [Claude Code or Codex](https://smithclay.github.io/duckdb-otlp/guides/store-agent-traces-local-ducklake/), or OpenTelemetry Collectors. 
 
-You can either run the provider Docker image that automatically runs the extension as a daemon, or type commands in DuckDB shell.
+You can either run a Docker image that runs the extension as a daemon, or type some short commands in DuckDB shell.
 
 <details>
-<summary>Run server as a standalone daemon with Docker</summary>
+<summary>Run server as a daemon with Docker</summary>
 
 ```sh
-# This automatically bootstraps an embedded DuckDB instance with the extension preloaded.
+# Bootstraps an embedded DuckDB instance with the server running
+# Writes data to a local DuckLake file
 mkdir -p data
 
 docker run --rm --name duckdb-otlp \
@@ -65,27 +66,25 @@ Send one hello-world log in OTLP/HTTP format with cURL:
 curl -sS http://localhost:4318/v1/logs -H 'Authorization: Bearer dev-token-123456' -H 'Content-Type: application/json' -d '{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"curl-demo"}}]},"scopeLogs":[{"logRecords":[{"timeUnixNano":"1704067200000000000","severityText":"INFO","body":{"stringValue":"hello from curl"}}]}]}]}'
 ```
 
-Back in DuckDB:
+Query the data after ~5 seconds for the buffer to flush:
 
 ```sql
--- Stop server, flush all buffered data.
-SELECT status FROM otlp_stop('otlp:localhost:4318');
 SELECT timestamp, service_name, severity_text, body FROM otlp_logs;
 ```
 
 Live ingest commits buffered rows in the background after about 5 seconds for the oldest buffered row or about 64 MiB of admitted request-body bytes. Use `otlp_flush` when readers need accepted rows durable and queryable while the server keeps running.
 
-For a full walkthrough, including lakehouse ingest, see the [documentation site](https://smithclay.github.io/duckdb-otlp/).
+For a full walkthrough, including lakehouse ingest, see the [docs](https://smithclay.github.io/duckdb-otlp/).
 
 ## Schema
 
-The schemas align with a normalized version of the [OpenTelemetry Arrow Data model](https://github.com/open-telemetry/otel-arrow/blob/main/docs/data_model.md) as of extension release `v0.5.0`. Release `v0.5.0` includes breaking schema changes from `v0.4.0`.
+The schemas align with a normalized ClickStack-inspired version of the [OpenTelemetry Arrow Data model](https://github.com/open-telemetry/otel-arrow/blob/main/docs/data_model.md) as of extension release `v0.5.0`. Release `v0.5.0` includes breaking schema changes from `v0.4.0`.
 
 ## What You Can Do
 
 - Read OTLP traces, logs, gauges, sums/counters, histograms, and exponential histograms from files.
 - Stream live OTLP/HTTP exports into the default DuckDB catalog, an attached [DuckLake](https://ducklake.select) lakehouse, or an Iceberg REST catalog such as Amazon S3 Tables or Cloudflare R2 Data Catalog.
-- Convert telemetry exports to Parquet with DuckDB `COPY`.
+- Convert telemetry to Parquet files and save to cloud storage.
 - Query local files, globs, S3, HTTP(S), Azure Blob, and GCS paths through DuckDB file systems.
 - Use the browser demo for JSON, JSONL, and protobuf exploration with DuckDB-WASM: [Interactive Demo](https://smithclay.github.io/duckdb-otlp/demo/).
 
