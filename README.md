@@ -6,20 +6,34 @@ As of v0.5, the extension has an embedded HTTP server that lets you stream live 
 
 ## Quickstart: Read OpenTelemetry data
 
-Install and load the extension in a `duckdb` v1.5.3 or higher:
+Install and load the extension in `duckdb` v1.5.3 or higher:
 
 ```sql
+-- Note: v0.5.0 pending publication in the community repo
+-- Until merged, installing unsigned via this repo required (see below)
 INSTALL otlp FROM community;
 LOAD otlp;
 ```
+
+<details>
+<summary>Install nightly/pre-release extension via GitHub</summary>
+
+```sql
+-- Install unsigned extenstion from GitHub
+-- You must start duckdb with `-unsigned` to allow this
+INSTALL otlp from 'https://smithclay.github.io/duckdb-otlp';
+LOAD otlp;
+```
+
+</details>
 
 Read OTLP protobuf/JSON data from public URLs, local files, or object storage buckets:
 
 ```sql
 LOAD httpfs;
-SELECT timestamp, service_name, severity_text, body FROM read_otlp_logs('https://github.com/smithclay/duckdb-otlp/raw/refs/heads/main/test/data/otlp_logs.pb');
+SELECT time_unix_nano, service_name, severity_text, body FROM read_otlp_logs('https://github.com/smithclay/duckdb-otlp/raw/refs/heads/main/test/data/otlp_logs.pb');
 
-SELECT trace_id, span_name, duration / 1000000 AS duration_ms FROM read_otlp_traces('https://github.com/smithclay/duckdb-otlp/raw/refs/heads/main/test/data/otlp_traces.pb') ORDER BY duration DESC;
+SELECT trace_id, name, duration_time_unix_nano FROM read_otlp_traces('https://github.com/smithclay/duckdb-otlp/raw/refs/heads/main/test/data/otlp_traces.pb') ORDER BY duration_time_unix_nano DESC;
 ```
 
 ## Quickstart: Stream OpenTelemetry data
@@ -34,25 +48,27 @@ You can either run a Docker image that runs the extension as a daemon, or type s
 ```sh
 # Bootstraps an embedded DuckDB instance with the server running
 # Writes data to a local DuckLake file
-mkdir -p data
+mkdir -p data 
+export DUCKDB_OTLP_TOKEN=dev-token-123456
 
 docker run --rm --name duckdb-otlp \
-  -p 4318:4318 \
-  -v "$(pwd)/data:/data" \
-  ghcr.io/smithclay/duckdb-otlp:latest
+    -p 4318:4318 \
+    -e DUCKDB_OTLP_TOKEN \
+    -v "$(pwd)/data:/data" \
+    ghcr.io/smithclay/duckdb-otlp:latest
 ```
+
+To query the running daemon using Quack protocol, [see docs here](https://smithclay.github.io/duckdb-otlp/guides/query-with-quack/).
 
 </details>
 
 <details>
-<summary>Start server manually from the DuckDB shell</summary>
+<summary>Start server in the DuckDB shell</summary>
 
 ```sql
-INSTALL otlp FROM community;
-LOAD otlp;
-
+-- See instructions above for loading otlp extension
 -- Inside DuckDB 1.5.3+
-SELECT otlp_serve(
+FROM otlp_serve(
     'otlp:localhost:4318',
     token := 'dev-token-123456'
 );
@@ -69,7 +85,7 @@ curl -sS http://localhost:4318/v1/logs -H 'Authorization: Bearer dev-token-12345
 Query the data after ~5 seconds for the buffer to flush:
 
 ```sql
-SELECT timestamp, service_name, severity_text, body FROM otlp_logs;
+SELECT time_unix_nano, service_name, severity_text, body FROM otlp_logs;
 ```
 
 Live ingest commits buffered rows in the background after about 5 seconds for the oldest buffered row or about 64 MiB of admitted request-body bytes. Use `otlp_flush` when readers need accepted rows durable and queryable while the server keeps running.

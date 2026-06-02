@@ -6,19 +6,22 @@ Use the DuckDB OpenTelemetry Extension to query OpenTelemetry files, then try th
 
 ## Prerequisites
 
-- DuckDB 0.10 or later.
-- A native DuckDB build for live ingest.
-- The repository checkout if you want to use the bundled `test/data/` samples:
-
-```bash
-git clone https://github.com/smithclay/duckdb-otlp.git
-cd duckdb-otlp
-```
+- DuckDB 1.5.3 or later.
+- OpenTelemetry data
+- Docker (if you want to use the server daemon image)
 
 ## 1. Install and Load
 
 ```sql
+-- Install from community repo
 INSTALL otlp FROM community;
+LOAD otlp;
+```
+
+Alternately, for development and pre-releases, start duckdb with `-unsigned` and you can install from GitHub:
+```sql
+-- Install unsigned from GitHub pages (nightly/pre-release)
+INSTALL otlp from 'https://smithclay.github.io/duckdb-otlp';
 LOAD otlp;
 ```
 
@@ -27,30 +30,18 @@ LOAD otlp;
 The table functions accept local paths, globs, and DuckDB-supported remote file systems.
 
 ```sql
+LOAD httpfs;
+
+SELECT time_unix_nano, service_name, severity_text, body
+FROM read_otlp_logs('https://github.com/smithclay/duckdb-otlp/raw/refs/heads/main/test/data/otlp_logs.pb')
+WHERE severity_text = 'ERROR';
+
 SELECT
     trace_id,
     name,
     duration_time_unix_nano / 1000000 AS duration_ms
-FROM read_otlp_traces('test/data/traces_simple.jsonl')
+FROM read_otlp_traces('https://github.com/smithclay/duckdb-otlp/raw/refs/heads/main/test/data/otlp_traces.pb')
 ORDER BY duration_time_unix_nano DESC;
-```
-
-```sql
-SELECT time_unix_nano, service_name, severity_text, body
-FROM read_otlp_logs('test/data/logs_simple.jsonl')
-WHERE severity_text = 'ERROR';
-```
-
-```sql
-SELECT time_unix_nano, name, coalesce(double_value, int_value::DOUBLE) AS value
-FROM read_otlp_metrics_gauge('test/data/metrics_simple.jsonl');
-```
-
-Histogram metrics use typed readers too:
-
-```sql
-SELECT name, count, sum, bucket_counts, explicit_bounds
-FROM read_otlp_metrics_histogram('test/data/metrics_simple.jsonl');
 ```
 
 See the [Schema Reference](../reference/schemas/) for every column emitted by each reader.
