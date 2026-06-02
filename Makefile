@@ -89,6 +89,7 @@ docker-image: docker-image-local
 docker-image-local:
 	docker buildx build \
 		--platform $(DOCKER_LOCAL_PLATFORM) \
+		--target runtime-source \
 		--load \
 		-t $(DOCKER_IMAGE) \
 		-f docker/duckdb-otlp-server/Dockerfile \
@@ -98,6 +99,7 @@ docker-image-multiarch:
 	mkdir -p $(dir $(DOCKER_OCI_OUTPUT))
 	docker buildx build \
 		--platform $(DOCKER_PLATFORMS) \
+		--target runtime-source \
 		--output type=oci,dest=$(DOCKER_OCI_OUTPUT) \
 		-t $(DOCKER_IMAGE) \
 		-f docker/duckdb-otlp-server/Dockerfile \

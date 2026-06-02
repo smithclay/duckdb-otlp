@@ -238,4 +238,12 @@ private:
 	string last_error;
 };
 
+//! Loopback HTTP probe backing the daemon's `healthcheck` subcommand. Distroless images
+//! ship no shell/curl, so the daemon health-checks itself: returns true if
+//! GET http://127.0.0.1:<port><path> answers 2xx/3xx within a short timeout. Defined in
+//! otlp_server_http.cpp (httplib lives there); not built for wasm.
+#ifndef __EMSCRIPTEN__
+bool OtlpLoopbackHttpStatusOk(int port, const string &path);
+#endif
+
 } // namespace duckdb

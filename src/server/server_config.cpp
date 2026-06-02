@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <limits>
 #include <sstream>
+#include <system_error>
 
 namespace duckdb_otlp_server {
 namespace {
@@ -162,15 +163,28 @@ bool IsS3Path(const string &path) {
 }
 
 void CreateDirectory(const string &path) {
-	if (!path.empty()) {
-		std::filesystem::create_directories(path);
+	if (path.empty()) {
+		return;
+	}
+	std::error_code ec;
+	std::filesystem::create_directories(path, ec);
+	if (ec) {
+		throw InvalidInputException("Failed to create directory \"%s\": %s (check the mounted volume and permissions)",
+		                            path, ec.message());
 	}
 }
 
 void CreateParentDirectory(const string &path) {
 	auto parent = std::filesystem::path(path).parent_path();
-	if (!parent.empty()) {
-		std::filesystem::create_directories(parent);
+	if (parent.empty()) {
+		return;
+	}
+	std::error_code ec;
+	std::filesystem::create_directories(parent, ec);
+	if (ec) {
+		throw InvalidInputException(
+		    "Failed to create parent directory \"%s\" for \"%s\": %s (check the mounted volume and permissions)",
+		    parent.string(), path, ec.message());
 	}
 }
 
@@ -205,11 +219,16 @@ void ValidateCatalogDoesNotShadowDatabase(const ServerConfig &config) {
 	}
 }
 
-string EnvSql(const string &name, const string &fallback = "") {
-	if (HasEnv(name.c_str())) {
-		return "getenv(" + SqlQuote(name) + ")";
+string EnvSql(ServerConfig &config, const string &name, const string &fallback = "") {
+	if (!HasEnv(name.c_str())) {
+		return SqlQuote(fallback);
 	}
-	return SqlQuote(fallback);
+	// Read the value through a session variable the daemon binds from the environment, not
+	// getenv(): getenv() is a CLI-only DuckDB function and is NOT registered in the embedded
+	// library the daemon links, so it errors at mode setup. Recording only the NAME keeps the
+	// secret value out of the generated SQL text (which DRY_RUN prints).
+	config.env_variables.push_back(name);
+	return "getvariable(" + SqlQuote("env_" + name) + ")";
 }
 
 int ParsePositiveIntEnv(const char *name, int fallback) {
@@ -319,9 +338,9 @@ ATTACH %s AS %s (
   SECRET cloudflare_catalog_secret
 );
 )SQL",
-	                                           EnvSql(access_key_var), EnvSql(secret_key_var), SqlQuote(endpoint),
-	                                           EnvSql(catalog_token_var), SqlQuote(warehouse),
-	                                           QuoteIdent(config.catalog), SqlQuote(catalog_uri));
+	                                           EnvSql(config, access_key_var), EnvSql(config, secret_key_var),
+	                                           SqlQuote(endpoint), EnvSql(config, catalog_token_var),
+	                                           SqlQuote(warehouse), QuoteIdent(config.catalog), SqlQuote(catalog_uri));
 }
 
 void ConfigureParquet(ServerConfig &config) {
@@ -418,7 +437,7 @@ ATTACH %s AS %s (
   DATA_PATH %s
 );
 )SQL",
-	                       EnvSql(access_key_var), EnvSql(secret_key_var), SqlQuote(endpoint),
+	                       EnvSql(config, access_key_var), EnvSql(config, secret_key_var), SqlQuote(endpoint),
 	                       SqlQuote("ducklake:" + catalog_path), QuoteIdent(config.catalog), SqlQuote(data_path));
 }
 
@@ -473,9 +492,10 @@ CREATE OR REPLACE SECRET ducklake_secret (
 );
 ATTACH 'ducklake:ducklake_secret' AS %s;
 )SQL",
-	    EnvSql(access_key_var), EnvSql(secret_key_var), SqlQuote(endpoint), EnvSql("NEON_PGHOST"),
-	    EnvSql("NEON_PGPORT", "5432"), EnvSql("NEON_PGDATABASE"), EnvSql("NEON_PGUSER"), EnvSql("NEON_PGPASSWORD"),
-	    EnvSql("NEON_PGSSLMODE", "require"), SqlQuote(data_path), QuoteIdent(config.catalog));
+	    EnvSql(config, access_key_var), EnvSql(config, secret_key_var), SqlQuote(endpoint),
+	    EnvSql(config, "NEON_PGHOST"), EnvSql(config, "NEON_PGPORT", "5432"), EnvSql(config, "NEON_PGDATABASE"),
+	    EnvSql(config, "NEON_PGUSER"), EnvSql(config, "NEON_PGPASSWORD"), EnvSql(config, "NEON_PGSSLMODE", "require"),
+	    SqlQuote(data_path), QuoteIdent(config.catalog));
 }
 
 void ConfigureS3Tables(ServerConfig &config) {
@@ -568,6 +588,7 @@ ServerConfig ServerConfig::FromEnv() {
 	config.otel_http_addr = Env("OTEL_HTTP_ADDR", "0.0.0.0:4318");
 	config.listen_uri = Env("DUCKDB_OTLP_LISTEN_URI", "otlp:" + config.otel_http_addr);
 	config.token = Env("OTEL_AUTH_TOKEN", Env("DUCKDB_OTLP_TOKEN", DEFAULT_TOKEN));
+	config.using_default_token = config.token == DEFAULT_TOKEN;
 	config.quack_enabled = Truthy(Env("DUCKDB_QUACK_ENABLED", Env("QUACK_ENABLED", "0")));
 	config.quack_http_addr = Env("DUCKDB_QUACK_ADDR", Env("QUACK_HTTP_ADDR", "0.0.0.0:9494"));
 	config.quack_listen_uri = Env("DUCKDB_QUACK_LISTEN_URI", "quack:" + config.quack_http_addr);

@@ -25,6 +25,7 @@ import statistics
 import string
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -82,6 +83,7 @@ class ScenarioContext:
     token: str
     container_name: str
     dry_run: bool = False
+    quack_port: int = 0
     catalog: str = "lake"
     schema: str = "otlp"
     docker_env: dict[str, str] = field(default_factory=dict)
@@ -659,6 +661,10 @@ def s3_tables_setup(ctx: ScenarioContext) -> None:
             ),
             env=ctx.env,
         ).stdout.strip()
+        # Empty the table bucket before the stack delete (registered after the stack so the
+        # reversed() cleanup runs it first), otherwise CloudFormation can't delete the
+        # populated bucket and it leaks.
+        ctx.cleanup.append(("s3_tables_bucket", {"arn": table_bucket_arn, "profile": profile, "region": region}))
     ctx.resources.update(
         {
             "aws_profile": profile or "default",
@@ -854,6 +860,8 @@ SETUP_BY_SCENARIO = {
 def start_container(ctx: ScenarioContext) -> None:
     configure_container_env(ctx)
     require_program("docker")
+    # The daemon image is distroless (no shell/duckdb); Quack queries run from a host duckdb.
+    require_program("duckdb")
     run_cmd(["docker", "rm", "-f", ctx.container_name], check=False)
     args = docker_run_args(ctx)
     run_cmd(args)
@@ -882,6 +890,8 @@ def docker_run_args(ctx: ScenarioContext) -> list[str]:
         ctx.container_name,
         "-p",
         f"127.0.0.1:{ctx.port}:4318",
+        "-p",
+        f"127.0.0.1:{ctx.quack_port}:9494",
     ]
     if ctx.platform:
         args[2:2] = ["--platform", ctx.platform]
@@ -1166,80 +1176,50 @@ def send_load(ctx: ScenarioContext, duration: float, rate: int, batch_size: int)
     }
 
 
-def quack_control_sql(ctx: ScenarioContext, sql: str) -> str:
+# The daemon image is distroless (no shell/duckdb inside the container), so Quack queries
+# run from the host duckdb CLI against the published Quack port (ctx.quack_port -> 9494).
+def quack_query_expr(ctx: ScenarioContext, sql: str) -> str:
     return "\n".join(
         [
-            "INSTALL quack;",
-            "LOAD quack;",
             "FROM quack_query(",
-            "  'quack:127.0.0.1:9494',",
+            f"  {sql_quote(f'quack:127.0.0.1:{ctx.quack_port}')},",
             f"  {sql_quote(sql)},",
             f"  token = {sql_quote(ctx.token + '-quack')}",
-            ");",
+            ")",
         ]
     )
 
 
-def docker_quack_sql(ctx: ScenarioContext, sql: str) -> None:
-    control = quack_control_sql(ctx, sql)
-    run_cmd(
-        [
-            "docker",
-            "exec",
-            "-i",
-            ctx.container_name,
-            "sh",
-            "-c",
-            "cat > /tmp/duckdb-otlp-query.sql && duckdb -unsigned :memory: < /tmp/duckdb-otlp-query.sql",
-        ],
-        input_text=control,
-    )
+def run_host_duckdb(control: str, timeout: float = 60) -> str:
+    return run_cmd(["duckdb", "-unsigned", ":memory:"], input_text=control, timeout=timeout).stdout
+
+
+def quack_exec(ctx: ScenarioContext, sql: str) -> None:
+    run_host_duckdb("INSTALL quack;\nLOAD quack;\n" + quack_query_expr(ctx, sql) + ";\n")
 
 
 def query_json(ctx: ScenarioContext, query: str, name: str, timeout: float = 60) -> list[dict[str, Any]]:
-    path = f"/tmp/bench-{slug(name)}-{int(time.time() * 1000)}.json"
-    control = "\n".join(
-        [
-            "INSTALL quack;",
-            "LOAD quack;",
-            "COPY (",
-            "  FROM quack_query(",
-            "    'quack:127.0.0.1:9494',",
-            f"    {sql_quote(query)},",
-            f"    token = {sql_quote(ctx.token + '-quack')}",
-            "  )",
-            f") TO {sql_quote(path)} (FORMAT JSON);",
-        ]
+    fd, tmp = tempfile.mkstemp(prefix=f"bench-{slug(name)}-", suffix=".json")
+    os.close(fd)
+    os.unlink(tmp)  # COPY ... TO creates the file fresh
+    out_path = Path(tmp)
+    control = (
+        "INSTALL quack;\nLOAD quack;\nCOPY (\n"
+        + quack_query_expr(ctx, query)
+        + f"\n) TO {sql_quote(str(out_path))} (FORMAT JSON);\n"
     )
-    run_cmd(
-        [
-            "docker",
-            "exec",
-            "-i",
-            ctx.container_name,
-            "sh",
-            "-c",
-            "cat > /tmp/duckdb-otlp-query.sql && duckdb -unsigned :memory: < /tmp/duckdb-otlp-query.sql",
-        ],
-        input_text=control,
-    )
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        test = run_cmd(["docker", "exec", ctx.container_name, "test", "-s", path], check=False)
-        if test.returncode == 0:
-            raw = run_cmd(["docker", "exec", ctx.container_name, "cat", path]).stdout.strip()
-            run_cmd(["docker", "exec", ctx.container_name, "rm", "-f", path], check=False)
-            if not raw:
-                return []
-            with contextlib.suppress(json.JSONDecodeError):
-                payload = json.loads(raw)
-                return payload if isinstance(payload, list) else [payload]
-            rows = []
-            for line in raw.splitlines():
-                rows.append(json.loads(line))
-            return rows
-        time.sleep(0.5)
-    raise BenchError(f"timed out waiting for query result: {name}")
+    try:
+        run_host_duckdb(control, timeout=timeout)
+        raw = out_path.read_text().strip() if out_path.exists() else ""
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            out_path.unlink()
+    if not raw:
+        return []
+    with contextlib.suppress(json.JSONDecodeError):
+        payload = json.loads(raw)
+        return payload if isinstance(payload, list) else [payload]
+    return [json.loads(line) for line in raw.splitlines() if line]
 
 
 def collect_db_stats(ctx: ScenarioContext) -> dict[str, Any]:
@@ -1316,7 +1296,7 @@ def drop_tables(ctx: ScenarioContext) -> None:
     statements = ["SELECT status FROM otlp_stop('otlp:0.0.0.0:4318');"]
     statements.extend(f"DROP TABLE IF EXISTS {ctx.catalog}.{ctx.schema}.{table};" for table in DEFAULT_TABLES)
     statements.append(f"DETACH {ctx.catalog};")
-    docker_quack_sql(ctx, "\n".join(statements) + "\n")
+    quack_exec(ctx, "\n".join(statements) + "\n")
     time.sleep(2)
 
 
@@ -1361,13 +1341,13 @@ def storage_summary(ctx: ScenarioContext) -> dict[str, Any]:
         data_path = ctx.resources.get("data_path")
         if not data_path:
             return {}
-        result = run_cmd(
-            ["docker", "exec", ctx.container_name, "find", data_path, "-type", "f"],
-            check=False,
-        )
-        if result.returncode != 0:
-            return {"error": result.stderr.strip()}
-        files = [line for line in result.stdout.splitlines() if line]
+        # Distroless image has no shell/find; list files via the daemon's own glob() over Quack.
+        glob_pattern = data_path.rstrip("/") + "/**"
+        try:
+            rows = query_json(ctx, f"SELECT file FROM glob({sql_quote(glob_pattern)})", "storage-files")
+        except BenchError as exc:
+            return {"error": str(exc)}
+        files = [row["file"] for row in rows if row.get("file")]
         return {
             "path": data_path,
             "objects": len(files),
@@ -1380,6 +1360,83 @@ def storage_summary(ctx: ScenarioContext) -> dict[str, Any]:
     if ctx.name == "s3-tables":
         return s3_tables_summary(ctx)
     return {"note": "object files are managed by the provider and are not enumerated by this harness"}
+
+
+def empty_s3_tables_bucket(ctx: ScenarioContext, arn: str, profile: str | None, region: str) -> None:
+    """Delete every table and namespace in an S3 Tables bucket so CloudFormation can delete the
+    (now-empty) bucket. CloudFormation delete-stack fails on a populated table bucket, which
+    otherwise leaks the bucket and leaves the stack in DELETE_FAILED."""
+    ns_result = run_cmd(
+        aws_cli(
+            ctx.env,
+            "s3tables",
+            "list-namespaces",
+            "--table-bucket-arn",
+            arn,
+            "--query",
+            "namespaces[].namespace[0]",
+            "--output",
+            "text",
+            profile=profile,
+            region=region,
+        ),
+        env=ctx.env,
+        check=False,
+    )
+    namespaces = ns_result.stdout.split() if ns_result.returncode == 0 else []
+    for namespace in namespaces:
+        tbl_result = run_cmd(
+            aws_cli(
+                ctx.env,
+                "s3tables",
+                "list-tables",
+                "--table-bucket-arn",
+                arn,
+                "--namespace",
+                namespace,
+                "--query",
+                "tables[].name",
+                "--output",
+                "text",
+                profile=profile,
+                region=region,
+            ),
+            env=ctx.env,
+            check=False,
+        )
+        for name in tbl_result.stdout.split() if tbl_result.returncode == 0 else []:
+            run_cmd(
+                aws_cli(
+                    ctx.env,
+                    "s3tables",
+                    "delete-table",
+                    "--table-bucket-arn",
+                    arn,
+                    "--namespace",
+                    namespace,
+                    "--name",
+                    name,
+                    profile=profile,
+                    region=region,
+                ),
+                env=ctx.env,
+                check=False,
+            )
+        run_cmd(
+            aws_cli(
+                ctx.env,
+                "s3tables",
+                "delete-namespace",
+                "--table-bucket-arn",
+                arn,
+                "--namespace",
+                namespace,
+                profile=profile,
+                region=region,
+            ),
+            env=ctx.env,
+            check=False,
+        )
 
 
 def cleanup_resource(ctx: ScenarioContext, item: tuple[str, Any]) -> None:
@@ -1419,6 +1476,8 @@ def cleanup_resource(ctx: ScenarioContext, item: tuple[str, Any]) -> None:
             env=ctx.env,
             check=False,
         )
+    elif kind == "s3_tables_bucket":
+        empty_s3_tables_bucket(ctx, value["arn"], value.get("profile"), value["region"])
     elif kind == "neon_branch" and value:
         project_id = ctx.env.get("NEON_PROJECT_ID") or neon_project_id(ctx)
         run_cmd(
@@ -1463,6 +1522,7 @@ def run_scenario(
         token=args.token,
         container_name=unique_name("duckdb-otlp", run_id, f"{name}-t{run.trial}-r{run.rate}", max_len=48),
         dry_run=args.dry_run,
+        quack_port=free_port(),
     )
     started = False
     drop = False

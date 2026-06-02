@@ -4,7 +4,7 @@ DuckDB extension for querying and storing OpenTelemetry traces, logs, and metric
 
 The embedded HTTP server streams live telemetry, including traces from [Claude Code or Codex](https://smithclay.github.io/duckdb-otlp/guides/store-agent-traces-local-ducklake/), into local DuckDB files, [DuckLake](https://smithclay.github.io/duckdb-otlp/guides/stream-to-ducklake/), or Iceberg catalogs such as [Amazon S3 Tables](https://smithclay.github.io/duckdb-otlp/guides/stream-to-s3-tables/) and [Cloudflare R2 Data Catalog](https://smithclay.github.io/duckdb-otlp/guides/stream-to-r2-data-catalog/).
 
-## Quickstart
+## Quickstart: Read OpenTelemetry data
 
 Install and load the extension in a `duckdb` v1.5.3 or higher:
 
@@ -16,18 +16,49 @@ LOAD otlp;
 Read OTLP protobuf/JSON data from public URLs, local files, or object storage buckets:
 
 ```sql
-INSTALL httpfs; LOAD httpfs;
+LOAD httpfs;
 SELECT timestamp, service_name, severity_text, body FROM read_otlp_logs('https://github.com/smithclay/duckdb-otlp/raw/refs/heads/main/test/data/otlp_logs.pb');
 
 SELECT trace_id, span_name, duration / 1000000 AS duration_ms FROM read_otlp_traces('https://github.com/smithclay/duckdb-otlp/raw/refs/heads/main/test/data/otlp_traces.pb') ORDER BY duration DESC;
 ```
 
-You can start a server that accepts OpenTelemetry data from instrumented code, AI agents such as [Claude Code or Codex](https://smithclay.github.io/duckdb-otlp/guides/store-agent-traces-local-ducklake/), or OpenTelemetry Collectors:
+## Quickstart: Stream OpenTelemetry data
+
+You can start a server that accepts OpenTelemetry data from instrumented code, AI agents such as [Claude Code or Codex](https://smithclay.github.io/duckdb-otlp/guides/store-agent-traces-local-ducklake/), or OpenTelemetry Collectors. 
+
+You can either run the provider Docker image that automatically runs the extension as a daemon, or type commands in DuckDB shell.
+
+<details>
+<summary>Run server as a standalone daemon with Docker</summary>
+
+This automatically bootstraps an embedded DuckDB instance with the extension preloaded.
+
+```sh
+mkdir -p data
+
+docker run --rm --name duckdb-otlp \
+  -p 4318:4318 \
+  -v "$(pwd)/data:/data" \
+  ghcr.io/smithclay/duckdb-otlp:latest
+```
+
+</details>
+
+<details>
+<summary>Start server manually from the DuckDB shell</summary>
 
 ```sql
--- Start the server
-otlp_serve('otlp:localhost:4318', token := 'dev-token-123456');
+INSTALL otlp FROM community;
+LOAD otlp;
+
+-- Inside DuckDB 1.5.3+
+SELECT otlp_serve(
+    'otlp:localhost:4318',
+    token := 'dev-token-123456'
+);
 ```
+
+</details>
 
 Send one hello-world log in OTLP/HTTP format with cURL:
 

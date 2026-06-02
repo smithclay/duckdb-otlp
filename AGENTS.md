@@ -59,7 +59,13 @@ python3 scripts/benchmark_catalog_ingest.py \
 
 The Docker image uses `/usr/local/bin/duckdb-otlp-server` as the foreground `ENTRYPOINT`. It no longer relies on a shell/FIFO controller for normal startup/shutdown. Benchmark/admin SQL goes through Quack when `DUCKDB_QUACK_ENABLED=1`.
 
-CI image publishing is split into two phases in `.github/workflows/MainDistributionPipeline.yml`: `daemon-linux` exports Linux `amd64`/`arm64` daemon binaries with the `daemon-export` Dockerfile target, then `docker-image` packages those artifacts with `docker/duckdb-otlp-server/Dockerfile.runtime`. Do not make the runtime Dockerfile compile DuckDB; it should only copy `docker-bin/$TARGETARCH/duckdb-otlp-server` into the image.
+There is a single `docker/duckdb-otlp-server/Dockerfile` with named stages: `builder` (compiles the static daemon), `daemon-export` (exports just the binary), `deps` (throwaway: primes the extension cache and stages `libz`), `runtime-base` (the runnable image minus the binary), and two leaf stages — `runtime-source` (default; copies the binary from `builder`, used by `make docker-image-local`) and `runtime-prebuilt` (copies `docker-bin/$TARGETARCH/duckdb-otlp-server`, used by CI). `runtime-prebuilt` does not depend on `builder`, so packaging never recompiles DuckDB — keep it that way.
+
+The final image is `gcr.io/distroless/cc-debian12:nonroot` (~48MB base): glibc + NSS (DNS) + libstdc++ + openssl + CA certs, no shell, no package manager, no bundled DuckDB CLI, runs as nonroot (uid 65532). The daemon and all six runtime extensions link only glibc/libstdc++/libgcc/libz; distroless/cc ships everything except `libz`, so the `deps` stage stages `libz.so.1` into `/opt/duckdb-otlp/lib` (`LD_LIBRARY_PATH`). Because there is no shell/curl, the container `HEALTHCHECK` is the daemon's own `duckdb-otlp-server healthcheck` subcommand (probes `/readyz`, plus Quack when enabled, over loopback).
+
+CI in `.github/workflows/MainDistributionPipeline.yml`: `daemon-compile` is a cheap amd64-only `daemon-export` build that runs the daemon config tests and gates PRs and feature-branch pushes (no publish). The publish path runs only on `main`/tags/`workflow_dispatch`: `daemon-linux` exports `amd64`/`arm64` binaries (`daemon-export` target), `docker-smoke` runs the benchmark e2e on the packaged amd64 image, and `docker-image` publishes with `--target runtime-prebuilt`.
+
+Extension offline-cache coupling: the `deps` stage pre-`INSTALL`s ducklake/iceberg/httpfs/aws/postgres/quack with a throwaway DuckDB CLI into `HOME=/duckdb-home` (copied into the final image, owned by the nonroot user; the CLI itself is not copied). The daemon reuses that cache only because it runs with the same `HOME` and is pinned to the same `DUCKDB_VERSION`. If those diverge, the daemon's startup `INSTALL`/`LOAD` re-downloads (or fails when offline). The `otlp` extension is statically embedded in the daemon and is intentionally not installed. Bind-mounted `/data` must be writable by uid 65532; named/anonymous volumes inherit the image's nonroot ownership automatically.
 
 ### Building for WebAssembly
 ```bash
@@ -212,7 +218,7 @@ Prefer one canonical page per topic and link to it instead of duplicating exampl
 - SQLLogicTests under `test/sql/` cover JSON parsing, protobuf parsing, option handling, and schema projections.
 - All tests run against DuckDB with the extension statically linked (`make test`).
 - Test data in `test/data/` includes representative OTLP JSON and protobuf fixtures used by the table functions.
-- The Docker benchmark harness starts the daemon image, sends OTLP/HTTP log batches, flushes via Quack, and queries row counts/server metrics over Quack. It intentionally avoids the old FIFO controller path.
+- The Docker benchmark harness (`scripts/benchmark_catalog_ingest.py`) starts the daemon image, sends OTLP/HTTP log batches, flushes via Quack, and queries row counts/server metrics over Quack. Because the image is distroless (no in-container shell/`duckdb`), it publishes the Quack port and runs Quack queries from a **host `duckdb` CLI** — so the harness now requires `duckdb` on `PATH` (the `docker-smoke` CI job installs the pinned v1.5.3 CLI). It intentionally avoids the old FIFO controller path.
 
 ## Known Limitations
 
