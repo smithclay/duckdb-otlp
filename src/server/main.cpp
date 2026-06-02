@@ -22,7 +22,8 @@ bool OtlpLoopbackHttpStatusOk(int port, const string &path);
 
 namespace {
 
-volatile std::sig_atomic_t shutdown_requested = 0;
+// Written from a signal handler, so it must be a mutable global volatile sig_atomic_t.
+volatile std::sig_atomic_t shutdown_requested = 0; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 
 void HandleSignal(int) {
 	shutdown_requested = 1;
@@ -78,7 +79,7 @@ bool TryExecuteShutdown(duckdb::Connection &con, const duckdb::string &sql, cons
 		Execute(con, sql, label, true);
 		return true;
 	} catch (std::exception &ex) {
-		std::cerr << "ERROR during " << label << ": " << ex.what() << std::endl;
+		std::cerr << "ERROR during " << label << ": " << ex.what() << '\n';
 		return false;
 	}
 }
@@ -148,7 +149,7 @@ bool WaitForShutdownOrListenerFailure(duckdb::Connection &con, const duckdb_otlp
 		}
 		auto health = QueryOtlpHealth(con, config);
 		if (!health.found) {
-			std::cerr << "ERROR: OTLP listener disappeared from server registry" << std::endl;
+			std::cerr << "ERROR: OTLP listener disappeared from server registry" << '\n';
 			return false;
 		}
 		if (!health.listening) {
@@ -156,7 +157,7 @@ bool WaitForShutdownOrListenerFailure(duckdb::Connection &con, const duckdb_otlp
 			if (!health.last_error.empty()) {
 				std::cerr << ": " << health.last_error;
 			}
-			std::cerr << std::endl;
+			std::cerr << '\n';
 			return false;
 		}
 		if (health.seal_failures > last_seal_failures) {
@@ -166,7 +167,7 @@ bool WaitForShutdownOrListenerFailure(duckdb::Connection &con, const duckdb_otlp
 			if (!health.seal_last_error.empty()) {
 				std::cerr << ": " << health.seal_last_error;
 			}
-			std::cerr << std::endl;
+			std::cerr << '\n';
 		}
 	}
 	return true;
@@ -254,7 +255,7 @@ int main(int argc, char **argv) {
 		if (arg == "healthcheck") {
 			return RunHealthCheck();
 		}
-		std::cerr << "ERROR: unsupported argument: " << arg << std::endl;
+		std::cerr << "ERROR: unsupported argument: " << arg << '\n';
 		PrintUsage();
 		return 1;
 	}
@@ -287,12 +288,12 @@ int main(int argc, char **argv) {
 				std::cout << "  " << extension << "\n";
 			}
 		}
-		std::cout << std::endl;
+		std::cout << '\n';
 
 		if (config.dry_run) {
 			std::cout << "DRY_RUN=1; planned initialization only.\n\n";
 			std::cout << "Generated initialization SQL:\n";
-			std::cout << config.BootSql() << std::endl;
+			std::cout << config.BootSql() << '\n';
 			return 0;
 		}
 
@@ -352,11 +353,11 @@ int main(int argc, char **argv) {
 		interrupt_watcher.join();
 
 		std::cout << "DuckDB initialization complete\n";
-		std::cout << "Starting server..." << std::endl;
+		std::cout << "Starting server..." << '\n';
 
 		auto listener_ok = WaitForShutdownOrListenerFailure(con, config);
 
-		std::cout << "Stopping duckdb-otlp..." << std::endl;
+		std::cout << "Stopping duckdb-otlp..." << '\n';
 		bool shutdown_ok = true;
 		if (config.quack_enabled) {
 			shutdown_ok = TryExecuteShutdown(con, config.StopQuackSql(), "quack shutdown") && shutdown_ok;
@@ -366,12 +367,12 @@ int main(int argc, char **argv) {
 	} catch (std::exception &ex) {
 		if (shutdown_requested) {
 			// A signal interrupted startup (e.g. mid-ATTACH); treat it as a clean stop.
-			std::cerr << "Shutdown requested during startup; exiting before the server became ready." << std::endl;
+			std::cerr << "Shutdown requested during startup; exiting before the server became ready." << '\n';
 			return 0;
 		}
 		// DuckDB exceptions stringify as a JSON blob; RawMessage() gives the plain text a
 		// Docker user actually wants to read.
-		std::cerr << "ERROR: " << duckdb::ErrorData(ex).RawMessage() << std::endl;
+		std::cerr << "ERROR: " << duckdb::ErrorData(ex).RawMessage() << '\n';
 		return 1;
 	}
 }
