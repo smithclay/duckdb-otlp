@@ -2,7 +2,7 @@
 title: "How to Export Telemetry to Parquet"
 ---
 
-Use Parquet when you will query the same telemetry repeatedly or hand it to BI/data tools. After export, DuckDB can read the Parquet files without loading the OTLP extension.
+Use Parquet when you expect to query the same telemetry many times or pass it to BI and data tools. After export, DuckDB can read the Parquet files without the OTLP extension.
 
 ## Traces and Logs
 
@@ -30,7 +30,7 @@ ORDER BY duration_time_unix_nano DESC;
 
 ## Metrics
 
-Metrics have shape-specific schemas, so write each shape separately:
+Each metric shape has its own schema. Write each shape to its own Parquet file:
 
 ```sql
 COPY (

@@ -2,7 +2,7 @@
 title: "OpenTelemetry Demo Example"
 ---
 
-This directory contains `otelcol-config-extras.yml` for sending OpenTelemetry Demo traces, logs, and metrics to a local `duckdb-otlp` server running in `local-ducklake` mode.
+Use `otelcol-config-extras.yml` to send OpenTelemetry Demo traces, logs, and metrics to a local `duckdb-otlp` server running in `local-ducklake` mode.
 
 ## Use It
 

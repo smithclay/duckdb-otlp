@@ -3,7 +3,7 @@ title: "How to Store Claude Code or Codex Traces in Local DuckLake"
 description: "Export agent OpenTelemetry spans to the duckdb-otlp Docker image and persist them in a local DuckLake volume."
 ---
 
-This guide shows you how to run the `duckdb-otlp` server image locally and point Claude Code or Codex at it with OTLP/HTTP. The container listens on `localhost:4318` and writes traces into a DuckLake catalog stored in a Docker volume.
+Run the `duckdb-otlp` server image locally and point Claude Code or Codex at it with OTLP/HTTP. The container listens on `localhost:4318` and writes traces into a DuckLake catalog stored in a Docker volume.
 
 The examples follow the Claude Code [monitoring](https://code.claude.com/docs/en/monitoring-usage) docs and the Codex [observability](https://developers.openai.com/codex/config-advanced#observability-and-telemetry) and [configuration](https://developers.openai.com/codex/config-reference#configtoml) docs.
 
@@ -33,7 +33,7 @@ docker run --rm --name duckdb-otlp \
   ghcr.io/smithclay/duckdb-otlp:latest
 ```
 
-This starts `duckdb-otlp` at `http://localhost:4318`. OTLP/HTTP traces are accepted at:
+This starts `duckdb-otlp` at `http://localhost:4318`. Send OTLP/HTTP traces to:
 
 ```text
 http://localhost:4318/v1/traces
@@ -45,7 +45,7 @@ The token in `.env` is:
 dev-otlp-token-123456
 ```
 
-For a different local token, change `DUCKDB_OTLP_TOKEN` and use the same value in the agent exporter headers.
+To use a different local token, change `DUCKDB_OTLP_TOKEN` and use the same value in the agent exporter headers.
 
 ## Export Claude Code Traces
 
@@ -63,7 +63,7 @@ export OTEL_EXPORTER_OTLP_HEADERS='Authorization=Bearer dev-otlp-token-123456'
 claude -p "write one sentence about local trace storage"
 ```
 
-If you also want Claude Code events in DuckLake, add the logs exporter before starting Claude Code:
+To store Claude Code events in DuckLake, add the logs exporter before starting Claude Code:
 
 ```bash
 export OTEL_LOGS_EXPORTER=otlp
@@ -75,7 +75,7 @@ Leave `OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_TOOL_DETAILS`, `OTEL_LOG_TOOL_CONTENT`,
 
 ## Export Codex Traces
 
-Put telemetry routing in your user-level Codex config, not in a project-local `.codex/config.toml`. Codex ignores `otel` in project-local config.
+Put telemetry routing in your user-level Codex config. Codex ignores `otel` in project-local `.codex/config.toml`.
 
 Edit `~/.codex/config.toml`:
 
@@ -102,11 +102,11 @@ Start a new Codex process after editing the config:
 codex exec "write one sentence about local trace storage"
 ```
 
-If you only want spans and not Codex event logs, set `exporter = "none"` and keep the `trace_exporter` block.
+To collect spans without Codex event logs, set `exporter = "none"` and keep the `trace_exporter` block.
 
 ## Flush Buffered Telemetry
 
-`duckdb-otlp` buffers accepted rows. Flush before querying a short local run:
+`duckdb-otlp` buffers accepted rows. Flush before you query a short local run:
 
 ```bash
 docker exec duckdb-otlp sh -c \
@@ -115,7 +115,7 @@ docker exec duckdb-otlp sh -c \
 
 ## Inspect Stored Traces
 
-Query through the running DuckDB process. The server process owns the DuckLake catalog lock while it is running, so send inspection SQL to the control FIFO instead of attaching the same DuckLake from a second DuckDB process.
+Query through the running DuckDB process. The server process owns the DuckLake catalog lock while it runs, so send inspection SQL to the control FIFO instead of attaching the same DuckLake from a second DuckDB process.
 
 ```bash
 docker exec duckdb-otlp sh -c \
@@ -145,23 +145,23 @@ docker logs --tail 80 duckdb-otlp
 
 ## Stop the Writer
 
-Stop the container with `Ctrl-C` if it is attached to your terminal, or run:
+Stop the container with `Ctrl-C` if your terminal is attached, or run:
 
 ```bash
 docker stop duckdb-otlp
 ```
 
-The image sends `otlp_stop('otlp:0.0.0.0:4318')` to DuckDB during shutdown so remaining buffered rows are committed before the process exits.
+During shutdown, the image sends `otlp_stop('otlp:0.0.0.0:4318')` to DuckDB so the process commits remaining buffered rows before it exits.
 
 ## If No Traces Appear
 
-- Confirm the agent process was started after the telemetry settings were set.
+- Start the agent process after you set the telemetry settings.
 - Confirm the trace endpoint is `http://localhost:4318/v1/traces`.
 - Confirm the Authorization header uses the same token as `DUCKDB_OTLP_TOKEN`.
 - Flush the writer before querying short sessions.
 - Keep the query window recent enough to include the agent run.
 
-## See also
+## Related
 
 - [How to stream to local DuckLake](../stream-to-local-ducklake/)
 - [Live Ingest Reference](../../reference/serve/)

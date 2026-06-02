@@ -6,11 +6,11 @@ import PostLogRecord from '../../../components/docs/PostLogRecord.astro';
 import QueryCommittedRows from '../../../components/docs/QueryCommittedRows.astro';
 import StopCleanly from '../../../components/docs/StopCleanly.astro';
 
-This guide shows you how to run the `duckdb-otlp` Docker image in `r2-neon-ducklake` mode and stream OTLP/HTTP exports into DuckLake with a Neon Postgres catalog and Cloudflare R2 data files.
+Use the `duckdb-otlp` Docker image in `r2-neon-ducklake` mode to stream OTLP/HTTP exports into DuckLake with a Neon Postgres catalog and Cloudflare R2 data files.
 
 The container initializes DuckDB, loads the required extensions, connects DuckLake to Neon, stores Parquet files in R2, starts the ingest server, and commits accepted rows in batches.
 
-> Live ingestion is OTLP/HTTP on port `4318`. The ingest server is not available in WASM builds.
+Live ingestion uses OTLP/HTTP on port `4318`. WASM builds do not include the ingest server.
 
 ## Prepare Neon and R2
 
@@ -70,7 +70,7 @@ docker run --rm --name duckdb-otlp \
   ghcr.io/smithclay/duckdb-otlp:latest
 ```
 
-The container creates the target tables in `lake.otlp` if they do not already exist:
+The container creates the target tables in `lake.otlp` if they do not exist:
 
 - `otlp_logs`
 - `otlp_traces`
@@ -120,11 +120,11 @@ Then delete the R2 prefix or bucket and remove the Neon database or branch you c
 
 ## Troubleshooting
 
-- If startup cannot connect to Neon, confirm `NEON_PGHOST`, `NEON_PGDATABASE`, `NEON_PGUSER`, `NEON_PGPASSWORD`, and `NEON_PGSSLMODE=require`.
-- If startup connects to Neon but cannot write data files, confirm the R2 access key can write objects to `CLOUDFLARE_R2_BUCKET`.
-- If R2 paths point at the wrong location, confirm `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_R2_BUCKET`, and `CLOUDFLARE_R2_PREFIX`.
+- If the container cannot connect to Neon at startup, confirm `NEON_PGHOST`, `NEON_PGDATABASE`, `NEON_PGUSER`, `NEON_PGPASSWORD`, and `NEON_PGSSLMODE=require`.
+- If the container connects to Neon but cannot write data files, confirm the R2 access key can write objects to `CLOUDFLARE_R2_BUCKET`.
+- If R2 paths use the wrong location, confirm `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_R2_BUCKET`, and `CLOUDFLARE_R2_PREFIX`.
 - If no rows appear after a `202` response, run the flush command before querying.
-- `otlp_flush` is only for ingest durability. Use DuckDB or DuckLake maintenance commands separately if you need immediate compaction.
+- `otlp_flush` seals buffered ingest rows. Run DuckDB or DuckLake maintenance commands when you need compaction.
 
 ## See also
 

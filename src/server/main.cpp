@@ -151,7 +151,7 @@ void PrintUsage() {
 
 Required:
 
-  DUCKDB_MODE=local-ducklake|r2-data-catalog|s3-tables|r2-neon-ducklake|r2-local-ducklake
+  DUCKDB_MODE=local-ducklake|parquet|r2-data-catalog|s3-tables|r2-neon-ducklake|r2-local-ducklake
 
 Useful common settings:
 
@@ -183,8 +183,6 @@ int main(int argc, char **argv) {
 
 	try {
 		auto config = duckdb_otlp_server::ServerConfig::FromEnv();
-		SetEnv("DUCKDB_OTLP_EFFECTIVE_TOKEN", config.token);
-		SetEnv("DUCKDB_QUACK_EFFECTIVE_TOKEN", config.quack_token);
 		SetDefaultEnv("NEON_PGPORT", "5432");
 		SetDefaultEnv("NEON_PGSSLMODE", "require");
 
@@ -217,6 +215,12 @@ int main(int argc, char **argv) {
 		duckdb::DuckDB db(config.database);
 		db.LoadStaticExtension<duckdb::OtlpExtension>();
 		duckdb::Connection con(db);
+		// Bind the tokens as session variables rather than interpolating them into the
+		// startup SQL, so the secrets never appear in the generated SQL text (which
+		// DRY_RUN prints and the engine can echo back in error messages). StartOtlpSql()/
+		// StartQuackSql() read them back with getvariable(...).
+		con.context->config.SetUserVariable("duckdb_otlp_effective_token", duckdb::Value(config.token));
+		con.context->config.SetUserVariable("duckdb_quack_effective_token", duckdb::Value(config.quack_token));
 
 		InstallSignalHandlers();
 		Execute(con, config.mode_setup_sql, "mode setup");

@@ -2,7 +2,7 @@
 title: "DuckDB OpenTelemetry Extension"
 ---
 
-Start here for `duckdb-otlp`: installation, file readers, live ingest, the browser demo, and the exact schemas exposed by the extension.
+Start here for `duckdb-otlp`: installation, file readers, live ingest, the browser demo, and schema details.
 
 ## Start using duckdb-otlp
 
@@ -15,6 +15,7 @@ Start here for `duckdb-otlp`: installation, file readers, live ingest, the brows
 - **[How to analyze telemetry](guides/analyze-telemetry/)** - query traces, logs, and metrics with a few practical starting points.
 - **[How to stream to local DuckLake](guides/stream-to-local-ducklake/)** - land OTLP/HTTP rows in local Parquet files tracked by DuckLake.
 - **[How to stream to remote DuckLake](guides/stream-to-remote-ducklake/)** - land OTLP/HTTP rows in DuckLake with Neon Postgres metadata and R2 data files.
+- **[How to stream to Parquet](guides/stream-to-parquet/)** - land OTLP/HTTP rows as partitioned Parquet files on disk or S3.
 - **[How to stream to Amazon S3 Tables](guides/stream-to-s3-tables/)** - land OTLP/HTTP rows in Amazon S3 Tables as an Iceberg catalog.
 - **[How to stream to Cloudflare R2 Data Catalog](guides/stream-to-r2-data-catalog/)** - land OTLP/HTTP rows in Cloudflare R2 Data Catalog as an Iceberg catalog.
 - **[How to export telemetry to Parquet](guides/exporting-to-parquet/)** - write traces, logs, and metrics to reusable Parquet datasets.

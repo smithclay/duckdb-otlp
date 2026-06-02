@@ -2,11 +2,11 @@
 title: "OTLP HTTP Ingest Server"
 ---
 
-The extension can run an embedded HTTP server that accepts live OTLP/HTTP exports and streams them into DuckDB. Point any OpenTelemetry exporter at the server and rows are buffered, then committed to your target in batches: the connection's default catalog, a DuckLake lakehouse, or another attached writable catalog such as an Iceberg REST catalog.
+You can run an embedded HTTP server that accepts live OTLP/HTTP exports and streams them into DuckDB. Point any OpenTelemetry exporter at the server. The server buffers rows, then commits them in batches to the connection's default catalog, a DuckLake lakehouse, or another attached writable catalog such as an Iceberg REST catalog.
 
-> **Not available in WASM builds.** The server requires the native extension. Live ingestion is HTTP-only (no gRPC).
+Native extension builds include the server. WASM builds omit it. Live ingestion uses HTTP only, with no gRPC listener.
 
-For a copy-pasteable walkthrough, see the [Live Ingest Quickstart](../../quickstart/serve/). For lakehouse examples, see [Stream to Local DuckLake](../../guides/stream-to-local-ducklake/), [Stream to Remote DuckLake](../../guides/stream-to-remote-ducklake/), [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/), and [Stream to Cloudflare R2 Data Catalog](../../guides/stream-to-r2-data-catalog/). For how it works internally, see [Architecture](../../architecture/#otlp-http-ingest-server).
+For a runnable walkthrough, see the [Live Ingest Quickstart](../../quickstart/serve/). For lakehouse examples, see [Stream to Local DuckLake](../../guides/stream-to-local-ducklake/), [Stream to Remote DuckLake](../../guides/stream-to-remote-ducklake/), [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/), and [Stream to Cloudflare R2 Data Catalog](../../guides/stream-to-r2-data-catalog/). For plain files or object storage, see [Stream to Parquet](../../guides/stream-to-parquet/). For the implementation model, see [Architecture](../../architecture/#otlp-http-ingest-server).
 
 ## Functions
 
@@ -15,7 +15,7 @@ The extension registers four lifecycle functions:
 | Function | What it does |
 |----------|-------------|
 | `otlp_serve([uri], ...)` | Start an HTTP server and create/validate target tables. Returns one row describing the listener. |
-| `otlp_flush(uri)` | Optionally force a synchronous commit of buffered rows. Returns commit stats. It does not force catalog maintenance. |
+| `otlp_flush(uri)` | Force a synchronous commit of buffered rows when readers need fresh data. Returns commit stats. It leaves catalog maintenance alone. |
 | `otlp_stop(uri)` | Stop the server listening on `uri` (commits remaining rows first). Returns a status string. |
 | `otlp_server_list()` | List all running servers with live counters, buffer state, and health. |
 
@@ -34,10 +34,11 @@ SELECT * FROM otlp_serve('otlp:localhost:4318', catalog := 'lake', token := 'my-
 |-----------|------|---------|-------------|
 | `uri` (positional) | VARCHAR | `otlp:localhost:4318` | Listen URI. See [URI scheme](#uri-scheme). |
 | `catalog` | VARCHAR | *(default catalog)* | Name of the target catalog. Empty means the connection's **default catalog** (in-memory or file). Set this to an attached writable catalog such as DuckLake or an Iceberg REST catalog to stream OTLP into a lakehouse. See [Catalog targeting](#catalog-targeting). |
-| `token` | VARCHAR | *(random, see below)* | Auth token clients must present. Must be at least 16 characters. If omitted, a random 32-hex-character token is generated and returned in `auth_token`. |
+| `token` | VARCHAR | *(random, see below)* | Auth token clients must present. Must be at least 16 characters. If you omit it, `otlp_serve` generates a random 32-hex-character token and returns it in `auth_token`. |
 | `schema` | VARCHAR | `main` | Schema (within the catalog) that holds the target tables. |
+| `parquet_export_path` | VARCHAR | *(none)* | Plain Parquet export root. When set, each seal writes the sealed rows to `<root>/<table>/year=YYYY/month=MM/day=DD/*.parquet` as the **only** durable store (no local table copy); a read-only view per signal is created over the files for inspection. Mutually exclusive with a `catalog` target. Export is **at-least-once** (a `COPY` cannot be rolled back). |
 | `create_tables` | BOOLEAN | `true` | Create the six target tables if they don't exist. When `false`, the tables must already exist with the expected columns or `otlp_serve` fails fast. |
-| `allow_other_hostname` | BOOLEAN | `false` | Allow binding to a non-localhost host. By default only `localhost`, `127.0.0.1`, and `::1` are permitted. |
+| `allow_other_hostname` | BOOLEAN | `false` | Allow binding to a non-localhost host. By default `otlp_serve` permits only `localhost`, `127.0.0.1`, and `::1`. |
 | `max_body_bytes` | UBIGINT | `16777216` (16 MiB) | Reject request bodies larger than this with `413`. Must be greater than zero. |
 | `http_threads` | UBIGINT | host-based bounded default | Worker threads for concurrent HTTP requests. Must be greater than zero when set. |
 | `max_buffered_bytes` | UBIGINT | `536870912` (512 MiB) | Backpressure cap. POSTs that would exceed this return `503`. |
@@ -58,11 +59,11 @@ SELECT * FROM otlp_serve('otlp:localhost:4318', catalog := 'lake', token := 'my-
 | `metrics_exp_histogram_table` | VARCHAR | `otlp_metrics_exp_histogram` |
 | `catalog_name` | VARCHAR | Target catalog. Empty for the connection's default catalog. |
 
-Starting a second server on the same URI fails (`OTLP server already exists`). The server's lifetime is tied to the DuckDB `DatabaseInstance`: all servers are stopped automatically when the database closes, but their buffers are **not** committed at that point (see Durability below). Call `otlp_stop` before closing the database to avoid losing buffered rows.
+Starting a second server on the same URI fails (`OTLP server already exists`). The DuckDB `DatabaseInstance` owns the server lifetime: DuckDB stops all servers when the database closes, but it does **not** commit their buffers at that point (see Durability below). Call `otlp_stop` before closing the database to avoid losing buffered rows.
 
 ### `otlp_flush(uri)`
 
-Forces a **synchronous commit**: the server's in-memory buffer is written to the target in one transaction before the function returns. This is optional for normal ingest because the background writer commits automatically and `otlp_stop` performs a final commit. Use `otlp_flush` only when readers need the latest accepted rows immediately while the server stays running. `otlp_flush` is a durability/read-freshness operation; it does not promise immediate compaction or other catalog maintenance.
+Forces a **synchronous commit**: the server writes its in-memory buffer to the target in one transaction before the function returns. Normal ingest can rely on background commits, and `otlp_stop` performs a final commit. Use `otlp_flush` when readers need the latest accepted rows while the server stays running. `otlp_flush` handles durability and read freshness; it leaves compaction and other catalog maintenance alone.
 
 ```sql
 -- Force a commit
@@ -100,7 +101,7 @@ SELECT status FROM otlp_stop('otlp:localhost:4318');
 
 ### `otlp_server_list()`
 
-Lists every running server with live counters and buffer state. Takes no arguments.
+Lists running OTLP servers with live counters and buffer state. Takes no arguments.
 
 ```sql
 SELECT
@@ -123,24 +124,24 @@ FROM otlp_server_list();
 | `port` | USMALLINT | Bound port. |
 | `catalog_name` | VARCHAR | Target catalog. Empty for the default catalog. |
 | `schema_name` | VARCHAR | Schema holding the target tables. |
-| `active_requests` | UBIGINT | Requests currently being handled. |
+| `active_requests` | UBIGINT | Requests in progress. |
 | `total_requests` | UBIGINT | Requests handled since startup (includes failures). |
 | `total_rows` | UBIGINT | Rows **accepted** (buffered) since startup. Once the buffer drains, this equals the rows committed. A `/v1/metrics` request counts rows across all four metric tables. |
-| `buffered_rows` | UBIGINT | Rows currently in the buffer, not yet committed. |
+| `buffered_rows` | UBIGINT | Rows in the buffer that the writer has not committed. |
 | `last_seal_age_ms` | BIGINT | Age (ms) since the last successful batch commit, or `NULL` if none has completed. |
 | `seals_total` | UBIGINT | Batch commits performed since startup. |
 | `is_listening` | BOOLEAN | `false` once the listener has fallen over (e.g. an error after a successful bind). |
 | `last_error` | VARCHAR | Last fatal listener error, or `NULL` if none. |
 | `seal_last_error` | VARCHAR | Last batch commit error, or `NULL` if none. |
 
-`is_listening` / `last_error` detect a dead listener; `seal_last_error` surfaces a failing writer (e.g. a catalog conflict).
+Use `is_listening` / `last_error` to detect a dead listener. Use `seal_last_error` to inspect writer failures, such as catalog conflicts.
 
 ## Catalog targeting
 
 The target of a server is `<catalog>.<schema>.<table>`:
 
-- **Default catalog** (`catalog` omitted): rows land in the connection's default catalog — an in-memory database, or whatever file you opened DuckDB with. This is the **ephemeral / no-lakehouse** path: fast and zero-setup, but tied to that one database. Ingest is still buffered (a POST returns `202`); rows become durable in that database at the next background commit.
-- **DuckLake catalog** (`catalog := '<attached_db>'`): rows stream straight into a [DuckLake](https://ducklake.select) lakehouse — Parquet data files on local or object storage, tracked by a catalog. Attach the catalog first, then name it:
+- **Default catalog** (`catalog` omitted): rows land in the connection's default catalog, either an in-memory database or the file you opened DuckDB with. Use this zero-setup path when you do not need a lakehouse catalog. The server still buffers ingest (a POST returns `202`); rows become durable in that database at the next background commit.
+- **DuckLake catalog** (`catalog := '<attached_db>'`): rows stream into a [DuckLake](https://ducklake.select) lakehouse with Parquet data files on local or object storage, tracked by a catalog. Attach the catalog first, then name it:
 
 ```sql
 INSTALL ducklake; LOAD ducklake;
@@ -154,7 +155,9 @@ SELECT count(*) FROM lake.main.otlp_logs;
 Each batch commit writes **one Parquet data file per signal** plus one DuckLake snapshot. After a conservative number of successful automatic row-seals, `duckdb-otlp` may run best-effort catalog-native maintenance with DuckDB's non-force `CHECKPOINT lake` when recent ingest rate and pending bytes leave ample admission headroom; DuckLake owns the actual policy through its settings such as `auto_compact`, retention, inlining, and target file size. See [Durability and background commits](#durability-and-background-commits).
 
 - **Iceberg REST catalog** (`catalog := '<attached_db>'`): rows stream into tables in an attached writable Iceberg REST catalog. Attach the catalog with DuckDB's `iceberg` extension, create the target schema, then pass the catalog and schema to `otlp_serve`; see [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/) and [Stream to Cloudflare R2 Data Catalog](../../guides/stream-to-r2-data-catalog/) for managed provider paths.
-  DuckDB's Iceberg REST catalog docs do not currently document a useful `CHECKPOINT` maintenance path. The internal maintenance probe uses generic `CHECKPOINT <catalog>` only; if the catalog reports checkpointing as unsupported, automatic maintenance is disabled for that server and ingest durability continues normally.
+  DuckDB's Iceberg REST catalog docs have no useful `CHECKPOINT` maintenance path today. The internal maintenance probe uses generic `CHECKPOINT <catalog>` only. If the catalog reports checkpointing as unsupported, the server disables automatic maintenance for that server and ingest durability continues normally.
+
+- **Plain Parquet export** (`parquet_export_path := '/data/otlp-parquet'` or `parquet_export_path := 's3://bucket/prefix'`): each seal writes the sealed rows straight to `<path>/<table>/year=YYYY/month=MM/day=DD/*.parquet`. The Parquet dataset is the only durable store — no local table copy is kept (a read-only view per signal is created over the files for inspection), and it is mutually exclusive with a `catalog` target. Because a `COPY` is a file write and cannot be rolled back, export is **at-least-once**: a signal that already exported is never re-written, but a seal whose `COPY` fails part-way can re-export that signal's rows on retry, so deduplicate downstream if you need exactly-once. Use this when you want partitioned Parquet without a lakehouse catalog; see [Stream to Parquet](../../guides/stream-to-parquet/).
 
 ## URI scheme
 
@@ -166,7 +169,7 @@ Listen URIs use the `otlp:` scheme:
 | `otlp://host:port` | `otlp://127.0.0.1:4318` |
 | IPv6 (host in brackets) | `otlp:[::1]:4318` |
 
-Only `localhost`, `127.0.0.1`, and `::1` are allowed by default. To bind to any other host (for example `0.0.0.0` to accept remote exporters), pass `allow_other_hostname := true`. Non-localhost hosts are rejected before a socket is bound.
+By default, `otlp_serve` allows only `localhost`, `127.0.0.1`, and `::1`. To bind to any other host (for example `0.0.0.0` to accept remote exporters), pass `allow_other_hostname := true`. `otlp_serve` rejects non-localhost hosts before it binds a socket.
 
 ## HTTP endpoints
 
@@ -200,24 +203,24 @@ Any other content type returns `415`.
 
 ## Authentication
 
-Every POST must present the configured token, via **either**:
+Every POST must present the configured token through one of these headers:
 
-- `Authorization: Bearer <token>` — the scheme is case-insensitive, or
+- `Authorization: Bearer <token>` (case-insensitive scheme)
 - `x-api-key: <token>`
 
-The two are checked independently, so a malformed `Authorization` header does not mask a valid `x-api-key`. A missing or invalid token returns `401`. Tokens are compared with a constant-time check.
+The server checks the two headers independently, so a malformed `Authorization` header does not mask a valid `x-api-key`. A missing or invalid token returns `401`. The server compares tokens with a constant-time check.
 
 Tokens must be at least 16 characters. Auto-generated tokens (when `token` is omitted) are 32 hex characters (128 bits of entropy).
 
 ## Responses and status codes
 
-A successful POST is **buffered**, not committed, and returns `202 Accepted`:
+A successful POST returns `202 Accepted` after the server buffers rows:
 
 ```json
 {"status":"buffered","rows":42,"batches":1}
 ```
 
-A `202` means the rows were validated, converted, and accepted into the in-memory buffer — **they are not yet durable** (see below).
+A `202` means the server validated, converted, and accepted the rows into the in-memory buffer. **The rows are not yet durable** (see below).
 
 Errors return JSON shaped like `{"error":"<reason>","message":"<detail>"}`:
 
@@ -232,38 +235,38 @@ Errors return JSON shaped like `{"error":"<reason>","message":"<detail>"}`:
 
 ## Durability and background commits
 
-Ingest is **buffered and committed in batches** for every target. This avoids per-request tiny files and write conflicts: a single serialized writer means lakehouse catalogs do not receive concurrent writes from the ingest server.
+The server **buffers ingest and commits rows in batches** for each target. Batch commits avoid per-request tiny files and write conflicts: a single serialized writer prevents concurrent catalog writes from the ingest server.
 
 **The flow:**
 
 1. A POST reserves admission bytes, parses, converts, and appends rows into the relevant per-signal in-memory buffer, then returns `202`. The bounded worker pool does this concurrently; append locks only the target signal buffer.
 2. A single background writer commits the buffer to the target in **one transaction** when any trigger fires:
-   - admitted request-body bytes reach the internal size threshold, currently 64 MiB,
-   - the oldest buffered row reaches the internal age limit, currently about 5 seconds, or
+   - admitted request-body bytes reach the internal size threshold, 64 MiB today,
+   - the oldest buffered row reaches the internal age limit, about 5 seconds today, or
    - an explicit [`otlp_flush`](#otlp_flushuri-).
 3. For a DuckLake target, each batch commit writes **one Parquet data file per signal** plus one snapshot.
-4. For named catalogs, successful automatic row-seals may occasionally be followed by best-effort, non-force `CHECKPOINT <catalog>` outside the ingest transaction when recent ingest rate and pending bytes leave ample admission headroom. This is internal scheduling, not a public management layer. The default catalog is skipped, explicit `otlp_flush`, sustained high ingest, high pending buffered bytes, and shutdown drains do not trigger it; unsupported checkpoint implementations are logged once and disabled for that server.
+4. For named catalogs, the server may follow successful automatic row-seals with best-effort, non-force `CHECKPOINT <catalog>` outside the ingest transaction when recent ingest rate and pending bytes leave ample admission headroom. Treat this as internal scheduling. The server skips the default catalog. The hook also skips explicit `otlp_flush`, sustained high ingest, high pending buffered bytes, and shutdown drains; unsupported checkpoint implementations log once and disable the hook for that server.
 
 **Durability contract:**
 
-- A `202` is **not durable.** Rows become durable at the next automatic background commit, on `otlp_stop`, or immediately on `otlp_flush`.
+- A `202` is **not durable.** Rows become durable at the next background commit, on `otlp_stop`, or on `otlp_flush`.
 - A crash or hard kill loses buffered-but-uncommitted rows (**at-most-once** for that window).
-- `otlp_stop` and `otlp_flush` **commit remaining rows before returning**, so those lose nothing. A plain **database/connection close does NOT commit buffered rows** (the drain runs after the DuckDB instance is torn down, when it can no longer write) — buffered rows can be dropped. Prefer `otlp_stop` before closing the database; use `otlp_flush` only when the server should keep running but readers need durable rows now.
+- `otlp_stop` and `otlp_flush` **commit remaining rows before returning**, so those calls lose no accepted rows. A plain **database/connection close does NOT commit buffered rows**. The drain runs after DuckDB tears down the instance, when it can no longer write, so DuckDB can drop buffered rows. Prefer `otlp_stop` before closing the database. Use `otlp_flush` when the server should keep running but readers need durable rows now.
 
-> A durable raw-spool journal for at-least-once delivery is a documented future enhancement, not yet implemented.
+The project tracks a future durable raw-spool journal for at-least-once delivery.
 
 **Backpressure:** if admitting a request would exceed `max_buffered_bytes` (default 512 MiB) across in-flight and uncommitted accepted payloads, the POST returns `503` before parse/transform work. Clients should retry with backoff.
 
-**Keeping DuckLake tidy:** each batch commit can leave a small Parquet file per signal. For DuckLake, the server now periodically gives the catalog a chance to run its own maintenance through DuckDB's catalog-native `CHECKPOINT` machinery when recent ingest leaves enough admission headroom. This is best effort: it is not run after every seal, it is not part of the ingest transaction, and a maintenance failure does not roll back rows that were already committed. `otlp_flush` still only forces ingest durability and does not promise immediate compaction.
+**Keeping DuckLake tidy:** each batch commit can leave a small Parquet file per signal. For DuckLake, the server lets the catalog run its own maintenance through DuckDB's catalog-native `CHECKPOINT` machinery when recent ingest leaves enough admission headroom. The hook skips per-seal maintenance and stays outside the ingest transaction; a maintenance failure leaves committed rows intact. `otlp_flush` still forces only ingest durability and leaves compaction to catalog maintenance.
 
 ## Concurrency model
 
 - The server runs a bounded httplib worker pool. Workers parse, convert, and buffer requests concurrently; each signal table has its own buffer lock. In the daemon, set `DUCKDB_OTLP_HTTP_THREADS` to override the host-based default.
-- A single background writer thread is the only writer to the target catalog. Serializing writes is what lets DuckLake (which uses optimistic concurrency) avoid conflict retries and tiny-file churn.
+- A single background writer thread writes to the target catalog. Serial writes let DuckLake, which uses optimistic concurrency, avoid conflict retries and tiny-file churn.
 
 ## Verifying ingest under load
 
-`make test` cannot issue HTTP POSTs, so the SQL logic tests cover only the lifecycle surface. To exercise the ingest hot path (auth, content-type handling, the metrics fan-out, buffering + batch commits, and Arrow → DuckDB conversion under concurrency), run the manual concurrency harness:
+`make test` cannot issue HTTP POSTs, so the SQL logic tests cover only the lifecycle functions. To exercise the ingest hot path, run the manual concurrency harness. It covers auth, content-type handling, the metrics fan-out, buffering and batch commits, and Arrow → DuckDB conversion under concurrency:
 
 ```bash
 uv run --script test/manual/otlp_serve_concurrency.py
@@ -282,10 +285,11 @@ It covers auth and validation errors, low-buffer backpressure, metrics fanout, s
 
 ## See also
 
-- [Live Ingest Quickstart](../../quickstart/serve/) — POST one log to the default catalog with `curl`.
-- [Stream to Local DuckLake](../../guides/stream-to-local-ducklake/) — write live OTLP rows to local DuckLake.
-- [Stream to Remote DuckLake](../../guides/stream-to-remote-ducklake/) — write live OTLP rows to DuckLake with Neon and R2.
-- [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/) — write live OTLP rows to Amazon S3 Tables as an Iceberg catalog.
-- [Stream to Cloudflare R2 Data Catalog](../../guides/stream-to-r2-data-catalog/) — write live OTLP rows to Cloudflare R2 Data Catalog as an Iceberg catalog.
-- [Architecture](../../architecture/#otlp-http-ingest-server) — buffer, background writer, and `otlp_flush` internals.
-- [Schema Reference](../schemas/) — columns of the target tables.
+- [Live Ingest Quickstart](../../quickstart/serve/): POST one log to the default catalog with `curl`.
+- [Stream to Local DuckLake](../../guides/stream-to-local-ducklake/): write live OTLP rows to local DuckLake.
+- [Stream to Remote DuckLake](../../guides/stream-to-remote-ducklake/): write live OTLP rows to DuckLake with Neon and R2.
+- [Stream to Parquet](../../guides/stream-to-parquet/): write live OTLP rows to partitioned Parquet files on disk or S3.
+- [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/): write live OTLP rows to Amazon S3 Tables as an Iceberg catalog.
+- [Stream to Cloudflare R2 Data Catalog](../../guides/stream-to-r2-data-catalog/): write live OTLP rows to Cloudflare R2 Data Catalog as an Iceberg catalog.
+- [Architecture](../../architecture/#otlp-http-ingest-server): buffer, background writer, and `otlp_flush` internals.
+- [Schema Reference](../schemas/): columns of the target tables.

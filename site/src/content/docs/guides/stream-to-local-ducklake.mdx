@@ -6,11 +6,11 @@ import PostLogRecord from '../../../components/docs/PostLogRecord.astro';
 import QueryCommittedRows from '../../../components/docs/QueryCommittedRows.astro';
 import StopCleanly from '../../../components/docs/StopCleanly.astro';
 
-This guide shows you how to run the `duckdb-otlp` Docker image in `local-ducklake` mode and stream OTLP/HTTP exports into a local DuckLake lakehouse.
+Use the `duckdb-otlp` Docker image in `local-ducklake` mode to stream OTLP/HTTP exports into a local DuckLake lakehouse.
 
 The container initializes DuckDB, loads the required extensions, attaches DuckLake, starts the ingest server, and commits accepted rows in batches.
 
-> Live ingestion is OTLP/HTTP on port `4318`. The ingest server is not available in WASM builds.
+Live ingestion uses OTLP/HTTP on port `4318`. WASM builds do not include the ingest server.
 
 ## Configure
 
@@ -39,7 +39,7 @@ docker run --rm --name duckdb-otlp \
   ghcr.io/smithclay/duckdb-otlp:latest
 ```
 
-The container creates the target tables in `lake.main` if they do not already exist:
+The container creates the target tables in `lake.main` if they do not exist:
 
 - `otlp_logs`
 - `otlp_traces`
@@ -65,7 +65,7 @@ Leave the container running while clients send OTLP/HTTP requests.
 
 <StopCleanly />
 
-`otlp_flush` is only for ingest durability. Use DuckDB or DuckLake maintenance commands separately if you need immediate compaction.
+`otlp_flush` seals buffered ingest rows. Run DuckDB or DuckLake maintenance commands when you need compaction.
 
 ## See also
 

@@ -42,6 +42,9 @@ string NormalizeMode(const string &mode) {
 	if (mode == "s3tables") {
 		return "s3-tables";
 	}
+	if (mode == "plain-s3" || mode == "s3-parquet" || mode == "s3") {
+		return "parquet";
+	}
 	return mode;
 }
 
@@ -130,6 +133,32 @@ string R2DataPath() {
 	auto bucket = R2BucketValue();
 	auto prefix = R2PrefixValue();
 	return prefix.empty() ? "s3://" + bucket + "/" : "s3://" + bucket + "/" + prefix;
+}
+
+string S3BucketValue() {
+	auto var = RequireAnyEnv("S3 bucket", {"S3_BUCKET", "AWS_S3_BUCKET", "DUCKDB_OTLP_S3_BUCKET"});
+	return Env(var.c_str());
+}
+
+string S3PrefixValue() {
+	auto prefix = Env("S3_PREFIX", Env("AWS_S3_PREFIX", Env("DUCKDB_OTLP_S3_PREFIX", "duckdb-otlp/")));
+	while (!prefix.empty() && prefix[0] == '/') {
+		prefix = prefix.substr(1);
+	}
+	while (!prefix.empty() && prefix[prefix.size() - 1] == '/') {
+		prefix = prefix.substr(0, prefix.size() - 1);
+	}
+	return prefix;
+}
+
+string S3DataPath() {
+	auto bucket = S3BucketValue();
+	auto prefix = S3PrefixValue();
+	return prefix.empty() ? "s3://" + bucket : "s3://" + bucket + "/" + prefix;
+}
+
+bool IsS3Path(const string &path) {
+	return StringUtil::StartsWith(StringUtil::Lower(path), "s3://");
 }
 
 void CreateDirectory(const string &path) {
@@ -295,6 +324,66 @@ ATTACH %s AS %s (
 	                                           QuoteIdent(config.catalog), SqlQuote(catalog_uri));
 }
 
+void ConfigureParquet(ServerConfig &config) {
+	config.mode_extensions = {"otlp"};
+	config.catalog = "";
+	config.schema = SchemaDefault("otlp");
+	config.parquet_export_path =
+	    Env("PARQUET_EXPORT_PATH",
+	        Env("DUCKDB_OTLP_PARQUET_EXPORT_PATH", Env("S3_EXPORT_PATH", Env("DUCKDB_OTLP_S3_EXPORT_PATH"))));
+	if (config.parquet_export_path.empty()) {
+		if (HasEnv("S3_BUCKET") || HasEnv("AWS_S3_BUCKET") || HasEnv("DUCKDB_OTLP_S3_BUCKET")) {
+			config.parquet_export_path = S3DataPath();
+		} else {
+			config.parquet_export_path = config.data_dir + "/parquet";
+		}
+	}
+
+	if (!IsS3Path(config.parquet_export_path)) {
+		CreateDirectory(config.parquet_export_path);
+		config.mode_setup_sql = "";
+		return;
+	}
+
+	config.mode_extensions = {"aws", "httpfs", "otlp"};
+	auto region = Env("AWS_REGION", Env("AWS_DEFAULT_REGION"));
+	if (region.empty()) {
+		throw InvalidInputException("Missing AWS region for DUCKDB_MODE=%s with an s3:// export path. Set AWS_REGION "
+		                            "or AWS_DEFAULT_REGION",
+		                            config.mode);
+	}
+	auto profile = Env("AWS_PROFILE", Env("AWS_DEFAULT_PROFILE"));
+	auto endpoint = Env("S3_ENDPOINT", Env("AWS_S3_ENDPOINT"));
+	auto url_style = Env("S3_URL_STYLE", Env("AWS_S3_URL_STYLE"));
+
+	auto secret_sql = StringUtil::Format(R"SQL(
+CREATE OR REPLACE SECRET plain_s3_secret (
+  TYPE s3,
+  PROVIDER credential_chain,
+)SQL");
+	if (!profile.empty()) {
+		secret_sql += StringUtil::Format("  CHAIN config,\n  PROFILE %s,\n", SqlQuote(profile));
+	} else {
+		secret_sql += "  CHAIN env,\n";
+	}
+	secret_sql += StringUtil::Format("  REGION %s", SqlQuote(region));
+	if (!endpoint.empty()) {
+		secret_sql += StringUtil::Format(",\n  ENDPOINT %s", SqlQuote(EndpointHost(endpoint)));
+	}
+	if (!url_style.empty()) {
+		secret_sql += StringUtil::Format(",\n  URL_STYLE %s", SqlQuote(url_style));
+	}
+	secret_sql += "\n);\n";
+
+	config.mode_setup_sql = StringUtil::Format(R"SQL(
+INSTALL aws;
+INSTALL httpfs;
+LOAD aws;
+LOAD httpfs;
+%s)SQL",
+	                                           secret_sql);
+}
+
 void ConfigureR2LocalDuckLake(ServerConfig &config) {
 	config.mode_extensions = {"ducklake", "httpfs", "otlp"};
 	config.catalog = CatalogDefault(Env("DUCKLAKE_NAME", "lake"));
@@ -446,6 +535,8 @@ LOAD httpfs;
 void ConfigureMode(ServerConfig &config) {
 	if (config.mode == "local-ducklake") {
 		ConfigureLocalDuckLake(config);
+	} else if (config.mode == "parquet") {
+		ConfigureParquet(config);
 	} else if (config.mode == "r2-data-catalog") {
 		ConfigureR2DataCatalog(config);
 	} else if (config.mode == "s3-tables") {
@@ -456,7 +547,7 @@ void ConfigureMode(ServerConfig &config) {
 		ConfigureR2LocalDuckLake(config);
 	} else {
 		throw InvalidInputException(
-		    "Unsupported DUCKDB_MODE \"%s\". Supported modes: local-ducklake, r2-data-catalog, s3-tables, "
+		    "Unsupported DUCKDB_MODE \"%s\". Supported modes: local-ducklake, parquet, r2-data-catalog, s3-tables, "
 		    "r2-neon-ducklake, r2-local-ducklake",
 		    config.mode);
 	}
@@ -503,19 +594,27 @@ string ServerConfig::StartOtlpSql() const {
 	auto thread_sql = http_threads == 0
 	                      ? string("")
 	                      : StringUtil::Format(",\n    http_threads := %llu", static_cast<uint64_t>(http_threads));
+	auto export_sql = parquet_export_path.empty()
+	                      ? string("")
+	                      : StringUtil::Format(",\n    parquet_export_path := %s", SqlQuote(parquet_export_path));
+	auto schema_target = catalog.empty() ? QuoteIdent(schema) : QuoteIdent(catalog) + "." + QuoteIdent(schema);
+	// The token is read at execution time from a session variable (set via the C++ API in
+	// main.cpp) rather than interpolated as a literal, so it never appears in the generated
+	// SQL string (which DRY_RUN=1 prints to stdout and the engine can echo in error
+	// messages).
 	return StringUtil::Format(R"SQL(
-CREATE SCHEMA IF NOT EXISTS %s.%s;
+CREATE SCHEMA IF NOT EXISTS %s;
 SELECT listen_url, catalog_name, schema_name
 FROM otlp_serve(
     %s,
     catalog := %s,
     schema := %s,
-    token := getenv('DUCKDB_OTLP_EFFECTIVE_TOKEN'),
-    allow_other_hostname := true%s
+    token := getvariable('duckdb_otlp_effective_token'),
+    allow_other_hostname := true%s%s
 );
 )SQL",
-	                          QuoteIdent(catalog), QuoteIdent(schema), SqlQuote(listen_uri), SqlQuote(catalog),
-	                          SqlQuote(schema), thread_sql);
+	                          schema_target, SqlQuote(listen_uri), SqlQuote(catalog), SqlQuote(schema), thread_sql,
+	                          export_sql);
 }
 
 string ServerConfig::StartQuackSql() const {
@@ -527,7 +626,7 @@ LOAD quack;
 SELECT listen_uri
 FROM quack_serve(
     %s,
-    token := getenv('DUCKDB_QUACK_EFFECTIVE_TOKEN'),
+    token := getvariable('duckdb_quack_effective_token'),
     allow_other_hostname := true
 );
 )SQL",

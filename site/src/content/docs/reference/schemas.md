@@ -2,7 +2,7 @@
 title: "Schema Reference"
 ---
 
-The extension emits strongly-typed tables inspired by the [OpenTelemetry ClickHouse exporter schema](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/clickhouseexporter), while also trying to conform at the field level with the [OpenTelemetry Arrow data model](https://github.com/open-telemetry/otel-arrow/blob/main/docs/data_model.md). All column names use `snake_case`.
+The extension emits typed tables based on the [OpenTelemetry ClickHouse exporter schema](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/clickhouseexporter) and aligns fields with the [OpenTelemetry Arrow data model](https://github.com/open-telemetry/otel-arrow/blob/main/docs/data_model.md) where the models overlap. All column names use `snake_case`.
 
 | Table function | Columns | Notes |
 | --- | --- | --- |
@@ -13,7 +13,7 @@ The extension emits strongly-typed tables inspired by the [OpenTelemetry ClickHo
 | `read_otlp_metrics_exp_histogram` | 27 | Exponential histogram metrics with bucket data |
 | `read_otlp_metrics_histogram` | 22 | Standard histogram metrics with explicit bucket bounds |
 
-> **Note**: `read_otlp_metrics` (union schema) and `read_otlp_metrics_summary` are not yet implemented.
+`read_otlp_metrics` (union schema) and `read_otlp_metrics_summary` are registered placeholders.
 
 ## Traces (`read_otlp_traces`)
 

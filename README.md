@@ -1,8 +1,8 @@
 # DuckDB OpenTelemetry Extension
 
-DuckDB extension that makes it easy to query and store OpenTelemetry traces, logs, and metrics with SQL.
+DuckDB extension for querying and storing OpenTelemetry traces, logs, and metrics with SQL.
 
-Though the extension's embedded HTTP server, you can now stream live telemetry—like traces from [Claude Code or Codex](https://smithclay.github.io/duckdb-otlp/guides/store-agent-traces-local-ducklake/)—into a local or remote DuckDB using Quack, [DuckLake](https://smithclay.github.io/duckdb-otlp/guides/stream-to-ducklake/), or Iceberg catalogs like [Amazon S3 Tables](https://smithclay.github.io/duckdb-otlp/guides/stream-to-s3-tables/) or [Cloudflare R2 Data Catalog](https://smithclay.github.io/duckdb-otlp/guides/stream-to-r2-data-catalog/).
+The embedded HTTP server streams live telemetry, including traces from [Claude Code or Codex](https://smithclay.github.io/duckdb-otlp/guides/store-agent-traces-local-ducklake/), into local DuckDB files, [DuckLake](https://smithclay.github.io/duckdb-otlp/guides/stream-to-ducklake/), or Iceberg catalogs such as [Amazon S3 Tables](https://smithclay.github.io/duckdb-otlp/guides/stream-to-s3-tables/) and [Cloudflare R2 Data Catalog](https://smithclay.github.io/duckdb-otlp/guides/stream-to-r2-data-catalog/).
 
 ## Quickstart
 
@@ -22,20 +22,20 @@ SELECT timestamp, service_name, severity_text, body FROM read_otlp_logs('https:/
 SELECT trace_id, span_name, duration / 1000000 AS duration_ms FROM read_otlp_traces('https://github.com/smithclay/duckdb-otlp/raw/refs/heads/main/test/data/otlp_traces.pb') ORDER BY duration DESC;
 ```
 
-You can also start a server to accept OpenTelemetry data directly from other sources like instrumented code, AI agents like [Claude Code or Codex](https://smithclay.github.io/duckdb-otlp/guides/store-agent-traces-local-ducklake/), or OpenTelemetery Collectors:
+You can start a server that accepts OpenTelemetry data from instrumented code, AI agents such as [Claude Code or Codex](https://smithclay.github.io/duckdb-otlp/guides/store-agent-traces-local-ducklake/), or OpenTelemetry Collectors:
 
 ```sql
 -- Start the server
 otlp_serve('otlp:localhost:4318', token := 'dev-token-123456');
 ```
 
-To test it out, just send a simple hello world log in OTLP/HTTP format with cURL:
+Send one hello-world log in OTLP/HTTP format with cURL:
 
 ```bash
 curl -sS http://localhost:4318/v1/logs -H 'Authorization: Bearer dev-token-123456' -H 'Content-Type: application/json' -d '{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"curl-demo"}}]},"scopeLogs":[{"logRecords":[{"timeUnixNano":"1704067200000000000","severityText":"INFO","body":{"stringValue":"hello from curl"}}]}]}]}'
 ```
 
-Back in duckdb:
+Back in DuckDB:
 
 ```sql
 -- Stop server, flush all buffered data.
@@ -43,13 +43,13 @@ SELECT status FROM otlp_stop('otlp:localhost:4318');
 SELECT timestamp, service_name, severity_text, body FROM otlp_logs;
 ```
 
-Live ingest commits buffered rows automatically in the background, currently after about 5 seconds for the oldest buffered row or about 64 MiB of admitted request-body bytes. `otlp_flush` is only needed when you want accepted rows durable/queryable immediately while the server keeps running.
+Live ingest commits buffered rows in the background after about 5 seconds for the oldest buffered row or about 64 MiB of admitted request-body bytes. Use `otlp_flush` when readers need accepted rows durable and queryable while the server keeps running.
 
 For a full walkthrough, including lakehouse ingest, see the [documentation site](https://smithclay.github.io/duckdb-otlp/).
 
 ## Schema
 
-Schema is are generally aligned with a normalized version of [OpenTelemetry Arrow Data model](https://github.com/open-telemetry/otel-arrow/blob/main/docs/data_model.md) as of extension release `v0.5.0`. There are breaking schema changes between `v0.4.0` and `v0.5.0` releases.
+The schemas align with a normalized version of the [OpenTelemetry Arrow Data model](https://github.com/open-telemetry/otel-arrow/blob/main/docs/data_model.md) as of extension release `v0.5.0`. Release `v0.5.0` includes breaking schema changes from `v0.4.0`.
 
 ## What You Can Do
 
@@ -89,7 +89,7 @@ Schema is are generally aligned with a normalized version of [OpenTelemetry Arro
 | `otlp_stop(uri)` | Stop a server after committing remaining rows |
 | `otlp_server_list()` | Inspect running servers and ingest counters |
 
-`read_otlp_metrics` and `read_otlp_metrics_summary` are registered but intentionally unsupported until the extension has stable schemas for those shapes. See the [API Reference](https://smithclay.github.io/duckdb-otlp/reference/api/) for details.
+The extension registers `read_otlp_metrics` and `read_otlp_metrics_summary`, but those functions remain unsupported until the project defines stable schemas for those shapes. See the [API Reference](https://smithclay.github.io/duckdb-otlp/reference/api/) for details.
 
 ## Installation
 
@@ -102,7 +102,7 @@ For source builds, development commands, and WASM builds, see [CONTRIBUTING.md](
 
 ## Limits
 
-Individual file reads are limited to **100 MB** to prevent memory exhaustion. Live ingest accepts request bodies up to `max_body_bytes` and applies buffered-ingest backpressure through `max_buffered_bytes`; see the [Live Ingest Reference](https://smithclay.github.io/duckdb-otlp/reference/serve/#responses-and-status-codes).
+The file readers limit individual files to **100 MB** to prevent memory exhaustion. Live ingest accepts request bodies up to `max_body_bytes` and applies buffered-ingest backpressure through `max_buffered_bytes`; see the [Live Ingest Reference](https://smithclay.github.io/duckdb-otlp/reference/serve/#responses-and-status-codes).
 
 ## Need Help?
 

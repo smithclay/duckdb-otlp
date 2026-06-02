@@ -2,7 +2,7 @@
 title: "How to Configure the OpenTelemetry Collector"
 ---
 
-Use the OpenTelemetry Collector when you want a standard pipeline between applications and `duckdb-otlp`. The collector can forward OTLP/HTTP directly to the server image, or write OTLP files for offline DuckDB analysis.
+Use the OpenTelemetry Collector to route telemetry from applications to `duckdb-otlp`. You can forward OTLP/HTTP to the server image, or write OTLP files for later DuckDB analysis.
 
 ## Forward to the Server Image
 
@@ -67,7 +67,7 @@ Run the collector:
 otelcol-contrib --config collector-to-duckdb.yaml
 ```
 
-Point applications at the collector's normal OTLP endpoints:
+Point applications at the collector's OTLP endpoints:
 
 - OTLP/gRPC: `http://localhost:4317`
 - OTLP/HTTP: `http://localhost:4318`
@@ -96,7 +96,7 @@ docker logs --tail 80 duckdb-otlp
 
 ## Write OTLP Files Instead
 
-Use the file exporter when you want portable files that you can query later without a running server.
+Use the file exporter when you want files that DuckDB can query without a running server.
 
 Create `collector-to-files.yaml`:
 
@@ -140,7 +140,7 @@ Run it:
 otelcol-contrib --config collector-to-files.yaml
 ```
 
-This collector listens on the standard OTLP ports and writes JSONL files under `./otel-export/`.
+The collector listens on the OTLP ports and writes JSONL files under `./otel-export/`.
 
 To generate protobuf files, switch the exporter to `encoding: proto`.
 
@@ -168,6 +168,7 @@ FROM read_otlp_metrics_gauge('otel-export/*.jsonl');
 - [Get Started](../../get-started/)
 - [Stream to Local DuckLake](../../guides/stream-to-local-ducklake/)
 - [Stream to Remote DuckLake](../../guides/stream-to-remote-ducklake/)
+- [Stream to Parquet](../../guides/stream-to-parquet/)
 - [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/)
 - [Stream to Cloudflare R2 Data Catalog](../../guides/stream-to-r2-data-catalog/)
 - [Schema Reference](../../reference/schemas/)

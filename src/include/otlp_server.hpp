@@ -26,6 +26,12 @@ struct OtlpServerConfig {
 	//! Set this to an attached writable catalog name for lakehouse ingest.
 	string catalog_name;
 	string schema_name = "main";
+	//! Optional plain Parquet export root. When set, the server keeps no persistent
+	//! destination table: each seal writes the sealed rows straight to
+	//! <root>/<table>/year=YYYY/month=MM/day=DD/*.parquet (the only durable store), and a
+	//! read-only view over those files is created lazily for inspection. Export is
+	//! at-least-once (a COPY cannot be rolled back), so downstream readers must dedupe.
+	string parquet_export_path;
 	bool create_tables = true;
 	idx_t max_body_bytes = 16ULL * 1024ULL * 1024ULL;
 	//! HTTP worker threads. Zero means choose a conservative host-based default.

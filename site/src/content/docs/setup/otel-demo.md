@@ -2,9 +2,9 @@
 title: "How to Point the OpenTelemetry Demo at Local DuckLake"
 ---
 
-This guide shows you how to run the `duckdb-otlp` server image in `local-ducklake` mode and send OpenTelemetry Demo traces, logs, and metrics to it over OTLP/HTTP.
+Run the `duckdb-otlp` server image in `local-ducklake` mode and send OpenTelemetry Demo traces, logs, and metrics to it over OTLP/HTTP.
 
-The demo keeps its normal observability backends. You add `duckdb-otlp` as one more collector exporter.
+The demo keeps its existing observability backends. You add `duckdb-otlp` as one more collector exporter.
 
 ## Start the Local DuckLake Server
 
@@ -61,7 +61,7 @@ service:
       exporters: [otlp_http/prometheus, debug, otlp_http/duckdb]
 ```
 
-The OpenTelemetry Demo merges this file with its main collector config. Pipeline arrays are replaced during that merge, so keep the demo's existing exporters in each list and add `otlp_http/duckdb`.
+The OpenTelemetry Demo merges this file with its main collector config. The merge replaces pipeline arrays, so keep the demo's existing exporters in each list and add `otlp_http/duckdb`.
 
 On Linux, add `host.docker.internal` to the `otelcol` service in `docker-compose.yml`:
 
@@ -72,7 +72,7 @@ services:
       - "host.docker.internal:host-gateway"
 ```
 
-Docker Desktop for macOS and Windows provides `host.docker.internal` automatically.
+Docker Desktop for macOS and Windows provides `host.docker.internal`.
 
 ## Start the Demo
 
@@ -132,14 +132,14 @@ Stop the DuckLake server:
 docker stop duckdb-otlp
 ```
 
-The image sends `otlp_stop('otlp:0.0.0.0:4318')` during shutdown, so remaining buffered rows are committed before the process exits.
+During shutdown, the image sends `otlp_stop('otlp:0.0.0.0:4318')`, so the server commits remaining buffered rows before the process exits.
 
 ## Troubleshooting
 
 - If the collector logs connection errors, confirm the `duckdb-otlp` container is still running and `docker logs duckdb-otlp` shows `OTLP HTTP: 0.0.0.0:4318`.
-- If the collector runs in Linux Docker and cannot resolve `host.docker.internal`, add the `extra_hosts` entry above.
-- If requests are rejected with `401`, confirm the collector `Authorization` header matches `DUCKDB_OTLP_TOKEN`.
-- If rows do not appear immediately, run `otlp_flush` before querying.
+- If you run the collector in Linux Docker and it cannot resolve `host.docker.internal`, add the `extra_hosts` entry above.
+- If the server returns `401`, confirm the collector `Authorization` header matches `DUCKDB_OTLP_TOKEN`.
+- If you cannot see rows before the next background commit, run `otlp_flush` before querying.
 
 ## See Also
 

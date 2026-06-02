@@ -49,6 +49,7 @@ export default defineConfig({
             { label: 'Query with Quack', link: '/guides/query-with-quack/' },
             { label: 'Stream to Remote DuckLake', link: '/guides/stream-to-remote-ducklake/' },
             { label: 'Store Agent Traces in DuckLake', link: '/guides/store-agent-traces-local-ducklake/' },
+            { label: 'Stream to Parquet', link: '/guides/stream-to-parquet/' },
             { label: 'Stream to S3 Tables', link: '/guides/stream-to-s3-tables/' },
             { label: 'Stream to R2 Data Catalog', link: '/guides/stream-to-r2-data-catalog/' },
             { label: 'Export to Parquet', link: '/guides/exporting-to-parquet/' },

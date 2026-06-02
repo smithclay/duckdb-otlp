@@ -6,13 +6,13 @@ import PostLogRecord from '../../../components/docs/PostLogRecord.astro';
 import QueryCommittedRows from '../../../components/docs/QueryCommittedRows.astro';
 import StopCleanly from '../../../components/docs/StopCleanly.astro';
 
-This guide shows you how to run the `duckdb-otlp` Docker image in `s3-tables` mode and stream OTLP/HTTP exports into an Iceberg catalog hosted by **Amazon S3 Tables**.
+Use the `duckdb-otlp` Docker image in `s3-tables` mode to stream OTLP/HTTP exports into an Iceberg catalog hosted by **Amazon S3 Tables**.
 
 The container initializes DuckDB, loads the required extensions, attaches the S3 Tables table bucket, starts the ingest server, and commits accepted rows in batches.
 
-This guide is specifically for **Amazon S3 Tables**, the managed AWS service with table buckets and an Iceberg REST catalog endpoint. It is not the same as writing Iceberg metadata and Parquet files to an ordinary `s3://` bucket.
+Choose **Amazon S3 Tables** when you want AWS-managed table buckets and an Iceberg REST catalog endpoint. To write partitioned Parquet files to a regular `s3://` bucket, use [Stream to Parquet](../stream-to-parquet/).
 
-> Live ingestion is OTLP/HTTP on port `4318`. The ingest server is not available in WASM builds.
+Live ingestion uses OTLP/HTTP on port `4318`. WASM builds do not include the ingest server.
 
 ## Create S3 Tables resources
 
@@ -89,7 +89,7 @@ aws cloudformation deploy \
     NamespaceName=otlp
 ```
 
-Read the table bucket ARN. This ARN is what DuckDB attaches; it is not an `s3://` path.
+Read the table bucket ARN. DuckDB attaches this ARN; DuckDB cannot attach an `s3://` path for S3 Tables.
 
 ```bash
 export TABLE_BUCKET_ARN="$(
@@ -132,7 +132,7 @@ docker run --rm --name duckdb-otlp \
   ghcr.io/smithclay/duckdb-otlp:latest
 ```
 
-The container creates these Iceberg tables in the S3 Tables namespace if they do not already exist:
+The container creates these Iceberg tables in the S3 Tables namespace if they do not exist:
 
 - `s3tables.otlp.otlp_logs`
 - `s3tables.otlp.otlp_traces`
@@ -191,12 +191,12 @@ aws cloudformation wait stack-delete-complete \
 
 ## Troubleshooting
 
-- If startup cannot find AWS credentials, confirm `AWS_PROFILE` in `s3tables.env` matches a profile in the mounted `$HOME/.aws` directory.
-- If attachment fails, confirm `S3_TABLES_BUCKET_ARN` is the table bucket ARN from CloudFormation, not an `s3://` path.
+- If the container cannot find AWS credentials at startup, confirm `AWS_PROFILE` in `s3tables.env` matches a profile in the mounted `$HOME/.aws` directory.
+- If attachment fails, confirm `S3_TABLES_BUCKET_ARN` is the table bucket ARN from CloudFormation. DuckDB cannot attach an `s3://` path for S3 Tables.
 - If no rows appear after a `202` response, run the flush command before querying.
 - If stack deletion fails, rerun [Clean up](#clean-up) while the container is still running, then delete the CloudFormation stack again.
 - S3 Tables stores live ingest timestamp columns with microsecond precision because the Iceberg catalog does not accept DuckDB `TIMESTAMP_NS` columns.
-- If catalog checkpointing is reported as unsupported, no action is required; ingest, flush, and stop durability behavior is unchanged.
+- If DuckDB reports unsupported catalog checkpointing, no action is required; ingest, flush, and stop durability behavior stays the same.
 
 ## See also
 

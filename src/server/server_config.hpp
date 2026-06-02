@@ -19,6 +19,7 @@ struct ServerConfig {
 	duckdb::string quack_listen_uri;
 	duckdb::string quack_http_addr;
 	duckdb::string quack_token;
+	duckdb::string parquet_export_path;
 	bool quack_enabled = false;
 	bool dry_run = false;
 	int startup_timeout_secs = 60;

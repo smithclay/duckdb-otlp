@@ -6,11 +6,11 @@ description: "Run the duckdb-otlp Docker image as the OTLP writer, enable Quack,
 import PostLogRecord from '../../../components/docs/PostLogRecord.astro';
 import StopCleanly from '../../../components/docs/StopCleanly.astro';
 
-This guide shows you how to run the `duckdb-otlp` Docker image in `local-ducklake` mode, enable the image's Quack server, and connect to it from a DuckDB process outside Docker.
+Run the `duckdb-otlp` Docker image in `local-ducklake` mode, enable the image's Quack server, and connect to it from a DuckDB process outside Docker.
 
-Use this when you want the container to own ingestion and DuckLake writes, but you still want a normal local DuckDB shell, notebook, or script to query the telemetry without attaching the DuckLake catalog directly.
+Use this setup when you want the container to handle ingestion and DuckLake writes while a local DuckDB shell, notebook, or script queries telemetry through Quack.
 
-> Quack is experimental in DuckDB v1.5.3. Use it on trusted local networks unless you put it behind a TLS-terminating reverse proxy.
+Quack is experimental in DuckDB v1.5.3. Run it on trusted local networks. For remote access, put it behind a TLS-terminating reverse proxy.
 
 ## Configure
 
@@ -29,7 +29,7 @@ DUCKDB_QUACK_TOKEN=dev-quack-token-123456
 
 `DUCKDB_OTLP_TOKEN` protects OTLP/HTTP ingest on port `4318`. `DUCKDB_QUACK_TOKEN` protects DuckDB query access on port `9494`.
 
-The local DuckLake mode defaults to `DUCKLAKE_CATALOG_PATH=/data/ducklake/catalog.duckdb` and `DUCKLAKE_DATA_PATH=/data/ducklake/storage`. Set those variables only when you want to place DuckLake metadata or Parquet files somewhere else inside the mounted `/data` volume.
+Local DuckLake mode uses `DUCKLAKE_CATALOG_PATH=/data/ducklake/catalog.duckdb` and `DUCKLAKE_DATA_PATH=/data/ducklake/storage` by default. Set those variables when you want DuckLake metadata or Parquet files somewhere else inside the mounted `/data` volume.
 
 ## Start the server
 
@@ -44,9 +44,9 @@ docker run --rm --name duckdb-otlp \
   ghcr.io/smithclay/duckdb-otlp:latest
 ```
 
-The container initializes DuckLake, starts the OTLP/HTTP ingest server, and starts Quack in the same DuckDB process. The server-side catalog is named `lake`, so telemetry lands in tables such as `lake.main.otlp_logs` and `lake.main.otlp_traces`.
+The container initializes DuckLake, starts the OTLP/HTTP ingest server, and starts Quack in the same DuckDB process. The server names the catalog `lake`, so telemetry lands in tables such as `lake.main.otlp_logs` and `lake.main.otlp_traces`.
 
-Leave the container running while clients send OTLP/HTTP requests and while local DuckDB clients query through Quack.
+Leave the container running while clients send OTLP/HTTP requests and local DuckDB clients query through Quack.
 
 <PostLogRecord
   serviceName="quack-local-ducklake-demo"
@@ -83,11 +83,11 @@ ATTACH 'quack:localhost:9494' AS otel_writer (TYPE quack);
 
 For `localhost`, Quack uses plain HTTP by default. The Docker port mapping forwards local port `9494` to `quack:0.0.0.0:9494` inside the container.
 
-> **Remote hosts need transport protection.** If you connect to Quack on a remote host, put it behind TLS termination. As another option, use a tunneling extension such as [Query-farm/quackscale](https://github.com/Query-farm/quackscale) instead of exposing the Quack listener directly.
+If you connect to Quack on a remote host, protect the transport with TLS termination. A tunneling extension such as [Query-farm/quackscale](https://github.com/Query-farm/quackscale) keeps the Quack listener off the public network.
 
 ## Query committed rows
 
-Rows are accepted before they are durable. For a short local test, flush the ingest buffer from the remote DuckDB process first:
+The server accepts rows before it makes them durable. For a short local test, flush the ingest buffer from the remote DuckDB process first:
 
 ```sql
 FROM otel_writer.query(
@@ -122,11 +122,11 @@ FROM otel_writer.query(
 );
 ```
 
-The query runs inside the container's DuckDB process, so it sees the attached `lake` catalog without a second process opening the DuckLake catalog files.
+Quack runs the query inside the container's DuckDB process, so the query sees the attached `lake` catalog without a second process opening the DuckLake catalog files.
 
 ## Run one-shot queries
 
-If you do not need a sticky attachment, use `quack_query` directly:
+For one-off queries, call `quack_query`:
 
 ```sql
 FROM quack_query(
@@ -141,19 +141,19 @@ FROM quack_query(
 );
 ```
 
-`ATTACH` is better when you want to reuse the connection across multiple queries. `quack_query` is convenient for scripts and quick checks.
+Use `ATTACH` when you want to reuse the connection across multiple queries. Use `quack_query` for scripts and quick checks.
 
 <StopCleanly />
 
 ## Clean up
 
-After stopping the container, remove the local DuckLake files if you no longer need them:
+After you stop the container, remove the local DuckLake files if you no longer need them:
 
 ```bash
 rm -rf data
 ```
 
-## See also
+## Related
 
 - [How to stream to local DuckLake](../stream-to-local-ducklake/)
 - [How to store agent traces in local DuckLake](../store-agent-traces-local-ducklake/)

@@ -81,6 +81,20 @@ static unique_ptr<FunctionData> OtlpServeBind(ClientContext &context, TableFunct
 			throw InvalidInputException("schema must not be empty");
 		}
 	}
+	if (input.named_parameters.find("parquet_export_path") != input.named_parameters.end()) {
+		bind_data->config.parquet_export_path = input.named_parameters["parquet_export_path"].GetValue<string>();
+		if (bind_data->config.parquet_export_path.empty()) {
+			throw InvalidInputException("parquet_export_path must not be empty");
+		}
+		// Parquet export is a standalone durable store (the Parquet files), not a mirror of
+		// a catalog table: it keeps no local table copy and is at-least-once. Combining it
+		// with a catalog target would be ambiguous, so the two are mutually exclusive.
+		if (!bind_data->config.catalog_name.empty()) {
+			throw InvalidInputException(
+			    "parquet_export_path cannot be combined with a catalog target; use a catalog "
+			    "mode for transactional ingest or parquet_export_path for plain Parquet export");
+		}
+	}
 	if (input.named_parameters.find("create_tables") != input.named_parameters.end()) {
 		bind_data->config.create_tables = input.named_parameters["create_tables"].GetValue<bool>();
 	}
@@ -161,6 +175,7 @@ TableFunctionSet OtlpServeFunction::GetFunction() {
 	fun.named_parameters["token"] = OtlpVarcharType();
 	fun.named_parameters["catalog"] = OtlpVarcharType();
 	fun.named_parameters["schema"] = OtlpVarcharType();
+	fun.named_parameters["parquet_export_path"] = OtlpVarcharType();
 	fun.named_parameters["create_tables"] = OtlpBooleanType();
 	fun.named_parameters["allow_other_hostname"] = OtlpBooleanType();
 	fun.named_parameters["max_body_bytes"] = OtlpUBigIntType();

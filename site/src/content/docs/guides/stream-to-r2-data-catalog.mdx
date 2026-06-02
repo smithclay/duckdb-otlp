@@ -6,13 +6,13 @@ import PostLogRecord from '../../../components/docs/PostLogRecord.astro';
 import QueryCommittedRows from '../../../components/docs/QueryCommittedRows.astro';
 import StopCleanly from '../../../components/docs/StopCleanly.astro';
 
-This guide shows you how to run the `duckdb-otlp` Docker image in `r2-data-catalog` mode and stream OTLP/HTTP exports into an Iceberg catalog hosted by **Cloudflare R2 Data Catalog**.
+Use the `duckdb-otlp` Docker image in `r2-data-catalog` mode to stream OTLP/HTTP exports into an Iceberg catalog hosted by **Cloudflare R2 Data Catalog**.
 
 The container initializes DuckDB, loads the required extensions, attaches the R2 Data Catalog warehouse, starts the ingest server, and commits accepted rows in batches.
 
-This guide is specifically for **R2 Data Catalog**, the managed Cloudflare service that exposes an Iceberg REST catalog for an R2 bucket. It is not the same as writing Iceberg metadata and Parquet files to an ordinary R2 bucket through the S3-compatible API.
+Choose **R2 Data Catalog** when you want Cloudflare to host an Iceberg REST catalog for an R2 bucket. To write Iceberg metadata and Parquet files to a regular R2 bucket through the S3-compatible API, use a different catalog setup.
 
-> Live ingestion is OTLP/HTTP on port `4318`. The ingest server is not available in WASM builds.
+Live ingestion uses OTLP/HTTP on port `4318`. WASM builds do not include the ingest server.
 
 ## Create R2 Data Catalog resources
 
@@ -52,6 +52,21 @@ export R2_CATALOG_URI="https://catalog.cloudflarestorage.com/${CLOUDFLARE_ACCOUN
 export R2_WAREHOUSE="${CLOUDFLARE_ACCOUNT_ID}_${R2_BUCKET_NAME}"
 ```
 
+Enable R2 Data Catalog table maintenance before sustained ingest. Live OTLP ingest commits rows in batches, which can leave many small data files and table snapshots without Cloudflare managed maintenance.
+
+```bash
+wrangler r2 bucket catalog compaction enable "$R2_BUCKET_NAME" \
+  --target-size 128 \
+  --token "$CLOUDFLARE_API_TOKEN"
+
+wrangler r2 bucket catalog snapshot-expiration enable "$R2_BUCKET_NAME" \
+  --token "$CLOUDFLARE_API_TOKEN" \
+  --older-than-days 7 \
+  --retain-last 10
+```
+
+Compaction combines small files into larger files for faster queries; catalog-level compaction applies retroactively to existing tables. Snapshot expiration removes old Iceberg snapshots and unreferenced files according to the retention policy. Snapshot expiration requires Wrangler `4.56.0` or newer.
+
 You also need an R2 S3-compatible access key pair that can write objects to the bucket. Save those values as `CLOUDFLARE_ACCESS_KEY_ID` and `CLOUDFLARE_SECRET_ACCESS_KEY` in the next step.
 
 ## Configure
@@ -82,7 +97,7 @@ docker run --rm --name duckdb-otlp \
   ghcr.io/smithclay/duckdb-otlp:latest
 ```
 
-The container creates these Iceberg tables in the R2 Data Catalog namespace if they do not already exist:
+The container creates these Iceberg tables in the R2 Data Catalog namespace if they do not exist:
 
 - `r2catalog.otlp.otlp_logs`
 - `r2catalog.otlp.otlp_traces`
@@ -132,7 +147,7 @@ wrangler r2 bucket catalog disable "$R2_BUCKET_NAME"
 wrangler r2 bucket delete "$R2_BUCKET_NAME"
 ```
 
-If bucket deletion reports that the bucket is not empty, delete the remaining catalog objects and retry. For a fresh bucket created only for this guide, those objects are the Iceberg metadata and data files under `__r2_data_catalog/`:
+If bucket deletion reports that the bucket is not empty, delete the remaining catalog objects and retry. For a bucket you created for this guide, those objects are the Iceberg metadata and data files under `__r2_data_catalog/`:
 
 ```bash
 export R2_OBJECTS_API="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/r2/buckets/${R2_BUCKET_NAME}/objects"
@@ -153,13 +168,13 @@ wrangler r2 bucket delete "$R2_BUCKET_NAME"
 
 ## Troubleshooting
 
-- If startup cannot attach the catalog, confirm `CLOUDFLARE_CATALOG_URI`, `CLOUDFLARE_CATALOG_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, and `CLOUDFLARE_R2_BUCKET` all refer to the same bucket.
-- If startup attaches the catalog but cannot write files, confirm `CLOUDFLARE_ACCESS_KEY_ID` and `CLOUDFLARE_SECRET_ACCESS_KEY` can write objects to the R2 bucket.
+- If the container cannot attach the catalog at startup, confirm `CLOUDFLARE_CATALOG_URI`, `CLOUDFLARE_CATALOG_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, and `CLOUDFLARE_R2_BUCKET` all refer to the same bucket.
+- If the container attaches the catalog but cannot write files, confirm `CLOUDFLARE_ACCESS_KEY_ID` and `CLOUDFLARE_SECRET_ACCESS_KEY` can write objects to the R2 bucket.
 - If no rows appear after a `202` response, run the flush command before querying.
 - If bucket deletion reports that the bucket is not empty, delete the remaining catalog objects as shown in [Clean up](#clean-up), then retry `wrangler r2 bucket delete`.
-- R2 Data Catalog currently does not support R2 buckets in a non-default jurisdiction.
+- R2 Data Catalog supports R2 buckets in the default jurisdiction.
 - R2 Data Catalog stores live ingest timestamp columns with microsecond precision because the Iceberg catalog does not accept DuckDB `TIMESTAMP_NS` columns.
-- If catalog checkpointing is reported as unsupported, no action is required; ingest, flush, and stop durability behavior is unchanged.
+- If DuckDB reports unsupported catalog checkpointing, no action is required; ingest, flush, and stop durability behavior stays the same.
 
 ## See also
 

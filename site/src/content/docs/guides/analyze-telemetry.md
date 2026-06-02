@@ -2,7 +2,7 @@
 title: "How to Analyze Telemetry"
 ---
 
-Use the OTLP reader that matches the signal you are analyzing:
+Choose the OTLP reader for the signal you want to analyze:
 
 - traces: `read_otlp_traces(path)`
 - logs: `read_otlp_logs(path)`
@@ -11,9 +11,9 @@ Use the OTLP reader that matches the signal you are analyzing:
 - histograms: `read_otlp_metrics_histogram(path)`
 - exponential histograms: `read_otlp_metrics_exp_histogram(path)`
 
-> If you are using the `duckdb-otlp` server, incoming telemetry is already written into regular tables such as `otlp_traces`, `otlp_logs`, and `otlp_metrics_gauge`. Use the same SQL patterns below, but replace the `read_otlp_*('...')` call with your table name.
+If you use the `duckdb-otlp` server, the server writes incoming telemetry into regular tables such as `otlp_traces`, `otlp_logs`, and `otlp_metrics_gauge`. Use the SQL patterns below with your table name in place of the `read_otlp_*('...')` call.
 
-The examples below use JSONL paths such as `traces/*.jsonl`, but the same readers also accept OTLP JSON and protobuf files. For complete columns and types, use the [Schema Reference](../../reference/schemas/).
+The examples use JSONL paths such as `traces/*.jsonl`. The same readers accept OTLP JSON and protobuf files. For columns and types, use the [Schema Reference](../../reference/schemas/).
 
 ## Traces
 
@@ -115,11 +115,11 @@ ORDER BY time_unix_nano DESC
 LIMIT 50;
 ```
 
-Metric shapes have different columns, so choose the shape-specific reader. See [Metrics Schema](../../reference/schemas/#metrics) for gauge, sum, histogram, and exponential histogram fields.
+Metric shapes use different columns. Choose the shape-specific reader, then see [Metrics Schema](../../reference/schemas/#metrics) for gauge, sum, histogram, and exponential histogram fields.
 
 ## Attributes
 
-Resource, scope, and signal attributes are JSON strings. Use DuckDB JSON functions to filter nested keys:
+The readers expose resource, scope, and signal attributes as JSON strings. Use DuckDB JSON functions to filter nested keys:
 
 ```sql
 SELECT time_unix_nano, service_name, body
