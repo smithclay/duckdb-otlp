@@ -21,6 +21,10 @@ Create `.env`:
 DUCKDB_MODE=local-ducklake
 DUCKLAKE_NAME=lake
 DUCKDB_OTLP_TOKEN=dev-otlp-token-123456
+
+DUCKDB_QUACK_ENABLED=1
+DUCKDB_QUACK_ADDR=0.0.0.0:9494
+DUCKDB_QUACK_TOKEN=dev-quack-token-123456
 ```
 
 Start the published server image:
@@ -29,6 +33,7 @@ Start the published server image:
 docker run --rm --name duckdb-otlp \
   --env-file .env \
   -p 4318:4318 \
+  -p 9494:9494 \
   -v duckdb-otlp-ducklake:/data \
   ghcr.io/smithclay/duckdb-otlp:latest
 ```
@@ -109,38 +114,58 @@ To collect spans without Codex event logs, set `exporter = "none"` and keep the 
 `duckdb-otlp` buffers accepted rows. Flush before you query a short local run:
 
 ```bash
-docker exec duckdb-otlp sh -c \
-  "printf '%s\n' \"SELECT * FROM otlp_flush('otlp:0.0.0.0:4318');\" > /tmp/duckdb-otlp.sql"
+duckdb <<'SQL'
+INSTALL quack;
+LOAD quack;
+
+FROM quack_query(
+  'quack:localhost:9494',
+  'SELECT * FROM otlp_flush(''otlp:0.0.0.0:4318'')',
+  token = 'dev-quack-token-123456'
+);
+SQL
 ```
 
 ## Inspect Stored Traces
 
-Query through the running DuckDB process. The server process owns the DuckLake catalog lock while it runs, so send inspection SQL to the control FIFO instead of attaching the same DuckLake from a second DuckDB process.
+Query through the running DuckDB process with Quack. The server process owns the DuckLake catalog lock while it runs, and the distroless image has no shell or bundled DuckDB CLI, so do not use `docker exec ... sh -c` for inspection SQL.
 
 ```bash
-docker exec duckdb-otlp sh -c \
-  "printf '%s\n' \
-    \"SELECT trace_id, name, service_name, duration_time_unix_nano\" \
-    \"FROM lake.main.otlp_traces\" \
-    \"ORDER BY start_time_unix_nano DESC\" \
-    \"LIMIT 20;\" \
-    > /tmp/duckdb-otlp.sql"
+duckdb <<'SQL'
+INSTALL quack;
+LOAD quack;
 
-docker logs --tail 80 duckdb-otlp
+FROM quack_query(
+  'quack:localhost:9494',
+  $$
+  SELECT trace_id, name, service_name, duration_time_unix_nano
+  FROM lake.main.otlp_traces
+  ORDER BY start_time_unix_nano DESC
+  LIMIT 20
+  $$,
+  token = 'dev-quack-token-123456'
+);
+SQL
 ```
 
 If you enabled event logs, inspect recent log rows:
 
 ```bash
-docker exec duckdb-otlp sh -c \
-  "printf '%s\n' \
-    \"SELECT time_unix_nano, service_name, severity_text, body\" \
-    \"FROM lake.main.otlp_logs\" \
-    \"ORDER BY time_unix_nano DESC\" \
-    \"LIMIT 20;\" \
-    > /tmp/duckdb-otlp.sql"
+duckdb <<'SQL'
+INSTALL quack;
+LOAD quack;
 
-docker logs --tail 80 duckdb-otlp
+FROM quack_query(
+  'quack:localhost:9494',
+  $$
+  SELECT time_unix_nano, service_name, severity_text, body
+  FROM lake.main.otlp_logs
+  ORDER BY time_unix_nano DESC
+  LIMIT 20
+  $$,
+  token = 'dev-quack-token-123456'
+);
+SQL
 ```
 
 ## Stop the Writer
