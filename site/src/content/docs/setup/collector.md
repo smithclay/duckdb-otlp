@@ -2,13 +2,103 @@
 title: "How to Configure the OpenTelemetry Collector"
 ---
 
-Use the OpenTelemetry Collector when you want a standard pipeline that receives OTLP from applications and writes OTLP files for DuckDB analysis.
+Use the OpenTelemetry Collector to route telemetry from applications to `duckdb-otlp`. You can forward OTLP/HTTP to the server image, or write OTLP files for later DuckDB analysis.
 
-For direct HTTP ingestion into DuckDB, DuckLake, Amazon S3 Tables, or Cloudflare R2 Data Catalog, see the [Live Ingest Quickstart](../../quickstart/serve/), [Stream to DuckLake](../../guides/stream-to-ducklake/), [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/), and [Stream to Cloudflare R2 Data Catalog](../../guides/stream-to-r2-data-catalog/).
+## Forward to the Server Image
 
-## File Exporter Configuration
+Start a local DuckLake-backed server:
 
-Create `collector.yaml`:
+```bash
+cat > .env <<'EOF'
+DUCKDB_MODE=local-ducklake
+DUCKDB_OTLP_TOKEN=dev-token-123456
+
+DUCKLAKE_NAME=lake
+DUCKLAKE_CATALOG_PATH=/data/ducklake/catalog.duckdb
+DUCKLAKE_DATA_PATH=/data/ducklake/storage
+EOF
+
+mkdir -p data
+
+docker run --rm --name duckdb-otlp \
+  --env-file .env \
+  -p 4318:4318 \
+  -v "$(pwd)/data:/data" \
+  ghcr.io/smithclay/duckdb-otlp:latest
+```
+
+In another terminal, create `collector-to-duckdb.yaml`:
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      grpc:
+      http:
+
+processors:
+  batch:
+
+exporters:
+  otlp_http/duckdb:
+    endpoint: http://localhost:4318
+    headers:
+      Authorization: Bearer dev-token-123456
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp_http/duckdb]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp_http/duckdb]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp_http/duckdb]
+```
+
+Run the collector:
+
+```bash
+otelcol-contrib --config collector-to-duckdb.yaml
+```
+
+Point applications at the collector's OTLP endpoints:
+
+- OTLP/gRPC: `http://localhost:4317`
+- OTLP/HTTP: `http://localhost:4318`
+
+The collector forwards traces, logs, and metrics to `duckdb-otlp`, which writes them into DuckLake tables.
+
+If the collector itself runs in Docker, use `http://host.docker.internal:4318` for the exporter endpoint. On Linux, add `host.docker.internal` with Docker's `host-gateway` support.
+
+## Query Forwarded Telemetry
+
+Flush buffered telemetry and query through the running `duckdb-otlp` container:
+
+```bash
+docker exec duckdb-otlp sh -c \
+  "printf '%s\n' \
+    \"SELECT * FROM otlp_flush('otlp:0.0.0.0:4318');\" \
+    \"SELECT service_name, name, count(*) AS spans\" \
+    \"FROM lake.main.otlp_traces\" \
+    \"GROUP BY service_name, name\" \
+    \"ORDER BY spans DESC\" \
+    \"LIMIT 20;\" \
+    > /tmp/duckdb-otlp.sql"
+
+docker logs --tail 80 duckdb-otlp
+```
+
+## Write OTLP Files Instead
+
+Use the file exporter when you want files that DuckDB can query without a running server.
+
+Create `collector-to-files.yaml`:
 
 ```yaml
 receivers:
@@ -47,10 +137,10 @@ service:
 Run it:
 
 ```bash
-otelcol-contrib --config collector.yaml
+otelcol-contrib --config collector-to-files.yaml
 ```
 
-The collector listens on the standard OTLP ports: `4317` for gRPC and `4318` for HTTP. It writes JSONL files under `./otel-export/`.
+The collector listens on the OTLP ports and writes JSONL files under `./otel-export/`.
 
 To generate protobuf files, switch the exporter to `encoding: proto`.
 
@@ -60,36 +150,25 @@ To generate protobuf files, switch the exporter to `encoding: proto`.
 INSTALL otlp FROM community;
 LOAD otlp;
 
-SELECT trace_id, span_name, duration
+SELECT trace_id, name, duration_time_unix_nano
 FROM read_otlp_traces('otel-export/*.jsonl')
-ORDER BY timestamp DESC
+ORDER BY start_time_unix_nano DESC
 LIMIT 20;
 
-SELECT timestamp, severity_text, body
+SELECT time_unix_nano, severity_text, body
 FROM read_otlp_logs('otel-export/*.jsonl')
 WHERE severity_text IN ('ERROR', 'FATAL');
 
-SELECT timestamp, metric_name, value
+SELECT time_unix_nano, name, coalesce(double_value, int_value::DOUBLE) AS value
 FROM read_otlp_metrics_gauge('otel-export/*.jsonl');
 ```
-
-## Live Ingest Alternative
-
-If you do not need collector-side processing, the extension can receive OTLP/HTTP directly:
-
-```sql
-SELECT listen_url
-FROM otlp_serve('otlp:localhost:4318', token := 'dev-token-123456');
-```
-
-Point an OTLP/HTTP exporter at `http://localhost:4318` and set `Authorization: Bearer dev-token-123456`. See [Live Ingest Reference](../../reference/serve/) for endpoints, content types, auth, buffering, and durability.
 
 ## Next Steps
 
 - [Get Started](../../get-started/)
-- [Live Ingest Quickstart](../../quickstart/serve/)
-- [Stream to DuckLake](../../guides/stream-to-ducklake/)
+- [Stream to Local DuckLake](../../guides/stream-to-local-ducklake/)
+- [Stream to Remote DuckLake](../../guides/stream-to-remote-ducklake/)
+- [Stream to Parquet](../../guides/stream-to-parquet/)
 - [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/)
 - [Stream to Cloudflare R2 Data Catalog](../../guides/stream-to-r2-data-catalog/)
-- [How to Get Sample Data](../sample-data/)
 - [Schema Reference](../../reference/schemas/)

@@ -4,9 +4,9 @@ title: "How to Install the Extension"
 
 Install the DuckDB OpenTelemetry Extension to start querying OpenTelemetry data with SQL.
 
-## Install from Community (Recommended)
+## Install from Community
 
-The easiest way to get started:
+Install from DuckDB's community extension repository:
 
 ```sql
 -- Install from DuckDB community extensions
@@ -14,7 +14,7 @@ INSTALL otlp FROM community;
 LOAD otlp;
 ```
 
-This downloads the pre-built extension for your platform.
+DuckDB downloads the pre-built extension for your platform.
 
 ### Requirements
 
@@ -36,7 +36,7 @@ The WASM demo supports:
 - Running SQL queries in-browser
 - Uploading your own files
 
-The live ingest server is available only in native builds.
+Native builds include the live ingest server.
 
 ## Build from Source
 
@@ -52,7 +52,7 @@ cd duckdb-otlp
 # Install vcpkg dependencies
 export VCPKG_TOOLCHAIN_PATH=`pwd`/vcpkg/scripts/buildsystems/vcpkg.cmake
 
-# Build with ninja (recommended)
+# Build with ninja
 GEN=ninja make
 
 # DuckDB shell with extension loaded
@@ -72,7 +72,7 @@ make wasm_eh
 
 ## Verify Installation
 
-Check that the extension loaded successfully:
+Check that DuckDB loaded the extension:
 
 ```sql
 -- List installed extensions
@@ -86,8 +86,8 @@ SELECT count(*) FROM read_otlp_logs('test/data/logs_simple.jsonl');
 
 - [Get Started](../../get-started/) - install, load, and run first queries.
 - [OpenTelemetry Collector](../collector/) - export OTLP files from the collector.
-- [Sample Data](../sample-data/) - use small test files.
-- [How-to Guides](../../guides/) - complete query and export tasks.
+- [OpenTelemetry Demo](../otel-demo/) - stream demo traces, logs, and metrics into local DuckLake.
+- [How-to Guides](../../guides/) - query and export telemetry.
 
 ## Troubleshooting
 
@@ -114,10 +114,10 @@ If pre-built binaries aren't available for your platform, [build from source](ht
 Error: otlp_serve is not implemented for the wasm platform
 ```
 
-The HTTP ingest server is native-only. Use a native DuckDB build for `otlp_serve`, `otlp_flush`, `otlp_stop`, and `otlp_server_list`.
+Use a native DuckDB build for the HTTP ingest functions: `otlp_serve`, `otlp_flush`, `otlp_stop`, and `otlp_server_list`.
 
 ## See Also
 
 - [How to Configure the OpenTelemetry Collector](../collector/) - export OTLP files
-- [CONTRIBUTING.md](https://github.com/smithclay/duckdb-otlp/blob/main/CONTRIBUTING.md) - Build instructions
+- [CONTRIBUTING.md](https://github.com/smithclay/duckdb-otlp/blob/main/CONTRIBUTING.md) - build instructions
 - [Get Started](../../get-started/) - first queries and one HTTP ingest request

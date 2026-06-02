@@ -2,13 +2,13 @@
 title: "How to Handle Malformed Input"
 ---
 
-The file readers fail fast on malformed OTLP input. Use the error message to decide whether the problem is file discovery, payload shape, file size, unsupported metric shape, or live-ingest admission.
+The file readers fail fast on malformed OTLP input. Use the error message to identify file discovery problems, payload shape mismatches, file size limits, unsupported metric shapes, or live-ingest admission failures.
 
 ```sql
 SELECT * FROM read_otlp_traces('traces.jsonl');
 ```
 
-Use this behavior when converting telemetry exports so bad data is visible immediately.
+Use this behavior when you convert telemetry exports. It surfaces bad data during the query instead of hiding it in downstream results.
 
 ## Common Errors
 
@@ -28,7 +28,7 @@ SELECT * FROM read_otlp_traces('malformed.jsonl');
 -- OTLP parse error on malformed.jsonl: ...
 ```
 
-Validate that the payload shape matches the reader:
+Check that the payload shape matches the reader:
 
 - `read_otlp_traces` expects `resourceSpans`.
 - `read_otlp_logs` expects `resourceLogs`.
@@ -36,7 +36,7 @@ Validate that the payload shape matches the reader:
 
 **Unsupported metric shape**
 
-`read_otlp_metrics()` and `read_otlp_metrics_summary()` are intentionally unsupported. Use a typed metric reader:
+The extension raises an unsupported-function error for `read_otlp_metrics()` and `read_otlp_metrics_summary()`. Use a typed metric reader:
 
 ```sql
 SELECT * FROM read_otlp_metrics_gauge('metrics.jsonl');
@@ -47,11 +47,11 @@ SELECT * FROM read_otlp_metrics_exp_histogram('metrics.jsonl');
 
 **File is too large**
 
-Individual file reads are limited to 100 MB to prevent memory exhaustion. Split large exports with the OpenTelemetry Collector file exporter rotation settings, or query smaller files through globs.
+The readers limit each file to 100 MB to avoid memory exhaustion. Split large exports with the OpenTelemetry Collector file exporter rotation settings, or query smaller files through globs.
 
 ## Live Ingest Errors
 
-For `otlp_serve`, HTTP errors are returned as JSON. Common cases are:
+For `otlp_serve`, the server returns HTTP errors as JSON. Common cases:
 
 - `401` for missing or invalid tokens.
 - `413` for bodies larger than `max_body_bytes`.
@@ -60,7 +60,7 @@ For `otlp_serve`, HTTP errors are returned as JSON. Common cases are:
 
 See the [Live Ingest Reference](../../reference/serve/#responses-and-status-codes) for the complete contract.
 
-## See Also
+## Related
 
 - [API Reference](../../reference/api/)
 - [Live Ingest Reference](../../reference/serve/)

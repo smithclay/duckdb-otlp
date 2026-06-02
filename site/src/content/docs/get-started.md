@@ -29,27 +29,27 @@ The table functions accept local paths, globs, and DuckDB-supported remote file 
 ```sql
 SELECT
     trace_id,
-    span_name,
-    duration / 1000000 AS duration_ms
+    name,
+    duration_time_unix_nano / 1000000 AS duration_ms
 FROM read_otlp_traces('test/data/traces_simple.jsonl')
-ORDER BY duration DESC;
+ORDER BY duration_time_unix_nano DESC;
 ```
 
 ```sql
-SELECT timestamp, service_name, severity_text, body
+SELECT time_unix_nano, service_name, severity_text, body
 FROM read_otlp_logs('test/data/logs_simple.jsonl')
 WHERE severity_text = 'ERROR';
 ```
 
 ```sql
-SELECT timestamp, metric_name, value
+SELECT time_unix_nano, name, coalesce(double_value, int_value::DOUBLE) AS value
 FROM read_otlp_metrics_gauge('test/data/metrics_simple.jsonl');
 ```
 
 Histogram metrics use typed readers too:
 
 ```sql
-SELECT metric_name, count, sum, bucket_counts, explicit_bounds
+SELECT name, count, sum, bucket_counts, explicit_bounds
 FROM read_otlp_metrics_histogram('test/data/metrics_simple.jsonl');
 ```
 
@@ -57,7 +57,7 @@ See the [Schema Reference](../reference/schemas/) for every column emitted by ea
 
 ## 3. Stream One Log over OTLP/HTTP
 
-The ingest server is available in native builds only. It accepts OTLP/HTTP, buffers rows in memory, and commits them in batches. A POST returning `202` means the rows are accepted but not durable until an automatic background commit, a graceful `otlp_stop`, or an optional `otlp_flush`. Current native builds commit automatically when the oldest buffered row is about 5 seconds old, or when admitted request-body bytes reach about 64 MiB.
+Native builds include the ingest server. You can POST OTLP/HTTP to it, and DuckDB buffers rows in memory before batch commits. When a POST returns `202`, DuckDB has accepted the rows, but it has not made them durable yet. DuckDB commits rows after about 5 seconds in the buffer, when admitted request-body bytes reach about 64 MiB, when you call `otlp_stop`, or when you call `otlp_flush`.
 
 Start a local server:
 
@@ -81,24 +81,26 @@ SELECT status FROM otlp_stop('otlp:localhost:4318');
 Then query the accepted row:
 
 ```sql
-SELECT timestamp, service_name, severity_text, body
+SELECT time_unix_nano, service_name, severity_text, body
 FROM otlp_logs;
 ```
 
-You can query while the server is still running after the automatic background commit. Use `otlp_flush` only when you need the latest accepted rows visible immediately.
+You can query while the server still runs after the background commit. Use `otlp_flush` when readers need the latest accepted rows before the next scheduled commit.
 
-For durable lakehouse ingest, pass `catalog` to an attached lakehouse catalog; see [Stream to DuckLake](../guides/stream-to-ducklake/), [Stream to Amazon S3 Tables](../guides/stream-to-s3-tables/), or [Stream to Cloudflare R2 Data Catalog](../guides/stream-to-r2-data-catalog/).
+For durable lakehouse ingest, pass `catalog` to an attached lakehouse catalog. See [Stream to Local DuckLake](../guides/stream-to-local-ducklake/), [Stream to Remote DuckLake](../guides/stream-to-remote-ducklake/), [Stream to Amazon S3 Tables](../guides/stream-to-s3-tables/), or [Stream to Cloudflare R2 Data Catalog](../guides/stream-to-r2-data-catalog/). To write partitioned Parquet files without a lakehouse catalog, see [Stream to Parquet](../guides/stream-to-parquet/).
 
 ## Next Steps
 
 - [Live Ingest Quickstart](../quickstart/serve/) - POST one log record over OTLP/HTTP.
-- [Stream to DuckLake](../guides/stream-to-ducklake/) - stream OTLP into DuckLake/Parquet.
+- [Stream to Local DuckLake](../guides/stream-to-local-ducklake/) - stream OTLP into local DuckLake/Parquet.
+- [Stream to Remote DuckLake](../guides/stream-to-remote-ducklake/) - stream OTLP into DuckLake with Neon and R2.
+- [Stream to Parquet](../guides/stream-to-parquet/) - stream OTLP into partitioned Parquet files on disk or S3.
 - [Stream to Amazon S3 Tables](../guides/stream-to-s3-tables/) - stream OTLP into Amazon S3 Tables as an Iceberg catalog.
 - [Stream to Cloudflare R2 Data Catalog](../guides/stream-to-r2-data-catalog/) - stream OTLP into Cloudflare R2 Data Catalog as an Iceberg catalog.
 - [How to Configure the OpenTelemetry Collector](../setup/collector/) - export OTLP files from the OpenTelemetry Collector.
 - [How-to Guides](../guides/) - common query and export tasks.
 - [API Reference](../reference/api/) - function signatures and capability notes.
-- [Schema Reference](../reference/schemas/) - complete column lists.
+- [Schema Reference](../reference/schemas/) - column lists for every reader.
 
 ## Common Issues
 
@@ -111,7 +113,7 @@ LOAD otlp;
 
 **File does not exist**
 
-Use a path relative to DuckDB's current working directory, or use an absolute path:
+Use a path relative to DuckDB's current working directory, or pass an absolute path:
 
 ```sql
 SELECT * FROM read_otlp_traces('/full/path/to/traces.jsonl');
@@ -119,4 +121,4 @@ SELECT * FROM read_otlp_traces('/full/path/to/traces.jsonl');
 
 **Rows posted to the server are not visible yet**
 
-Wait for the automatic background commit, or stop the server with `otlp_stop('otlp:localhost:4318')` before closing the database. Use `otlp_flush('otlp:localhost:4318')` only when the server should keep running and readers need the latest accepted rows immediately.
+Wait for the background commit, or stop the server with `otlp_stop('otlp:localhost:4318')` before closing the database. Use `otlp_flush('otlp:localhost:4318')` when the server should keep running and readers need the latest accepted rows before the next scheduled commit.

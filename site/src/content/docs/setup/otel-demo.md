@@ -1,98 +1,148 @@
 ---
-title: "How to Export the OpenTelemetry Demo"
+title: "How to Point the OpenTelemetry Demo at Local DuckLake"
 ---
 
-Use this when you want real sample telemetry from the OpenTelemetry Demo. For a generic collector config, see [How to Configure the OpenTelemetry Collector](../collector/).
+Run the `duckdb-otlp` server image in `local-ducklake` mode and send OpenTelemetry Demo traces, logs, and metrics to it over OTLP/HTTP.
 
-## 1. Add File Exporters
+The demo keeps its existing observability backends. You add `duckdb-otlp` as one more collector exporter.
 
-In the OpenTelemetry Demo repository, create `src/otelcollector/otelcol-config-extras.yml`:
+## Start the Local DuckLake Server
+
+Create `.env`:
+
+```ini
+DUCKDB_MODE=local-ducklake
+DUCKDB_OTLP_TOKEN=dev-token-123456
+
+DUCKLAKE_NAME=lake
+DUCKLAKE_CATALOG_PATH=/data/ducklake/catalog.duckdb
+DUCKLAKE_DATA_PATH=/data/ducklake/storage
+```
+
+Start the server:
+
+```bash
+mkdir -p data
+
+docker run --rm --name duckdb-otlp \
+  --env-file .env \
+  -p 4318:4318 \
+  -v "$(pwd)/data:/data" \
+  ghcr.io/smithclay/duckdb-otlp:latest
+```
+
+Leave this container running. It accepts OTLP/HTTP at `http://localhost:4318`.
+
+## Configure the OpenTelemetry Demo Collector
+
+In another terminal, clone the OpenTelemetry Demo:
+
+```bash
+git clone https://github.com/open-telemetry/opentelemetry-demo.git
+cd opentelemetry-demo
+```
+
+Create `src/otel-collector/otelcol-config-extras.yml`:
 
 ```yaml
 exporters:
-  file/json-traces:
-    path: /export/json/traces.jsonl
-    encoding: json
-    rotation:
-      max_megabytes: 50
-      max_days: 1
-  file/json-logs:
-    path: /export/json/logs.jsonl
-    encoding: json
-    rotation:
-      max_megabytes: 50
-      max_days: 1
-  file/json-metrics:
-    path: /export/json/metrics.jsonl
-    encoding: json
-    rotation:
-      max_megabytes: 50
-      max_days: 1
+  otlp_http/duckdb:
+    endpoint: http://host.docker.internal:4318
+    headers:
+      Authorization: Bearer dev-token-123456
 
 service:
   pipelines:
     traces:
-      exporters: [otlp, debug, spanmetrics, file/json-traces]
+      exporters: [otlp, debug, spanmetrics, otlp_http/duckdb]
     logs:
-      exporters: [opensearch, debug, file/json-logs]
+      exporters: [opensearch, debug, otlp_http/duckdb]
     metrics:
-      exporters: [otlphttp/prometheus, debug, file/json-metrics]
+      exporters: [otlp_http/prometheus, debug, otlp_http/duckdb]
 ```
 
-If your collector version expects `format` instead of `encoding`, use `format: json`.
+The OpenTelemetry Demo merges this file with its main collector config. The merge replaces pipeline arrays, so keep the demo's existing exporters in each list and add `otlp_http/duckdb`.
 
-## 2. Mount the Export Directory
-
-Add an export volume to the `otelcol` service in `docker-compose.yml`:
+On Linux, add `host.docker.internal` to the `otelcol` service in `docker-compose.yml`:
 
 ```yaml
 services:
   otelcol:
-    volumes:
-      - ./exports:/export
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 ```
 
-Then start the demo:
+Docker Desktop for macOS and Windows provides `host.docker.internal`.
+
+## Start the Demo
 
 ```bash
-mkdir -p exports/json
 docker compose up -d
 ```
 
-## 3. Query the Files
+Generate traffic by opening the demo frontend and using the store:
 
-```sql
-INSTALL otlp FROM community;
-LOAD otlp;
-
-SELECT service_name, span_name, count(*) AS span_count, avg(duration) / 1000000 AS avg_ms
-FROM read_otlp_traces('exports/json/traces.jsonl*')
-GROUP BY service_name, span_name
-ORDER BY avg_ms DESC
-LIMIT 10;
-
-SELECT timestamp, service_name, severity_text, body
-FROM read_otlp_logs('exports/json/logs.jsonl*')
-WHERE severity_text IN ('ERROR', 'FATAL')
-ORDER BY timestamp DESC;
-
-SELECT timestamp, service_name, metric_name, value
-FROM read_otlp_metrics_gauge('exports/json/metrics.jsonl*')
-LIMIT 20;
+```text
+http://localhost:8080
 ```
 
-## 4. Archive What You Need
+## Query the DuckLake Tables
 
-```sql
-COPY (
-  SELECT * FROM read_otlp_traces('exports/json/traces.jsonl*')
-) TO 'archives/traces.parquet' (FORMAT PARQUET, COMPRESSION ZSTD);
-```
-
-Troubleshoot with:
+Flush buffered telemetry and query the running `duckdb-otlp` container:
 
 ```bash
-docker compose logs otelcol | grep file
-docker compose exec otelcol ls -la /export/json
-wc -l exports/json/*.jsonl
+docker exec duckdb-otlp sh -c \
+  "printf '%s\n' \
+    \"SELECT * FROM otlp_flush('otlp:0.0.0.0:4318');\" \
+    \"SELECT service_name, name, count(*) AS spans\" \
+    \"FROM lake.main.otlp_traces\" \
+    \"GROUP BY service_name, name\" \
+    \"ORDER BY spans DESC\" \
+    \"LIMIT 20;\" \
+    > /tmp/duckdb-otlp.sql"
+
+docker logs --tail 80 duckdb-otlp
 ```
+
+Inspect recent logs:
+
+```bash
+docker exec duckdb-otlp sh -c \
+  "printf '%s\n' \
+    \"SELECT time_unix_nano, service_name, severity_text, body\" \
+    \"FROM lake.main.otlp_logs\" \
+    \"ORDER BY time_unix_nano DESC\" \
+    \"LIMIT 20;\" \
+    > /tmp/duckdb-otlp.sql"
+
+docker logs --tail 80 duckdb-otlp
+```
+
+## Stop Cleanly
+
+Stop the demo:
+
+```bash
+docker compose down
+```
+
+Stop the DuckLake server:
+
+```bash
+docker stop duckdb-otlp
+```
+
+During shutdown, the image sends `otlp_stop('otlp:0.0.0.0:4318')`, so the server commits remaining buffered rows before the process exits.
+
+## Troubleshooting
+
+- If the collector logs connection errors, confirm the `duckdb-otlp` container is still running and `docker logs duckdb-otlp` shows `OTLP HTTP: 0.0.0.0:4318`.
+- If you run the collector in Linux Docker and it cannot resolve `host.docker.internal`, add the `extra_hosts` entry above.
+- If the server returns `401`, confirm the collector `Authorization` header matches `DUCKDB_OTLP_TOKEN`.
+- If you cannot see rows before the next background commit, run `otlp_flush` before querying.
+
+## See Also
+
+- [How to stream to local DuckLake](../../guides/stream-to-local-ducklake/)
+- [How to analyze telemetry](../../guides/analyze-telemetry/)
+- [Live Ingest Reference](../../reference/serve/)

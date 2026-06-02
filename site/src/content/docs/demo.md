@@ -2,7 +2,7 @@
 title: "WASM Demo"
 ---
 
-Explore OTLP JSON, JSONL, and protobuf files in your browser with DuckDB-WASM and `duckdb-otlp`.
+Open OTLP JSON, JSONL, and protobuf files in your browser with DuckDB-WASM and `duckdb-otlp`.
 
 <iframe
   title="duckdb-otlp WASM demo"

@@ -4,6 +4,11 @@ PROJ_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 EXT_NAME=otlp
 EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 
+DOCKER_IMAGE ?= duckdb-otlp:local
+DOCKER_PLATFORMS ?= linux/amd64,linux/arm64
+DOCKER_LOCAL_PLATFORM ?= linux/arm64
+DOCKER_OCI_OUTPUT ?= output/docker/duckdb-otlp-server-multiarch.oci.tar
+
 # Include the Makefile from extension-ci-tools
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
@@ -71,3 +76,31 @@ wasm_rust: wasm_eh
 
 # Legacy alias
 wasm_relink: wasm_link
+
+.PHONY: server-release docker-image docker-image-local docker-image-multiarch
+
+server-release: ${EXTENSION_CONFIG_STEP}
+	mkdir -p build/release
+	cmake $(GENERATOR) $(BUILD_FLAGS) $(EXT_RELEASE_FLAGS) $(VCPKG_MANIFEST_FLAGS) -DCMAKE_BUILD_TYPE=Release -S $(DUCKDB_SRCDIR) -B build/release
+	cmake --build build/release --config Release --target duckdb_otlp_server
+
+docker-image: docker-image-local
+
+docker-image-local:
+	docker buildx build \
+		--platform $(DOCKER_LOCAL_PLATFORM) \
+		--target runtime-source \
+		--load \
+		-t $(DOCKER_IMAGE) \
+		-f docker/duckdb-otlp-server/Dockerfile \
+		.
+
+docker-image-multiarch:
+	mkdir -p $(dir $(DOCKER_OCI_OUTPUT))
+	docker buildx build \
+		--platform $(DOCKER_PLATFORMS) \
+		--target runtime-source \
+		--output type=oci,dest=$(DOCKER_OCI_OUTPUT) \
+		-t $(DOCKER_IMAGE) \
+		-f docker/duckdb-otlp-server/Dockerfile \
+		.

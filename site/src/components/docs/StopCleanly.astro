@@ -1,0 +1,26 @@
+---
+import { Code } from '@astrojs/starlight/components';
+
+interface Props {
+  cleanupTarget?: string;
+}
+
+const { cleanupTarget } = Astro.props;
+const stopCommand = 'docker stop duckdb-otlp';
+---
+
+<h2 id="stop-cleanly">Stop cleanly</h2>
+
+{cleanupTarget && (
+  <p>
+    If you plan to delete the {cleanupTarget} resources immediately, skip this
+    step and use <a href="#clean-up">Clean up</a> instead.
+  </p>
+)}
+
+<Code code={stopCommand} lang="bash" />
+
+<p>
+  The image sends <code>otlp_stop('otlp:0.0.0.0:4318')</code> during shutdown,
+  so remaining buffered rows are committed before the process exits.
+</p>

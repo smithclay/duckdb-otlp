@@ -1,0 +1,135 @@
+---
+title: "How to Stream OTLP to Remote DuckLake"
+---
+
+import PostLogRecord from '../../../components/docs/PostLogRecord.astro';
+import QueryCommittedRows from '../../../components/docs/QueryCommittedRows.astro';
+import StopCleanly from '../../../components/docs/StopCleanly.astro';
+
+Use the `duckdb-otlp` Docker image in `r2-neon-ducklake` mode to stream OTLP/HTTP exports into DuckLake with a Neon Postgres catalog and Cloudflare R2 data files.
+
+The container initializes DuckDB, loads the required extensions, connects DuckLake to Neon, stores Parquet files in R2, starts the ingest server, and commits accepted rows in batches.
+
+Live ingestion uses OTLP/HTTP on port `4318`. WASM builds do not include the ingest server.
+
+## Prepare Neon and R2
+
+Create or choose a Neon database for the DuckLake catalog. Copy the connection details from Neon as separate values:
+
+- host
+- port
+- database
+- user
+- password
+- SSL mode
+
+Create or choose a Cloudflare R2 bucket for DuckLake data files:
+
+```bash
+export CLOUDFLARE_ACCOUNT_ID=<account-id>
+export R2_BUCKET_NAME=duckdb-otlp-ducklake
+
+wrangler r2 bucket create "$R2_BUCKET_NAME"
+```
+
+Create an R2 S3-compatible access key pair that can write objects to the bucket. Save the access key ID and secret access key for the next step.
+
+## Configure
+
+Create `remote-ducklake.env`:
+
+```ini
+DUCKDB_MODE=r2-neon-ducklake
+DUCKDB_OTLP_TOKEN=dev-token-123456
+
+DUCKLAKE_NAME=lake
+DUCKDB_SCHEMA=otlp
+
+CLOUDFLARE_ACCOUNT_ID=<account-id>
+CLOUDFLARE_R2_BUCKET=<bucket-name>
+CLOUDFLARE_R2_PREFIX=duckdb-otlp/
+CLOUDFLARE_ACCESS_KEY_ID=<r2-s3-access-key-id>
+CLOUDFLARE_SECRET_ACCESS_KEY=<r2-s3-secret-access-key>
+
+NEON_PGHOST=<neon-host>
+NEON_PGPORT=5432
+NEON_PGDATABASE=<database>
+NEON_PGUSER=<user>
+NEON_PGPASSWORD=<password>
+NEON_PGSSLMODE=require
+```
+
+If you use a custom R2 endpoint, add `CLOUDFLARE_R2_ENDPOINT=<endpoint-host>`.
+
+## Start the server
+
+```bash
+docker run --rm --name duckdb-otlp \
+  --env-file remote-ducklake.env \
+  -p 4318:4318 \
+  ghcr.io/smithclay/duckdb-otlp:latest
+```
+
+The container creates the target tables in `lake.otlp` if they do not exist:
+
+- `otlp_logs`
+- `otlp_traces`
+- `otlp_metrics_gauge`
+- `otlp_metrics_sum`
+- `otlp_metrics_histogram`
+- `otlp_metrics_exp_histogram`
+
+Leave the container running while clients send OTLP/HTTP requests.
+
+<PostLogRecord
+  serviceName="remote-ducklake-demo"
+  message="hello from remote DuckLake"
+  guide="stream-to-remote-ducklake"
+/>
+
+<QueryCommittedRows
+  table="lake.otlp.otlp_logs"
+  serviceName="remote-ducklake-demo"
+  ownershipNote="The server process owns the DuckLake catalog connection while it runs, so send inspection SQL to the container control file."
+/>
+
+<StopCleanly cleanupTarget="Neon and R2" />
+
+## Clean up
+
+Drop the DuckLake tables before deleting the Neon database or R2 bucket:
+
+```bash
+docker exec duckdb-otlp sh -c \
+  "printf '%s\n' \
+    \"SELECT status FROM otlp_stop('otlp:0.0.0.0:4318');\" \
+    \"DROP TABLE IF EXISTS lake.otlp.otlp_logs;\" \
+    \"DROP TABLE IF EXISTS lake.otlp.otlp_traces;\" \
+    \"DROP TABLE IF EXISTS lake.otlp.otlp_metrics_gauge;\" \
+    \"DROP TABLE IF EXISTS lake.otlp.otlp_metrics_sum;\" \
+    \"DROP TABLE IF EXISTS lake.otlp.otlp_metrics_histogram;\" \
+    \"DROP TABLE IF EXISTS lake.otlp.otlp_metrics_exp_histogram;\" \
+    \"DETACH lake;\" \
+    > /tmp/duckdb-otlp.sql"
+
+docker logs --tail 80 duckdb-otlp
+docker stop duckdb-otlp
+```
+
+Then delete the R2 prefix or bucket and remove the Neon database or branch you created for this guide.
+
+## Troubleshooting
+
+- If the container cannot connect to Neon at startup, confirm `NEON_PGHOST`, `NEON_PGDATABASE`, `NEON_PGUSER`, `NEON_PGPASSWORD`, and `NEON_PGSSLMODE=require`.
+- If the container connects to Neon but cannot write data files, confirm the R2 access key can write objects to `CLOUDFLARE_R2_BUCKET`.
+- If R2 paths use the wrong location, confirm `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_R2_BUCKET`, and `CLOUDFLARE_R2_PREFIX`.
+- If no rows appear after a `202` response, run the flush command before querying.
+- `otlp_flush` seals buffered ingest rows. Run DuckDB or DuckLake maintenance commands when you need compaction.
+
+## See also
+
+- [DuckLake documentation](https://ducklake.select/)
+- [Neon documentation](https://neon.com/docs)
+- [Cloudflare R2 documentation](https://developers.cloudflare.com/r2/)
+- [How to stream to local DuckLake](../stream-to-local-ducklake/)
+- [Live Ingest Reference](../../reference/serve/)
