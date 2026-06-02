@@ -90,6 +90,12 @@ static unique_ptr<FunctionData> OtlpServeBind(ClientContext &context, TableFunct
 			throw InvalidInputException("max_body_bytes must be greater than zero");
 		}
 	}
+	if (input.named_parameters.find("http_threads") != input.named_parameters.end()) {
+		bind_data->config.http_threads = input.named_parameters["http_threads"].GetValue<idx_t>();
+		if (bind_data->config.http_threads == 0) {
+			throw InvalidInputException("http_threads must be greater than zero");
+		}
+	}
 	if (input.named_parameters.find("max_buffered_bytes") != input.named_parameters.end()) {
 		bind_data->config.max_buffered_bytes = input.named_parameters["max_buffered_bytes"].GetValue<idx_t>();
 		if (bind_data->config.max_buffered_bytes == 0) {
@@ -158,6 +164,7 @@ TableFunctionSet OtlpServeFunction::GetFunction() {
 	fun.named_parameters["create_tables"] = OtlpBooleanType();
 	fun.named_parameters["allow_other_hostname"] = OtlpBooleanType();
 	fun.named_parameters["max_body_bytes"] = OtlpUBigIntType();
+	fun.named_parameters["http_threads"] = OtlpUBigIntType();
 	fun.named_parameters["max_buffered_bytes"] = OtlpUBigIntType();
 	set.AddFunction(fun);
 	fun.arguments.clear();

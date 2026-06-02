@@ -39,6 +39,7 @@ SELECT * FROM otlp_serve('otlp:localhost:4318', catalog := 'lake', token := 'my-
 | `create_tables` | BOOLEAN | `true` | Create the six target tables if they don't exist. When `false`, the tables must already exist with the expected columns or `otlp_serve` fails fast. |
 | `allow_other_hostname` | BOOLEAN | `false` | Allow binding to a non-localhost host. By default only `localhost`, `127.0.0.1`, and `::1` are permitted. |
 | `max_body_bytes` | UBIGINT | `16777216` (16 MiB) | Reject request bodies larger than this with `413`. Must be greater than zero. |
+| `http_threads` | UBIGINT | host-based bounded default | Worker threads for concurrent HTTP requests. Must be greater than zero when set. |
 | `max_buffered_bytes` | UBIGINT | `536870912` (512 MiB) | Backpressure cap. POSTs that would exceed this return `503`. |
 
 **Output columns** (one row):
@@ -177,6 +178,7 @@ The `http://` base URL from `listen_url` exposes:
 | POST | `/v1/traces` | Ingest traces into `otlp_traces`. |
 | POST | `/v1/metrics` | Ingest metrics. Fans out across all four metric tables: `otlp_metrics_gauge`, `otlp_metrics_sum`, `otlp_metrics_histogram`, `otlp_metrics_exp_histogram`. |
 | GET | `/healthz` | Liveness probe. Returns `200` with `{"status":"ok"}`. No auth required. |
+| GET | `/readyz` | Readiness probe. Returns `200` with `{"status":"ready"}` once the listener is bound. No auth required. |
 
 Tables live in `<catalog>.<schema>`, chosen by `otlp_serve(catalog := ..., schema := ...)`.
 
@@ -234,7 +236,7 @@ Ingest is **buffered and committed in batches** for every target. This avoids pe
 
 **The flow:**
 
-1. A POST reserves admission bytes, parses, converts, and appends rows into the relevant per-signal in-memory buffer, then returns `202`. The 128-thread worker pool does this concurrently; append locks only the target signal buffer.
+1. A POST reserves admission bytes, parses, converts, and appends rows into the relevant per-signal in-memory buffer, then returns `202`. The bounded worker pool does this concurrently; append locks only the target signal buffer.
 2. A single background writer commits the buffer to the target in **one transaction** when any trigger fires:
    - admitted request-body bytes reach the internal size threshold, currently 64 MiB,
    - the oldest buffered row reaches the internal age limit, currently about 5 seconds, or
@@ -256,7 +258,7 @@ Ingest is **buffered and committed in batches** for every target. This avoids pe
 
 ## Concurrency model
 
-- The server runs a 128-thread httplib worker pool. Workers parse, convert, and buffer requests concurrently; each signal table has its own buffer lock.
+- The server runs a bounded httplib worker pool. Workers parse, convert, and buffer requests concurrently; each signal table has its own buffer lock. In the daemon, set `DUCKDB_OTLP_HTTP_THREADS` to override the host-based default.
 - A single background writer thread is the only writer to the target catalog. Serializing writes is what lets DuckLake (which uses optimistic concurrency) avoid conflict retries and tiny-file churn.
 
 ## Verifying ingest under load

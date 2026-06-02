@@ -9,6 +9,9 @@
 #include "httplib.hpp"
 #endif
 
+#include <algorithm>
+#include <thread>
+
 namespace duckdb {
 
 #ifndef __EMSCRIPTEN__
@@ -55,6 +58,14 @@ static void SetError(duckdb_httplib::Response &res, int status, const string &re
 	SetJson(res, status, "{\"error\":\"" + JsonEscape(reason) + "\",\"message\":\"" + JsonEscape(message) + "\"}");
 }
 
+static idx_t DefaultHttpThreads() {
+	auto cores = std::thread::hardware_concurrency();
+	if (cores == 0) {
+		return 8;
+	}
+	return std::min<idx_t>(32, std::max<idx_t>(4, static_cast<idx_t>(cores) * 4));
+}
+
 OtlpServer::OtlpServer(ClientContext &context, const OtlpUri &uri_p, const OtlpServerConfig &config_p)
     : db_ptr(context.db), uri(uri_p), config(config_p), impl(make_uniq<Impl>()) {
 	ValidateToken(config.token);
@@ -71,21 +82,23 @@ OtlpServer::OtlpServer(ClientContext &context, const OtlpUri &uri_p, const OtlpS
 	StartSealer();
 
 	impl->server = make_uniq<duckdb_httplib::Server>();
-	// Wide worker pool (mirrors duckdb-quack): each keep-alive connection holds a
-	// worker thread for its lifetime, so we need enough threads to serve many
-	// concurrent exporters at once. Workers only parse/convert and buffer rows in
-	// memory (lock-free apart from a brief buffer append); a single background sealer
-	// group-commits the buffer, so concurrent exporters never contend on the writer.
-	impl->server->new_task_queue = [] {
-		return new duckdb_httplib::ThreadPool(128);
+	auto http_threads = config.http_threads == 0 ? DefaultHttpThreads() : config.http_threads;
+	// Each keep-alive connection holds a worker for its lifetime. Keep the default
+	// bounded for small containers, but allow the daemon to raise it explicitly for
+	// high-concurrency exporters.
+	impl->server->new_task_queue = [http_threads] {
+		return new duckdb_httplib::ThreadPool(static_cast<size_t>(http_threads));
 	};
-	impl->server->set_keep_alive_max_count(128);
+	impl->server->set_keep_alive_max_count(static_cast<size_t>(http_threads));
 	impl->server->set_keep_alive_timeout(10);
 	impl->server->set_tcp_nodelay(true);
 	impl->server->set_payload_max_length(static_cast<size_t>(config.max_body_bytes));
 
 	impl->server->Get("/healthz", [](const duckdb_httplib::Request &, duckdb_httplib::Response &res) {
 		SetJson(res, 200, "{\"status\":\"ok\"}");
+	});
+	impl->server->Get("/readyz", [](const duckdb_httplib::Request &, duckdb_httplib::Response &res) {
+		SetJson(res, 200, "{\"status\":\"ready\"}");
 	});
 
 	auto post_handler = [&](OtlpRequestKind kind) {

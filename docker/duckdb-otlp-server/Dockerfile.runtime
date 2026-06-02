@@ -1,27 +1,3 @@
-FROM rust:1-bookworm AS builder
-
-ARG DUCKDB_VERSION=v1.5.3
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        build-essential \
-        ca-certificates \
-        cmake \
-        git \
-        ninja-build \
-        pkg-config \
-        python3 \
-        zlib1g-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /src
-COPY . /src
-
-RUN GEN=ninja OVERRIDE_GIT_DESCRIBE=${DUCKDB_VERSION} make server-release
-
-FROM scratch AS daemon-export
-COPY --from=builder /src/build/release/extension/otlp/duckdb_otlp_server /duckdb-otlp-server
-
 FROM debian:bookworm-slim
 
 ARG DUCKDB_VERSION=v1.5.3
@@ -53,10 +29,9 @@ RUN duckdb -unsigned -c "INSTALL ducklake;" \
     && duckdb -unsigned -c "INSTALL httpfs;" \
     && duckdb -unsigned -c "INSTALL aws;" \
     && duckdb -unsigned -c "INSTALL postgres;" \
-    && duckdb -unsigned -c "INSTALL quack;" \
-    && duckdb -unsigned -c "INSTALL otlp FROM 'https://smithclay.github.io/duckdb-otlp';"
+    && duckdb -unsigned -c "INSTALL quack;"
 
-COPY --from=builder /src/build/release/extension/otlp/duckdb_otlp_server /usr/local/bin/duckdb-otlp-server
+COPY docker-bin/${TARGETARCH}/duckdb-otlp-server /usr/local/bin/duckdb-otlp-server
 
 RUN chmod +x /usr/local/bin/duckdb-otlp-server \
     && mkdir -p /data

@@ -55,6 +55,21 @@ if(NOT EMSCRIPTEN)
                              PRIVATE CPPHTTPLIB_ZLIB_SUPPORT)
   target_link_libraries(${EXTENSION_NAME} ZLIB::ZLIB)
   target_link_libraries(${LOADABLE_EXTENSION_NAME} ZLIB::ZLIB)
+
+  add_executable(duckdb_otlp_server src/server/main.cpp
+                                    src/server/server_config.cpp)
+  target_include_directories(
+    duckdb_otlp_server
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/server
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/storage
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/include)
+  set_target_properties(duckdb_otlp_server PROPERTIES CXX_STANDARD 17
+                                                      CXX_STANDARD_REQUIRED ON)
+  target_link_libraries(duckdb_otlp_server duckdb_static
+                        ${DUCKDB_EXTRA_LINK_FLAGS})
+  link_threads(duckdb_otlp_server "")
+  link_extension_libraries(duckdb_otlp_server "")
 endif()
 
 install(

@@ -11,6 +11,7 @@ vcpkg_installed
 otlp:*
 .env
 output/
+docker-bin/
 
 # Python
 __pycache__/

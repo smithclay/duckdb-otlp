@@ -73,7 +73,7 @@ Ingest is **buffered and committed in batches**, not per-request. Worker threads
 | Component | Location | Role |
 |-----------|----------|------|
 | `OtlpServer` | `src/otlp_server.cpp` / `src/include/otlp_server.hpp` | Base server: token validation/auth, content-type → format selection, Arrow → DuckDB conversion, the in-memory buffer, and the background writer that commits batches into the target catalog. |
-| `HttpOtlpServer` | `src/otlp_server.cpp` | `OtlpServer` subclass wrapping httplib. Owns the worker pool and the `/v1/logs`, `/v1/traces`, `/v1/metrics`, and `/healthz` routes; binds the socket synchronously so bind failures surface to the caller. |
+| `HttpOtlpServer` | `src/otlp_server.cpp` | `OtlpServer` subclass wrapping httplib. Owns the worker pool and the `/v1/logs`, `/v1/traces`, `/v1/metrics`, `/healthz`, and `/readyz` routes; binds the socket synchronously so bind failures surface to the caller. |
 | `OtlpStorageExtensionInfo` | `src/include/otlp_storage.hpp` | Database-scoped registry of running servers (keyed by listen URI). Backs `CreateServer` / `FlushServer` / `StopServer` / `ListServers`, and stops every server when the database closes (but cannot commit buffered rows at that point — see durability note below). |
 | Lifecycle functions | `src/otlp_start_stop.cpp` | The `otlp_serve`, `otlp_flush`, `otlp_stop`, and `otlp_server_list` table functions that drive the registry. |
 
@@ -107,7 +107,7 @@ A single background writer commits the buffer to the target catalog when any tri
 
 ### Concurrency model
 
-Mirrors `duckdb-quack`'s worker pool but inverts the writer: a 128-thread httplib pool parses, converts, and buffers requests **concurrently** (each signal table has its own buffer lock), while a **single background writer thread is the only writer** to the target catalog. Serializing all writes through one thread is what lets a DuckLake target avoid tiny-file churn and optimistic-concurrency retries. **Backpressure:** if request admission would exceed `max_buffered_bytes` (default 512 MiB) across in-flight and uncommitted accepted payloads, POSTs return `503` before parse/transform work and clients should retry with backoff.
+Mirrors `duckdb-quack`'s worker-pool shape but inverts the writer: a bounded httplib pool parses, converts, and buffers requests **concurrently** (each signal table has its own buffer lock), while a **single background writer thread is the only writer** to the target catalog. Serializing all writes through one thread is what lets a DuckLake target avoid tiny-file churn and optimistic-concurrency retries. **Backpressure:** if request admission would exceed `max_buffered_bytes` (default 512 MiB) across in-flight and uncommitted accepted payloads, POSTs return `503` before parse/transform work and clients should retry with backoff.
 
 ## Key Design Decisions
 

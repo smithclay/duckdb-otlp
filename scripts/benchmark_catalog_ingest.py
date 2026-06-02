@@ -853,6 +853,8 @@ def configure_container_env(ctx: ScenarioContext) -> None:
             "DUCKDB_SCHEMA": ctx.schema,
             "DUCKDB_DATABASE": "/tmp/duckdb-otlp-bench-control.duckdb",
             "DUCKDB_OTLP_TOKEN": ctx.token,
+            "DUCKDB_QUACK_ENABLED": "1",
+            "DUCKDB_QUACK_TOKEN": ctx.token + "-quack",
             "OTEL_HTTP_ADDR": "0.0.0.0:4318",
         }
     )
@@ -1054,19 +1056,69 @@ def send_load(ctx: ScenarioContext, duration: float, rate: int, batch_size: int)
     }
 
 
-def docker_fifo_sql(container: str, sql: str) -> None:
-    run_cmd(["docker", "exec", "-i", container, "sh", "-c", "cat > /tmp/duckdb-otlp.sql"], input_text=sql)
+def quack_control_sql(ctx: ScenarioContext, sql: str) -> str:
+    return "\n".join(
+        [
+            "INSTALL quack;",
+            "LOAD quack;",
+            "FROM quack_query(",
+            "  'quack:127.0.0.1:9494',",
+            f"  {sql_quote(sql)},",
+            f"  token = {sql_quote(ctx.token + '-quack')}",
+            ");",
+        ]
+    )
 
 
-def query_json(container: str, query: str, name: str, timeout: float = 60) -> list[dict[str, Any]]:
+def docker_quack_sql(ctx: ScenarioContext, sql: str) -> None:
+    control = quack_control_sql(ctx, sql)
+    run_cmd(
+        [
+            "docker",
+            "exec",
+            "-i",
+            ctx.container_name,
+            "sh",
+            "-c",
+            "cat > /tmp/duckdb-otlp-query.sql && duckdb -unsigned :memory: < /tmp/duckdb-otlp-query.sql",
+        ],
+        input_text=control,
+    )
+
+
+def query_json(ctx: ScenarioContext, query: str, name: str, timeout: float = 60) -> list[dict[str, Any]]:
     path = f"/tmp/bench-{slug(name)}-{int(time.time() * 1000)}.json"
-    docker_fifo_sql(container, f"COPY ({query}) TO '{path}' (FORMAT JSON);\n")
+    control = "\n".join(
+        [
+            "INSTALL quack;",
+            "LOAD quack;",
+            "COPY (",
+            "  FROM quack_query(",
+            "    'quack:127.0.0.1:9494',",
+            f"    {sql_quote(query)},",
+            f"    token = {sql_quote(ctx.token + '-quack')}",
+            "  )",
+            f") TO {sql_quote(path)} (FORMAT JSON);",
+        ]
+    )
+    run_cmd(
+        [
+            "docker",
+            "exec",
+            "-i",
+            ctx.container_name,
+            "sh",
+            "-c",
+            "cat > /tmp/duckdb-otlp-query.sql && duckdb -unsigned :memory: < /tmp/duckdb-otlp-query.sql",
+        ],
+        input_text=control,
+    )
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        test = run_cmd(["docker", "exec", container, "test", "-s", path], check=False)
+        test = run_cmd(["docker", "exec", ctx.container_name, "test", "-s", path], check=False)
         if test.returncode == 0:
-            raw = run_cmd(["docker", "exec", container, "cat", path]).stdout.strip()
-            run_cmd(["docker", "exec", container, "rm", "-f", path], check=False)
+            raw = run_cmd(["docker", "exec", ctx.container_name, "cat", path]).stdout.strip()
+            run_cmd(["docker", "exec", ctx.container_name, "rm", "-f", path], check=False)
             if not raw:
                 return []
             with contextlib.suppress(json.JSONDecodeError):
@@ -1081,14 +1133,14 @@ def query_json(container: str, query: str, name: str, timeout: float = 60) -> li
 
 
 def collect_db_stats(ctx: ScenarioContext) -> dict[str, Any]:
-    flush = query_json(ctx.container_name, "SELECT * FROM otlp_flush('otlp:0.0.0.0:4318')", "flush")
-    server = query_json(ctx.container_name, "SELECT * FROM otlp_server_list()", "server-list")
+    flush = query_json(ctx, "SELECT * FROM otlp_flush('otlp:0.0.0.0:4318')", "flush")
+    server = query_json(ctx, "SELECT * FROM otlp_server_list()", "server-list")
     parts = []
     for table in DEFAULT_TABLES:
         parts.append(
             f"SELECT {sql_quote(table)} AS table_name, count(*) AS row_count FROM {ctx.catalog}.{ctx.schema}.{table}"
         )
-    counts = query_json(ctx.container_name, "\nUNION ALL\n".join(parts), "row-counts")
+    counts = query_json(ctx, "\nUNION ALL\n".join(parts), "row-counts")
     return {"flush": flush, "server": server, "table_counts": counts}
 
 
@@ -1113,7 +1165,7 @@ def drop_tables(ctx: ScenarioContext) -> None:
     statements = ["SELECT status FROM otlp_stop('otlp:0.0.0.0:4318');"]
     statements.extend(f"DROP TABLE IF EXISTS {ctx.catalog}.{ctx.schema}.{table};" for table in DEFAULT_TABLES)
     statements.append(f"DETACH {ctx.catalog};")
-    docker_fifo_sql(ctx.container_name, "\n".join(statements) + "\n")
+    docker_quack_sql(ctx, "\n".join(statements) + "\n")
     time.sleep(2)
 
 

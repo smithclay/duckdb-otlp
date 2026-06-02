@@ -28,6 +28,8 @@ struct OtlpServerConfig {
 	string schema_name = "main";
 	bool create_tables = true;
 	idx_t max_body_bytes = 16ULL * 1024ULL * 1024ULL;
+	//! HTTP worker threads. Zero means choose a conservative host-based default.
+	idx_t http_threads = 0;
 	//! Internal buffered group-commit ("seal") defaults. Ingest buffers rows in memory
 	//! and a single writer seals them on a size or age trigger, avoiding per-request
 	//! Parquet files and write conflicts. seal_target_bytes / seal_max_age_ms are fixed

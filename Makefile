@@ -77,7 +77,12 @@ wasm_rust: wasm_eh
 # Legacy alias
 wasm_relink: wasm_link
 
-.PHONY: docker-image docker-image-local docker-image-multiarch
+.PHONY: server-release docker-image docker-image-local docker-image-multiarch
+
+server-release: ${EXTENSION_CONFIG_STEP}
+	mkdir -p build/release
+	cmake $(GENERATOR) $(BUILD_FLAGS) $(EXT_RELEASE_FLAGS) $(VCPKG_MANIFEST_FLAGS) -DCMAKE_BUILD_TYPE=Release -S $(DUCKDB_SRCDIR) -B build/release
+	cmake --build build/release --config Release --target duckdb_otlp_server
 
 docker-image: docker-image-local
 

@@ -54,6 +54,8 @@ You can confirm the server is up without auth:
 ```bash
 curl -sS http://localhost:4318/healthz
 # {"status":"ok"}
+curl -sS http://localhost:4318/readyz
+# {"status":"ready"}
 ```
 
 ## Step 3: Stop and query

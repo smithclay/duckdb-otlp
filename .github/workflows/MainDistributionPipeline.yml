@@ -17,9 +17,16 @@ on:
       - 'README.md'
   workflow_dispatch:
 
+permissions:
+  contents: read
+  packages: write
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}-${{ github.ref != 'refs/heads/main' && github.sha || '' }}
   cancel-in-progress: true
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
 
 jobs:
   duckdb-stable-build:
@@ -31,6 +38,114 @@ jobs:
       extension_name: otlp
       extra_toolchains: rust
       exclude_archs: "wasm_mvp;wasm_threads;linux_amd64_musl"
+
+  daemon-linux:
+    name: Build server daemon (${{ matrix.arch }})
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+          - arch: arm64
+            platform: linux/arm64
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build daemon artifact
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/duckdb-otlp-server/Dockerfile
+          target: daemon-export
+          platforms: ${{ matrix.platform }}
+          outputs: type=local,dest=daemon-out/${{ matrix.arch }}
+          cache-from: type=gha,scope=daemon-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=daemon-${{ matrix.arch }}
+
+      - name: Upload daemon artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: duckdb-otlp-server-${{ matrix.arch }}
+          path: daemon-out/${{ matrix.arch }}/duckdb-otlp-server
+          if-no-files-found: error
+
+  docker-image:
+    name: Build and publish server image
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    needs:
+      - duckdb-stable-build
+      - code-quality-check
+      - daemon-linux
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Download daemon artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: duckdb-otlp-server-*
+          path: daemon-artifacts
+
+      - name: Prepare Docker build context
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p docker-bin/amd64 docker-bin/arm64
+          cp daemon-artifacts/duckdb-otlp-server-amd64/duckdb-otlp-server docker-bin/amd64/duckdb-otlp-server
+          cp daemon-artifacts/duckdb-otlp-server-arm64/duckdb-otlp-server docker-bin/arm64/duckdb-otlp-server
+          chmod +x docker-bin/amd64/duckdb-otlp-server docker-bin/arm64/duckdb-otlp-server
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
+            type=ref,event=branch
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-
+
+      - name: Build and publish image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/duckdb-otlp-server/Dockerfile.runtime
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=docker-runtime
+          cache-to: type=gha,mode=max,scope=docker-runtime
 
   code-quality-check:
     name: Code Quality Check
