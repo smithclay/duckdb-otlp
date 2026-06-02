@@ -80,6 +80,10 @@ DUCKDB_OTLP_TOKEN=dev-token-123456
 DUCKDB_CATALOG=r2catalog
 DUCKDB_SCHEMA=otlp
 
+DUCKDB_QUACK_ENABLED=1
+DUCKDB_QUACK_ADDR=0.0.0.0:9494
+DUCKDB_QUACK_TOKEN=dev-quack-token-123456
+
 CLOUDFLARE_ACCOUNT_ID=<account-id>
 CLOUDFLARE_R2_BUCKET=<bucket-name>
 CLOUDFLARE_ACCESS_KEY_ID=<r2-s3-access-key-id>
@@ -94,6 +98,7 @@ CLOUDFLARE_CATALOG_TOKEN=<r2-admin-read-write-token>
 docker run --rm --name duckdb-otlp \
   --env-file cloudflare.env \
   -p 4318:4318 \
+  -p 9494:9494 \
   ghcr.io/smithclay/duckdb-otlp:latest
 ```
 
@@ -124,19 +129,26 @@ The container creates these Iceberg tables in the R2 Data Catalog namespace if t
 Drop the Iceberg tables before disabling the catalog and deleting the R2 bucket:
 
 ```bash
-docker exec duckdb-otlp sh -c \
-  "printf '%s\n' \
-    \"SELECT status FROM otlp_stop('otlp:0.0.0.0:4318');\" \
-    \"DROP TABLE IF EXISTS r2catalog.otlp.otlp_logs;\" \
-    \"DROP TABLE IF EXISTS r2catalog.otlp.otlp_traces;\" \
-    \"DROP TABLE IF EXISTS r2catalog.otlp.otlp_metrics_gauge;\" \
-    \"DROP TABLE IF EXISTS r2catalog.otlp.otlp_metrics_sum;\" \
-    \"DROP TABLE IF EXISTS r2catalog.otlp.otlp_metrics_histogram;\" \
-    \"DROP TABLE IF EXISTS r2catalog.otlp.otlp_metrics_exp_histogram;\" \
-    \"DETACH r2catalog;\" \
-    > /tmp/duckdb-otlp.sql"
+duckdb <<'SQL'
+INSTALL quack;
+LOAD quack;
 
-docker logs --tail 80 duckdb-otlp
+FROM quack_query(
+  'quack:localhost:9494',
+  $$
+  SELECT status FROM otlp_stop('otlp:0.0.0.0:4318');
+  DROP TABLE IF EXISTS r2catalog.otlp.otlp_logs;
+  DROP TABLE IF EXISTS r2catalog.otlp.otlp_traces;
+  DROP TABLE IF EXISTS r2catalog.otlp.otlp_metrics_gauge;
+  DROP TABLE IF EXISTS r2catalog.otlp.otlp_metrics_sum;
+  DROP TABLE IF EXISTS r2catalog.otlp.otlp_metrics_histogram;
+  DROP TABLE IF EXISTS r2catalog.otlp.otlp_metrics_exp_histogram;
+  DETACH r2catalog;
+  $$,
+  token = 'dev-quack-token-123456'
+);
+SQL
+
 docker stop duckdb-otlp
 ```
 

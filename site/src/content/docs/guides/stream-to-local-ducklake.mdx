@@ -23,6 +23,10 @@ DUCKDB_OTLP_TOKEN=dev-token-123456
 DUCKLAKE_NAME=lake
 DUCKLAKE_CATALOG_PATH=/data/ducklake/catalog.duckdb
 DUCKLAKE_DATA_PATH=/data/ducklake/storage
+
+DUCKDB_QUACK_ENABLED=1
+DUCKDB_QUACK_ADDR=0.0.0.0:9494
+DUCKDB_QUACK_TOKEN=dev-quack-token-123456
 ```
 
 `DUCKLAKE_CATALOG_PATH` stores DuckLake metadata. `DUCKLAKE_DATA_PATH` stores Parquet data files.
@@ -35,6 +39,7 @@ mkdir -p data
 docker run --rm --name duckdb-otlp \
   --env-file .env \
   -p 4318:4318 \
+  -p 9494:9494 \
   -v "$(pwd)/data:/data" \
   ghcr.io/smithclay/duckdb-otlp:latest
 ```
@@ -60,7 +65,7 @@ Leave the container running while clients send OTLP/HTTP requests.
   table="lake.main.otlp_logs"
   serviceName="local-ducklake-demo"
   includeTimestamp
-  ownershipNote="The server process owns the DuckLake catalog while it runs, so send inspection SQL to the container control file."
+  ownershipNote="The server process owns the DuckLake catalog while it runs, and the distroless image has no shell or bundled DuckDB CLI."
 />
 
 <StopCleanly />

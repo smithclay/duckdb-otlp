@@ -31,9 +31,8 @@ You can either run the provider Docker image that automatically runs the extensi
 <details>
 <summary>Run server as a standalone daemon with Docker</summary>
 
-This automatically bootstraps an embedded DuckDB instance with the extension preloaded.
-
 ```sh
+# This automatically bootstraps an embedded DuckDB instance with the extension preloaded.
 mkdir -p data
 
 docker run --rm --name duckdb-otlp \

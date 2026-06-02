@@ -20,24 +20,41 @@ const selectColumns = includeTimestamp
   : 'service_name, severity_text, body';
 
 const intro = ownershipNote
-  ? `Flush and query through the running container. ${ownershipNote}`
-  : 'Flush and query through the running container:';
+  ? `Flush and query through Quack from a host DuckDB process. ${ownershipNote}`
+  : 'Flush and query through Quack from a host DuckDB process:';
 
-const queryCommand = `docker exec duckdb-otlp sh -c \\
-  "printf '%s\\n' \\
-    \\"SELECT * FROM otlp_flush('otlp:0.0.0.0:4318');\\" \\
-    \\"SELECT ${selectColumns}\\" \\
-    \\"FROM ${table}\\" \\
-    \\"WHERE service_name = '${serviceName}'\\" \\
-    \\"ORDER BY time_unix_nano DESC\\" \\
-    \\"LIMIT 5;\\" \\
-    > /tmp/duckdb-otlp.sql"
+const queryCommand = `duckdb <<'SQL'
+INSTALL quack;
+LOAD quack;
 
-docker logs --tail 80 duckdb-otlp`;
+FROM quack_query(
+  'quack:localhost:9494',
+  'SELECT * FROM otlp_flush(''otlp:0.0.0.0:4318'')',
+  token = 'dev-quack-token-123456'
+);
+
+FROM quack_query(
+  'quack:localhost:9494',
+  $$
+  SELECT ${selectColumns}
+  FROM ${table}
+  WHERE service_name = '${serviceName}'
+  ORDER BY time_unix_nano DESC
+  LIMIT 5
+  $$,
+  token = 'dev-quack-token-123456'
+);
+SQL`;
 ---
 
 <h2 id="query-committed-rows">Query committed rows</h2>
 
 <p>{intro}</p>
+
+<p>
+  The server image is distroless and has no shell or DuckDB CLI, so do not use
+  <code>docker exec ... sh -c</code> for inspection SQL. The examples in this
+  guide enable Quack and publish port <code>9494</code> for this purpose.
+</p>
 
 <Code code={queryCommand} lang="bash" />

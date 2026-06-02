@@ -17,6 +17,10 @@ DUCKDB_OTLP_TOKEN=dev-token-123456
 DUCKLAKE_NAME=lake
 DUCKLAKE_CATALOG_PATH=/data/ducklake/catalog.duckdb
 DUCKLAKE_DATA_PATH=/data/ducklake/storage
+
+DUCKDB_QUACK_ENABLED=1
+DUCKDB_QUACK_ADDR=0.0.0.0:9494
+DUCKDB_QUACK_TOKEN=dev-quack-token-123456
 ```
 
 Start the server:
@@ -27,6 +31,7 @@ mkdir -p data
 docker run --rm --name duckdb-otlp \
   --env-file .env \
   -p 4318:4318 \
+  -p 9494:9494 \
   -v "$(pwd)/data:/data" \
   ghcr.io/smithclay/duckdb-otlp:latest
 ```
@@ -91,32 +96,51 @@ http://localhost:8080
 Flush buffered telemetry and query the running `duckdb-otlp` container:
 
 ```bash
-docker exec duckdb-otlp sh -c \
-  "printf '%s\n' \
-    \"SELECT * FROM otlp_flush('otlp:0.0.0.0:4318');\" \
-    \"SELECT service_name, name, count(*) AS spans\" \
-    \"FROM lake.main.otlp_traces\" \
-    \"GROUP BY service_name, name\" \
-    \"ORDER BY spans DESC\" \
-    \"LIMIT 20;\" \
-    > /tmp/duckdb-otlp.sql"
+duckdb <<'SQL'
+INSTALL quack;
+LOAD quack;
 
-docker logs --tail 80 duckdb-otlp
+FROM quack_query(
+  'quack:localhost:9494',
+  'SELECT * FROM otlp_flush(''otlp:0.0.0.0:4318'')',
+  token = 'dev-quack-token-123456'
+);
+
+FROM quack_query(
+  'quack:localhost:9494',
+  $$
+  SELECT service_name, name, count(*) AS spans
+  FROM lake.main.otlp_traces
+  GROUP BY service_name, name
+  ORDER BY spans DESC
+  LIMIT 20
+  $$,
+  token = 'dev-quack-token-123456'
+);
+SQL
 ```
 
 Inspect recent logs:
 
 ```bash
-docker exec duckdb-otlp sh -c \
-  "printf '%s\n' \
-    \"SELECT time_unix_nano, service_name, severity_text, body\" \
-    \"FROM lake.main.otlp_logs\" \
-    \"ORDER BY time_unix_nano DESC\" \
-    \"LIMIT 20;\" \
-    > /tmp/duckdb-otlp.sql"
+duckdb <<'SQL'
+INSTALL quack;
+LOAD quack;
 
-docker logs --tail 80 duckdb-otlp
+FROM quack_query(
+  'quack:localhost:9494',
+  $$
+  SELECT time_unix_nano, service_name, severity_text, body
+  FROM lake.main.otlp_logs
+  ORDER BY time_unix_nano DESC
+  LIMIT 20
+  $$,
+  token = 'dev-quack-token-123456'
+);
+SQL
 ```
+
+The server image is distroless and has no shell or DuckDB CLI, so run inspection SQL from a host DuckDB process through Quack instead of `docker exec ... sh -c`.
 
 ## Stop Cleanly
 
