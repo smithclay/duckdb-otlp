@@ -9,14 +9,17 @@ As of v0.5, the extension has an embedded HTTP server that lets you stream live 
 Install and load the extension in `duckdb` v1.5.3 or higher:
 
 ```sql
--- Note: v0.5.0 pending publication in the community repo
--- Until merged, installing unsigned via this repo required (see below)
+-- Note: v0.5.0 is still pending publication
+-- Use "Install pre-release extension" steps below for latest
 INSTALL otlp FROM community;
 LOAD otlp;
 ```
 
 <details>
-<summary>Install nightly/pre-release extension via GitHub</summary>
+<summary>Install pre-release extension via GitHub</summary>
+
+If you want to use a pre-release that's not on the duckdb
+community site, you can install it (unsigned) via GitHub:
 
 ```sql
 -- Install unsigned extenstion from GitHub
@@ -30,7 +33,7 @@ LOAD otlp;
 Read OTLP protobuf/JSON data from public URLs, local files, or object storage buckets:
 
 ```sql
-LOAD httpfs;
+INSTALL httpfs; LOAD httpfs;
 SELECT time_unix_nano, service_name, severity_text, body FROM read_otlp_logs('https://github.com/smithclay/duckdb-otlp/raw/refs/heads/main/test/data/otlp_logs.pb');
 
 SELECT trace_id, name, duration_time_unix_nano FROM read_otlp_traces('https://github.com/smithclay/duckdb-otlp/raw/refs/heads/main/test/data/otlp_traces.pb') ORDER BY duration_time_unix_nano DESC;

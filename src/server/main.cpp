@@ -4,6 +4,7 @@
 #include "duckdb.hpp"
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/main/database_manager.hpp"
 #include "duckdb/main/query_result.hpp"
 
 #include <atomic>
@@ -344,6 +345,28 @@ int main(int argc, char **argv) {
 		} watcher_guard {startup_complete, interrupt_watcher};
 
 		Execute(con, config.mode_setup_sql, "mode setup");
+		// Make the mode's telemetry catalog the instance-wide default database. The Quack
+		// server handles each external client on a *fresh* Connection spun up from the
+		// DatabaseInstance (quack_server.cpp: make_uniq<Connection>(*db)), not on this
+		// startup connection, and `USE`/`SET schema` only mutate the connection they run
+		// on. Setting the DatabaseManager default lets those client connections resolve the
+		// telemetry catalog by default, so callers can scan tables transparently
+		// (ATTACH 'quack:...' AS x; FROM x.otlp_logs) instead of wrapping every statement in
+		// x.query('...'). otlp_serve targets the catalog explicitly, so changing the default
+		// is safe. Parquet mode has no catalog (its inspection views already live in the
+		// default catalog) and is skipped.
+		if (!config.catalog.empty()) {
+			// SetDefaultDatabase resolves the catalog through the meta-transaction, so it must run
+			// inside an explicit transaction on this connection.
+			con.BeginTransaction();
+			try {
+				duckdb::DatabaseManager::Get(*con.context).SetDefaultDatabase(*con.context, config.catalog);
+				con.Commit();
+			} catch (...) {
+				con.Rollback();
+				throw;
+			}
+		}
 		Execute(con, config.StartOtlpSql(), "otlp startup", true);
 		Execute(con, config.StartQuackSql(), "quack startup", true);
 		if (!WaitForReady(con, config) && !shutdown_requested) {
