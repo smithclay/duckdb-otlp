@@ -2,6 +2,7 @@
 
 #include "duckdb.hpp"
 
+#include "otlp_log.hpp"
 #include "otlp_request.hpp"
 #include "otlp_uri.hpp"
 #include "otlp2records.h"
@@ -154,8 +155,10 @@ private:
 	//! connection / database go away. Idempotent; called from Close() and ~OtlpServer().
 	void ShutdownIngest();
 	//! Write a server-side diagnostic to duckdb_logs under the OTLP log type. No-op
-	//! if the database has been closed. Safe to call from any worker thread.
-	void LogServerEvent(const string &message) const;
+	//! if the database has been closed. Safe to call from any worker thread. Routine
+	//! lifecycle events log at INFO (the default); pass LogLevel::LOG_WARNING for
+	//! failure paths so they stay visible at default log thresholds.
+	void LogServerEvent(const string &message, LogLevel level = OtlpLogType::LEVEL) const;
 
 	static void ListenThread(OtlpServer *server);
 

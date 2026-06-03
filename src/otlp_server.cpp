@@ -294,14 +294,14 @@ idx_t OtlpServer::BufferedRows() const {
 	return rows;
 }
 
-void OtlpServer::LogServerEvent(const string &message) const {
+void OtlpServer::LogServerEvent(const string &message, LogLevel level) const {
 	auto db = db_ptr.lock();
 	if (!db) {
 		return;
 	}
 	auto &logger = Logger::Get(*db);
-	if (logger.ShouldLog(OtlpLogType::NAME, OtlpLogType::LEVEL)) {
-		logger.WriteLog(OtlpLogType::NAME, OtlpLogType::LEVEL, message);
+	if (logger.ShouldLog(OtlpLogType::NAME, level)) {
+		logger.WriteLog(OtlpLogType::NAME, level, message);
 	}
 }
 
@@ -836,7 +836,8 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 			LogServerEvent(StringUtil::Format("parquet seal failed at signal %llu (%llu/%llu rows exported): %s",
 			                                  static_cast<uint64_t>(failed_signal),
 			                                  static_cast<uint64_t>(exported_rows), static_cast<uint64_t>(total),
-			                                  failure_msg));
+			                                  failure_msg),
+			               LogLevel::LOG_WARNING);
 			throw IOException(StringUtil::Format("parquet seal failed: %s", failure_msg));
 		}
 
@@ -922,7 +923,7 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 			std::lock_guard<std::mutex> elock(seal_error_mutex);
 			seal_last_error = msg;
 		}
-		LogServerEvent(StringUtil::Format("seal failed: %s", msg));
+		LogServerEvent(StringUtil::Format("seal failed: %s", msg), LogLevel::LOG_WARNING);
 		throw;
 	}
 
@@ -999,7 +1000,8 @@ void OtlpServer::MaybeRunCatalogMaintenance(idx_t sealed_rows, idx_t sealed_admi
 			                       config.catalog_name, msg));
 		} else {
 			LogServerEvent(StringUtil::Format("catalog maintenance checkpoint failed: catalog=%s error=%s",
-			                                  config.catalog_name, msg));
+			                                  config.catalog_name, msg),
+			               LogLevel::LOG_WARNING);
 		}
 	}
 }
@@ -1076,7 +1078,7 @@ void OtlpServer::ShutdownIngest() {
 		try {
 			SealOnce(false);
 		} catch (...) {
-			LogServerEvent("final seal attempt failed during shutdown");
+			LogServerEvent("final seal attempt failed during shutdown", LogLevel::LOG_WARNING);
 		}
 	}
 	auto remaining_rows = BufferedRows();
@@ -1084,7 +1086,8 @@ void OtlpServer::ShutdownIngest() {
 		LogServerEvent(
 		    StringUtil::Format("dropping %llu buffered rows on shutdown (database closed without graceful otlp_stop, "
 		                       "or repeated seal failure)",
-		                       static_cast<uint64_t>(remaining_rows)));
+		                       static_cast<uint64_t>(remaining_rows)),
+		    LogLevel::LOG_WARNING);
 	}
 	{
 		std::lock_guard<std::mutex> writer_lock(writer_mutex);

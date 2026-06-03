@@ -156,10 +156,10 @@ OtlpServer::OtlpServer(ClientContext &context, const OtlpUri &uri_p, const OtlpS
 			} catch (IOException &ex) {
 				// 500-class failures are otherwise only visible in the client's
 				// response body; log them so the operator has a server-side trace.
-				LogServerEvent(StringUtil::Format("ingest I/O error: %s", ex.what()));
+				LogServerEvent(StringUtil::Format("ingest I/O error: %s", ex.what()), LogLevel::LOG_WARNING);
 				SetError(res, 500, "internal_error", ex.what());
 			} catch (std::exception &ex) {
-				LogServerEvent(StringUtil::Format("ingest internal error: %s", ex.what()));
+				LogServerEvent(StringUtil::Format("ingest internal error: %s", ex.what()), LogLevel::LOG_WARNING);
 				SetError(res, 500, "internal_error", ex.what());
 			}
 		};
@@ -236,7 +236,8 @@ void OtlpServer::ListenThread(OtlpServer *server) {
 			server->last_error = ex.what();
 		}
 		server->LogServerEvent(
-		    StringUtil::Format("OTLP listener for %s stopped: %s", server->ListenUri().Uri(), ex.what()));
+		    StringUtil::Format("OTLP listener for %s stopped: %s", server->ListenUri().Uri(), ex.what()),
+		    LogLevel::LOG_WARNING);
 	} catch (...) {
 		server->is_running.store(false);
 		server->listener_failed.store(true);
@@ -245,7 +246,8 @@ void OtlpServer::ListenThread(OtlpServer *server) {
 			server->last_error = "unknown error in listen loop";
 		}
 		server->LogServerEvent(
-		    StringUtil::Format("OTLP listener for %s stopped: unknown error", server->ListenUri().Uri()));
+		    StringUtil::Format("OTLP listener for %s stopped: unknown error", server->ListenUri().Uri()),
+		    LogLevel::LOG_WARNING);
 	}
 }
 
