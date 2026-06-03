@@ -2,7 +2,7 @@
 title: "Get Started"
 ---
 
-Use the DuckDB OpenTelemetry Extension to query OpenTelemetry files, then try the native OTLP/HTTP ingest server.
+Use the DuckDB OpenTelemetry Extension to query OpenTelemetry files, try the native OTLP/HTTP ingest server, then share live telemetry with other hosts over Quack.
 
 ## Prerequisites
 
@@ -63,26 +63,85 @@ Send one OTLP log record:
 curl -sS http://localhost:4318/v1/logs -H 'Authorization: Bearer dev-token-123456' -H 'Content-Type: application/json' -d '{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"curl-demo"}}]},"scopeLogs":[{"logRecords":[{"timeUnixNano":"1704067200000000000","severityText":"INFO","body":{"stringValue":"hello from curl"}}]}]}]}'
 ```
 
-Stop the server before closing the database. `otlp_stop` commits remaining buffered rows before it returns:
+Leave the server running for the next steps. The in-memory `otlp_logs` table it writes to is the same one the queries and the Quack server below read from.
+
+For durable lakehouse ingest, pass `catalog` to an attached lakehouse catalog. See [Stream to Local DuckLake](../guides/stream-to-local-ducklake/), [Stream to Remote DuckLake](../guides/stream-to-remote-ducklake/), [Stream to Amazon S3 Tables](../guides/stream-to-s3-tables/), or [Stream to Cloudflare R2 Data Catalog](../guides/stream-to-r2-data-catalog/). To write partitioned Parquet files without a lakehouse catalog, see [Stream to Parquet](../guides/stream-to-parquet/).
+
+## 4. Query the Data
+
+The server buffers rows in memory and commits them in the background, so a freshly POSTed row may not be visible yet. Force a commit with `otlp_flush`, then read the table:
 
 ```sql
-SELECT status FROM otlp_stop('otlp:localhost:4318');
-```
+SELECT * FROM otlp_flush('otlp:localhost:4318');
 
-Then query the accepted row:
-
-```sql
 SELECT time_unix_nano, service_name, severity_text, body
 FROM otlp_logs;
 ```
 
-You can query while the server still runs after the background commit. Use `otlp_flush` when readers need the latest accepted rows before the next scheduled commit.
+Rows land in the default (in-memory) catalog: logs in `otlp_logs`, traces in `otlp_traces`, and metrics in `otlp_metrics_gauge`, `otlp_metrics_sum`, `otlp_metrics_histogram`, and `otlp_metrics_exp_histogram`. See the [Schema Reference](../reference/schemas/) for every column.
 
-For durable lakehouse ingest, pass `catalog` to an attached lakehouse catalog. See [Stream to Local DuckLake](../guides/stream-to-local-ducklake/), [Stream to Remote DuckLake](../guides/stream-to-remote-ducklake/), [Stream to Amazon S3 Tables](../guides/stream-to-s3-tables/), or [Stream to Cloudflare R2 Data Catalog](../guides/stream-to-r2-data-catalog/). To write partitioned Parquet files without a lakehouse catalog, see [Stream to Parquet](../guides/stream-to-parquet/).
+## 5. Share with Quack
+
+[Quack](https://duckdb.org/docs/current/quack/overview.html) turns a running DuckDB process into a query server, so other hosts can read its tables over the network. Enable it in the same DuckDB session that is running the ingest server:
+
+```sql
+INSTALL quack;
+LOAD quack;
+
+CALL quack_serve(
+    'quack:0.0.0.0:9494',
+    token := 'dev-quack-token-123456',
+    allow_other_hostname := true
+);
+```
+
+Quack now serves this DuckDB instance — including `otlp_logs` and the other signal tables — on port `9494`. Use a token separate from the ingest token: `dev-token-123456` protects OTLP ingest on `4318`, and `dev-quack-token-123456` protects query access on `9494`. To accept only same-host connections, bind to `quack:localhost:9494` and drop `allow_other_hostname`.
+
+Quack grants full SQL read/write access to this DuckDB connection, so treat the token as an administrative credential. Quack is experimental in DuckDB 1.5.3. Run it on trusted networks, and put it behind a TLS-terminating reverse proxy for remote access.
+
+## 6. Query with Quack from Another Host
+
+On another machine, install Quack, create a secret with the token, and attach the remote server. Replace `SERVER_HOST` with the hostname or IP of the machine running the ingest server:
+
+```sql
+INSTALL quack;
+LOAD quack;
+
+CREATE SECRET otlp_quack (
+  TYPE quack,
+  SCOPE 'quack:SERVER_HOST:9494',
+  TOKEN 'dev-quack-token-123456'
+);
+
+ATTACH 'quack:SERVER_HOST:9494' AS otel (TYPE quack);
+```
+
+Point the session at the attached server, then query the signal tables directly:
+
+```sql
+USE otel;
+
+SELECT time_unix_nano, service_name, severity_text, body
+FROM otlp_logs
+ORDER BY time_unix_nano DESC
+LIMIT 5;
+```
+
+Quack runs each scan inside the remote DuckDB process and streams the result back. For heavy aggregations — or server-side functions such as `otlp_flush` — run SQL through the attached catalog's `query` macro instead. See [Query with Quack](../guides/query-with-quack/) for the full workflow, including the Docker daemon path.
+
+## Stop the Servers
+
+When you are done, stop Quack and the ingest server before closing the database. `otlp_stop` commits remaining buffered rows before it returns:
+
+```sql
+CALL quack_stop('quack:0.0.0.0:9494');
+SELECT status FROM otlp_stop('otlp:localhost:4318');
+```
 
 ## Next Steps
 
 - [Live Ingest Quickstart](../quickstart/serve/) - POST one log record over OTLP/HTTP.
+- [Query with Quack](../guides/query-with-quack/) - share stored telemetry and query it from a separate DuckDB process.
 - [Stream to Local DuckLake](../guides/stream-to-local-ducklake/) - stream OTLP into local DuckLake/Parquet.
 - [Stream to Remote DuckLake](../guides/stream-to-remote-ducklake/) - stream OTLP into DuckLake with Neon and R2.
 - [Stream to Parquet](../guides/stream-to-parquet/) - stream OTLP into partitioned Parquet files on disk or S3.
