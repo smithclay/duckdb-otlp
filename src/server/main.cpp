@@ -228,7 +228,7 @@ void PrintUsage() {
 
 Required:
 
-  DUCKDB_MODE=local-ducklake|parquet|r2-data-catalog|s3-tables|r2-neon-ducklake|r2-local-ducklake
+  DUCKDB_MODE=local-ducklake|aws-ducklake|parquet|r2-data-catalog|s3-tables|r2-neon-ducklake|r2-local-ducklake
 
 Useful common settings:
 

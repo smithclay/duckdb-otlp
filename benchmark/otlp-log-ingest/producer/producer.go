@@ -66,6 +66,7 @@ type Result struct {
 	ActualAttemptedPerSec     float64           `json:"actual_attempted_records_per_second"`
 	AcceptedRecordsPerSec     float64           `json:"accepted_records_per_second"`
 	RejectedRecordsPerSec     float64           `json:"rejected_records_per_second"`
+	GeneratedRecords          uint64            `json:"generated_records"`
 	AttemptedRecords          uint64            `json:"attempted_records"`
 	AcceptedRecords           uint64            `json:"accepted_records"`
 	RejectedRecords           uint64            `json:"rejected_records"`
@@ -86,12 +87,25 @@ type Result struct {
 	GzipGbps                  float64           `json:"gzip_gigabits_per_second"`
 	GzipBytesPerRecord        float64           `json:"gzip_bytes_per_record"`
 	LatencyMS                 Percentiles       `json:"request_latency_ms"`
+	GeneratedToAcceptedMS     Percentiles       `json:"generated_to_accepted_batch_ms"`
 	SchedulerLagMS            Percentiles       `json:"scheduler_lag_ms"`
+	AcceptedBatches           []AcceptedBatch   `json:"accepted_batches,omitempty"`
 	Calibration               Calibration       `json:"calibration"`
 	GoMaxProcs                int               `json:"go_max_procs"`
 	PeakHeapBytes             uint64            `json:"peak_heap_bytes"`
 	Completed                 bool              `json:"completed"`
 	StopReason                string            `json:"stop_reason,omitempty"`
+}
+
+type AcceptedBatch struct {
+	FirstSequence          uint64 `json:"first_sequence"`
+	LastSequence           uint64 `json:"last_sequence"`
+	Records                uint64 `json:"records"`
+	GeneratedFirstUnixNano uint64 `json:"generated_first_unix_nano"`
+	GeneratedLastUnixNano  uint64 `json:"generated_last_unix_nano"`
+	AcceptedAtUnixNano     int64  `json:"accepted_at_unix_nano"`
+	ProtobufBytes          uint64 `json:"protobuf_bytes"`
+	GzipBytes              uint64 `json:"gzip_bytes"`
 }
 
 type Percentiles struct {
@@ -126,7 +140,9 @@ type counters struct {
 	responseErrors        map[string]string
 	transportErrors       map[string]uint64
 	latencies             []float64
+	generatedToAccepted   []float64
 	schedulerLag          []float64
+	acceptedBatches       []AcceptedBatch
 }
 
 func deterministicBody(seed, sequence uint64, size int) string {
@@ -531,6 +547,23 @@ func sendBatch(ctx context.Context, client *http.Client, cfg Config, calibration
 		stats.accepted.Add(payload.Rows)
 		stats.acceptedProtobufBytes.Add(uint64(len(protobufBytes)))
 		stats.acceptedGzipBytes.Add(uint64(len(gzipBytes)))
+		acceptedAt := time.Now()
+		stats.mu.Lock()
+		stats.generatedToAccepted = append(
+			stats.generatedToAccepted,
+			float64(acceptedAt.UnixNano()-int64(generatedAt))/float64(time.Millisecond),
+		)
+		stats.acceptedBatches = append(stats.acceptedBatches, AcceptedBatch{
+			FirstSequence:          job.sequence,
+			LastSequence:           job.sequence + uint64(cfg.BatchSize) - 1,
+			Records:                payload.Rows,
+			GeneratedFirstUnixNano: generatedAt,
+			GeneratedLastUnixNano:  generatedAt + uint64(cfg.BatchSize) - 1,
+			AcceptedAtUnixNano:     acceptedAt.UnixNano(),
+			ProtobufBytes:          uint64(len(protobufBytes)),
+			GzipBytes:              uint64(len(gzipBytes)),
+		})
+		stats.mu.Unlock()
 		return
 	}
 	stats.rejected.Add(uint64(cfg.BatchSize))
@@ -557,15 +590,20 @@ func snapshotResult(cfg Config, calibration Calibration, stats *counters, starte
 	responseErrors := cloneStringMap(stats.responseErrors)
 	transportErrors := cloneMap(stats.transportErrors)
 	latencies := append([]float64(nil), stats.latencies...)
+	generatedToAccepted := append([]float64(nil), stats.generatedToAccepted...)
 	lags := append([]float64(nil), stats.schedulerLag...)
+	acceptedBatches := append([]AcceptedBatch(nil), stats.acceptedBatches...)
 	stats.mu.Unlock()
+	sort.Slice(acceptedBatches, func(i, j int) bool {
+		return acceptedBatches[i].FirstSequence < acceptedBatches[j].FirstSequence
+	})
 	attempted := stats.attempted.Load()
 	accepted := stats.accepted.Load()
 	rejected := stats.rejected.Load()
 	protobufBytes := stats.protobufBytes.Load()
 	gzipBytes := stats.gzipBytes.Load()
 	return Result{
-		SchemaVersion:             1,
+		SchemaVersion:             2,
 		RunID:                     cfg.RunID,
 		Scenario:                  cfg.Scenario,
 		StartedAt:                 started.UTC(),
@@ -575,6 +613,7 @@ func snapshotResult(cfg Config, calibration Calibration, stats *counters, starte
 		ActualAttemptedPerSec:     divide(float64(attempted), elapsed),
 		AcceptedRecordsPerSec:     divide(float64(accepted), elapsed),
 		RejectedRecordsPerSec:     divide(float64(rejected), elapsed),
+		GeneratedRecords:          attempted,
 		AttemptedRecords:          attempted,
 		AcceptedRecords:           accepted,
 		RejectedRecords:           rejected,
@@ -595,7 +634,9 @@ func snapshotResult(cfg Config, calibration Calibration, stats *counters, starte
 		GzipGbps:                  divide(float64(gzipBytes)*8, elapsed*1e9),
 		GzipBytesPerRecord:        divide(float64(gzipBytes), float64(attempted)),
 		LatencyMS:                 percentiles(latencies),
+		GeneratedToAcceptedMS:     percentiles(generatedToAccepted),
 		SchedulerLagMS:            percentiles(lags),
+		AcceptedBatches:           acceptedBatches,
 		Calibration:               calibration,
 		GoMaxProcs:                runtime.GOMAXPROCS(0),
 		PeakHeapBytes:             stats.peakHeapBytes.Load(),

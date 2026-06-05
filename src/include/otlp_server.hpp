@@ -10,6 +10,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <deque>
 #include <thread>
 
 namespace duckdb {
@@ -72,6 +73,20 @@ struct OtlpIngestResult {
 	}
 };
 
+struct OtlpSealEvent {
+	idx_t seal_sequence = 0;
+	int64_t started_unix_ms = 0;
+	int64_t completed_unix_ms = 0;
+	int64_t duration_ms = 0;
+	idx_t rows_committed = 0;
+	idx_t admitted_bytes_committed = 0;
+	bool success = false;
+	idx_t seals_total = 0;
+	idx_t seal_failures_total = 0;
+	idx_t committed_rows_total = 0;
+	string error;
+};
+
 class OtlpServer {
 public:
 	OtlpServer(ClientContext &context, const OtlpUri &uri, const OtlpServerConfig &config);
@@ -127,8 +142,16 @@ public:
 		return total_rows.load();
 	}
 	idx_t BufferedRows() const;
+	idx_t AdmittedBytes() const {
+		return admitted_bytes.load();
+	}
+	//! Milliseconds since the oldest currently buffered row was admitted, or -1 if empty.
+	int64_t OldestBufferedAgeMs() const;
 	idx_t SealsTotal() const {
 		return seals_total.load();
+	}
+	idx_t CommittedRowsTotal() const {
+		return committed_rows_total.load();
 	}
 	//! Monotonic count of failed seal attempts (never reset), so a flapping/failing
 	//! sealer is visible even when seal_last_error self-clears on the next success.
@@ -141,6 +164,7 @@ public:
 		std::lock_guard<std::mutex> lock(seal_error_mutex);
 		return seal_last_error;
 	}
+	vector<OtlpSealEvent> SealHistory() const;
 
 	//! Force a synchronous seal of all buffered rows (used by otlp_flush). Returns the
 	//! number of rows sealed.
@@ -187,6 +211,8 @@ private:
 	void RequestSeal();
 	bool SealAgeDue() const;
 	void MaybeRunCatalogMaintenance(idx_t sealed_rows, idx_t sealed_admission_bytes);
+	void RecordSealEvent(int64_t started_unix_ms, idx_t rows_committed, idx_t admitted_bytes_committed, bool success,
+	                     const string &error);
 
 	void CreateOrValidateTable(Connection &con, OtlpSignalType signal_type, const string &table_name);
 	void GetSignalColumns(OtlpSignalType signal_type, vector<LogicalType> &types, vector<string> &names);
@@ -221,9 +247,13 @@ private:
 
 	std::atomic<idx_t> seals_total {0};
 	std::atomic<idx_t> seal_failures_total {0};
+	std::atomic<idx_t> committed_rows_total {0};
+	std::atomic<idx_t> seal_sequence {0};
 	std::atomic<int64_t> last_seal_unix_ms {0};
 	mutable mutex seal_error_mutex;
 	string seal_last_error;
+	mutable mutex seal_history_mutex;
+	std::deque<OtlpSealEvent> seal_history;
 
 	enum class CatalogMaintenanceState { PENDING, SUPPORTED, DISABLED };
 	CatalogMaintenanceState catalog_maintenance_state = CatalogMaintenanceState::PENDING;

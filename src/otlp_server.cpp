@@ -23,6 +23,8 @@
 
 namespace duckdb {
 
+static int64_t NowUnixMs();
+
 namespace {
 
 static constexpr idx_t TOKEN_BYTES = 16;
@@ -292,6 +294,53 @@ idx_t OtlpServer::BufferedRows() const {
 		rows += buf->buffered_rows;
 	}
 	return rows;
+}
+
+int64_t OtlpServer::OldestBufferedAgeMs() const {
+	bool found = false;
+	std::chrono::steady_clock::time_point oldest;
+	for (auto &buf : signal_buffers) {
+		std::lock_guard<std::mutex> lock(buf->mutex);
+		if (!buf->have_unsealed) {
+			continue;
+		}
+		if (!found || buf->first_unsealed < oldest) {
+			oldest = buf->first_unsealed;
+			found = true;
+		}
+	}
+	if (!found) {
+		return -1;
+	}
+	return std::max<int64_t>(
+	    0, std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - oldest).count());
+}
+
+vector<OtlpSealEvent> OtlpServer::SealHistory() const {
+	std::lock_guard<std::mutex> lock(seal_history_mutex);
+	return vector<OtlpSealEvent>(seal_history.begin(), seal_history.end());
+}
+
+void OtlpServer::RecordSealEvent(int64_t started_unix_ms, idx_t rows_committed, idx_t admitted_bytes_committed,
+                                 bool success, const string &error) {
+	OtlpSealEvent event;
+	event.seal_sequence = seal_sequence.fetch_add(1) + 1;
+	event.started_unix_ms = started_unix_ms;
+	event.completed_unix_ms = NowUnixMs();
+	event.duration_ms = std::max<int64_t>(0, event.completed_unix_ms - event.started_unix_ms);
+	event.rows_committed = rows_committed;
+	event.admitted_bytes_committed = admitted_bytes_committed;
+	event.success = success;
+	event.seals_total = seals_total.load();
+	event.seal_failures_total = seal_failures_total.load();
+	event.committed_rows_total = committed_rows_total.load();
+	event.error = error;
+	std::lock_guard<std::mutex> lock(seal_history_mutex);
+	static constexpr idx_t MAX_SEAL_HISTORY = 4096;
+	if (seal_history.size() >= MAX_SEAL_HISTORY) {
+		seal_history.pop_front();
+	}
+	seal_history.push_back(std::move(event));
 }
 
 void OtlpServer::LogServerEvent(const string &message, LogLevel level) const {
@@ -656,6 +705,7 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 		return OtlpIngestResult {}; // database closed; nothing we can durably write
 	}
 	auto &allocator = Allocator::Get(*db);
+	auto seal_started_unix_ms = NowUnixMs();
 
 	struct SealingBuffer {
 		unique_ptr<ColumnDataCollection> collection;
@@ -829,6 +879,7 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 				last_seal_unix_ms.store(NowUnixMs());
 			}
 			seal_failures_total.fetch_add(1);
+			committed_rows_total.fetch_add(exported_rows);
 			{
 				std::lock_guard<std::mutex> elock(seal_error_mutex);
 				seal_last_error = failure_msg;
@@ -838,11 +889,13 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 			                                  static_cast<uint64_t>(exported_rows), static_cast<uint64_t>(total),
 			                                  failure_msg),
 			               LogLevel::LOG_WARNING);
+			RecordSealEvent(seal_started_unix_ms, exported_rows, sealed_admission_bytes, false, failure_msg);
 			throw IOException(StringUtil::Format("parquet seal failed: %s", failure_msg));
 		}
 
 		ReleaseAdmission(sealed_admission_bytes);
 		seals_total.fetch_add(1);
+		committed_rows_total.fetch_add(result.rows);
 		last_seal_unix_ms.store(NowUnixMs());
 		{
 			std::lock_guard<std::mutex> elock(seal_error_mutex);
@@ -850,6 +903,7 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 		}
 		LogServerEvent(StringUtil::Format("parquet seal: path=%s rows=%llu batches=%llu", config.parquet_export_path,
 		                                  static_cast<uint64_t>(result.rows), static_cast<uint64_t>(result.batches)));
+		RecordSealEvent(seal_started_unix_ms, result.rows, sealed_admission_bytes, true, "");
 		return result;
 	}
 
@@ -924,11 +978,13 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 			seal_last_error = msg;
 		}
 		LogServerEvent(StringUtil::Format("seal failed: %s", msg), LogLevel::LOG_WARNING);
+		RecordSealEvent(seal_started_unix_ms, 0, 0, false, msg);
 		throw;
 	}
 
 	ReleaseAdmission(sealed_admission_bytes);
 	seals_total.fetch_add(1);
+	committed_rows_total.fetch_add(result.rows);
 	last_seal_unix_ms.store(NowUnixMs());
 	{
 		std::lock_guard<std::mutex> elock(seal_error_mutex);
@@ -936,6 +992,7 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 	}
 	LogServerEvent(StringUtil::Format("seal: catalog=%s rows=%llu batches=%llu", config.catalog_name,
 	                                  static_cast<uint64_t>(result.rows), static_cast<uint64_t>(result.batches)));
+	RecordSealEvent(seal_started_unix_ms, result.rows, sealed_admission_bytes, true, "");
 	if (allow_maintenance) {
 		MaybeRunCatalogMaintenance(result.rows, sealed_admission_bytes);
 	}

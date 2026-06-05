@@ -46,6 +46,9 @@ string NormalizeMode(const string &mode) {
 	if (mode == "plain-s3" || mode == "s3-parquet" || mode == "s3") {
 		return "parquet";
 	}
+	if (mode == "ducklake-s3" || mode == "s3-ducklake") {
+		return "aws-ducklake";
+	}
 	return mode;
 }
 
@@ -287,6 +290,42 @@ ATTACH %s AS %s (
 );
 )SQL",
 	                       SqlQuote("ducklake:" + catalog_path), QuoteIdent(config.catalog), SqlQuote(data_path));
+}
+
+void ConfigureAwsDuckLake(ServerConfig &config) {
+	config.mode_extensions = {"ducklake", "aws", "httpfs", "otlp"};
+	config.catalog = CatalogDefault(Env("DUCKLAKE_NAME", "lake"));
+	config.schema = SchemaDefault("otlp");
+	auto catalog_path = Env("DUCKLAKE_CATALOG_PATH", config.data_dir + "/ducklake/catalog.duckdb");
+	auto data_path = Env("DUCKLAKE_DATA_PATH");
+	if (!IsS3Path(data_path)) {
+		throw InvalidInputException("DUCKDB_MODE=%s requires DUCKLAKE_DATA_PATH=s3://bucket/prefix", config.mode);
+	}
+	auto region = Env("AWS_REGION", Env("AWS_DEFAULT_REGION"));
+	if (region.empty()) {
+		throw InvalidInputException("Missing AWS region for DUCKDB_MODE=%s. Set AWS_REGION or AWS_DEFAULT_REGION",
+		                            config.mode);
+	}
+	CreateParentDirectory(catalog_path);
+	config.mode_setup_sql = StringUtil::Format(R"SQL(
+INSTALL ducklake;
+INSTALL aws;
+INSTALL httpfs;
+LOAD ducklake;
+LOAD aws;
+LOAD httpfs;
+CREATE OR REPLACE SECRET aws_ducklake_storage (
+  TYPE s3,
+  PROVIDER credential_chain,
+  CHAIN instance,
+  REGION %s
+);
+ATTACH %s AS %s (
+  DATA_PATH %s
+);
+)SQL",
+	                                           SqlQuote(region), SqlQuote("ducklake:" + catalog_path),
+	                                           QuoteIdent(config.catalog), SqlQuote(data_path));
 }
 
 void ConfigureR2DataCatalog(ServerConfig &config) {
@@ -555,6 +594,8 @@ LOAD httpfs;
 void ConfigureMode(ServerConfig &config) {
 	if (config.mode == "local-ducklake") {
 		ConfigureLocalDuckLake(config);
+	} else if (config.mode == "aws-ducklake") {
+		ConfigureAwsDuckLake(config);
 	} else if (config.mode == "parquet") {
 		ConfigureParquet(config);
 	} else if (config.mode == "r2-data-catalog") {
@@ -567,8 +608,8 @@ void ConfigureMode(ServerConfig &config) {
 		ConfigureR2LocalDuckLake(config);
 	} else {
 		throw InvalidInputException(
-		    "Unsupported DUCKDB_MODE \"%s\". Supported modes: local-ducklake, parquet, r2-data-catalog, s3-tables, "
-		    "r2-neon-ducklake, r2-local-ducklake",
+		    "Unsupported DUCKDB_MODE \"%s\". Supported modes: local-ducklake, aws-ducklake, parquet, "
+		    "r2-data-catalog, s3-tables, r2-neon-ducklake, r2-local-ducklake",
 		    config.mode);
 	}
 }

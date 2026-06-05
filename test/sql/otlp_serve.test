@@ -74,7 +74,9 @@ WHERE listen_uri = 'otlp:127.0.0.1:55439' AND catalog_name = '';
 query I
 SELECT count(*) FROM otlp_server_list()
 WHERE listen_uri = 'otlp:127.0.0.1:55439'
-  AND buffered_rows = 0 AND seals_total = 0
+  AND buffered_rows = 0 AND admitted_bytes = 0
+  AND oldest_buffered_age_ms IS NULL AND seals_total = 0
+  AND committed_rows_total = 0
   AND last_seal_age_ms IS NULL AND seal_last_error IS NULL;
 ----
 1
@@ -84,6 +86,12 @@ query TI
 SELECT status, sealed_rows FROM otlp_flush('otlp:127.0.0.1:55439');
 ----
 sealed	0
+
+query I
+SELECT count(*) FROM otlp_seal_list()
+WHERE listen_uri = 'otlp:127.0.0.1:55439';
+----
+0
 
 # flushing an unknown server reports not found
 query T

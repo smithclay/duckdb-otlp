@@ -1,0 +1,288 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Disposable two-node EC2 benchmark for duckdb-otlp to DuckLake on S3.
+
+Parameters:
+  RunId:
+    Type: String
+    AllowedPattern: '[a-z0-9-]{8,48}'
+  Repository:
+    Type: String
+    Default: duckdb-otlp
+  CreatedAt:
+    Type: String
+  InstanceType:
+    Type: String
+    Default: c7g.xlarge
+  ConsumerVolumeGiB:
+    Type: Number
+    Default: 100
+    MinValue: 40
+  MaxRuntimeHours:
+    Type: Number
+    Default: 4
+    MinValue: 1
+    MaxValue: 24
+  RetentionDays:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 30
+  Arm64Ami:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ecs/optimized-ami/amazon-linux-2023/arm64/recommended/image_id
+
+Mappings:
+  Network:
+    Cidr:
+      Vpc: 10.77.0.0/16
+      Private: 10.77.1.0/24
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !FindInMap [Network, Cidr, Vpc]
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - {Key: Name, Value: !Sub 'duckdb-otlp-${RunId}'}
+        - {Key: duckdb-otlp:run-id, Value: !Ref RunId}
+        - {Key: duckdb-otlp:repository, Value: !Ref Repository}
+        - {Key: duckdb-otlp:purpose, Value: benchmark}
+
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !FindInMap [Network, Cidr, Private]
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Select [0, !GetAZs '']
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties: {VpcId: !Ref Vpc}
+  PrivateAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: {SubnetId: !Ref PrivateSubnet, RouteTableId: !Ref PrivateRouteTable}
+
+  EndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: HTTPS from benchmark instances to VPC endpoints
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref ProducerSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref ConsumerSecurityGroup
+  ProducerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Producer egress only
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        - {IpProtocol: '-1', CidrIp: 0.0.0.0/0}
+  ConsumerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: OTLP and Quack only from producer
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 4318, ToPort: 4318, SourceSecurityGroupId: !Ref ProducerSecurityGroup}
+        - {IpProtocol: tcp, FromPort: 9494, ToPort: 9494, SourceSecurityGroupId: !Ref ProducerSecurityGroup}
+      SecurityGroupEgress:
+        - {IpProtocol: '-1', CidrIp: 0.0.0.0/0}
+
+  S3Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      VpcEndpointType: Gateway
+      RouteTableIds: [!Ref PrivateRouteTable]
+  SsmEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ssm'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [!Ref PrivateSubnet]
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+  SsmMessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ssmmessages'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: [!Ref PrivateSubnet]
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+  DataBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-benchmark-data
+            Status: Enabled
+            ExpirationInDays: !Ref RetentionDays
+      Tags:
+        - {Key: duckdb-otlp:run-id, Value: !Ref RunId}
+        - {Key: duckdb-otlp:repository, Value: !Ref Repository}
+        - {Key: duckdb-otlp:purpose, Value: benchmark}
+        - {Key: duckdb-otlp:created-at, Value: !Ref CreatedAt}
+        - {Key: duckdb-otlp:max-runtime-hours, Value: !Ref MaxRuntimeHours}
+
+  ProducerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ec2.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: producer-benchmark-data
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [s3:GetObject]
+                Resource: [!Sub '${DataBucket.Arn}/${RunId}/artifacts/*']
+              - Effect: Allow
+                Action: [s3:PutObject]
+                Resource: [!Sub '${DataBucket.Arn}/${RunId}/raw/*']
+  ProducerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties: {Roles: [!Ref ProducerRole]}
+
+  ConsumerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ec2.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: consumer-benchmark-data
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [s3:GetObject]
+                Resource: [!Sub '${DataBucket.Arn}/${RunId}/artifacts/*']
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:AbortMultipartUpload
+                  - s3:ListMultipartUploadParts
+                Resource: [!Sub '${DataBucket.Arn}/${RunId}/ducklake/*']
+              - Effect: Allow
+                Action: [s3:ListBucket]
+                Resource: [!GetAtt DataBucket.Arn]
+                Condition:
+                  StringLike:
+                    s3:prefix: [!Sub '${RunId}/ducklake/*']
+              - Effect: Allow
+                Action: [s3:GetBucketLocation]
+                Resource: [!GetAtt DataBucket.Arn]
+  ConsumerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties: {Roles: [!Ref ConsumerRole]}
+
+  ProducerInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref Arm64Ami
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref ProducerInstanceProfile
+      SubnetId: !Ref PrivateSubnet
+      SecurityGroupIds: [!Ref ProducerSecurityGroup]
+      MetadataOptions: {HttpTokens: required, HttpPutResponseHopLimit: 2}
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs: {VolumeSize: 30, VolumeType: gp3, Encrypted: true, DeleteOnTermination: true}
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -eux
+          shutdown -h +$(( ${MaxRuntimeHours} * 60 ))
+          mkdir -p /opt/duckdb-otlp-benchmark
+          touch /opt/duckdb-otlp-benchmark/ready
+      Tags:
+        - {Key: Name, Value: !Sub 'duckdb-otlp-producer-${RunId}'}
+        - {Key: duckdb-otlp:run-id, Value: !Ref RunId}
+        - {Key: duckdb-otlp:repository, Value: !Ref Repository}
+        - {Key: duckdb-otlp:purpose, Value: benchmark}
+        - {Key: duckdb-otlp:role, Value: producer}
+
+  ConsumerInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref Arm64Ami
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref ConsumerInstanceProfile
+      SubnetId: !Ref PrivateSubnet
+      SecurityGroupIds: [!Ref ConsumerSecurityGroup]
+      MetadataOptions: {HttpTokens: required, HttpPutResponseHopLimit: 2}
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs: {VolumeSize: 30, VolumeType: gp3, Encrypted: true, DeleteOnTermination: true}
+        - DeviceName: /dev/xvdb
+          Ebs:
+            VolumeSize: !Ref ConsumerVolumeGiB
+            VolumeType: gp3
+            Iops: 3000
+            Encrypted: true
+            DeleteOnTermination: true
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -eux
+          shutdown -h +$(( ${MaxRuntimeHours} * 60 ))
+          systemctl enable --now docker
+          DEVICE=/dev/nvme1n1
+          while [ ! -b "$DEVICE" ]; do sleep 1; done
+          mkfs.xfs -f "$DEVICE"
+          mkdir -p /data
+          mount "$DEVICE" /data
+          chown 65532:65532 /data
+          echo "$DEVICE /data xfs defaults,nofail 0 2" >> /etc/fstab
+          mkdir -p /opt/duckdb-otlp-benchmark
+          touch /opt/duckdb-otlp-benchmark/ready
+      Tags:
+        - {Key: Name, Value: !Sub 'duckdb-otlp-consumer-${RunId}'}
+        - {Key: duckdb-otlp:run-id, Value: !Ref RunId}
+        - {Key: duckdb-otlp:repository, Value: !Ref Repository}
+        - {Key: duckdb-otlp:purpose, Value: benchmark}
+        - {Key: duckdb-otlp:role, Value: consumer}
+
+Outputs:
+  RunId: {Value: !Ref RunId}
+  BucketName: {Value: !Ref DataBucket}
+  ProducerInstanceId: {Value: !Ref ProducerInstance}
+  ProducerPrivateIp: {Value: !GetAtt ProducerInstance.PrivateIp}
+  ConsumerInstanceId: {Value: !Ref ConsumerInstance}
+  ConsumerPrivateIp: {Value: !GetAtt ConsumerInstance.PrivateIp}

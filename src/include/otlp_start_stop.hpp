@@ -19,6 +19,11 @@ public:
 	static TableFunction GetFunction();
 };
 
+class OtlpSealListFunction {
+public:
+	static TableFunction GetFunction();
+};
+
 class OtlpFlushFunction {
 public:
 	static TableFunction GetFunction();

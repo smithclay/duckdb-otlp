@@ -35,3 +35,84 @@ The Go module in `producer/` is also the canonical workload generator for
 record body while this capacity suite uses compressed-size calibration. Python
 owns provisioning, observation, reconciliation, and reporting; Go owns OTLP
 payload generation, pacing, HTTP transport, and producer-side metrics.
+
+## Run the AWS DuckLake/S3 benchmark
+
+`run_aws.py` provisions two private ARM64 EC2 instances with CloudFormation:
+the producer runs the shared Go binary directly, while the consumer runs the
+existing daemon container with its DuckLake catalogue on encrypted EBS and
+Parquet data in regional S3.
+
+The stack deliberately has no NAT gateway, internet gateway, public subnet,
+public IP, or SSH ingress. Stage the ARM64 daemon image and matching ARM64
+DuckDB CLI from the operator machine; instances download them through the S3
+gateway endpoint. The only interface endpoints are SSM and SSM Messages.
+
+Prepare offline artefacts:
+
+```bash
+docker save duckdb-otlp:daemon -o /tmp/duckdb-otlp-daemon-arm64.tar
+gzip -1 /tmp/duckdb-otlp-daemon-arm64.tar
+chmod +x /path/to/duckdb-arm64
+```
+
+Use one run ID for the complete lifecycle:
+
+```bash
+RUN_ID=aws-$(date -u +%Y%m%d-%H%M%S)-test
+
+# Validation only: no resources are created.
+uv run python benchmark/otlp-log-ingest/run_aws.py plan \
+  --run-id "$RUN_ID" --region us-west-2
+
+# This is the first billable command.
+uv run python benchmark/otlp-log-ingest/run_aws.py provision \
+  --run-id "$RUN_ID" --region us-west-2
+
+uv run python benchmark/otlp-log-ingest/run_aws.py smoke \
+  --run-id "$RUN_ID" --region us-west-2 \
+  --image duckdb-otlp:daemon \
+  --image-archive /tmp/duckdb-otlp-daemon-arm64.tar.gz \
+  --duckdb-cli /path/to/duckdb-arm64 \
+  --consumer-cpus 2 --consumer-memory-gib 3 \
+  --max-buffered-bytes 536870912 \
+  --retain
+
+uv run python benchmark/otlp-log-ingest/run_aws.py run \
+  --run-id "$RUN_ID" --region us-west-2 \
+  --image duckdb-otlp:daemon \
+  --image-archive /tmp/duckdb-otlp-daemon-arm64.tar.gz \
+  --duckdb-cli /path/to/duckdb-arm64
+
+uv run python benchmark/otlp-log-ingest/run_aws.py status \
+  --run-id "$RUN_ID" --region us-west-2
+
+uv run python benchmark/otlp-log-ingest/run_aws.py cleanup \
+  --run-id "$RUN_ID" --region us-west-2
+```
+
+The default 4 CPU/8 GiB container limits target `c7g.xlarge`. Reduce the
+explicit consumer limits for a cheap `t4g.medium` smoke as shown above.
+
+`run` performs a 30-second smoke phase, 60-second warm-up, and 180-second
+measurement at 175,000 records/s with batches of 1,000. Use
+`--rate-sweep 125000,150000,175000,200000` for the optional sweep. A 30-minute
+soak runs only with `--soak`.
+
+Use `--retain` only for deliberate debugging. Otherwise `smoke` and `run`
+empty the S3 bucket and delete the stack on success or failure. The instances
+also schedule an automatic shutdown after `--max-runtime-hours` (four hours by
+default), limiting compute exposure if orchestration is interrupted. Stopped
+instances, EBS, S3, and interface endpoints still incur cost until `cleanup`
+completes.
+
+The main costs are EC2 runtime, EBS, S3 storage and requests, and two SSM
+interface endpoints. Producer-to-consumer traffic stays within one
+Availability Zone. Consumer-to-S3 traffic uses the S3 gateway endpoint, which
+has no hourly or data-processing charge. Detailed S3 request metrics are not
+enabled because they add monitoring cost; reports mark them unavailable.
+
+Results and raw samples are written under
+`benchmark/otlp-log-ingest/output/aws/<run-id>`. Durability latency is reported
+as a seal-bucket approximation based on producer accepted-batch ranges and
+generic daemon seal history; it is not presented as exact per-record latency.

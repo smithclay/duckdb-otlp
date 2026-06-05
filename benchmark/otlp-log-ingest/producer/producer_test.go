@@ -106,8 +106,14 @@ func TestSequenceUniquenessAcrossWorkers(t *testing.T) {
 	if result.AttemptedRecords == 0 || result.AcceptedRecords != result.AttemptedRecords {
 		t.Fatalf("unexpected result: %#v", result)
 	}
-	if result.SchemaVersion != 1 || result.AcceptedGzipBytes == 0 {
+	if result.GeneratedRecords != result.AttemptedRecords {
+		t.Fatalf("generated records do not match payloads sent: %#v", result)
+	}
+	if result.SchemaVersion != 2 || result.AcceptedGzipBytes == 0 || len(result.AcceptedBatches) == 0 {
 		t.Fatalf("missing reusable result fields: %#v", result)
+	}
+	if result.AcceptedBatches[0].LastSequence < result.AcceptedBatches[0].FirstSequence {
+		t.Fatalf("invalid accepted batch range: %#v", result.AcceptedBatches[0])
 	}
 	if result.DurationSeconds < cfg.Duration.Seconds() {
 		t.Fatalf("producer ended before configured duration: %#v", result)

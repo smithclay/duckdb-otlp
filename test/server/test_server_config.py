@@ -83,6 +83,28 @@ def test_local_ducklake_boot_sql(tmp_path):
     assert "a-private-token-123456" not in out
 
 
+def test_aws_ducklake_uses_instance_role_and_local_catalog(tmp_path):
+    catalog = tmp_path / "ducklake" / "catalog.duckdb"
+    result = run(
+        {
+            "DUCKDB_MODE": "aws-ducklake",
+            "DUCKDB_OTLP_TOKEN": "a-private-token-123456",
+            "DUCKLAKE_CATALOG_PATH": str(catalog),
+            "DUCKLAKE_DATA_PATH": "s3://benchmark-bucket/run-123",
+            "AWS_REGION": "us-west-2",
+        },
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert "PROVIDER credential_chain" in out
+    assert "CHAIN instance" in out
+    assert f"ATTACH 'ducklake:{catalog}'" in out
+    assert "'s3://benchmark-bucket/run-123'" in out
+    assert "KEY_ID" not in out
+    assert "SECRET '" not in out
+
+
 def test_otlp_limits_are_configurable(tmp_path):
     result = run(
         {

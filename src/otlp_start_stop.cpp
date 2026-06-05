@@ -251,9 +251,15 @@ static unique_ptr<FunctionData> OtlpServerListBind(ClientContext &context, Table
 	return_types.emplace_back(OtlpVarcharType());
 	names.emplace_back("buffered_rows");
 	return_types.emplace_back(OtlpUBigIntType());
+	names.emplace_back("admitted_bytes");
+	return_types.emplace_back(OtlpUBigIntType());
+	names.emplace_back("oldest_buffered_age_ms");
+	return_types.emplace_back(OtlpBigIntType());
 	names.emplace_back("last_seal_age_ms");
 	return_types.emplace_back(OtlpBigIntType());
 	names.emplace_back("seals_total");
+	return_types.emplace_back(OtlpUBigIntType());
+	names.emplace_back("committed_rows_total");
 	return_types.emplace_back(OtlpUBigIntType());
 	names.emplace_back("seal_failures_total");
 	return_types.emplace_back(OtlpUBigIntType());
@@ -285,11 +291,16 @@ static void OtlpServerList(ClientContext &context, TableFunctionInput &data_p, D
 		output.SetValue(9, row, s.last_error.empty() ? Value(LogicalType::VARCHAR) : Value(s.last_error));
 		output.SetValue(10, row, Value(s.catalog_name));
 		output.SetValue(11, row, Value::UBIGINT(s.buffered_rows));
-		output.SetValue(12, row,
+		output.SetValue(12, row, Value::UBIGINT(s.admitted_bytes));
+		output.SetValue(13, row,
+		                s.oldest_buffered_age_ms < 0 ? Value(LogicalType::BIGINT)
+		                                             : Value::BIGINT(s.oldest_buffered_age_ms));
+		output.SetValue(14, row,
 		                s.last_seal_age_ms < 0 ? Value(LogicalType::BIGINT) : Value::BIGINT(s.last_seal_age_ms));
-		output.SetValue(13, row, Value::UBIGINT(s.seals_total));
-		output.SetValue(14, row, Value::UBIGINT(s.seal_failures_total));
-		output.SetValue(15, row, s.seal_last_error.empty() ? Value(LogicalType::VARCHAR) : Value(s.seal_last_error));
+		output.SetValue(15, row, Value::UBIGINT(s.seals_total));
+		output.SetValue(16, row, Value::UBIGINT(s.committed_rows_total));
+		output.SetValue(17, row, Value::UBIGINT(s.seal_failures_total));
+		output.SetValue(18, row, s.seal_last_error.empty() ? Value(LogicalType::VARCHAR) : Value(s.seal_last_error));
 		row++;
 		bind_data.offset++;
 	}
@@ -298,6 +309,55 @@ static void OtlpServerList(ClientContext &context, TableFunctionInput &data_p, D
 
 TableFunction OtlpServerListFunction::GetFunction() {
 	return TableFunction("otlp_server_list", {}, OtlpServerList, OtlpServerListBind);
+}
+
+struct OtlpSealListFunctionData : public TableFunctionData {
+	bool initialized = false;
+	idx_t offset = 0;
+	vector<OtlpStorageExtensionInfo::SealSnapshot> snapshots;
+};
+
+static unique_ptr<FunctionData> OtlpSealListBind(ClientContext &context, TableFunctionBindInput &input,
+                                                 vector<LogicalType> &return_types, vector<string> &names) {
+	names = {"listen_uri",  "seal_sequence",       "started_unix_ms",      "completed_unix_ms",
+	         "duration_ms", "rows_committed",      "admitted_bytes",       "success",
+	         "seals_total", "seal_failures_total", "committed_rows_total", "error"};
+	return_types = {OtlpVarcharType(), OtlpUBigIntType(), OtlpBigIntType(),  OtlpBigIntType(),
+	                OtlpBigIntType(),  OtlpUBigIntType(), OtlpUBigIntType(), OtlpBooleanType(),
+	                OtlpUBigIntType(), OtlpUBigIntType(), OtlpUBigIntType(), OtlpVarcharType()};
+	return make_uniq<OtlpSealListFunctionData>();
+}
+
+static void OtlpSealList(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &bind_data = data_p.bind_data->CastNoConst<OtlpSealListFunctionData>();
+	if (!bind_data.initialized) {
+		bind_data.snapshots = OtlpStorageExtensionInfo::GetState(*context.db).ListSeals();
+		bind_data.initialized = true;
+	}
+	idx_t row = 0;
+	while (bind_data.offset < bind_data.snapshots.size() && row < STANDARD_VECTOR_SIZE) {
+		auto &snapshot = bind_data.snapshots[bind_data.offset];
+		auto &event = snapshot.event;
+		output.SetValue(0, row, Value(snapshot.listen_uri));
+		output.SetValue(1, row, Value::UBIGINT(event.seal_sequence));
+		output.SetValue(2, row, Value::BIGINT(event.started_unix_ms));
+		output.SetValue(3, row, Value::BIGINT(event.completed_unix_ms));
+		output.SetValue(4, row, Value::BIGINT(event.duration_ms));
+		output.SetValue(5, row, Value::UBIGINT(event.rows_committed));
+		output.SetValue(6, row, Value::UBIGINT(event.admitted_bytes_committed));
+		output.SetValue(7, row, Value::BOOLEAN(event.success));
+		output.SetValue(8, row, Value::UBIGINT(event.seals_total));
+		output.SetValue(9, row, Value::UBIGINT(event.seal_failures_total));
+		output.SetValue(10, row, Value::UBIGINT(event.committed_rows_total));
+		output.SetValue(11, row, event.error.empty() ? Value(LogicalType::VARCHAR) : Value(event.error));
+		row++;
+		bind_data.offset++;
+	}
+	output.SetCardinality(row);
+}
+
+TableFunction OtlpSealListFunction::GetFunction() {
+	return TableFunction("otlp_seal_list", {}, OtlpSealList, OtlpSealListBind);
 }
 
 struct OtlpFlushFunctionData : public TableFunctionData {
