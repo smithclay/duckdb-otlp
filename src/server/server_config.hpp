@@ -27,6 +27,8 @@ struct ServerConfig {
 	bool using_default_token = false;
 	int startup_timeout_secs = 60;
 	uint64_t http_threads = 0;
+	uint64_t max_body_bytes = 16ULL * 1024ULL * 1024ULL;
+	uint64_t max_buffered_bytes = 512ULL * 1024ULL * 1024ULL;
 
 	duckdb::string mode_setup_sql;
 	std::vector<duckdb::string> mode_extensions;

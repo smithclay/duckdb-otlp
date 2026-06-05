@@ -595,6 +595,8 @@ ServerConfig ServerConfig::FromEnv() {
 	config.dry_run = Truthy(Env("DRY_RUN", "0"));
 	config.startup_timeout_secs = ParsePositiveIntEnv("DUCKDB_OTLP_STARTUP_TIMEOUT", 60);
 	config.http_threads = ParsePositiveUInt64Env("DUCKDB_OTLP_HTTP_THREADS", 0);
+	config.max_body_bytes = ParsePositiveUInt64Env("DUCKDB_OTLP_MAX_BODY_BYTES", 16ULL * 1024ULL * 1024ULL);
+	config.max_buffered_bytes = ParsePositiveUInt64Env("DUCKDB_OTLP_MAX_BUFFERED_BYTES", 512ULL * 1024ULL * 1024ULL);
 
 	auto quack_token_var = FirstEnv({"DUCKDB_QUACK_TOKEN", "QUACK_AUTH_TOKEN"});
 	if (config.quack_enabled && quack_token_var.empty()) {
@@ -615,6 +617,9 @@ string ServerConfig::StartOtlpSql() const {
 	auto thread_sql = http_threads == 0
 	                      ? string("")
 	                      : StringUtil::Format(",\n    http_threads := %llu", static_cast<uint64_t>(http_threads));
+	auto limits_sql =
+	    StringUtil::Format(",\n    max_body_bytes := %llu,\n    max_buffered_bytes := %llu",
+	                       static_cast<uint64_t>(max_body_bytes), static_cast<uint64_t>(max_buffered_bytes));
 	auto export_sql = parquet_export_path.empty()
 	                      ? string("")
 	                      : StringUtil::Format(",\n    parquet_export_path := %s", SqlQuote(parquet_export_path));
@@ -631,11 +636,11 @@ FROM otlp_serve(
     catalog := %s,
     schema := %s,
     token := getvariable('duckdb_otlp_effective_token'),
-    allow_other_hostname := true%s%s
+    allow_other_hostname := true%s%s%s
 );
 )SQL",
 	                          schema_target, SqlQuote(listen_uri), SqlQuote(catalog), SqlQuote(schema), thread_sql,
-	                          export_sql);
+	                          limits_sql, export_sql);
 }
 
 string ServerConfig::StartQuackSql() const {

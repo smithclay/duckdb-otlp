@@ -83,6 +83,23 @@ def test_local_ducklake_boot_sql(tmp_path):
     assert "a-private-token-123456" not in out
 
 
+def test_otlp_limits_are_configurable(tmp_path):
+    result = run(
+        {
+            "DUCKDB_MODE": "local-ducklake",
+            "DUCKDB_OTLP_TOKEN": "a-private-token-123456",
+            "DUCKDB_OTLP_HTTP_THREADS": "4",
+            "DUCKDB_OTLP_MAX_BODY_BYTES": "2097152",
+            "DUCKDB_OTLP_MAX_BUFFERED_BYTES": "2147483648",
+        },
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "http_threads := 4" in result.stdout
+    assert "max_body_bytes := 2097152" in result.stdout
+    assert "max_buffered_bytes := 2147483648" in result.stdout
+
+
 def test_default_token_warns(tmp_path):
     result = run({"DUCKDB_MODE": "local-ducklake"}, tmp_path)  # no token set
     assert result.returncode == 0, result.stderr
