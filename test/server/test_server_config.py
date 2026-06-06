@@ -83,6 +83,53 @@ def test_local_ducklake_boot_sql(tmp_path):
     assert "a-private-token-123456" not in out
 
 
+def test_aws_ducklake_uses_instance_role_and_local_catalog(tmp_path):
+    catalog = tmp_path / "ducklake" / "catalog.duckdb"
+    result = run(
+        {
+            "DUCKDB_MODE": "aws-ducklake",
+            "DUCKDB_OTLP_TOKEN": "a-private-token-123456",
+            "DUCKLAKE_CATALOG_PATH": str(catalog),
+            "DUCKLAKE_DATA_PATH": "s3://benchmark-bucket/run-123",
+            "AWS_REGION": "us-west-2",
+        },
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert "PROVIDER credential_chain" in out
+    assert "CHAIN instance" in out
+    assert f"ATTACH 'ducklake:{catalog}'" in out
+    assert "'s3://benchmark-bucket/run-123'" in out
+    assert "KEY_ID" not in out
+    assert "SECRET '" not in out
+
+
+def test_otlp_limits_are_configurable(tmp_path):
+    result = run(
+        {
+            "DUCKDB_MODE": "local-ducklake",
+            "DUCKDB_OTLP_TOKEN": "a-private-token-123456",
+            "DUCKDB_OTLP_HTTP_THREADS": "4",
+            "DUCKDB_OTLP_MAX_BODY_BYTES": "2097152",
+            "DUCKDB_OTLP_MAX_BUFFERED_BYTES": "2147483648",
+            "DUCKDB_OTLP_SEAL_TARGET_BYTES": "134217728",
+            "DUCKDB_OTLP_SEAL_MAX_AGE_MS": "3000",
+            "DUCKDB_OTLP_TARGET_FILE_SIZE": "268435456",
+            "DUCKDB_OTLP_MAINTENANCE_RETENTION_MS": "600000",
+        },
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "http_threads := 4" in result.stdout
+    assert "max_body_bytes := 2097152" in result.stdout
+    assert "max_buffered_bytes := 2147483648" in result.stdout
+    assert "seal_target_bytes := 134217728" in result.stdout
+    assert "seal_max_age_ms := 3000" in result.stdout
+    assert "target_file_size := 268435456" in result.stdout
+    assert "maintenance_retention_ms := 600000" in result.stdout
+
+
 def test_default_token_warns(tmp_path):
     result = run({"DUCKDB_MODE": "local-ducklake"}, tmp_path)  # no token set
     assert result.returncode == 0, result.stderr

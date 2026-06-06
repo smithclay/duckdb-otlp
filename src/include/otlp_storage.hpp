@@ -39,13 +39,29 @@ public:
 		bool is_listening;
 		string last_error;
 		idx_t buffered_rows;
+		idx_t admitted_bytes;
+		idx_t seal_target_bytes;
+		int64_t seal_max_age_ms;
+		int64_t oldest_buffered_age_ms;
 		int64_t last_seal_age_ms;
 		idx_t seals_total;
+		idx_t committed_rows_total;
 		idx_t seal_failures_total;
 		string seal_last_error;
+		idx_t maintenance_runs_total;
+		idx_t maintenance_failures_total;
+		int64_t last_maintenance_age_ms;
+		string maintenance_last_error;
 	};
 
 	vector<ServerSnapshot> ListServers();
+
+	struct SealSnapshot {
+		string listen_uri;
+		OtlpSealEvent event;
+	};
+
+	vector<SealSnapshot> ListSeals();
 
 	struct FlushResult {
 		bool found = false;

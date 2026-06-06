@@ -46,6 +46,9 @@ string NormalizeMode(const string &mode) {
 	if (mode == "plain-s3" || mode == "s3-parquet" || mode == "s3") {
 		return "parquet";
 	}
+	if (mode == "ducklake-s3" || mode == "s3-ducklake") {
+		return "aws-ducklake";
+	}
 	return mode;
 }
 
@@ -269,6 +272,25 @@ uint64_t ParsePositiveUInt64Env(const char *name, uint64_t fallback) {
 	}
 }
 
+int64_t ParsePositiveInt64Env(const char *name, int64_t fallback) {
+	auto value = Env(name);
+	if (value.empty()) {
+		return fallback;
+	}
+	try {
+		size_t pos = 0;
+		auto parsed = std::stoll(value, &pos);
+		if (pos != value.size() || parsed <= 0) {
+			throw InvalidInputException("%s must be a positive integer", name);
+		}
+		return parsed;
+	} catch (InvalidInputException &) {
+		throw;
+	} catch (...) {
+		throw InvalidInputException("%s must be a positive integer", name);
+	}
+}
+
 void ConfigureLocalDuckLake(ServerConfig &config) {
 	config.mode_extensions = {"ducklake", "otlp"};
 	config.catalog = CatalogDefault(Env("DUCKLAKE_NAME", "otel"));
@@ -287,6 +309,42 @@ ATTACH %s AS %s (
 );
 )SQL",
 	                       SqlQuote("ducklake:" + catalog_path), QuoteIdent(config.catalog), SqlQuote(data_path));
+}
+
+void ConfigureAwsDuckLake(ServerConfig &config) {
+	config.mode_extensions = {"ducklake", "aws", "httpfs", "otlp"};
+	config.catalog = CatalogDefault(Env("DUCKLAKE_NAME", "lake"));
+	config.schema = SchemaDefault("otlp");
+	auto catalog_path = Env("DUCKLAKE_CATALOG_PATH", config.data_dir + "/ducklake/catalog.duckdb");
+	auto data_path = Env("DUCKLAKE_DATA_PATH");
+	if (!IsS3Path(data_path)) {
+		throw InvalidInputException("DUCKDB_MODE=%s requires DUCKLAKE_DATA_PATH=s3://bucket/prefix", config.mode);
+	}
+	auto region = Env("AWS_REGION", Env("AWS_DEFAULT_REGION"));
+	if (region.empty()) {
+		throw InvalidInputException("Missing AWS region for DUCKDB_MODE=%s. Set AWS_REGION or AWS_DEFAULT_REGION",
+		                            config.mode);
+	}
+	CreateParentDirectory(catalog_path);
+	config.mode_setup_sql = StringUtil::Format(R"SQL(
+INSTALL ducklake;
+INSTALL aws;
+INSTALL httpfs;
+LOAD ducklake;
+LOAD aws;
+LOAD httpfs;
+CREATE OR REPLACE SECRET aws_ducklake_storage (
+  TYPE s3,
+  PROVIDER credential_chain,
+  CHAIN instance,
+  REGION %s
+);
+ATTACH %s AS %s (
+  DATA_PATH %s
+);
+)SQL",
+	                                           SqlQuote(region), SqlQuote("ducklake:" + catalog_path),
+	                                           QuoteIdent(config.catalog), SqlQuote(data_path));
 }
 
 void ConfigureR2DataCatalog(ServerConfig &config) {
@@ -555,6 +613,8 @@ LOAD httpfs;
 void ConfigureMode(ServerConfig &config) {
 	if (config.mode == "local-ducklake") {
 		ConfigureLocalDuckLake(config);
+	} else if (config.mode == "aws-ducklake") {
+		ConfigureAwsDuckLake(config);
 	} else if (config.mode == "parquet") {
 		ConfigureParquet(config);
 	} else if (config.mode == "r2-data-catalog") {
@@ -567,8 +627,8 @@ void ConfigureMode(ServerConfig &config) {
 		ConfigureR2LocalDuckLake(config);
 	} else {
 		throw InvalidInputException(
-		    "Unsupported DUCKDB_MODE \"%s\". Supported modes: local-ducklake, parquet, r2-data-catalog, s3-tables, "
-		    "r2-neon-ducklake, r2-local-ducklake",
+		    "Unsupported DUCKDB_MODE \"%s\". Supported modes: local-ducklake, aws-ducklake, parquet, "
+		    "r2-data-catalog, s3-tables, r2-neon-ducklake, r2-local-ducklake",
 		    config.mode);
 	}
 }
@@ -595,6 +655,13 @@ ServerConfig ServerConfig::FromEnv() {
 	config.dry_run = Truthy(Env("DRY_RUN", "0"));
 	config.startup_timeout_secs = ParsePositiveIntEnv("DUCKDB_OTLP_STARTUP_TIMEOUT", 60);
 	config.http_threads = ParsePositiveUInt64Env("DUCKDB_OTLP_HTTP_THREADS", 0);
+	config.max_body_bytes = ParsePositiveUInt64Env("DUCKDB_OTLP_MAX_BODY_BYTES", 16ULL * 1024ULL * 1024ULL);
+	config.max_buffered_bytes = ParsePositiveUInt64Env("DUCKDB_OTLP_MAX_BUFFERED_BYTES", 512ULL * 1024ULL * 1024ULL);
+	config.seal_target_bytes = ParsePositiveUInt64Env("DUCKDB_OTLP_SEAL_TARGET_BYTES", 128ULL * 1024ULL * 1024ULL);
+	config.seal_max_age_ms = ParsePositiveInt64Env("DUCKDB_OTLP_SEAL_MAX_AGE_MS", 5000);
+	config.target_file_size = ParsePositiveUInt64Env("DUCKDB_OTLP_TARGET_FILE_SIZE", 256ULL * 1024ULL * 1024ULL);
+	config.maintenance_retention_ms =
+	    ParsePositiveInt64Env("DUCKDB_OTLP_MAINTENANCE_RETENTION_MS", 15LL * 60LL * 1000LL);
 
 	auto quack_token_var = FirstEnv({"DUCKDB_QUACK_TOKEN", "QUACK_AUTH_TOKEN"});
 	if (config.quack_enabled && quack_token_var.empty()) {
@@ -615,6 +682,15 @@ string ServerConfig::StartOtlpSql() const {
 	auto thread_sql = http_threads == 0
 	                      ? string("")
 	                      : StringUtil::Format(",\n    http_threads := %llu", static_cast<uint64_t>(http_threads));
+	// These ingest limits are declared in three places that must stay in lockstep: the ServerConfig
+	// fields (server_config.hpp), the env parsing in FromEnv(), and this otlp_serve() param emission.
+	// Keep the order/format specifiers aligned — a %llu/%lld mismatch against a field's type is silent.
+	auto limits_sql = StringUtil::Format(
+	    ",\n    max_body_bytes := %llu,\n    max_buffered_bytes := %llu,\n    seal_target_bytes := %llu,\n    "
+	    "seal_max_age_ms := %lld,\n    target_file_size := %llu,\n    maintenance_retention_ms := %lld",
+	    static_cast<uint64_t>(max_body_bytes), static_cast<uint64_t>(max_buffered_bytes),
+	    static_cast<uint64_t>(seal_target_bytes), static_cast<int64_t>(seal_max_age_ms),
+	    static_cast<uint64_t>(target_file_size), static_cast<int64_t>(maintenance_retention_ms));
 	auto export_sql = parquet_export_path.empty()
 	                      ? string("")
 	                      : StringUtil::Format(",\n    parquet_export_path := %s", SqlQuote(parquet_export_path));
@@ -631,11 +707,11 @@ FROM otlp_serve(
     catalog := %s,
     schema := %s,
     token := getvariable('duckdb_otlp_effective_token'),
-    allow_other_hostname := true%s%s
+    allow_other_hostname := true%s%s%s
 );
 )SQL",
 	                          schema_target, SqlQuote(listen_uri), SqlQuote(catalog), SqlQuote(schema), thread_sql,
-	                          export_sql);
+	                          limits_sql, export_sql);
 }
 
 string ServerConfig::StartQuackSql() const {

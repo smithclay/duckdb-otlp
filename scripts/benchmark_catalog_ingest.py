@@ -2,9 +2,9 @@
 """Run disposable duckdb-otlp catalog ingest benchmarks.
 
 The harness starts the published duckdb-otlp Docker image with DUCKDB_MODE,
-sends OTLP/HTTP log batches at a target rate, records Docker CPU/memory samples,
-samples server seal/backlog counters through Quack, and writes a consolidated
-JSON/Markdown report.
+runs the shared Go OTLP producer at a target rate, records Docker CPU/memory
+samples, samples server seal/backlog counters through Quack, and writes a
+consolidated JSON/Markdown report.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import json
 import math
 import socket
 import os
+import platform
 import random
 import re
 import secrets
@@ -41,6 +42,11 @@ DEFAULT_AWS_PROFILE = "cli-dev"
 DEFAULT_RATE = 50_000
 DEFAULT_RATE_SWEEP = "10000,25000,50000,75000,100000"
 DEFAULT_BATCH_SIZE = 5_000
+DEFAULT_BODY_PAYLOAD_BYTES = 32
+DEFAULT_PRODUCER_CONCURRENCY = 4
+DEFAULT_PRODUCER_QUEUE_DEPTH = 8
+ROOT = Path(__file__).resolve().parents[1]
+PRODUCER_DIR = ROOT / "benchmark" / "otlp-log-ingest" / "producer"
 DEFAULT_TABLES = (
     "otlp_logs",
     "otlp_traces",
@@ -82,6 +88,7 @@ class ScenarioContext:
     port: int
     token: str
     container_name: str
+    producer_bin: Path
     dry_run: bool = False
     quack_port: int = 0
     catalog: str = "lake"
@@ -369,6 +376,28 @@ def free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+def host_docker_platform(machine: str | None = None) -> str:
+    machine = (machine or platform.machine()).lower()
+    if machine in {"arm64", "aarch64"}:
+        return "linux/arm64"
+    if machine in {"x86_64", "amd64"}:
+        return "linux/amd64"
+    raise BenchError(f"unsupported host architecture: {machine}")
+
+
+def build_producer(output_dir: Path, configured: Path | None) -> Path:
+    if configured:
+        producer = configured.resolve()
+        if not producer.is_file():
+            raise BenchError(f"producer executable not found: {producer}")
+        return producer
+    require_program("go")
+    producer = output_dir / "bin" / "otlp-bench-producer"
+    producer.parent.mkdir(parents=True, exist_ok=True)
+    run_cmd(["go", "build", "-trimpath", "-o", str(producer), "."], cwd=PRODUCER_DIR)
+    return producer
 
 
 def cf_api(
@@ -1074,106 +1103,92 @@ def server_sample_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def make_log_batch(batch_size: int, scenario: str, sequence: int) -> bytes:
-    base_ns = int(time.time() * 1_000_000_000)
-    records = []
-    for idx in range(batch_size):
-        records.append(
-            {
-                "timeUnixNano": str(base_ns + idx),
-                "observedTimeUnixNano": str(base_ns + idx),
-                "severityNumber": 9,
-                "severityText": "INFO",
-                "body": {"stringValue": f"benchmark log {sequence}-{idx}"},
-                "attributes": [
-                    {"key": "benchmark.scenario", "value": {"stringValue": scenario}},
-                    {"key": "benchmark.sequence", "value": {"intValue": str(sequence)}},
-                ],
-            }
-        )
-    payload = {
-        "resourceLogs": [
-            {
-                "resource": {
-                    "attributes": [
-                        {"key": "service.name", "value": {"stringValue": "duckdb-otlp-benchmark"}},
-                        {"key": "benchmark.scenario", "value": {"stringValue": scenario}},
-                    ]
-                },
-                "scopeLogs": [{"scope": {"name": "benchmark_catalog_ingest"}, "logRecords": records}],
-            }
-        ]
-    }
-    return json.dumps(payload, separators=(",", ":")).encode()
-
-
-def post_batch(port: int, token: str, body: bytes) -> tuple[int, dict[str, Any]]:
-    req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/logs", data=body, method="POST")
-    req.add_header("Authorization", f"Bearer {token}")
-    req.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(req, timeout=30) as response:
-            payload = response.read().decode()
-            return response.status, json.loads(payload) if payload else {}
-    except urllib.error.HTTPError as exc:
-        payload = exc.read().decode(errors="replace")
-        with contextlib.suppress(json.JSONDecodeError):
-            return exc.code, json.loads(payload)
-        return exc.code, {"error": payload}
-
-
-def send_load(ctx: ScenarioContext, duration: float, rate: int, batch_size: int) -> dict[str, Any]:
-    start = time.monotonic()
-    next_send = start
-    attempted = 0
-    accepted = 0
-    batches = 0
-    errors: dict[str, int] = {}
-    post_latencies_ms: list[float] = []
-    attempted_body_bytes = 0
-    accepted_body_bytes = 0
-    interval = batch_size / rate if rate > 0 else 0
-    while time.monotonic() - start < duration:
-        body = make_log_batch(batch_size, ctx.name, batches)
-        body_bytes = len(body)
-        post_start = time.monotonic()
-        status, payload = post_batch(ctx.port, ctx.token, body)
-        post_latencies_ms.append((time.monotonic() - post_start) * 1000)
-        attempted += batch_size
-        attempted_body_bytes += body_bytes
-        batches += 1
-        if status == 202:
-            accepted += int(payload.get("rows") or 0)
-            accepted_body_bytes += body_bytes
-        else:
-            key = str(status)
-            errors[key] = errors.get(key, 0) + 1
-        next_send += interval
-        sleep_for = next_send - time.monotonic()
-        if sleep_for > 0:
-            time.sleep(sleep_for)
-    elapsed = time.monotonic() - start
+def producer_result_to_load(producer: dict[str, Any], batch_size: int) -> dict[str, Any]:
+    elapsed = float(producer.get("duration_seconds") or 0)
+    attempted = int(producer.get("attempted_records") or 0)
+    accepted = int(producer.get("accepted_records") or 0)
+    rejected = int(producer.get("rejected_records") or 0)
+    failed = int(producer.get("failed_records") or 0)
+    missed = int(producer.get("scheduler_missed_records") or 0)
+    attempted_body_bytes = int(producer.get("gzip_bytes") or 0)
+    accepted_body_bytes = int(producer.get("accepted_gzip_bytes") or 0)
+    latency = producer.get("request_latency_ms") or {}
     return {
         "duration_seconds": elapsed,
-        "target_records_per_second": rate,
+        "target_records_per_second": int(producer.get("configured_offered_records_per_second") or 0),
         "batch_size": batch_size,
         "attempted_records": attempted,
         "accepted_records": accepted,
-        "dropped_records": max(0, attempted - accepted),
+        "dropped_records": rejected + failed + missed,
         "attempted_body_bytes": attempted_body_bytes,
         "accepted_body_bytes": accepted_body_bytes,
-        "batches": batches,
-        "errors_by_status": errors,
-        "accepted_records_per_second": accepted / elapsed if elapsed else None,
+        "batches": int(producer.get("requests_attempted") or 0),
+        "errors_by_status": {
+            status: count for status, count in (producer.get("response_status_counts") or {}).items() if status != "202"
+        },
+        "accepted_records_per_second": producer.get("accepted_records_per_second"),
         "accepted_body_bytes_per_second": accepted_body_bytes / elapsed if elapsed else None,
         "accepted_body_mib_per_second": accepted_body_bytes / elapsed / (1024 * 1024) if elapsed else None,
         "accepted_body_bytes_per_record": accepted_body_bytes / accepted if accepted else None,
-        "post_latency_ms_avg": statistics.fmean(post_latencies_ms) if post_latencies_ms else None,
-        "post_latency_ms_p50": percentile(post_latencies_ms, 50),
-        "post_latency_ms_p95": percentile(post_latencies_ms, 95),
-        "post_latency_ms_p99": percentile(post_latencies_ms, 99),
-        "post_latency_ms_max": max(post_latencies_ms) if post_latencies_ms else None,
+        "post_latency_ms_avg": latency.get("mean"),
+        "post_latency_ms_p50": latency.get("p50"),
+        "post_latency_ms_p95": latency.get("p95"),
+        "post_latency_ms_p99": latency.get("p99"),
+        "post_latency_ms_max": latency.get("max"),
     }
+
+
+def send_load(
+    ctx: ScenarioContext,
+    duration: float,
+    rate: int,
+    batch_size: int,
+    body_payload_bytes: int,
+    concurrency: int,
+    queue_depth: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    output = ctx.output_dir / f"{slug(ctx.container_name)}-producer.json"
+    result = run_cmd(
+        [
+            str(ctx.producer_bin),
+            "--mode",
+            "run",
+            "--url",
+            f"http://127.0.0.1:{ctx.port}/v1/logs",
+            "--token",
+            ctx.token,
+            "--run-id",
+            ctx.container_name,
+            "--scenario",
+            ctx.name,
+            "--rate",
+            str(rate),
+            "--duration",
+            f"{duration}s",
+            "--batch-size",
+            str(batch_size),
+            "--body-payload-bytes",
+            str(body_payload_bytes),
+            "--concurrency",
+            str(concurrency),
+            "--queue-depth",
+            str(queue_depth),
+            "--output",
+            str(output),
+        ],
+        check=False,
+        timeout=duration + 120,
+    )
+    if not output.exists():
+        raise BenchError(f"producer did not write {output} (exit {result.returncode}): {result.stderr[-2000:]}")
+    producer = json.loads(output.read_text())
+    if result.returncode != 0:
+        raise BenchError(
+            f"producer failed with exit {result.returncode}: {producer.get('error') or result.stderr[-2000:]}"
+        )
+    if int(producer.get("schema_version") or 0) != 1:
+        raise BenchError(f"unsupported producer result schema: {producer.get('schema_version')}")
+    return producer_result_to_load(producer, batch_size), producer
 
 
 # The daemon image is distroless (no shell/duckdb inside the container), so Quack queries
@@ -1507,7 +1522,12 @@ def cleanup(ctx: ScenarioContext, *, drop: bool) -> None:
 
 
 def run_scenario(
-    args: argparse.Namespace, env: dict[str, str], run: TrialRun, run_id: str, output_dir: Path
+    args: argparse.Namespace,
+    env: dict[str, str],
+    run: TrialRun,
+    run_id: str,
+    output_dir: Path,
+    producer_bin: Path,
 ) -> dict[str, Any]:
     name = run.scenario
     ctx = ScenarioContext(
@@ -1521,6 +1541,7 @@ def run_scenario(
         port=args.port,
         token=args.token,
         container_name=unique_name("duckdb-otlp", run_id, f"{name}-t{run.trial}-r{run.rate}", max_len=48),
+        producer_bin=producer_bin,
         dry_run=args.dry_run,
         quack_port=free_port(),
     )
@@ -1557,7 +1578,15 @@ def run_scenario(
         with DockerStatsSampler(ctx.container_name) as docker_sampler, ServerStatsSampler(
             ctx, args.sample_interval
         ) as server_sampler:
-            load = send_load(ctx, args.duration, run.rate, args.batch_size)
+            load, producer = send_load(
+                ctx,
+                args.duration,
+                run.rate,
+                args.batch_size,
+                args.body_payload_bytes,
+                args.producer_concurrency,
+                args.producer_queue_depth,
+            )
         stats = docker_sampler.summary()
         server_stats = server_sampler.summary()
         eprint(f"[{name} t{run.trial} r{run.rate:,}] flushing and collecting counters")
@@ -1573,6 +1602,7 @@ def run_scenario(
                 "container": ctx.container_name,
                 "resources": ctx.resources,
                 "load": load,
+                "producer": producer,
                 "metrics": metrics,
                 "docker_stats": stats,
                 "server_stats": server_stats,
@@ -1677,6 +1707,8 @@ def write_report(results: list[dict[str, Any]], output_dir: Path, source: str, r
         "",
         f"Inspired by the OpenTelemetry Collector load-test shape: {source}",
         "",
+        "The producer sends gzip-compressed OTLP protobuf. Accepted MiB/s is compressed request-body throughput.",
+        "",
         "## Summary",
         "",
         "| Scenario | Offered rows/s | OK/Trials | Durable rows/s mean ± 95% CI | Accepted MiB/s mean ± 95% CI | Container TX MiB median | Accepted rows/s mean ± 95% CI | POST p95 ms mean | Flush seconds p95 | Max buffered rows p95 | Avg CPU % mean | Storage files median |",
@@ -1779,7 +1811,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scenario", action="append", choices=SCENARIOS + ("all",), default=None)
     parser.add_argument("--env-file", type=Path, default=Path(".env"))
     parser.add_argument("--image", default=os.environ.get("DUCKDB_OTLP_BENCH_IMAGE", DEFAULT_IMAGE))
-    parser.add_argument("--platform", default=os.environ.get("DUCKDB_OTLP_BENCH_PLATFORM"))
+    parser.add_argument(
+        "--platform",
+        default=os.environ.get("DUCKDB_OTLP_BENCH_PLATFORM") or host_docker_platform(),
+        help="Docker platform. Defaults to the host CPU architecture.",
+    )
     parser.add_argument("--duration", type=float, default=60)
     parser.add_argument(
         "--rate",
@@ -1800,6 +1836,29 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=int(os.environ.get("DUCKDB_OTLP_BENCH_BATCH_SIZE", DEFAULT_BATCH_SIZE)),
         help="Rows per OTLP request batch.",
+    )
+    parser.add_argument(
+        "--body-payload-bytes",
+        type=int,
+        default=int(os.environ.get("DUCKDB_OTLP_BENCH_BODY_PAYLOAD_BYTES", DEFAULT_BODY_PAYLOAD_BYTES)),
+        help="Deterministic log body bytes per record.",
+    )
+    parser.add_argument(
+        "--producer-concurrency",
+        type=int,
+        default=DEFAULT_PRODUCER_CONCURRENCY,
+        help="Concurrent OTLP request workers.",
+    )
+    parser.add_argument(
+        "--producer-queue-depth",
+        type=int,
+        default=DEFAULT_PRODUCER_QUEUE_DEPTH,
+        help="Bounded producer request queue depth.",
+    )
+    parser.add_argument(
+        "--producer-bin",
+        type=Path,
+        help="Use an existing shared Go producer executable instead of building it.",
     )
     parser.add_argument("--trials", type=int, default=1, help="Independent repetitions per scenario/rate.")
     parser.add_argument(
@@ -1864,6 +1923,12 @@ def validate_args(args: argparse.Namespace) -> None:
         raise BenchError("--rate must be greater than zero")
     if args.batch_size <= 0:
         raise BenchError("--batch-size must be greater than zero")
+    if args.body_payload_bytes <= 0:
+        raise BenchError("--body-payload-bytes must be greater than zero")
+    if args.producer_concurrency <= 0:
+        raise BenchError("--producer-concurrency must be greater than zero")
+    if args.producer_queue_depth <= 0:
+        raise BenchError("--producer-queue-depth must be greater than zero")
     if args.trials <= 0:
         raise BenchError("--trials must be greater than zero")
     if args.sample_interval < 0:
@@ -1892,6 +1957,7 @@ def main() -> int:
     run_id = make_run_id()
     output_dir = args.output_dir / run_id
     output_dir.mkdir(parents=True, exist_ok=True)
+    producer_bin = build_producer(output_dir, args.producer_bin) if not args.dry_run else Path("dry-run")
     scenarios = selected_scenarios(args.scenario)
     rates = selected_rates(args)
     random_seed = args.random_seed if args.random_seed is not None else secrets.randbelow(2**32)
@@ -1901,7 +1967,7 @@ def main() -> int:
     requested_port = args.port
     for run in runs:
         args.port = free_port() if requested_port == 0 else requested_port
-        results.append(run_scenario(args, env, run, run_id, output_dir))
+        results.append(run_scenario(args, env, run, run_id, output_dir, producer_bin))
     (output_dir / "results.json").write_text(json.dumps(results, indent=2, sort_keys=True))
     source = "https://open-telemetry.github.io/opentelemetry-collector-contrib/benchmarks/loadtests/"
     run_config = {
@@ -1911,6 +1977,10 @@ def main() -> int:
         "trials": args.trials,
         "duration_seconds": args.duration,
         "batch_size": args.batch_size,
+        "body_payload_bytes": args.body_payload_bytes,
+        "producer_concurrency": args.producer_concurrency,
+        "producer_queue_depth": args.producer_queue_depth,
+        "producer_schema_version": 1,
         "sample_interval_seconds": args.sample_interval,
         "randomized": not args.no_randomize,
         "random_seed": random_seed,

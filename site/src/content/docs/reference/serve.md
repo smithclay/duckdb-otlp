@@ -10,7 +10,7 @@ For a runnable walkthrough, see the [Live Ingest Quickstart](../../quickstart/se
 
 ## Functions
 
-The extension registers four lifecycle functions:
+The extension registers four lifecycle functions and one diagnostic function:
 
 | Function | What it does |
 |----------|-------------|
@@ -18,6 +18,7 @@ The extension registers four lifecycle functions:
 | `otlp_flush(uri)` | Force a synchronous commit of buffered rows when readers need fresh data. Returns commit stats. It leaves catalog maintenance alone. |
 | `otlp_stop(uri)` | Stop the server listening on `uri` (commits remaining rows first). Returns a status string. |
 | `otlp_server_list()` | List all running servers with live counters, buffer state, and health. |
+| `otlp_seal_list()` | List recent seal attempts with append, commit, row, byte, and error telemetry. |
 
 ### `otlp_serve([uri], ...)`
 
@@ -42,6 +43,10 @@ SELECT * FROM otlp_serve('otlp:localhost:4318', catalog := 'lake', token := 'my-
 | `max_body_bytes` | UBIGINT | `16777216` (16 MiB) | Reject request bodies larger than this with `413`. Must be greater than zero. |
 | `http_threads` | UBIGINT | host-based bounded default | Worker threads for concurrent HTTP requests. Must be greater than zero when set. |
 | `max_buffered_bytes` | UBIGINT | `536870912` (512 MiB) | Backpressure cap. POSTs that would exceed this return `503`. |
+| `seal_target_bytes` | UBIGINT | `134217728` (128 MiB) | Request an asynchronous seal when admitted, uncommitted request bytes reach this threshold. Larger values write fewer, larger files at the cost of a larger in-memory crash-loss window (still bounded by `seal_max_age_ms`). Must be greater than zero. |
+| `seal_max_age_ms` | BIGINT | `5000` | Request an asynchronous seal when the oldest buffered row reaches this age. Must be greater than zero. |
+| `target_file_size` | UBIGINT | `268435456` (256 MiB) | DuckLake only. **Output** Parquet file size the post-seal `CHECKPOINT` merge bin-packs toward; bounds compaction write amplification (files already at target are left alone). Distinct from `seal_target_bytes`, which is admitted *input* bytes. Must be greater than zero. |
+| `maintenance_retention_ms` | BIGINT | `900000` (15 min) | DuckLake only. How old snapshots and unused data files must be before the post-seal `CHECKPOINT` expires and deletes them (`expire_older_than` / `delete_older_than`). Keep it longer than your longest read; time-travel below this window is unavailable. Must be greater than zero. |
 
 **Output columns** (one row):
 
@@ -128,13 +133,27 @@ FROM otlp_server_list();
 | `total_requests` | UBIGINT | Requests handled since startup (includes failures). |
 | `total_rows` | UBIGINT | Rows **accepted** (buffered) since startup. Once the buffer drains, this equals the rows committed. A `/v1/metrics` request counts rows across all four metric tables. |
 | `buffered_rows` | UBIGINT | Rows in the buffer that the writer has not committed. |
+| `admitted_bytes` | UBIGINT | Encoded request bytes admitted but not yet released by a successful seal. |
+| `seal_target_bytes` | UBIGINT | Configured size trigger for requesting a seal. |
+| `seal_max_age_ms` | BIGINT | Configured age trigger for requesting a seal. |
+| `oldest_buffered_age_ms` | BIGINT | Age (ms) of the oldest buffered row, or `NULL` when empty. |
 | `last_seal_age_ms` | BIGINT | Age (ms) since the last successful batch commit, or `NULL` if none has completed. |
 | `seals_total` | UBIGINT | Batch commits performed since startup. |
+| `committed_rows_total` | UBIGINT | Rows committed since startup. |
+| `seal_failures_total` | UBIGINT | Failed batch commits since startup. |
 | `is_listening` | BOOLEAN | `false` once the listener has fallen over (e.g. an error after a successful bind). |
 | `last_error` | VARCHAR | Last fatal listener error, or `NULL` if none. |
 | `seal_last_error` | VARCHAR | Last batch commit error, or `NULL` if none. |
+| `maintenance_runs_total` | UBIGINT | Successful post-seal catalog maintenance (`CHECKPOINT`) passes since startup. Stays `0` for the default catalog and for catalogs where maintenance is unsupported/disabled. |
+| `maintenance_failures_total` | UBIGINT | Failed maintenance passes since startup. |
+| `last_maintenance_age_ms` | BIGINT | Age (ms) since the last successful maintenance pass, or `NULL` if none has run. |
+| `maintenance_last_error` | VARCHAR | Last maintenance error, or `NULL` if none. |
 
-Use `is_listening` / `last_error` to detect a dead listener. Use `seal_last_error` to inspect writer failures, such as catalog conflicts.
+Use `is_listening` / `last_error` to detect a dead listener. Use `seal_last_error` to inspect writer failures, such as catalog conflicts. Use `maintenance_runs_total` / `last_maintenance_age_ms` to confirm compaction is keeping up.
+
+### `otlp_seal_list()`
+
+Lists the bounded in-memory history of recent seal attempts for all running servers. `duration_ms` covers the complete seal attempt. For transaction-backed targets, `append_duration_ms` measures appending buffered chunks into the destination tables and `commit_duration_ms` measures `COMMIT`, including catalog and object-storage work. The remaining duration is buffer swapping, transaction setup, and bookkeeping. Plain Parquet export does not have a transaction commit, so both phase fields are zero.
 
 ## Catalog targeting
 
@@ -152,7 +171,7 @@ CALL otlp_serve('otlp:localhost:4318', catalog := 'lake');
 SELECT count(*) FROM lake.main.otlp_logs;
 ```
 
-Each batch commit writes **one Parquet data file per signal** plus one DuckLake snapshot. After a conservative number of successful automatic row-seals, `duckdb-otlp` may run best-effort catalog-native maintenance with DuckDB's non-force `CHECKPOINT lake` when recent ingest rate and pending bytes leave ample admission headroom; DuckLake owns the actual policy through its settings such as `auto_compact`, retention, inlining, and target file size. See [Durability and background commits](#durability-and-background-commits).
+Each batch commit writes **one Parquet data file per signal** plus one DuckLake snapshot. After a conservative number of successful automatic row-seals, `duckdb-otlp` runs best-effort catalog-native maintenance with DuckDB's non-force `CHECKPOINT lake` when recent ingest rate and pending bytes leave ample admission headroom. On a DuckLake catalog, `CHECKPOINT` merges adjacent files and expires/cleans old snapshots and data files in one pass — turning the many small per-seal files into compacted, query-efficient files. At startup the server sets the DuckLake options `CHECKPOINT` reads so this is **bounded**: `target_file_size` caps the merge output (files already at target are left alone, so re-compaction is O(new), not O(total)), and `expire_older_than` / `delete_older_than` (from `maintenance_retention_ms`) gate how old snapshots/files must be before reclaim. See [Durability and background commits](#durability-and-background-commits).
 
 - **Iceberg REST catalog** (`catalog := '<attached_db>'`): rows stream into tables in an attached writable Iceberg REST catalog. Attach the catalog with DuckDB's `iceberg` extension, create the target schema, then pass the catalog and schema to `otlp_serve`; see [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/) and [Stream to Cloudflare R2 Data Catalog](../../guides/stream-to-r2-data-catalog/) for managed provider paths.
   DuckDB's Iceberg REST catalog docs have no useful `CHECKPOINT` maintenance path today. The internal maintenance probe uses generic `CHECKPOINT <catalog>` only. If the catalog reports checkpointing as unsupported, the server disables automatic maintenance for that server and ingest durability continues normally.
@@ -241,7 +260,7 @@ The server **buffers ingest and commits rows in batches** for each target. Batch
 
 1. A POST reserves admission bytes, parses, converts, and appends rows into the relevant per-signal in-memory buffer, then returns `202`. The bounded worker pool does this concurrently; append locks only the target signal buffer.
 2. A single background writer commits the buffer to the target in **one transaction** when any trigger fires:
-   - admitted request-body bytes reach the internal size threshold, 64 MiB today,
+   - admitted request-body bytes reach the internal size threshold, 128 MiB today,
    - the oldest buffered row reaches the internal age limit, about 5 seconds today, or
    - an explicit [`otlp_flush`](#otlp_flushuri-).
 3. For a DuckLake target, each batch commit writes **one Parquet data file per signal** plus one snapshot.
@@ -257,7 +276,9 @@ The project tracks a future durable raw-spool journal for at-least-once delivery
 
 **Backpressure:** if admitting a request would exceed `max_buffered_bytes` (default 512 MiB) across in-flight and uncommitted accepted payloads, the POST returns `503` before parse/transform work. Clients should retry with backoff.
 
-**Keeping DuckLake tidy:** each batch commit can leave a small Parquet file per signal. For DuckLake, the server lets the catalog run its own maintenance through DuckDB's catalog-native `CHECKPOINT` machinery when recent ingest leaves enough admission headroom. The hook skips per-seal maintenance and stays outside the ingest transaction; a maintenance failure leaves committed rows intact. `otlp_flush` still forces only ingest durability and leaves compaction to catalog maintenance.
+**Seal cadence:** `seal_target_bytes` and `seal_max_age_ms` are size and age triggers for the single asynchronous writer. They control batching latency and file/transaction size; they do not raise durable write throughput. `max_buffered_bytes` remains the separate admission cap.
+
+**Keeping DuckLake tidy:** each batch commit leaves one Parquet file per signal, so a high seal cadence creates many small files. For DuckLake, the post-seal `CHECKPOINT` merges those into larger files and reclaims old snapshots/files when recent ingest leaves enough admission headroom. The merge is **bounded** by the `target_file_size` option the server sets at startup (files already at target are skipped, so re-compaction cost scales with new data, not total data), and reclaim is gated by `maintenance_retention_ms` (`expire_older_than` / `delete_older_than`). The hook skips per-seal maintenance and stays outside the ingest transaction; a maintenance failure leaves committed rows intact. `otlp_flush` still forces only ingest durability and leaves compaction to catalog maintenance.
 
 ## Concurrency model
 

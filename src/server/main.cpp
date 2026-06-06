@@ -228,7 +228,7 @@ void PrintUsage() {
 
 Required:
 
-  DUCKDB_MODE=local-ducklake|parquet|r2-data-catalog|s3-tables|r2-neon-ducklake|r2-local-ducklake
+  DUCKDB_MODE=local-ducklake|aws-ducklake|parquet|r2-data-catalog|s3-tables|r2-neon-ducklake|r2-local-ducklake
 
 Useful common settings:
 
@@ -239,6 +239,12 @@ Useful common settings:
   DUCKDB_QUACK_ADDR=0.0.0.0:9494
   DUCKDB_QUACK_TOKEN=required-when-quack-enabled
   DUCKDB_OTLP_HTTP_THREADS=auto
+  DUCKDB_OTLP_MAX_BODY_BYTES=16777216
+  DUCKDB_OTLP_MAX_BUFFERED_BYTES=536870912
+  DUCKDB_OTLP_SEAL_TARGET_BYTES=134217728
+  DUCKDB_OTLP_SEAL_MAX_AGE_MS=5000
+  DUCKDB_OTLP_TARGET_FILE_SIZE=268435456
+  DUCKDB_OTLP_MAINTENANCE_RETENTION_MS=900000
   DUCKDB_OTLP_STARTUP_TIMEOUT=60
   DRY_RUN=1
 )HELP";

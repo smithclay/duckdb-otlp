@@ -1,8 +1,13 @@
 # DuckDB OpenTelemetry Extension
 
+[![Build](https://github.com/smithclay/duckdb-otlp/actions/workflows/MainDistributionPipeline.yml/badge.svg)](https://github.com/smithclay/duckdb-otlp/actions/workflows/MainDistributionPipeline.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![DuckDB](https://img.shields.io/badge/DuckDB-%E2%89%A5%201.5.3-FFF000?logo=duckdb&logoColor=black)](https://duckdb.org)
+[![Docs](https://img.shields.io/badge/docs-online-4c9aff)](https://smithclay.github.io/duckdb-otlp/)
+
 DuckDB extension for querying and storing OpenTelemetry traces, logs, and metrics with SQL.
 
-As of v0.5, the extension has an embedded HTTP server that lets you stream live telemetry into local parquet files, [DuckLake](https://smithclay.github.io/duckdb-otlp/guides/stream-to-ducklake/), or Iceberg catalogs like [Amazon S3 Tables](https://smithclay.github.io/duckdb-otlp/guides/stream-to-s3-tables/) and [Cloudflare R2 Data Catalog](https://smithclay.github.io/duckdb-otlp/guides/stream-to-r2-data-catalog/).
+As of v0.5, the extension has an embedded HTTP server that lets you stream live telemetry into [local or remote parquet files](https://smithclay.github.io/duckdb-otlp/guides/stream-to-parquet/), [DuckLake](https://smithclay.github.io/duckdb-otlp/guides/stream-to-ducklake/), or Iceberg catalogs like [Amazon S3 Tables](https://smithclay.github.io/duckdb-otlp/guides/stream-to-s3-tables/) and [Cloudflare R2 Data Catalog](https://smithclay.github.io/duckdb-otlp/guides/stream-to-r2-data-catalog/).
 
 ## Quickstart: Read OpenTelemetry data
 
@@ -33,9 +38,13 @@ LOAD otlp;
 Read OTLP protobuf/JSON data from public URLs, local files, or object storage buckets:
 
 ```sql
+-- Install extension to support reading over HTTP(S)
 INSTALL httpfs; LOAD httpfs;
+
+-- Read logs exported from the OpenTelemetry Collector
 SELECT time_unix_nano, service_name, severity_text, body FROM read_otlp_logs('https://github.com/smithclay/duckdb-otlp/raw/refs/heads/main/test/data/otlp_logs.pb');
 
+-- Read traces exported from the OpenTelemetry Collector
 SELECT trace_id, name, duration_time_unix_nano FROM read_otlp_traces('https://github.com/smithclay/duckdb-otlp/raw/refs/heads/main/test/data/otlp_traces.pb') ORDER BY duration_time_unix_nano DESC;
 ```
 
@@ -91,7 +100,7 @@ Query the data after ~5 seconds for the buffer to flush:
 SELECT time_unix_nano, service_name, severity_text, body FROM otlp_logs;
 ```
 
-Live ingest commits buffered rows in the background after about 5 seconds for the oldest buffered row or about 64 MiB of admitted request-body bytes. Use `otlp_flush` when readers need accepted rows durable and queryable while the server keeps running.
+Live ingest commits buffered rows in the background after about 5 seconds for the oldest buffered row or about 128 MiB of admitted request-body bytes. Use `otlp_flush` when readers need accepted rows durable and queryable while the server keeps running.
 
 For a full walkthrough, including lakehouse ingest, see the [docs](https://smithclay.github.io/duckdb-otlp/).
 
@@ -150,7 +159,11 @@ For source builds, development commands, and WASM builds, see [CONTRIBUTING.md](
 
 ## Limits
 
-The file readers limit individual files to **100 MB** to prevent memory exhaustion. Live ingest accepts request bodies up to `max_body_bytes` and applies buffered-ingest backpressure through `max_buffered_bytes`; see the [Live Ingest Reference](https://smithclay.github.io/duckdb-otlp/reference/serve/#responses-and-status-codes).
+Early-stage and **single-node** (one daemon, one writer — no HA or horizontal scaling). Ingest has been benchmarked at ~100k logs/s on a 4-vCPU node; **querying at volume is unproven**, so test on your own data.
+
+- **Durability is the seal, not the `202`.** Live ingest buffers in memory and commits on a periodic group-commit ("seal"); a `202` means *accepted*, not durable. Call `otlp_flush`/`otlp_stop` before shutting down — a hard kill drops un-sealed rows (there is no WAL).
+- **Keep queries time-bounded.** Data lands roughly time-ordered, so queries scoped by `timestamp` (and `service_name`) prune well; unbounded scans are slow. There is **no full-text index** — `body` substring/regex search and `trace_id` point lookups are brute-force scans: cheap over a short window, expensive over a wide one.
+- **File reads** cap individual files at **100 MB**. **Live ingest** is HTTP-only (no gRPC, not in the WASM build), bounds request bodies via `max_body_bytes`, and applies `max_buffered_bytes` backpressure (returns `503`); see the [Live Ingest Reference](https://smithclay.github.io/duckdb-otlp/reference/serve/#responses-and-status-codes).
 
 ## Need Help?
 

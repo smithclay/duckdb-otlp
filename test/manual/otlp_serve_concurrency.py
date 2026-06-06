@@ -520,6 +520,32 @@ def scenario_ducklake_catalog_maintenance_event(failures, port):
             maintenance_events > 0,
             "DuckLake automatic catalog maintenance checkpoint event was not logged",
         )
+        # The bounded-compaction options (target_file_size + retention) are set once at startup.
+        options_set = con.execute(
+            """
+            SELECT count(*)
+            FROM duckdb_logs
+            WHERE type = 'OTLP'
+              AND message LIKE '%catalog maintenance options set%'
+              AND message LIKE ?
+            """,
+            [f"%catalog={catalog}%"],
+        ).fetchone()[0]
+        require(
+            failures,
+            options_set > 0,
+            "DuckLake catalog maintenance options (target_file_size/retention) were not set at startup",
+        )
+        # otlp_server_list surfaces maintenance telemetry; runs_total must reflect the event(s).
+        maint_runs, maint_fail = con.execute(
+            "SELECT max(maintenance_runs_total), max(maintenance_failures_total) FROM otlp_server_list()"
+        ).fetchone()
+        print(f"  options_set_events={options_set} maintenance_runs_total={maint_runs} failures={maint_fail}")
+        require(
+            failures,
+            maint_runs is not None and maint_runs > 0,
+            f"otlp_server_list maintenance_runs_total should be > 0, got {maint_runs}",
+        )
         flush_status, flush_rows, _, flush_error = flush_server(con, port)
         require(
             failures,

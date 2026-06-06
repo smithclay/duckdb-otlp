@@ -23,6 +23,12 @@
 
 namespace duckdb {
 
+static int64_t NowUnixMs();
+
+//! Milliseconds elapsed since `last_unix_ms` (a NowUnixMs() timestamp), or -1 if
+//! it was never set (0). Clamps to 0 if the clock appears to have gone backwards.
+static int64_t AgeMsSince(int64_t last_unix_ms);
+
 namespace {
 
 static constexpr idx_t TOKEN_BYTES = 16;
@@ -275,14 +281,11 @@ void OtlpServer::StartSealer() {
 }
 
 int64_t OtlpServer::LastSealAgeMs() const {
-	auto last = last_seal_unix_ms.load();
-	if (last == 0) {
-		return -1;
-	}
-	auto now =
-	    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
-	        .count();
-	return now >= last ? now - last : 0;
+	return AgeMsSince(last_seal_unix_ms.load());
+}
+
+int64_t OtlpServer::LastMaintenanceAgeMs() const {
+	return AgeMsSince(last_maintenance_unix_ms.load());
 }
 
 idx_t OtlpServer::BufferedRows() const {
@@ -292,6 +295,56 @@ idx_t OtlpServer::BufferedRows() const {
 		rows += buf->buffered_rows;
 	}
 	return rows;
+}
+
+int64_t OtlpServer::OldestBufferedAgeMs() const {
+	bool found = false;
+	std::chrono::steady_clock::time_point oldest;
+	for (auto &buf : signal_buffers) {
+		std::lock_guard<std::mutex> lock(buf->mutex);
+		if (!buf->have_unsealed) {
+			continue;
+		}
+		if (!found || buf->first_unsealed < oldest) {
+			oldest = buf->first_unsealed;
+			found = true;
+		}
+	}
+	if (!found) {
+		return -1;
+	}
+	return std::max<int64_t>(
+	    0, std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - oldest).count());
+}
+
+vector<OtlpSealEvent> OtlpServer::SealHistory() const {
+	std::lock_guard<std::mutex> lock(seal_history_mutex);
+	return vector<OtlpSealEvent>(seal_history.begin(), seal_history.end());
+}
+
+void OtlpServer::RecordSealEvent(int64_t started_unix_ms, int64_t append_duration_ms, int64_t commit_duration_ms,
+                                 idx_t rows_committed, idx_t admitted_bytes_committed, bool success,
+                                 const string &error) {
+	OtlpSealEvent event;
+	event.seal_sequence = seal_sequence.fetch_add(1) + 1;
+	event.started_unix_ms = started_unix_ms;
+	event.completed_unix_ms = NowUnixMs();
+	event.duration_ms = std::max<int64_t>(0, event.completed_unix_ms - event.started_unix_ms);
+	event.append_duration_ms = append_duration_ms;
+	event.commit_duration_ms = commit_duration_ms;
+	event.rows_committed = rows_committed;
+	event.admitted_bytes_committed = admitted_bytes_committed;
+	event.success = success;
+	event.seals_total = seals_total.load();
+	event.seal_failures_total = seal_failures_total.load();
+	event.committed_rows_total = committed_rows_total.load();
+	event.error = error;
+	std::lock_guard<std::mutex> lock(seal_history_mutex);
+	static constexpr idx_t MAX_SEAL_HISTORY = 4096;
+	if (seal_history.size() >= MAX_SEAL_HISTORY) {
+		seal_history.pop_front();
+	}
+	seal_history.push_back(std::move(event));
 }
 
 void OtlpServer::LogServerEvent(const string &message, LogLevel level) const {
@@ -646,6 +699,14 @@ static int64_t NowUnixMs() {
 	    .count();
 }
 
+static int64_t AgeMsSince(int64_t last_unix_ms) {
+	if (last_unix_ms == 0) {
+		return -1;
+	}
+	auto now = NowUnixMs();
+	return now >= last_unix_ms ? now - last_unix_ms : 0;
+}
+
 OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 	std::lock_guard<std::mutex> writer_lock(writer_mutex);
 	if (!writer_con) {
@@ -656,6 +717,9 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 		return OtlpIngestResult {}; // database closed; nothing we can durably write
 	}
 	auto &allocator = Allocator::Get(*db);
+	auto seal_started_unix_ms = NowUnixMs();
+	int64_t append_duration_ms = 0;
+	int64_t commit_duration_ms = 0;
 
 	struct SealingBuffer {
 		unique_ptr<ColumnDataCollection> collection;
@@ -829,6 +893,11 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 				last_seal_unix_ms.store(NowUnixMs());
 			}
 			seal_failures_total.fetch_add(1);
+			// Parquet COPY is not transactional, so the exported share is durable even though the
+			// seal failed overall. Count it in committed_rows_total (it reflects rows on disk, not
+			// successful seals); this is why otlp_seal_list() can show success=false with
+			// rows_committed > 0. The transaction path below adds nothing on failure (rollback).
+			committed_rows_total.fetch_add(exported_rows);
 			{
 				std::lock_guard<std::mutex> elock(seal_error_mutex);
 				seal_last_error = failure_msg;
@@ -838,11 +907,14 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 			                                  static_cast<uint64_t>(exported_rows), static_cast<uint64_t>(total),
 			                                  failure_msg),
 			               LogLevel::LOG_WARNING);
+			RecordSealEvent(seal_started_unix_ms, append_duration_ms, commit_duration_ms, exported_rows,
+			                sealed_admission_bytes, false, failure_msg);
 			throw IOException(StringUtil::Format("parquet seal failed: %s", failure_msg));
 		}
 
 		ReleaseAdmission(sealed_admission_bytes);
 		seals_total.fetch_add(1);
+		committed_rows_total.fetch_add(result.rows);
 		last_seal_unix_ms.store(NowUnixMs());
 		{
 			std::lock_guard<std::mutex> elock(seal_error_mutex);
@@ -850,11 +922,14 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 		}
 		LogServerEvent(StringUtil::Format("parquet seal: path=%s rows=%llu batches=%llu", config.parquet_export_path,
 		                                  static_cast<uint64_t>(result.rows), static_cast<uint64_t>(result.batches)));
+		RecordSealEvent(seal_started_unix_ms, append_duration_ms, commit_duration_ms, result.rows,
+		                sealed_admission_bytes, true, "");
 		return result;
 	}
 
 	try {
 		RunSQL(*writer_con, "BEGIN TRANSACTION");
+		auto append_started = std::chrono::steady_clock::now();
 		for (idx_t i = 0; i < signal_buffers.size(); i++) {
 			if (sealing[i].rows == 0) {
 				continue;
@@ -864,7 +939,14 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 			                                          config.schema_name, buf.table_name);
 			result.rows += sealing[i].rows;
 		}
+		append_duration_ms =
+		    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - append_started)
+		        .count();
+		auto commit_started = std::chrono::steady_clock::now();
 		RunSQL(*writer_con, "COMMIT");
+		commit_duration_ms =
+		    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - commit_started)
+		        .count();
 	} catch (...) {
 		// catch(...) — not just std::exception — so a non-std throw can never escape and
 		// std::terminate the host process, and the buffer is always restored.
@@ -924,11 +1006,13 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 			seal_last_error = msg;
 		}
 		LogServerEvent(StringUtil::Format("seal failed: %s", msg), LogLevel::LOG_WARNING);
+		RecordSealEvent(seal_started_unix_ms, append_duration_ms, commit_duration_ms, 0, 0, false, msg);
 		throw;
 	}
 
 	ReleaseAdmission(sealed_admission_bytes);
 	seals_total.fetch_add(1);
+	committed_rows_total.fetch_add(result.rows);
 	last_seal_unix_ms.store(NowUnixMs());
 	{
 		std::lock_guard<std::mutex> elock(seal_error_mutex);
@@ -936,6 +1020,8 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 	}
 	LogServerEvent(StringUtil::Format("seal: catalog=%s rows=%llu batches=%llu", config.catalog_name,
 	                                  static_cast<uint64_t>(result.rows), static_cast<uint64_t>(result.batches)));
+	RecordSealEvent(seal_started_unix_ms, append_duration_ms, commit_duration_ms, result.rows, sealed_admission_bytes,
+	                true, "");
 	if (allow_maintenance) {
 		MaybeRunCatalogMaintenance(result.rows, sealed_admission_bytes);
 	}
@@ -982,6 +1068,12 @@ void OtlpServer::MaybeRunCatalogMaintenance(idx_t sealed_rows, idx_t sealed_admi
 	try {
 		RunSQL(*writer_con, "CHECKPOINT " + QuoteIdentifier(config.catalog_name));
 		catalog_maintenance_state = CatalogMaintenanceState::SUPPORTED;
+		maintenance_runs_total.fetch_add(1);
+		last_maintenance_unix_ms.store(NowUnixMs());
+		{
+			std::lock_guard<std::mutex> elock(seal_error_mutex);
+			maintenance_last_error.clear();
+		}
 		LogServerEvent(StringUtil::Format("catalog maintenance checkpoint succeeded: catalog=%s", config.catalog_name));
 	} catch (...) {
 		string msg;
@@ -991,6 +1083,11 @@ void OtlpServer::MaybeRunCatalogMaintenance(idx_t sealed_rows, idx_t sealed_admi
 			msg = ex.what();
 		} catch (...) {
 			msg = "unknown (non-std) exception during catalog maintenance checkpoint";
+		}
+		maintenance_failures_total.fetch_add(1);
+		{
+			std::lock_guard<std::mutex> elock(seal_error_mutex);
+			maintenance_last_error = msg;
 		}
 		if (IsUnsupportedCatalogMaintenanceError(msg)) {
 			catalog_maintenance_state = CatalogMaintenanceState::DISABLED;
@@ -1003,6 +1100,37 @@ void OtlpServer::MaybeRunCatalogMaintenance(idx_t sealed_rows, idx_t sealed_admi
 			                                  config.catalog_name, msg),
 			               LogLevel::LOG_WARNING);
 		}
+	}
+}
+
+void OtlpServer::ConfigureCatalogMaintenanceOptions() {
+	// DuckLake's CHECKPOINT (the post-seal maintenance call) reads these catalog options:
+	// target_file_size bounds merge_adjacent_files' output (so already-at-target files are
+	// left alone -> O(new)/cycle, not O(total)); expire_older_than/delete_older_than gate how
+	// old snapshots/files must be before they are expired and deleted. Set once at startup on
+	// the writer connection. Best-effort: the default catalog and non-DuckLake catalogs (e.g.
+	// Iceberg) reject set_option -> ignore here; the maintenance pass DISABLEs itself anyway.
+	if (config.catalog_name.empty() || !writer_con) {
+		return;
+	}
+	auto target_mb = std::max<idx_t>(1, config.target_file_size / (1024ULL * 1024ULL));
+	auto retention_s = std::max<int64_t>(1, config.maintenance_retention_ms / 1000);
+	auto quoted = QuoteIdentifier(config.catalog_name);
+	try {
+		RunSQL(*writer_con, StringUtil::Format("CALL %s.set_option('target_file_size', '%lluMB')", quoted,
+		                                       static_cast<uint64_t>(target_mb)));
+		RunSQL(*writer_con, StringUtil::Format("CALL %s.set_option('expire_older_than', '%llds')", quoted,
+		                                       static_cast<long long>(retention_s)));
+		RunSQL(*writer_con, StringUtil::Format("CALL %s.set_option('delete_older_than', '%llds')", quoted,
+		                                       static_cast<long long>(retention_s)));
+		LogServerEvent(StringUtil::Format(
+		    "catalog maintenance options set: catalog=%s target_file_size=%lluMB retention=%llds", config.catalog_name,
+		    static_cast<uint64_t>(target_mb), static_cast<long long>(retention_s)));
+	} catch (std::exception &ex) {
+		// Not a DuckLake catalog (or options unsupported): leave defaults; maintenance will
+		// DISABLE on its first CHECKPOINT if the catalog can't be checkpointed at all.
+		LogServerEvent(StringUtil::Format("catalog maintenance options not applied for catalog=%s: %s",
+		                                  config.catalog_name, ex.what()));
 	}
 }
 

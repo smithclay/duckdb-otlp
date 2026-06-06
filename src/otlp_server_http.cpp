@@ -87,6 +87,10 @@ OtlpServer::OtlpServer(ClientContext &context, const OtlpUri &uri_p, const OtlpS
 	// that ever commits, so concurrent DuckLake writes never conflict.
 	writer_con = make_uniq<Connection>(*db);
 	writer_con->context->config.enable_progress_bar = false;
+	// Set the DuckLake catalog options the post-seal CHECKPOINT consumes (bounded target file
+	// size + snapshot/file retention) before the sealer can fire. Best-effort; no-op for the
+	// default/non-DuckLake catalogs.
+	ConfigureCatalogMaintenanceOptions();
 	StartSealer();
 
 	impl->server = make_uniq<duckdb_httplib::Server>();

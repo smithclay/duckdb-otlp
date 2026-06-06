@@ -122,15 +122,42 @@ vector<OtlpStorageExtensionInfo::ServerSnapshot> OtlpStorageExtensionInfo::ListS
 		snap.is_listening = server.IsListening();
 		snap.last_error = server.LastError();
 		snap.buffered_rows = server.BufferedRows();
+		snap.admitted_bytes = server.AdmittedBytes();
+		snap.seal_target_bytes = server.SealTargetBytes();
+		snap.seal_max_age_ms = server.SealMaxAgeMs();
+		snap.oldest_buffered_age_ms = server.OldestBufferedAgeMs();
 		snap.last_seal_age_ms = server.LastSealAgeMs();
 		snap.seals_total = server.SealsTotal();
+		snap.committed_rows_total = server.CommittedRowsTotal();
 		snap.seal_failures_total = server.SealFailuresTotal();
 		snap.seal_last_error = server.SealLastError();
+		snap.maintenance_runs_total = server.MaintenanceRunsTotal();
+		snap.maintenance_failures_total = server.MaintenanceFailuresTotal();
+		snap.last_maintenance_age_ms = server.LastMaintenanceAgeMs();
+		snap.maintenance_last_error = server.MaintenanceLastError();
 		result.push_back(std::move(snap));
 	}
 	// servers is an unordered_map; sort for deterministic output order.
 	std::sort(result.begin(), result.end(),
 	          [](const ServerSnapshot &a, const ServerSnapshot &b) { return a.listen_uri < b.listen_uri; });
+	return result;
+}
+
+vector<OtlpStorageExtensionInfo::SealSnapshot> OtlpStorageExtensionInfo::ListSeals() {
+	vector<SealSnapshot> result;
+	std::lock_guard<std::mutex> lock(servers_mutex);
+	for (auto &kv : servers) {
+		auto events = kv.second->SealHistory();
+		for (auto &event : events) {
+			result.push_back({kv.first, std::move(event)});
+		}
+	}
+	std::sort(result.begin(), result.end(), [](const SealSnapshot &a, const SealSnapshot &b) {
+		if (a.listen_uri != b.listen_uri) {
+			return a.listen_uri < b.listen_uri;
+		}
+		return a.event.seal_sequence < b.event.seal_sequence;
+	});
 	return result;
 }
 

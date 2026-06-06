@@ -149,6 +149,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: benchmark/otlp-log-ingest/producer/go.mod
+          cache-dependency-path: benchmark/otlp-log-ingest/producer/go.sum
+
       - name: Build amd64 runtime image (load)
         uses: docker/build-push-action@v6
         with:
