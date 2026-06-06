@@ -100,3 +100,15 @@ here as the cross-repo work list.
 - API-008 (serve.md cross-link the TIMESTAMP_NS-vs-TIMESTAMP precision note) — **fixed** (docs).
 - API-009 (api.md add `otlp_seal_list`) — **fixed** (docs).
 - API-010 (serve.md "four+one" undercount → "five server functions") — **fixed** (docs).
+- SLOP-004 (duplicated `release_batch` FFI lambda) — **fixed** — commit 4834922a (shared `ReleaseOtlpArrowBatch`).
+- SLOP-003 (SQL-quoting helpers ×3) + SLOP-005 (`Truthy`/`EnvTruthy`) — **fixed** — commit 4e440a78 (shared `otlp_sql_util.hpp` + daemon `EnvTruthy`; daemon DRY_RUN config tests confirm SQL unchanged).
+- HOT-002 (identity `column_ids` rebuilt per ingest slice) — **fixed** — commit 2f6b92a5 (precomputed per `OtlpSignalBuffer`; dead `CopyArrowStructToDataChunk` removed; manual concurrency harness PASS).
+- BLD-002 (stale gzip-canary comment + lost CI coverage) — **fixed** — commit 27b2200d (smoke_test.py POSTs gzip + asserts 202; CMakeLists comment corrected).
+- CON-004 (per-signal at-least-once comment), CON-005 (shutdown drop-cause WARNING disambiguated), HOT-003 (FFI projection limitation documented) — **fixed** — commit 82868b64.
+- HOT-001 (`std::string fmt` per column per chunk) — **deferred, won't-fix**: Arrow format strings are all ≤ ~5 chars, well within libc++/libstdc++ SSO (~15–22 bytes), so the construction and the `substr(0,3)` temporaries are stack-allocated — there is no heap churn. A full const-char* rewrite of a correctness-critical conversion function for a micro-CPU saving with no measured benefit is exactly the speculative perf change the pass is meant to avoid.
+- HOT-004/005/006/007, CON-003/009 (nits) — **deferred** (documented in reviews; latency/micro only, no correctness impact). HOT-006 (`unsealed_admission_bytes` could be atomic) intentionally left: the seal-restore arithmetic composes under the all-buffers lock today; an atomic refactor is unmeasured.
+
+### Pending user decisions (asked)
+- API-001/API-002 schema renames, API-004/SLOP-001 (`defs.rs`), SLOP-002/FFI-005, FFI-001/FFI-002 — all resident in the pinned `otlp2records` submodule (v0.8.4); need a coordinated release.
+- CON-001 (decoded-heap bound) and CON-002 (`/readyz` degrade on stuck seal) — both touch the soon-to-freeze surface / operational contract.
+- BLD-001 — CI PR-gate change (touches the workflow).
