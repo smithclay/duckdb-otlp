@@ -313,21 +313,6 @@ static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, D
 				break;
 			}
 
-			// Release helper: free a present batch's array+schema and mark it absent so the
-			// later release_others pass cannot double-free the chosen batch.
-			auto release_batch = [](OtlpArrowBatch &batch) {
-				if (!batch.present) {
-					return;
-				}
-				if (batch.array.release) {
-					batch.array.release(&batch.array);
-				}
-				if (batch.schema.release) {
-					batch.schema.release(&batch.schema);
-				}
-				batch.present = 0;
-			};
-
 			// Keep the chosen array; release its schema (we convert via the cached bind-time
 			// schema). If the chosen shape is absent, leave array unreleasable below.
 			if (chosen->present) {
@@ -343,10 +328,10 @@ static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, D
 			chosen->present = 0;
 
 			// Release every remaining present batch (array + schema) so nothing leaks.
-			release_batch(batches.gauge);
-			release_batch(batches.sum);
-			release_batch(batches.histogram);
-			release_batch(batches.exp_histogram);
+			ReleaseOtlpArrowBatch(batches.gauge);
+			ReleaseOtlpArrowBatch(batches.sum);
+			ReleaseOtlpArrowBatch(batches.histogram);
+			ReleaseOtlpArrowBatch(batches.exp_histogram);
 			break;
 		}
 		default:

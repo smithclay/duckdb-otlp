@@ -593,23 +593,11 @@ void OtlpServer::BufferMetrics(const string &body, OtlpInputFormat format, OtlpI
 	OtlpStatus status =
 	    otlp_transform_metrics_all(format, reinterpret_cast<const uint8_t *>(body.data()), body.size(), &batches);
 
-	auto release_batch = [](OtlpArrowBatch &batch) {
-		if (!batch.present) {
-			return;
-		}
-		if (batch.array.release) {
-			batch.array.release(&batch.array);
-		}
-		if (batch.schema.release) {
-			batch.schema.release(&batch.schema);
-		}
-		batch.present = 0;
-	};
 	auto release_all = [&]() {
-		release_batch(batches.gauge);
-		release_batch(batches.sum);
-		release_batch(batches.histogram);
-		release_batch(batches.exp_histogram);
+		ReleaseOtlpArrowBatch(batches.gauge);
+		ReleaseOtlpArrowBatch(batches.sum);
+		ReleaseOtlpArrowBatch(batches.histogram);
+		ReleaseOtlpArrowBatch(batches.exp_histogram);
 	};
 
 	if (status != OTLP_OK) {
