@@ -95,7 +95,7 @@ Query the data after ~5 seconds for the buffer to flush:
 SELECT time_unix_nano, service_name, severity_text, body FROM otlp_logs;
 ```
 
-Live ingest commits buffered rows in the background after about 5 seconds for the oldest buffered row or about 64 MiB of admitted request-body bytes. Use `otlp_flush` when readers need accepted rows durable and queryable while the server keeps running.
+Live ingest commits buffered rows in the background after about 5 seconds for the oldest buffered row or about 128 MiB of admitted request-body bytes. Use `otlp_flush` when readers need accepted rows durable and queryable while the server keeps running.
 
 For a full walkthrough, including lakehouse ingest, see the [docs](https://smithclay.github.io/duckdb-otlp/).
 

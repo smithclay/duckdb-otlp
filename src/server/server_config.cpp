@@ -657,8 +657,11 @@ ServerConfig ServerConfig::FromEnv() {
 	config.http_threads = ParsePositiveUInt64Env("DUCKDB_OTLP_HTTP_THREADS", 0);
 	config.max_body_bytes = ParsePositiveUInt64Env("DUCKDB_OTLP_MAX_BODY_BYTES", 16ULL * 1024ULL * 1024ULL);
 	config.max_buffered_bytes = ParsePositiveUInt64Env("DUCKDB_OTLP_MAX_BUFFERED_BYTES", 512ULL * 1024ULL * 1024ULL);
-	config.seal_target_bytes = ParsePositiveUInt64Env("DUCKDB_OTLP_SEAL_TARGET_BYTES", 64ULL * 1024ULL * 1024ULL);
+	config.seal_target_bytes = ParsePositiveUInt64Env("DUCKDB_OTLP_SEAL_TARGET_BYTES", 128ULL * 1024ULL * 1024ULL);
 	config.seal_max_age_ms = ParsePositiveInt64Env("DUCKDB_OTLP_SEAL_MAX_AGE_MS", 5000);
+	config.target_file_size = ParsePositiveUInt64Env("DUCKDB_OTLP_TARGET_FILE_SIZE", 256ULL * 1024ULL * 1024ULL);
+	config.maintenance_retention_ms =
+	    ParsePositiveInt64Env("DUCKDB_OTLP_MAINTENANCE_RETENTION_MS", 15LL * 60LL * 1000LL);
 
 	auto quack_token_var = FirstEnv({"DUCKDB_QUACK_TOKEN", "QUACK_AUTH_TOKEN"});
 	if (config.quack_enabled && quack_token_var.empty()) {
@@ -681,9 +684,10 @@ string ServerConfig::StartOtlpSql() const {
 	                      : StringUtil::Format(",\n    http_threads := %llu", static_cast<uint64_t>(http_threads));
 	auto limits_sql = StringUtil::Format(
 	    ",\n    max_body_bytes := %llu,\n    max_buffered_bytes := %llu,\n    seal_target_bytes := %llu,\n    "
-	    "seal_max_age_ms := %lld",
+	    "seal_max_age_ms := %lld,\n    target_file_size := %llu,\n    maintenance_retention_ms := %lld",
 	    static_cast<uint64_t>(max_body_bytes), static_cast<uint64_t>(max_buffered_bytes),
-	    static_cast<uint64_t>(seal_target_bytes), static_cast<int64_t>(seal_max_age_ms));
+	    static_cast<uint64_t>(seal_target_bytes), static_cast<int64_t>(seal_max_age_ms),
+	    static_cast<uint64_t>(target_file_size), static_cast<int64_t>(maintenance_retention_ms));
 	auto export_sql = parquet_export_path.empty()
 	                      ? string("")
 	                      : StringUtil::Format(",\n    parquet_export_path := %s", SqlQuote(parquet_export_path));

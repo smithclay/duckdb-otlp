@@ -48,6 +48,10 @@ public:
 		idx_t committed_rows_total;
 		idx_t seal_failures_total;
 		string seal_last_error;
+		idx_t maintenance_runs_total;
+		idx_t maintenance_failures_total;
+		int64_t last_maintenance_age_ms;
+		string maintenance_last_error;
 	};
 
 	vector<ServerSnapshot> ListServers();

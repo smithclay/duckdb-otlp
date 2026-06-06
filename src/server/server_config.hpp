@@ -29,8 +29,10 @@ struct ServerConfig {
 	uint64_t http_threads = 0;
 	uint64_t max_body_bytes = 16ULL * 1024ULL * 1024ULL;
 	uint64_t max_buffered_bytes = 512ULL * 1024ULL * 1024ULL;
-	uint64_t seal_target_bytes = 64ULL * 1024ULL * 1024ULL;
+	uint64_t seal_target_bytes = 128ULL * 1024ULL * 1024ULL;
 	int64_t seal_max_age_ms = 5000;
+	uint64_t target_file_size = 256ULL * 1024ULL * 1024ULL;
+	int64_t maintenance_retention_ms = 15LL * 60LL * 1000LL;
 
 	duckdb::string mode_setup_sql;
 	std::vector<duckdb::string> mode_extensions;

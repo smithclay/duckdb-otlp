@@ -128,6 +128,19 @@ static unique_ptr<FunctionData> OtlpServeBind(ClientContext &context, TableFunct
 			throw InvalidInputException("seal_max_age_ms must be greater than zero");
 		}
 	}
+	if (input.named_parameters.find("target_file_size") != input.named_parameters.end()) {
+		bind_data->config.target_file_size = input.named_parameters["target_file_size"].GetValue<idx_t>();
+		if (bind_data->config.target_file_size == 0) {
+			throw InvalidInputException("target_file_size must be greater than zero");
+		}
+	}
+	if (input.named_parameters.find("maintenance_retention_ms") != input.named_parameters.end()) {
+		bind_data->config.maintenance_retention_ms =
+		    input.named_parameters["maintenance_retention_ms"].GetValue<int64_t>();
+		if (bind_data->config.maintenance_retention_ms <= 0) {
+			throw InvalidInputException("maintenance_retention_ms must be greater than zero");
+		}
+	}
 
 	names.emplace_back("listen_uri");
 	return_types.emplace_back(OtlpVarcharType());
@@ -195,6 +208,8 @@ TableFunctionSet OtlpServeFunction::GetFunction() {
 	fun.named_parameters["max_buffered_bytes"] = OtlpUBigIntType();
 	fun.named_parameters["seal_target_bytes"] = OtlpUBigIntType();
 	fun.named_parameters["seal_max_age_ms"] = OtlpBigIntType();
+	fun.named_parameters["target_file_size"] = OtlpUBigIntType();
+	fun.named_parameters["maintenance_retention_ms"] = OtlpBigIntType();
 	set.AddFunction(fun);
 	fun.arguments.clear();
 	set.AddFunction(fun);
@@ -283,6 +298,14 @@ static unique_ptr<FunctionData> OtlpServerListBind(ClientContext &context, Table
 	return_types.emplace_back(OtlpUBigIntType());
 	names.emplace_back("seal_last_error");
 	return_types.emplace_back(OtlpVarcharType());
+	names.emplace_back("maintenance_runs_total");
+	return_types.emplace_back(OtlpUBigIntType());
+	names.emplace_back("maintenance_failures_total");
+	return_types.emplace_back(OtlpUBigIntType());
+	names.emplace_back("last_maintenance_age_ms");
+	return_types.emplace_back(OtlpBigIntType());
+	names.emplace_back("maintenance_last_error");
+	return_types.emplace_back(OtlpVarcharType());
 	return make_uniq<OtlpServerListFunctionData>();
 }
 
@@ -321,6 +344,13 @@ static void OtlpServerList(ClientContext &context, TableFunctionInput &data_p, D
 		output.SetValue(18, row, Value::UBIGINT(s.committed_rows_total));
 		output.SetValue(19, row, Value::UBIGINT(s.seal_failures_total));
 		output.SetValue(20, row, s.seal_last_error.empty() ? Value(LogicalType::VARCHAR) : Value(s.seal_last_error));
+		output.SetValue(21, row, Value::UBIGINT(s.maintenance_runs_total));
+		output.SetValue(22, row, Value::UBIGINT(s.maintenance_failures_total));
+		output.SetValue(23, row,
+		                s.last_maintenance_age_ms < 0 ? Value(LogicalType::BIGINT)
+		                                              : Value::BIGINT(s.last_maintenance_age_ms));
+		output.SetValue(
+		    24, row, s.maintenance_last_error.empty() ? Value(LogicalType::VARCHAR) : Value(s.maintenance_last_error));
 		row++;
 		bind_data.offset++;
 	}

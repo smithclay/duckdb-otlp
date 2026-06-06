@@ -287,6 +287,17 @@ int64_t OtlpServer::LastSealAgeMs() const {
 	return now >= last ? now - last : 0;
 }
 
+int64_t OtlpServer::LastMaintenanceAgeMs() const {
+	auto last = last_maintenance_unix_ms.load();
+	if (last == 0) {
+		return -1;
+	}
+	auto now =
+	    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+	        .count();
+	return now >= last ? now - last : 0;
+}
+
 idx_t OtlpServer::BufferedRows() const {
 	idx_t rows = 0;
 	for (auto &buf : signal_buffers) {
@@ -1055,6 +1066,12 @@ void OtlpServer::MaybeRunCatalogMaintenance(idx_t sealed_rows, idx_t sealed_admi
 	try {
 		RunSQL(*writer_con, "CHECKPOINT " + QuoteIdentifier(config.catalog_name));
 		catalog_maintenance_state = CatalogMaintenanceState::SUPPORTED;
+		maintenance_runs_total.fetch_add(1);
+		last_maintenance_unix_ms.store(NowUnixMs());
+		{
+			std::lock_guard<std::mutex> elock(seal_error_mutex);
+			maintenance_last_error.clear();
+		}
 		LogServerEvent(StringUtil::Format("catalog maintenance checkpoint succeeded: catalog=%s", config.catalog_name));
 	} catch (...) {
 		string msg;
@@ -1064,6 +1081,11 @@ void OtlpServer::MaybeRunCatalogMaintenance(idx_t sealed_rows, idx_t sealed_admi
 			msg = ex.what();
 		} catch (...) {
 			msg = "unknown (non-std) exception during catalog maintenance checkpoint";
+		}
+		maintenance_failures_total.fetch_add(1);
+		{
+			std::lock_guard<std::mutex> elock(seal_error_mutex);
+			maintenance_last_error = msg;
 		}
 		if (IsUnsupportedCatalogMaintenanceError(msg)) {
 			catalog_maintenance_state = CatalogMaintenanceState::DISABLED;
@@ -1076,6 +1098,37 @@ void OtlpServer::MaybeRunCatalogMaintenance(idx_t sealed_rows, idx_t sealed_admi
 			                                  config.catalog_name, msg),
 			               LogLevel::LOG_WARNING);
 		}
+	}
+}
+
+void OtlpServer::ConfigureCatalogMaintenanceOptions() {
+	// DuckLake's CHECKPOINT (the post-seal maintenance call) reads these catalog options:
+	// target_file_size bounds merge_adjacent_files' output (so already-at-target files are
+	// left alone -> O(new)/cycle, not O(total)); expire_older_than/delete_older_than gate how
+	// old snapshots/files must be before they are expired and deleted. Set once at startup on
+	// the writer connection. Best-effort: the default catalog and non-DuckLake catalogs (e.g.
+	// Iceberg) reject set_option -> ignore here; the maintenance pass DISABLEs itself anyway.
+	if (config.catalog_name.empty() || !writer_con) {
+		return;
+	}
+	auto target_mb = std::max<idx_t>(1, config.target_file_size / (1024ULL * 1024ULL));
+	auto retention_s = std::max<int64_t>(1, config.maintenance_retention_ms / 1000);
+	auto quoted = QuoteIdentifier(config.catalog_name);
+	try {
+		RunSQL(*writer_con, StringUtil::Format("CALL %s.set_option('target_file_size', '%lluMB')", quoted,
+		                                       static_cast<uint64_t>(target_mb)));
+		RunSQL(*writer_con, StringUtil::Format("CALL %s.set_option('expire_older_than', '%llds')", quoted,
+		                                       static_cast<long long>(retention_s)));
+		RunSQL(*writer_con, StringUtil::Format("CALL %s.set_option('delete_older_than', '%llds')", quoted,
+		                                       static_cast<long long>(retention_s)));
+		LogServerEvent(StringUtil::Format(
+		    "catalog maintenance options set: catalog=%s target_file_size=%lluMB retention=%llds", config.catalog_name,
+		    static_cast<uint64_t>(target_mb), static_cast<long long>(retention_s)));
+	} catch (std::exception &ex) {
+		// Not a DuckLake catalog (or options unsupported): leave defaults; maintenance will
+		// DISABLE on its first CHECKPOINT if the catalog can't be checkpointed at all.
+		LogServerEvent(StringUtil::Format("catalog maintenance options not applied for catalog=%s: %s",
+		                                  config.catalog_name, ex.what()));
 	}
 }
 

@@ -44,13 +44,22 @@ struct OtlpServerConfig {
 	//! max_buffered_bytes remains the independent admission/backpressure cap.
 	//! Explicit otlp_flush is optional; it only requests an immediate seal for fresh
 	//! reads/durability while the server keeps running. otlp_stop performs a final seal.
-	idx_t seal_target_bytes = 64ULL * 1024ULL * 1024ULL; //! seal when admitted bytes reach this
-	int64_t seal_max_age_ms = 5000;                      //! seal when the oldest buffered row is this old
-	//! Successful automatic row-seals into a named catalog may occasionally be followed
-	//! by internal best-effort catalog-native maintenance (`CHECKPOINT <catalog>`) when
-	//! recent ingress and pending bytes leave ample admission headroom. This is
-	//! deliberately not user-configurable and is skipped for explicit otlp_flush and
-	//! shutdown drains so those calls remain durability/seal operations.
+	idx_t seal_target_bytes = 128ULL * 1024ULL * 1024ULL; //! seal when admitted bytes reach this
+	int64_t seal_max_age_ms = 5000;                       //! seal when the oldest buffered row is this old
+	//! Tier-1 compaction for DuckLake catalogs. Successful automatic row-seals into a named
+	//! catalog are followed by best-effort catalog-native maintenance (`CHECKPOINT <catalog>`,
+	//! which merges adjacent files and expires/cleans old snapshots+files) when recent ingress
+	//! and pending bytes leave ample admission headroom; it is skipped for explicit otlp_flush
+	//! and shutdown drains so those stay pure durability/seal operations. The maintenance CADENCE
+	//! is internal, but these two knobs (set once on the catalog at startup) bound it:
+	//!  - target_file_size: OUTPUT Parquet file size the merge bin-packs toward; bounds write
+	//!    amplification (files already at target are left alone). Distinct from seal_target_bytes,
+	//!    which is admitted *input* bytes.
+	//!  - maintenance_retention_ms: how old snapshots/files must be before CHECKPOINT expires and
+	//!    deletes them (expire_older_than / delete_older_than). Long enough for in-flight reads /
+	//!    time-travel, short enough to bound disk.
+	idx_t target_file_size = 256ULL * 1024ULL * 1024ULL;
+	int64_t maintenance_retention_ms = 15LL * 60LL * 1000LL;
 	//! Backpressure admission cap (over it -> 503). NOTE: this bounds cumulative *admitted
 	//! request-body bytes* (each request reserves max(body_size, 1024) input bytes), NOT
 	//! decoded buffer heap — decoded columnar size differs from the encoded/compressed
@@ -152,6 +161,12 @@ public:
 	int64_t SealMaxAgeMs() const {
 		return config.seal_max_age_ms;
 	}
+	idx_t TargetFileSize() const {
+		return config.target_file_size;
+	}
+	int64_t MaintenanceRetentionMs() const {
+		return config.maintenance_retention_ms;
+	}
 	//! Milliseconds since the oldest currently buffered row was admitted, or -1 if empty.
 	int64_t OldestBufferedAgeMs() const;
 	idx_t SealsTotal() const {
@@ -170,6 +185,19 @@ public:
 	string SealLastError() const {
 		std::lock_guard<std::mutex> lock(seal_error_mutex);
 		return seal_last_error;
+	}
+	//! Catalog-maintenance (CHECKPOINT) telemetry, mirroring the seal counters.
+	idx_t MaintenanceRunsTotal() const {
+		return maintenance_runs_total.load();
+	}
+	idx_t MaintenanceFailuresTotal() const {
+		return maintenance_failures_total.load();
+	}
+	//! Milliseconds since the last successful catalog maintenance, or -1 if none yet.
+	int64_t LastMaintenanceAgeMs() const;
+	string MaintenanceLastError() const {
+		std::lock_guard<std::mutex> lock(seal_error_mutex);
+		return maintenance_last_error;
 	}
 	vector<OtlpSealEvent> SealHistory() const;
 
@@ -218,6 +246,10 @@ private:
 	void RequestSeal();
 	bool SealAgeDue() const;
 	void MaybeRunCatalogMaintenance(idx_t sealed_rows, idx_t sealed_admission_bytes);
+	//! Set the DuckLake catalog options the post-seal CHECKPOINT consumes (target_file_size,
+	//! expire_older_than, delete_older_than). Best-effort and idempotent: called once at startup;
+	//! non-DuckLake / default catalogs throw and are ignored (maintenance DISABLEs on its own).
+	void ConfigureCatalogMaintenanceOptions();
 	void RecordSealEvent(int64_t started_unix_ms, int64_t append_duration_ms, int64_t commit_duration_ms,
 	                     idx_t rows_committed, idx_t admitted_bytes_committed, bool success, const string &error);
 
@@ -268,6 +300,11 @@ private:
 	std::chrono::steady_clock::time_point catalog_maintenance_last_attempt = std::chrono::steady_clock::now();
 	std::chrono::steady_clock::time_point catalog_maintenance_last_row_seal = std::chrono::steady_clock::now();
 	double catalog_maintenance_ingress_rate_bytes_per_ms = 0;
+	// Catalog-maintenance telemetry (written by the sealer thread, read by ListServers).
+	std::atomic<idx_t> maintenance_runs_total {0};
+	std::atomic<idx_t> maintenance_failures_total {0};
+	std::atomic<int64_t> last_maintenance_unix_ms {0};
+	string maintenance_last_error; // guarded by seal_error_mutex
 
 	// --- HTTP transport (httplib). PIMPL so httplib.hpp stays out of this header. ---
 	class Impl;

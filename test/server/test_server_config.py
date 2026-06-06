@@ -115,6 +115,8 @@ def test_otlp_limits_are_configurable(tmp_path):
             "DUCKDB_OTLP_MAX_BUFFERED_BYTES": "2147483648",
             "DUCKDB_OTLP_SEAL_TARGET_BYTES": "134217728",
             "DUCKDB_OTLP_SEAL_MAX_AGE_MS": "3000",
+            "DUCKDB_OTLP_TARGET_FILE_SIZE": "268435456",
+            "DUCKDB_OTLP_MAINTENANCE_RETENTION_MS": "600000",
         },
         tmp_path,
     )
@@ -124,6 +126,8 @@ def test_otlp_limits_are_configurable(tmp_path):
     assert "max_buffered_bytes := 2147483648" in result.stdout
     assert "seal_target_bytes := 134217728" in result.stdout
     assert "seal_max_age_ms := 3000" in result.stdout
+    assert "target_file_size := 268435456" in result.stdout
+    assert "maintenance_retention_ms := 600000" in result.stdout
 
 
 def test_default_token_warns(tmp_path):
