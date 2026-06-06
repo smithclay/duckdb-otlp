@@ -10,7 +10,7 @@ For a runnable walkthrough, see the [Live Ingest Quickstart](../../quickstart/se
 
 ## Functions
 
-The extension registers four lifecycle functions and one diagnostic function:
+The extension registers five server functions (four lifecycle, one diagnostic):
 
 | Function | What it does |
 |----------|-------------|
@@ -157,7 +157,7 @@ Lists the bounded in-memory history of recent seal attempts for all running serv
 
 ## Catalog targeting
 
-The target of a server is `<catalog>.<schema>.<table>`:
+The target of a server is `<catalog>.<schema>.<table>`. The live-ingest tables keep the same column names as the file readers, but the nanosecond timestamp columns (`time_unix_nano`, `start_time_unix_nano`, …) are stored as DuckDB `TIMESTAMP` (microsecond) for catalog compatibility, where the file readers expose `TIMESTAMP_NS` — so a query that mixes a live table with `read_otlp_*` sees two types and loses sub-microsecond precision on the live side (see the [Schema Reference](../schemas/#type-system-notes)).
 
 - **Default catalog** (`catalog` omitted): rows land in the connection's default catalog, either an in-memory database or the file you opened DuckDB with. Use this zero-setup path when you do not need a lakehouse catalog. The server still buffers ingest (a POST returns `202`); rows become durable in that database at the next background commit.
 - **DuckLake catalog** (`catalog := '<attached_db>'`): rows stream into a [DuckLake](https://ducklake.select) lakehouse with Parquet data files on local or object storage, tracked by a catalog. Attach the catalog first, then name it:

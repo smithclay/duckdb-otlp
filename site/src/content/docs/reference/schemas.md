@@ -125,8 +125,8 @@ All gauge columns are included, plus the two sum-specific columns above.
 | `sum` | DOUBLE | Sum of all observations (optional) |
 | `min` | DOUBLE | Minimum observed value (optional) |
 | `max` | DOUBLE | Maximum observed value (optional) |
-| `bucket_counts` | VARCHAR | Bucket counts as JSON array of integers |
-| `explicit_bounds` | VARCHAR | Explicit bucket boundaries as JSON array of floats |
+| `bucket_counts` | BIGINT[] | Bucket counts (array of integers) |
+| `explicit_bounds` | DOUBLE[] | Explicit bucket boundaries (array of floats) |
 | `service_name` | VARCHAR | Service name from resource attributes |
 | `service_namespace` | VARCHAR | Service namespace from resource attributes |
 | `service_instance_id` | VARCHAR | Service instance ID from resource attributes |
@@ -158,9 +158,9 @@ All gauge columns are included, plus the two sum-specific columns above.
 | `zero_count` | BIGINT | Count of observations at zero |
 | `zero_threshold` | DOUBLE | Boundary for zero bucket (optional) |
 | `positive_offset` | INTEGER | Starting index for positive buckets |
-| `positive_bucket_counts` | VARCHAR | Positive bucket counts as JSON array |
+| `positive_bucket_counts` | BIGINT[] | Positive bucket counts (array of integers) |
 | `negative_offset` | INTEGER | Starting index for negative buckets |
-| `negative_bucket_counts` | VARCHAR | Negative bucket counts as JSON array |
+| `negative_bucket_counts` | BIGINT[] | Negative bucket counts (array of integers) |
 | `service_name` | VARCHAR | Service name from resource attributes |
 | `service_namespace` | VARCHAR | Service namespace from resource attributes |
 | `service_instance_id` | VARCHAR | Service instance ID from resource attributes |

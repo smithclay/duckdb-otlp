@@ -115,10 +115,10 @@ uvx --from pre-commit pre-commit run --all-files
 
 ### Extension Type
 The extension ships table functions, live ingest functions, and a native daemon. The file-reading table functions use a Rust backend (`otlp2records`) via FFI. They expose:
-- `read_otlp_traces` - 25 columns for trace spans
-- `read_otlp_logs` - 15 columns for log records
-- `read_otlp_metrics_gauge` - 16 columns for gauge metrics
-- `read_otlp_metrics_sum` - 18 columns for sum/counter metrics
+- `read_otlp_traces` - 24 columns for trace spans
+- `read_otlp_logs` - 18 columns for log records
+- `read_otlp_metrics_gauge` - 17 columns for gauge metrics
+- `read_otlp_metrics_sum` - 19 columns for sum/counter metrics
 - `read_otlp_metrics_histogram` - 22 columns for standard histogram metrics
 - `read_otlp_metrics_exp_histogram` - 27 columns for exponential histogram metrics
 
@@ -152,10 +152,10 @@ DuckDB: Convert Arrow to DataChunks
 ### Schema Design
 The table functions emit schemas inspired by the OpenTelemetry ClickHouse exporter, with all column names in `snake_case`:
 
-- **Traces**: 25 columns covering identifiers, scope metadata, resource attributes, events, links, and computed duration
-- **Logs**: 15 columns with severity, body, resource/scope maps, and trace correlation fields
-- **Metrics (gauge)**: 16 columns with timestamp, service info, metric metadata, and value
-- **Metrics (sum)**: 18 columns (gauge columns plus aggregation_temporality and is_monotonic)
+- **Traces**: 24 columns covering identifiers, scope metadata, resource attributes, events, links, and computed duration
+- **Logs**: 18 columns with severity, body, resource/scope maps, and trace correlation fields
+- **Metrics (gauge)**: 17 columns with timestamp, service info, metric metadata, and value
+- **Metrics (sum)**: 19 columns (gauge columns plus aggregation_temporality and is_monotonic)
 
 ## Dependencies
 
