@@ -1,0 +1,102 @@
+# V1 Slop & Hardening Report — duckdb-otlp pre-1.0 pass
+
+Branch `hardening-pass`. Baseline (commit ad725fcb): `GEN=ninja make` clean, `make test`
+green (250 assertions / 16 cases), `make format-check` passes with correct tooling
+(local failure was a missing-`black` venv, not code). Local `clang-tidy` is environmentally
+unusable (the pip/brew LLVM clang-tidy can't resolve this Apple-clang build's libc++ headers,
+erroring on every file); CI runs format+tidy with pinned tooling and gates on them.
+
+Six reviewers (`docs/internal/reviews/A–F`) plus a competitive memo
+(`docs/internal/COMPETITIVE_POSITIONING.md`). No blockers. The findings below are
+deduplicated, ranked, and partitioned by **where the fix lives**, because
+`external/otlp2records` is a **pinned git submodule** (tag `v0.8.4`, its own repo) — Rust/FFI
+fixes are cross-repo and cannot be committed on this branch without a coordinated release.
+
+## Cross-reviewer overlaps (strong signal)
+
+| Theme | Reviewers | Verdict |
+| --- | --- | --- |
+| `defs.rs` is a dead, ungated second schema source of truth | API-004 (high) + SLOP-001 (high) | Real, high — two independent reviewers. Delete (submodule). |
+| `AGENTS.md` column counts wrong (25/15/16/18 → 24/18/17/19) | API-003 + SLOP-008 + BLD-003 | Real — three reviewers. In-repo doc fix. |
+| FFI status enum values never produced (`InvalidFormat`/`OutOfMemory`) | FFI-005 + SLOP-002 | Real, low. Submodule. |
+
+## Global ranking (severity × confidence × blast-radius)
+
+### HIGH
+
+| ID | Where | Finding | Fix location |
+| --- | --- | --- | --- |
+| API-001 | freeze | `status_status_message` doubled-word column frozen into file + live schema | **submodule** (Rust) + in-repo tests/docs |
+| API-002 | freeze | `duration_time_unix_nano` is a Duration(ns)→BIGINT named like a unix-nano timestamp | **submodule** + in-repo tests/docs |
+| API-004 = SLOP-001 | integrity | `defs.rs` dead parallel schema, no drift guard | **submodule** |
+| CON-001 | durability | Decoded columnar heap is unbounded; `max_buffered_bytes` caps only *input* bytes → OOM under stuck/slow seal while `admitted_bytes` shows headroom | **in-repo** (`otlp_server.*`) |
+| CON-002 | durability/obs | Persistently-failing seal keeps returning 202 while `/readyz` stays a static 200; only signal is a stderr WARNING | **in-repo** (`otlp_server_http.cpp`) |
+| BLD-001 | CI safety | PR gate compiles the daemon but never builds/boots the published image or runs ingest→seal e2e (only `docker-smoke` does, gated to main) | **in-repo CI** (needs user OK) |
+
+### MEDIUM
+
+| ID | Where | Finding | Fix |
+| --- | --- | --- | --- |
+| FFI-002 | ABI | Generated `otlp2records_ffi.h` is unused, won't compile standalone, drifted from the real ABI — future-contributor foot-gun | submodule (`build.rs`) |
+| HOT-001 | read hot path | `std::string fmt(schema.format)` + `substr` built per column per chunk in `CopyArrowToDuckDB` | in-repo |
+| HOT-002 | ingest hot path | `CopyArrowStructToDataChunk` rebuilds an identity `column_ids` vector every 2048-row slice | in-repo |
+| HOT-003 | read hot path | Projection pushdown prunes only the Arrow→DuckDB copy; Rust FFI still materializes all columns (the bigger half) | in-repo (document) |
+| HOT-004 | ingest hot path | Row copied ~4× wire→catalog; bridging hops #2/#3 unavoidable w/o Arrow-direct collection append | in-repo (document) |
+| SLOP-003 | integrity | `SqlQuote`/`SqlEscape`/`QuoteIdentifier`(=`QuoteIdent`) copy-pasted across 3 TUs (injection surface) | in-repo |
+| SLOP-004 | integrity | `release_batch` FFI-ownership lambda duplicated byte-for-byte in two TUs | in-repo |
+| SLOP-005 | integrity | `Truthy`/`EnvTruthy` re-implement the same accepted-value set in 2 TUs | in-repo |
+| SLOP-002 = FFI-005 | ABI | Two FFI status codes never produced | submodule |
+| API-005 | docs | `api.md` "~64 MiB" seal trigger; real default 128 MiB | in-repo doc |
+| API-006 | docs | `schemas.md` types the 4 bucket/bound list columns as VARCHAR JSON; readers return `BIGINT[]`/`DOUBLE[]` | in-repo doc |
+| API-007 | API | `otlp_uri_parser` is a registered public scalar, documented nowhere | in-repo (doc or drop) |
+| API-008 | docs | `time_unix_nano` etc. are `TIMESTAMP_NS` in file readers but lossy `TIMESTAMP` (µs) in live tables, same name | in-repo doc |
+| CON-004 | durability | Parquet at-least-once can duplicate rows *within* a signal whose partitioned COPY fails mid-write (documented; comment reads as per-signal-atomic) | in-repo (comment) |
+| CON-005 | durability | 3-attempt drain WARNING conflates "no graceful stop" with "repeated seal failure" | in-repo (log text) |
+| CON-010 / BLD-005 | tests | Seal-path invariants only covered by manual harnesses not in any CI gate; vendored Rust not gated in-repo | recommend |
+| BLD-002 | CI/integrity | `CMakeLists.txt` claims a "docker-smoke gzip e2e canary" that no longer exists after the smoke harness went JSON-only — comment now lies; gzip ingest uncovered | in-repo |
+
+### NIT
+FFI-001 (submodule: narrow schema-leak window if a panic lands between the two `ptr::write`s in `export_record_batch`), FFI-003/004/006/007 (verifications, no defect), HOT-005 (`filter_pushdown=false`, not an easy win), HOT-006 (`unsealed_admission_bytes` could be atomic), HOT-007 (provably-false per-row overflow check on widening unsigned→signed), CON-003 (size-seal can lag one poll interval on a lost notify; latency only), CON-009 (`ListSeals` copies under registry lock), SLOP-006 (`ReadOTLPRustBindData::format` always AUTO), SLOP-007 (`ReadOTLPMetricsUnsupportedScan` unreachable — required ctor placeholder), SLOP-009 (one-line `otlp_request.hpp`), API-009 (`api.md` omits `otlp_seal_list`), API-010 (`serve.md` undercounts its own function table), API-011 (confirm throwing placeholders at freeze), BLD-004 (only `otlp_serve` carries the WASM bind guard), BLD-006 (pre-commit/CI tooling-version drift; local format venv broken).
+
+## Triage
+
+**V1 blockers:** none. The build is clean, tests green, the FFI boundary is sound (exactly-once
+Arrow release verified on all reachable paths, complete panic barrier), and the single-writer
+seal invariant holds.
+
+**Freeze-critical, must decide before tagging 1.0 (cross-repo):** API-001 and API-002 are the
+only findings that are *cheap now, impossible later*. Both are column renames in the
+`otlp2records` submodule schema (`arrow.rs`) that flow into both the file-read functions and the
+live `otlp_*` tables, plus this repo's `test/sql/*.test` and docs. They require a coordinated
+otlp2records release + submodule bump. Recommended: `status_status_message → status_message`,
+`duration_time_unix_nano → duration_nano`. Deferred-pending-decision (see status table); cannot
+be committed on this branch alone.
+
+**Do-now in-repo cleanup (while the code is fresh):** CON-001 (bound decoded heap / at minimum
+surface buffered bytes), CON-002 (`/readyz` degrades on stuck seals), the doc-drift cluster
+(API-003/005/006/007/008/009/010, AGENTS.md counts), the hot-path allocation nits
+(HOT-001/002), the conceptual-integrity dedup (SLOP-003/004/005), BLD-002 (restore/retire the
+gzip canary honestly), and the durability comment/log clarifications (CON-004/005, HOT-003/004
+documentation).
+
+**Recommend, needs user sign-off (CI policy):** BLD-001 — run the image build + smoke e2e on PRs,
+not only post-merge. Touches the CI workflow; flagged for the user rather than changed unilaterally.
+
+**Cross-repo, deferred with rationale (otlp2records submodule, pinned v0.8.4):** API-001, API-002,
+API-004/SLOP-001 (delete `defs.rs`), SLOP-002/FFI-005 (drop unused status codes), FFI-002 (drop
+or relocate the generated header), FFI-001 (write array-before-schema or document the adjacency
+invariant). These are correct and worth doing, but belong in an otlp2records release; documented
+here as the cross-repo work list.
+
+---
+
+## Status log (updated as Phase 4 progresses)
+
+(Each entry: ID(s) — status — commit.)
+
+- API-003 / BLD-003 / SLOP-008 (AGENTS.md column counts 25/15/16/18 → 24/18/17/19) — **fixed** (docs).
+- API-005 (api.md "64 MiB" → 128 MiB) — **fixed** (docs).
+- API-006 (schemas.md bucket/bound lists VARCHAR → BIGINT[]/DOUBLE[]) — **fixed** (docs).
+- API-008 (serve.md cross-link the TIMESTAMP_NS-vs-TIMESTAMP precision note) — **fixed** (docs).
+- API-009 (api.md add `otlp_seal_list`) — **fixed** (docs).
+- API-010 (serve.md "four+one" undercount → "five server functions") — **fixed** (docs).
