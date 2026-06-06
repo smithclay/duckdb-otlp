@@ -105,6 +105,10 @@ here as the cross-repo work list.
 - HOT-001 (`std::string fmt` per column per chunk) — **deferred, won't-fix**: Arrow format strings are all ≤ ~5 chars, well within libc++/libstdc++ SSO (~15–22 bytes), so the construction and the `substr(0,3)` temporaries are stack-allocated — there is no heap churn. A full const-char* rewrite of a correctness-critical conversion function for a micro-CPU saving with no measured benefit is exactly the speculative perf change the pass is meant to avoid.
 - HOT-004/005/006/007, CON-003/009 (nits) — **deferred** (documented in reviews; latency/micro only, no correctness impact). HOT-006 (`unsealed_admission_bytes` could be atomic) intentionally left: the seal-restore arithmetic composes under the all-buffers lock today; an atomic refactor is unmeasured.
 
+- CON-002 (`/readyz` stays 200 while seals fail) — **fixed** — commit 3bf76a24 (`/readyz` returns 503 when `SealStalled()`; daemon healthcheck inherits it; idle/healthy still 200).
+- CON-001 (decoded heap unobservable) — **observability fixed** — commit 3bf76a24 (`buffered_bytes` column on `otlp_server_list`; SQLLogicTest extended). Full decoded-heap *backpressure* gate still **deferred** (a new bound/knob is a larger design decision; the column makes the OOM risk visible in the meantime).
+- API-007 (`otlp_uri_parser` undocumented) — **fixed** (documented in `serve.md` URI-scheme section; kept as public, not dropped).
+
 ### Decisions taken (user, this session)
 1. Schema renames + Rust cleanups: **do now** (submodule + repo).
 2. Durability: **CON-002 + CON-001 observability**.

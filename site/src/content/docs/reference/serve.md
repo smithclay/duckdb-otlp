@@ -191,6 +191,8 @@ Listen URIs use the `otlp:` scheme:
 
 By default, `otlp_serve` allows only `localhost`, `127.0.0.1`, and `::1`. To bind to any other host (for example `0.0.0.0` to accept remote exporters), pass `allow_other_hostname := true`. `otlp_serve` rejects non-localhost hosts before it binds a socket.
 
+The scalar function **`otlp_uri_parser(uri)`** parses an `otlp:` URI and returns a `STRUCT(host VARCHAR, port USMALLINT, ipv6 BOOLEAN, url VARCHAR)` — the same parsing `otlp_serve` uses, useful for validating a URI or deriving the `http://` base URL up front.
+
 ## HTTP endpoints
 
 The `http://` base URL from `listen_url` exposes:
