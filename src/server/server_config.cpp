@@ -2,6 +2,7 @@
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "otlp_sql_util.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -13,6 +14,9 @@ namespace duckdb_otlp_server {
 namespace {
 
 using duckdb::InvalidInputException;
+using duckdb::QuoteIdentifier;
+using duckdb::SqlEscape;
+using duckdb::SqlQuote;
 using duckdb::string;
 using duckdb::StringUtil;
 
@@ -80,18 +84,6 @@ string RequireAnyEnv(const string &label, std::initializer_list<const char *> na
 		msg << " " << candidate;
 	}
 	throw InvalidInputException(msg.str());
-}
-
-string SqlEscape(const string &value) {
-	return StringUtil::Replace(value, "'", "''");
-}
-
-string SqlQuote(const string &value) {
-	return "'" + SqlEscape(value) + "'";
-}
-
-string QuoteIdent(const string &value) {
-	return "\"" + StringUtil::Replace(value, "\"", "\"\"") + "\"";
 }
 
 string EndpointHost(string value) {
@@ -308,7 +300,7 @@ ATTACH %s AS %s (
   DATA_PATH %s
 );
 )SQL",
-	                       SqlQuote("ducklake:" + catalog_path), QuoteIdent(config.catalog), SqlQuote(data_path));
+	                       SqlQuote("ducklake:" + catalog_path), QuoteIdentifier(config.catalog), SqlQuote(data_path));
 }
 
 void ConfigureAwsDuckLake(ServerConfig &config) {
@@ -344,7 +336,7 @@ ATTACH %s AS %s (
 );
 )SQL",
 	                                           SqlQuote(region), SqlQuote("ducklake:" + catalog_path),
-	                                           QuoteIdent(config.catalog), SqlQuote(data_path));
+	                                           QuoteIdentifier(config.catalog), SqlQuote(data_path));
 }
 
 void ConfigureR2DataCatalog(ServerConfig &config) {
@@ -373,7 +365,8 @@ void ConfigureR2DataCatalog(ServerConfig &config) {
 	}
 	auto endpoint = R2EndpointDefault(config.mode);
 
-	config.mode_setup_sql = StringUtil::Format(R"SQL(
+	config.mode_setup_sql = StringUtil::Format(
+	    R"SQL(
 INSTALL iceberg;
 INSTALL httpfs;
 LOAD iceberg;
@@ -396,9 +389,8 @@ ATTACH %s AS %s (
   SECRET cloudflare_catalog_secret
 );
 )SQL",
-	                                           EnvSql(config, access_key_var), EnvSql(config, secret_key_var),
-	                                           SqlQuote(endpoint), EnvSql(config, catalog_token_var),
-	                                           SqlQuote(warehouse), QuoteIdent(config.catalog), SqlQuote(catalog_uri));
+	    EnvSql(config, access_key_var), EnvSql(config, secret_key_var), SqlQuote(endpoint),
+	    EnvSql(config, catalog_token_var), SqlQuote(warehouse), QuoteIdentifier(config.catalog), SqlQuote(catalog_uri));
 }
 
 void ConfigureParquet(ServerConfig &config) {
@@ -496,7 +488,7 @@ ATTACH %s AS %s (
 );
 )SQL",
 	                       EnvSql(config, access_key_var), EnvSql(config, secret_key_var), SqlQuote(endpoint),
-	                       SqlQuote("ducklake:" + catalog_path), QuoteIdent(config.catalog), SqlQuote(data_path));
+	                       SqlQuote("ducklake:" + catalog_path), QuoteIdentifier(config.catalog), SqlQuote(data_path));
 }
 
 void ConfigureR2NeonDuckLake(ServerConfig &config) {
@@ -553,7 +545,7 @@ ATTACH 'ducklake:ducklake_secret' AS %s;
 	    EnvSql(config, access_key_var), EnvSql(config, secret_key_var), SqlQuote(endpoint),
 	    EnvSql(config, "NEON_PGHOST"), EnvSql(config, "NEON_PGPORT", "5432"), EnvSql(config, "NEON_PGDATABASE"),
 	    EnvSql(config, "NEON_PGUSER"), EnvSql(config, "NEON_PGPASSWORD"), EnvSql(config, "NEON_PGSSLMODE", "require"),
-	    SqlQuote(data_path), QuoteIdent(config.catalog));
+	    SqlQuote(data_path), QuoteIdentifier(config.catalog));
 }
 
 void ConfigureS3Tables(ServerConfig &config) {
@@ -607,7 +599,7 @@ LOAD httpfs;
   ENDPOINT_TYPE s3_tables
 );
 )SQL",
-	                                           secret_sql, SqlQuote(bucket_arn), QuoteIdent(config.catalog));
+	                                           secret_sql, SqlQuote(bucket_arn), QuoteIdentifier(config.catalog));
 }
 
 void ConfigureMode(ServerConfig &config) {
@@ -634,6 +626,10 @@ void ConfigureMode(ServerConfig &config) {
 }
 
 } // namespace
+
+bool EnvTruthy(const char *name) {
+	return Truthy(Env(name));
+}
 
 ServerConfig ServerConfig::FromEnv() {
 	auto raw_mode = Env("DUCKDB_MODE");
@@ -694,7 +690,8 @@ string ServerConfig::StartOtlpSql() const {
 	auto export_sql = parquet_export_path.empty()
 	                      ? string("")
 	                      : StringUtil::Format(",\n    parquet_export_path := %s", SqlQuote(parquet_export_path));
-	auto schema_target = catalog.empty() ? QuoteIdent(schema) : QuoteIdent(catalog) + "." + QuoteIdent(schema);
+	auto schema_target =
+	    catalog.empty() ? QuoteIdentifier(schema) : QuoteIdentifier(catalog) + "." + QuoteIdentifier(schema);
 	// The token is read at execution time from a session variable (set via the C++ API in
 	// main.cpp) rather than interpolated as a literal, so it never appears in the generated
 	// SQL string (which DRY_RUN=1 prints to stdout and the engine can echo in error

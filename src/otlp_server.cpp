@@ -15,6 +15,7 @@
 #include "otlp_arrow.hpp"
 #include "otlp_log.hpp"
 #include "otlp_server_internal.hpp"
+#include "otlp_sql_util.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -73,14 +74,6 @@ static bool TimingSafeEqual(const string &a, const string &b) {
 		diff |= static_cast<unsigned char>(a[i]) ^ static_cast<unsigned char>(b[i]);
 	}
 	return diff == 0;
-}
-
-static string QuoteIdentifier(const string &identifier) {
-	return "\"" + StringUtil::Replace(identifier, "\"", "\"\"") + "\"";
-}
-
-static string SqlQuote(const string &value) {
-	return "'" + StringUtil::Replace(value, "'", "''") + "'";
 }
 
 static string QualifiedTable(const string &catalog_name, const string &schema_name, const string &table_name) {
