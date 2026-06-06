@@ -46,6 +46,8 @@ The extension emits typed tables based on the [OpenTelemetry ClickHouse exporter
 | `dropped_links_count` | INTEGER | Number of dropped links |
 | `flags` | INTEGER | Trace flags |
 
+The `duration_time_unix_nano` (span duration) and `status_status_message` (span status message) column names are taken verbatim from the [OpenTelemetry Arrow span schema](https://github.com/open-telemetry/otel-arrow/blob/main/docs/data_model.md) — they are intentional, not typos, and are kept as-is for data-model alignment even though `duration_time_unix_nano` holds a duration rather than an absolute timestamp.
+
 Each span is emitted once, even if multiple files are scanned. Use standard DuckDB SQL to join traces back to logs or metrics via `trace_id`/`span_id`.
 
 ## Logs (`read_otlp_logs`)

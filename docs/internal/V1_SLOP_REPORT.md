@@ -26,8 +26,8 @@ fixes are cross-repo and cannot be committed on this branch without a coordinate
 
 | ID | Where | Finding | Fix location |
 | --- | --- | --- | --- |
-| API-001 | freeze | `status_status_message` doubled-word column frozen into file + live schema | **submodule** (Rust) + in-repo tests/docs |
-| API-002 | freeze | `duration_time_unix_nano` is a Duration(ns)→BIGINT named like a unix-nano timestamp | **submodule** + in-repo tests/docs |
+| ~~API-001~~ | — | ~~`status_status_message` doubled-word~~ — **NOT a defect: OTAP-canonical name** (otel-arrow data model). Won't fix. | n/a |
+| ~~API-002~~ | — | ~~`duration_time_unix_nano` misnamed~~ — **NOT a defect: OTAP-canonical name** (duration field is literally named this in the otel-arrow model). Won't fix. | n/a |
 | API-004 = SLOP-001 | integrity | `defs.rs` dead parallel schema, no drift guard | **submodule** |
 | CON-001 | durability | Decoded columnar heap is unbounded; `max_buffered_bytes` caps only *input* bytes → OOM under stuck/slow seal while `admitted_bytes` shows headroom | **in-repo** (`otlp_server.*`) |
 | CON-002 | durability/obs | Persistently-failing seal keeps returning 202 while `/readyz` stays a static 200; only signal is a stderr WARNING | **in-repo** (`otlp_server_http.cpp`) |
@@ -64,13 +64,10 @@ FFI-001 (submodule: narrow schema-leak window if a panic lands between the two `
 Arrow release verified on all reachable paths, complete panic barrier), and the single-writer
 seal invariant holds.
 
-**Freeze-critical, must decide before tagging 1.0 (cross-repo):** API-001 and API-002 are the
-only findings that are *cheap now, impossible later*. Both are column renames in the
-`otlp2records` submodule schema (`arrow.rs`) that flow into both the file-read functions and the
-live `otlp_*` tables, plus this repo's `test/sql/*.test` and docs. They require a coordinated
-otlp2records release + submodule bump. Recommended: `status_status_message → status_message`,
-`duration_time_unix_nano → duration_nano`. Deferred-pending-decision (see status table); cannot
-be committed on this branch alone.
+**Correction — API-001/API-002 are NOT defects.** The two "awkward" trace column names are the
+OpenTelemetry Arrow (OTAP) data-model field names verbatim, and the schema deliberately conforms
+to that model (README + `schemas.md`). The reviewer/orchestrator misread them; a rename was made
+and fully reverted. The schema is unchanged. There are **no** freeze-critical renames.
 
 **Do-now in-repo cleanup (while the code is fresh):** CON-001 (bound decoded heap / at minimum
 surface buffered bytes), CON-002 (`/readyz` degrades on stuck seals), the doc-drift cluster
@@ -108,7 +105,11 @@ here as the cross-repo work list.
 - HOT-001 (`std::string fmt` per column per chunk) — **deferred, won't-fix**: Arrow format strings are all ≤ ~5 chars, well within libc++/libstdc++ SSO (~15–22 bytes), so the construction and the `substr(0,3)` temporaries are stack-allocated — there is no heap churn. A full const-char* rewrite of a correctness-critical conversion function for a micro-CPU saving with no measured benefit is exactly the speculative perf change the pass is meant to avoid.
 - HOT-004/005/006/007, CON-003/009 (nits) — **deferred** (documented in reviews; latency/micro only, no correctness impact). HOT-006 (`unsealed_admission_bytes` could be atomic) intentionally left: the seal-restore arithmetic composes under the all-buffers lock today; an atomic refactor is unmeasured.
 
-### Pending user decisions (asked)
-- API-001/API-002 schema renames, API-004/SLOP-001 (`defs.rs`), SLOP-002/FFI-005, FFI-001/FFI-002 — all resident in the pinned `otlp2records` submodule (v0.8.4); need a coordinated release.
-- CON-001 (decoded-heap bound) and CON-002 (`/readyz` degrade on stuck seal) — both touch the soon-to-freeze surface / operational contract.
-- BLD-001 — CI PR-gate change (touches the workflow).
+### Decisions taken (user, this session)
+1. Schema renames + Rust cleanups: **do now** (submodule + repo).
+2. Durability: **CON-002 + CON-001 observability**.
+3. BLD-001 CI PR-gate: **leave to the user** — documented, no workflow change.
+
+- **API-001 / API-002 — WON'T FIX (reviewer error, corrected).** `status_status_message` and `duration_time_unix_nano` are **not** typos: they are the exact field names in the OpenTelemetry Arrow (OTAP) span schema (verified against `open-telemetry/otel-arrow/docs/data_model.md` — the spans record defines `duration_time_unix_nano` of type `duration` and `status_status_message` of type `string`), and the README/schemas docs state the schema deliberately aligns with that model. Reviewer D (and the orchestrator) wrongly read them as drift. A rename was briefly made and then **reverted in full** after the maintainer flagged it; the schema is unchanged. The C++ "deliberate divergence from OTAP" note refers only to the duration *type* mapping (BIGINT vs INTERVAL), never the name. Do not re-flag these.
+- API-004/SLOP-001 (delete dead `defs.rs`), SLOP-002/FFI-005 (drop never-produced FFI status codes), FFI-002 (remove generated header + cbindgen), FFI-001 (export_record_batch write-order note) — **fixed** in otlp2records submodule commit **bfeeb36** (branch `hardening-renames`, **UNPUSHED**, no schema-name change); 116 cargo tests pass. Submodule pointer bumped in parent commit **241b3fd**; `make test` 250 assertions + manual harness PASS. **Release step (user): push otlp2records, tag, re-point submodule.**
+- BLD-001 (PR gate doesn't build/boot the published image or run ingest→seal e2e) — **deferred to user (CI policy)**. Recommended fix: run `docker-smoke` (build `runtime-prebuilt` + `scripts/smoke_test.py`, amd64-only, reuses the `daemon-amd64` build cache) on PRs, or at least build+boot `runtime-prebuilt` on PRs, in `.github/workflows/MainDistributionPipeline.yml`. Today a Dockerfile-runtime, arm64-only, or ingest/seal regression first surfaces on the publish run.

@@ -1,5 +1,11 @@
 # Reviewer D — Schema Integrity & Public API Surface (1.0 freeze)
 
+> **CORRECTION (post-review).** API-001 and API-002 below are **wrong**. `status_status_message`
+> and `duration_time_unix_nano` are the verbatim field names from the OpenTelemetry Arrow (OTAP)
+> span data model (`open-telemetry/otel-arrow/docs/data_model.md`), which this schema deliberately
+> conforms to — not typos. A rename was attempted and fully reverted. Treat API-001/API-002 as
+> WON'T FIX. The rest of this review stands.
+
 ## Summary
 
 The schema and API surface is in better shape than the leads suggested, but it carries
