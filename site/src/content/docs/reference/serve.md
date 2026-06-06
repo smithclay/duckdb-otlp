@@ -134,6 +134,7 @@ FROM otlp_server_list();
 | `total_rows` | UBIGINT | Rows **accepted** (buffered) since startup. Once the buffer drains, this equals the rows committed. A `/v1/metrics` request counts rows across all four metric tables. |
 | `buffered_rows` | UBIGINT | Rows in the buffer that the writer has not committed. |
 | `admitted_bytes` | UBIGINT | Encoded request bytes admitted but not yet released by a successful seal. |
+| `buffered_bytes` | UBIGINT | Approximate decoded heap held by the in-memory buffers. Unlike `admitted_bytes` (which bounds *encoded input* via `max_buffered_bytes`), this reflects the real memory footprint and grows unbounded while a seal is stuck — watch it to detect backpressure-vs-OOM risk. |
 | `seal_target_bytes` | UBIGINT | Configured size trigger for requesting a seal. |
 | `seal_max_age_ms` | BIGINT | Configured age trigger for requesting a seal. |
 | `oldest_buffered_age_ms` | BIGINT | Age (ms) of the oldest buffered row, or `NULL` when empty. |
@@ -200,7 +201,7 @@ The `http://` base URL from `listen_url` exposes:
 | POST | `/v1/traces` | Ingest traces into `otlp_traces`. |
 | POST | `/v1/metrics` | Ingest metrics. Fans out across all four metric tables: `otlp_metrics_gauge`, `otlp_metrics_sum`, `otlp_metrics_histogram`, `otlp_metrics_exp_histogram`. |
 | GET | `/healthz` | Liveness probe. Returns `200` with `{"status":"ok"}`. No auth required. |
-| GET | `/readyz` | Readiness probe. Returns `200` with `{"status":"ready"}` once the listener is bound. No auth required. |
+| GET | `/readyz` | Readiness probe. Returns `200` with `{"status":"ready"}` once the listener is bound, and `503` with `{"status":"degraded"}` when buffered rows are not committing (a seal has failed, rows are still buffered, and the last successful seal is absent or several seal cycles old). No auth required. |
 
 Tables live in `<catalog>.<schema>`, chosen by `otlp_serve(catalog := ..., schema := ...)`.
 

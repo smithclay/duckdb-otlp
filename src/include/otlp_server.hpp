@@ -156,6 +156,14 @@ public:
 		return total_rows.load();
 	}
 	idx_t BufferedRows() const;
+	//! Approximate decoded heap held by the in-memory buffers (sum of each signal's
+	//! ColumnDataCollection size). admitted_bytes bounds *input* bytes, not this; surfaced so
+	//! the real memory footprint under a slow/stuck seal is observable.
+	idx_t BufferedBytes() const;
+	//! True when buffered rows are not committing: at least one seal has failed, rows are
+	//! still buffered, and the last successful seal is absent or older than several seal
+	//! cycles. Drives /readyz so a wedged seal backend is visible to orchestrators.
+	bool SealStalled() const;
 	idx_t AdmittedBytes() const {
 		return admitted_bytes.load();
 	}

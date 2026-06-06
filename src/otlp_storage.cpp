@@ -122,6 +122,7 @@ vector<OtlpStorageExtensionInfo::ServerSnapshot> OtlpStorageExtensionInfo::ListS
 		snap.is_listening = server.IsListening();
 		snap.last_error = server.LastError();
 		snap.buffered_rows = server.BufferedRows();
+		snap.buffered_bytes = server.BufferedBytes();
 		snap.admitted_bytes = server.AdmittedBytes();
 		snap.seal_target_bytes = server.SealTargetBytes();
 		snap.seal_max_age_ms = server.SealMaxAgeMs();

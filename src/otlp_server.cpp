@@ -290,6 +290,26 @@ idx_t OtlpServer::BufferedRows() const {
 	return rows;
 }
 
+idx_t OtlpServer::BufferedBytes() const {
+	idx_t bytes = 0;
+	for (auto &buf : signal_buffers) {
+		std::lock_guard<std::mutex> lock(buf->mutex);
+		if (buf->collection) {
+			bytes += buf->collection->SizeInBytes();
+		}
+	}
+	return bytes;
+}
+
+bool OtlpServer::SealStalled() const {
+	if (seal_failures_total.load() == 0 || BufferedRows() == 0) {
+		return false;
+	}
+	static constexpr int64_t STALL_SEAL_CYCLES = 3;
+	auto last_seal_age = LastSealAgeMs();
+	return last_seal_age < 0 || last_seal_age > STALL_SEAL_CYCLES * config.seal_max_age_ms;
+}
+
 int64_t OtlpServer::OldestBufferedAgeMs() const {
 	bool found = false;
 	std::chrono::steady_clock::time_point oldest;

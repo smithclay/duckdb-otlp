@@ -112,8 +112,16 @@ OtlpServer::OtlpServer(ClientContext &context, const OtlpUri &uri_p, const OtlpS
 	impl->server->Get("/healthz", [](const duckdb_httplib::Request &, duckdb_httplib::Response &res) {
 		SetJson(res, 200, "{\"status\":\"ok\"}");
 	});
-	impl->server->Get("/readyz", [](const duckdb_httplib::Request &, duckdb_httplib::Response &res) {
-		SetJson(res, 200, "{\"status\":\"ready\"}");
+	impl->server->Get("/readyz", [this](const duckdb_httplib::Request &, duckdb_httplib::Response &res) {
+		// Degrade readiness when buffered rows are not committing, so an orchestrator (and the
+		// daemon's own healthcheck, which probes /readyz) sees a wedged seal backend instead of a
+		// listener that keeps returning 202 while nothing becomes durable. /healthz stays
+		// liveness-only.
+		if (SealStalled()) {
+			SetJson(res, 503, "{\"status\":\"degraded\",\"reason\":\"buffered rows are not committing\"}");
+		} else {
+			SetJson(res, 200, "{\"status\":\"ready\"}");
+		}
 	});
 
 	auto post_handler = [&](OtlpRequestKind kind) {
