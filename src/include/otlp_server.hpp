@@ -91,6 +91,10 @@ struct OtlpSealEvent {
 	idx_t rows_committed = 0;
 	idx_t admitted_bytes_committed = 0;
 	bool success = false;
+	// Whole-server running totals as of this seal, snapshotted in RecordSealEvent *after* the
+	// per-seal counters have been incremented. Deliberately denormalized so otlp_seal_list() can
+	// show the cumulative tally at each seal without a window function; keep the increment-then-
+	// snapshot order in SealOnce or these values will be off by one seal.
 	idx_t seals_total = 0;
 	idx_t seal_failures_total = 0;
 	idx_t committed_rows_total = 0;
@@ -160,12 +164,6 @@ public:
 	}
 	int64_t SealMaxAgeMs() const {
 		return config.seal_max_age_ms;
-	}
-	idx_t TargetFileSize() const {
-		return config.target_file_size;
-	}
-	int64_t MaintenanceRetentionMs() const {
-		return config.maintenance_retention_ms;
 	}
 	//! Milliseconds since the oldest currently buffered row was admitted, or -1 if empty.
 	int64_t OldestBufferedAgeMs() const;

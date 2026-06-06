@@ -682,6 +682,9 @@ string ServerConfig::StartOtlpSql() const {
 	auto thread_sql = http_threads == 0
 	                      ? string("")
 	                      : StringUtil::Format(",\n    http_threads := %llu", static_cast<uint64_t>(http_threads));
+	// These ingest limits are declared in three places that must stay in lockstep: the ServerConfig
+	// fields (server_config.hpp), the env parsing in FromEnv(), and this otlp_serve() param emission.
+	// Keep the order/format specifiers aligned — a %llu/%lld mismatch against a field's type is silent.
 	auto limits_sql = StringUtil::Format(
 	    ",\n    max_body_bytes := %llu,\n    max_buffered_bytes := %llu,\n    seal_target_bytes := %llu,\n    "
 	    "seal_max_age_ms := %lld,\n    target_file_size := %llu,\n    maintenance_retention_ms := %lld",

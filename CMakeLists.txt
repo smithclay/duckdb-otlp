@@ -69,7 +69,9 @@ if(NOT EMSCRIPTEN)
   # Link the zlib-enabled OTLP archive before duckdb_static. Both archives
   # contain weak inline cpp-httplib symbols; ordering DuckDB first selects its
   # non-zlib request decompressor and makes the daemon reject gzip OTLP bodies
-  # with 415.
+  # with 415. This depends on linker weak-symbol resolution order, so it can
+  # regress silently if DuckDB's httplib vendoring or the linker changes; the
+  # docker-smoke gzip e2e is the canary that catches a regression.
   target_link_libraries(duckdb_otlp_server ${EXTENSION_NAME} duckdb_static
                         ${DUCKDB_EXTRA_LINK_FLAGS})
   link_threads(duckdb_otlp_server "")

@@ -25,6 +25,10 @@ namespace duckdb {
 
 static int64_t NowUnixMs();
 
+//! Milliseconds elapsed since `last_unix_ms` (a NowUnixMs() timestamp), or -1 if
+//! it was never set (0). Clamps to 0 if the clock appears to have gone backwards.
+static int64_t AgeMsSince(int64_t last_unix_ms);
+
 namespace {
 
 static constexpr idx_t TOKEN_BYTES = 16;
@@ -277,25 +281,11 @@ void OtlpServer::StartSealer() {
 }
 
 int64_t OtlpServer::LastSealAgeMs() const {
-	auto last = last_seal_unix_ms.load();
-	if (last == 0) {
-		return -1;
-	}
-	auto now =
-	    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
-	        .count();
-	return now >= last ? now - last : 0;
+	return AgeMsSince(last_seal_unix_ms.load());
 }
 
 int64_t OtlpServer::LastMaintenanceAgeMs() const {
-	auto last = last_maintenance_unix_ms.load();
-	if (last == 0) {
-		return -1;
-	}
-	auto now =
-	    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
-	        .count();
-	return now >= last ? now - last : 0;
+	return AgeMsSince(last_maintenance_unix_ms.load());
 }
 
 idx_t OtlpServer::BufferedRows() const {
@@ -709,6 +699,14 @@ static int64_t NowUnixMs() {
 	    .count();
 }
 
+static int64_t AgeMsSince(int64_t last_unix_ms) {
+	if (last_unix_ms == 0) {
+		return -1;
+	}
+	auto now = NowUnixMs();
+	return now >= last_unix_ms ? now - last_unix_ms : 0;
+}
+
 OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 	std::lock_guard<std::mutex> writer_lock(writer_mutex);
 	if (!writer_con) {
@@ -895,6 +893,10 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 				last_seal_unix_ms.store(NowUnixMs());
 			}
 			seal_failures_total.fetch_add(1);
+			// Parquet COPY is not transactional, so the exported share is durable even though the
+			// seal failed overall. Count it in committed_rows_total (it reflects rows on disk, not
+			// successful seals); this is why otlp_seal_list() can show success=false with
+			// rows_committed > 0. The transaction path below adds nothing on failure (rollback).
 			committed_rows_total.fetch_add(exported_rows);
 			{
 				std::lock_guard<std::mutex> elock(seal_error_mutex);
