@@ -810,9 +810,12 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 				}
 				break;
 			}
-			// COPY returned: these rows are durable in Parquet. The staging drop and the
-			// inspection view are best-effort and must never turn a durable export into a
-			// failure (that would re-buffer and re-export the rows).
+			// COPY returned success: these rows are durable in Parquet. exported[i] means
+			// exactly "this signal's COPY returned", NOT that the write is per-signal atomic —
+			// a partitioned COPY that throws part-way may already have written some partition
+			// files, so the re-buffer + retry below is at-least-once at signal granularity. The
+			// staging drop and the inspection view are best-effort and must never turn a durable
+			// export into a failure (that would re-buffer and re-export the rows).
 			exported[i] = true;
 			exported_rows += sealing[i].rows;
 			result.rows += sealing[i].rows;
@@ -1192,11 +1195,19 @@ void OtlpServer::ShutdownIngest() {
 	}
 	auto remaining_rows = BufferedRows();
 	if (remaining_rows > 0) {
-		LogServerEvent(
-		    StringUtil::Format("dropping %llu buffered rows on shutdown (database closed without graceful otlp_stop, "
-		                       "or repeated seal failure)",
-		                       static_cast<uint64_t>(remaining_rows)),
-		    LogLevel::LOG_WARNING);
+		// Distinguish the two loss causes: if the database is still alive the final seals were
+		// attempted and failed (graceful otlp_stop against a wedged backend) — surface the seal
+		// error; if db_ptr has expired this is the implicit DB-teardown path where SealOnce no-ops.
+		string cause;
+		if (db_ptr.lock()) {
+			auto last_error = SealLastError();
+			cause = last_error.empty() ? "repeated seal failure" : "repeated seal failure: " + last_error;
+		} else {
+			cause = "database closed without graceful otlp_stop";
+		}
+		LogServerEvent(StringUtil::Format("dropping %llu buffered rows on shutdown (%s)",
+		                                  static_cast<uint64_t>(remaining_rows), cause),
+		               LogLevel::LOG_WARNING);
 	}
 	{
 		std::lock_guard<std::mutex> writer_lock(writer_mutex);

@@ -219,6 +219,11 @@ static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, D
 			const auto row_count = static_cast<idx_t>(lstate.current_batch.length);
 			const auto remaining = row_count - lstate.batch_offset;
 			const auto count = MinValue<idx_t>(STANDARD_VECTOR_SIZE, remaining);
+			// Projection pushdown only prunes the Arrow->DuckDB copy here: the Rust transform
+			// already parsed the payload and built every column of the batch (the FFI has no
+			// column mask), so unselected columns are materialized in Rust regardless. Skipping
+			// their copy is the smaller half of the per-column cost; a column-aware transform is
+			// the lever for the larger half and waits on the streaming backend.
 			CopyProjectedArrowStructToDataChunk(lstate.current_batch, bind_data.arrow_schema, output, lstate.column_ids,
 			                                    lstate.batch_offset, count);
 			lstate.batch_offset += count;
