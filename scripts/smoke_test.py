@@ -2,10 +2,11 @@
 """Minimal end-to-end smoke for the published duckdb-otlp daemon image.
 
 Boots the distroless runtime image in local-ducklake mode, POSTs a fixed
-OTLP/JSON log batch over HTTP, flushes via Quack, and asserts the committed
-row count matches what was sent. This exercises the real published artifact
-end to end: distroless boot -> OTLP/HTTP ingest -> buffered seal -> DuckLake
-commit -> Quack read.
+OTLP/JSON log batch over HTTP (plain and gzip-encoded), flushes via Quack, and
+asserts the committed row count matches what was sent. This exercises the real
+published artifact end to end: distroless boot -> OTLP/HTTP ingest -> buffered
+seal -> DuckLake commit -> Quack read. The gzip POST is the canary for the
+zlib-enabled cpp-httplib link order (see CMakeLists.txt).
 
 The image is distroless (no shell/duckdb inside), so the Quack queries run
 from a host `duckdb` CLI against the published Quack port. Requires `docker`
@@ -15,6 +16,7 @@ and `duckdb` on PATH.
 from __future__ import annotations
 
 import argparse
+import gzip
 import http.client
 import json
 import platform
@@ -25,6 +27,7 @@ import sys
 import time
 
 LOG_RECORDS = 5
+GZIP_LOG_RECORDS = 3
 CATALOG = "lake"
 SCHEMA = "otlp"
 SERVE_URI = "otlp:0.0.0.0:4318"
@@ -104,14 +107,13 @@ def wait_for_health(port: int, timeout: float) -> None:
     raise SystemExit(f"server did not become healthy on port {port}: {last_error}")
 
 
-def post_logs(port: int, token: str, body: bytes) -> tuple[int, str]:
+def post_logs(port: int, token: str, body: bytes, content_encoding: str | None = None) -> tuple[int, str]:
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    if content_encoding == "gzip":
+        body = gzip.compress(body)
+        headers["Content-Encoding"] = "gzip"
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
-    conn.request(
-        "POST",
-        "/v1/logs",
-        body=body,
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-    )
+    conn.request("POST", "/v1/logs", body=body, headers=headers)
     resp = conn.getresponse()
     text = resp.read().decode(errors="replace")
     conn.close()
@@ -207,6 +209,21 @@ def main() -> int:
         if accepted != LOG_RECORDS:
             raise SystemExit(f"ingest buffered {accepted} rows, expected {LOG_RECORDS}: {body}")
 
+        # gzip canary: a gzip-encoded body must decode and buffer (202), not be rejected as an
+        # unsupported encoding (415). This is the only CI coverage of the zlib-enabled cpp-httplib
+        # link order in CMakeLists.txt; the wrong order silently selects DuckDB's non-zlib
+        # decompressor and breaks gzip ingest.
+        eprint(f"[smoke] posting {GZIP_LOG_RECORDS} gzip-encoded OTLP/JSON log records")
+        gz_status, gz_body = post_logs(otlp_port, token, otlp_logs_payload(GZIP_LOG_RECORDS), content_encoding="gzip")
+        if gz_status != 202:
+            raise SystemExit(
+                f"gzip ingest returned {gz_status}, expected 202 (zlib httplib link-order regression?): {gz_body}"
+            )
+        gz_accepted = int(json.loads(gz_body).get("rows") or 0)
+        if gz_accepted != GZIP_LOG_RECORDS:
+            raise SystemExit(f"gzip ingest buffered {gz_accepted} rows, expected {GZIP_LOG_RECORDS}: {gz_body}")
+
+        total_records = LOG_RECORDS + GZIP_LOG_RECORDS
         eprint("[smoke] flushing (forces a synchronous seal)")
         flush = quack_rows(quack_port, quack_token, f"SELECT * FROM otlp_flush('{SERVE_URI}')")
         if any(row.get("status") == "error" or row.get("error") for row in flush):
@@ -215,9 +232,9 @@ def main() -> int:
         eprint("[smoke] verifying committed row count")
         rows = quack_rows(quack_port, quack_token, f"SELECT count(*) AS n FROM {CATALOG}.{SCHEMA}.otlp_logs")
         committed = int(rows[0]["n"]) if rows else 0
-        if committed != LOG_RECORDS:
-            raise SystemExit(f"committed otlp_logs rows ({committed}) did not match sent records ({LOG_RECORDS})")
-        eprint(f"[smoke] PASS: {committed} rows ingested and durably committed")
+        if committed != total_records:
+            raise SystemExit(f"committed otlp_logs rows ({committed}) did not match sent records ({total_records})")
+        eprint(f"[smoke] PASS: {committed} rows ingested and durably committed (incl. gzip)")
         return 0
     except BaseException as exc:
         eprint(f"[smoke] FAILED: {exc}")
