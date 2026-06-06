@@ -2,7 +2,7 @@
 
 DuckDB extension for querying and storing OpenTelemetry traces, logs, and metrics with SQL.
 
-As of v0.5, the extension has an embedded HTTP server that lets you stream live telemetry into local parquet files, [DuckLake](https://smithclay.github.io/duckdb-otlp/guides/stream-to-ducklake/), or Iceberg catalogs like [Amazon S3 Tables](https://smithclay.github.io/duckdb-otlp/guides/stream-to-s3-tables/) and [Cloudflare R2 Data Catalog](https://smithclay.github.io/duckdb-otlp/guides/stream-to-r2-data-catalog/).
+As of v0.5, the extension has an embedded HTTP server that lets you stream live telemetry into [local or remote parquet files](https://smithclay.github.io/duckdb-otlp/guides/stream-to-parquet/), [DuckLake](https://smithclay.github.io/duckdb-otlp/guides/stream-to-ducklake/), or Iceberg catalogs like [Amazon S3 Tables](https://smithclay.github.io/duckdb-otlp/guides/stream-to-s3-tables/) and [Cloudflare R2 Data Catalog](https://smithclay.github.io/duckdb-otlp/guides/stream-to-r2-data-catalog/).
 
 ## Quickstart: Read OpenTelemetry data
 
@@ -33,9 +33,13 @@ LOAD otlp;
 Read OTLP protobuf/JSON data from public URLs, local files, or object storage buckets:
 
 ```sql
+-- Install extension to support reading over HTTP(S)
 INSTALL httpfs; LOAD httpfs;
+
+-- Read logs exported from the OpenTelemetry Collector
 SELECT time_unix_nano, service_name, severity_text, body FROM read_otlp_logs('https://github.com/smithclay/duckdb-otlp/raw/refs/heads/main/test/data/otlp_logs.pb');
 
+-- Read traces exported from the OpenTelemetry Collector
 SELECT trace_id, name, duration_time_unix_nano FROM read_otlp_traces('https://github.com/smithclay/duckdb-otlp/raw/refs/heads/main/test/data/otlp_traces.pb') ORDER BY duration_time_unix_nano DESC;
 ```
 
