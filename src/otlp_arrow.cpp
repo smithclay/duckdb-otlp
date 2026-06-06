@@ -481,16 +481,4 @@ void CopyProjectedArrowStructToDataChunk(const ArrowArray &array, const ArrowSch
 	}
 }
 
-void CopyArrowStructToDataChunk(const ArrowArray &array, const ArrowSchema &schema, DataChunk &output, idx_t offset,
-                                idx_t count) {
-	// Non-projected callers (e.g. the HTTP server) map output column N to source Arrow child N.
-	// Build identity column_ids and delegate to the single shared per-column dispatch routine.
-	vector<column_t> column_ids;
-	column_ids.reserve(output.ColumnCount());
-	for (idx_t col_idx = 0; col_idx < output.ColumnCount(); col_idx++) {
-		column_ids.push_back(col_idx);
-	}
-	CopyProjectedArrowStructToDataChunk(array, schema, output, column_ids, offset, count);
-}
-
 } // namespace duckdb

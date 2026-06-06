@@ -34,6 +34,10 @@ struct OtlpSignalBuffer {
 	const OtlpSignalType signal_type;
 	const string table_name;
 	const vector<LogicalType> types;
+	//! Identity projection (0..n_columns-1), precomputed once so the per-chunk append path
+	//! reuses it instead of rebuilding a column_ids vector for every buffered slice. Immutable
+	//! after construction like the other metadata, so workers read it without the mutex.
+	const vector<column_t> identity_column_ids;
 	std::mutex mutex;
 	unique_ptr<ColumnDataCollection> collection;
 	idx_t buffered_rows = 0;
@@ -43,7 +47,17 @@ struct OtlpSignalBuffer {
 	OtlpSignalBuffer(OtlpSignalType signal_type_p, string table_name_p, vector<LogicalType> types_p,
 	                 unique_ptr<ColumnDataCollection> collection_p)
 	    : signal_type(signal_type_p), table_name(std::move(table_name_p)), types(std::move(types_p)),
-	      collection(std::move(collection_p)) {
+	      identity_column_ids(MakeIdentityColumnIds(types.size())), collection(std::move(collection_p)) {
+	}
+
+private:
+	static vector<column_t> MakeIdentityColumnIds(idx_t count) {
+		vector<column_t> ids;
+		ids.reserve(count);
+		for (idx_t i = 0; i < count; i++) {
+			ids.push_back(i);
+		}
+		return ids;
 	}
 };
 

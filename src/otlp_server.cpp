@@ -641,7 +641,7 @@ void OtlpServer::AppendArrowBatch(OtlpSignalBuffer &buf, ArrowArray &array, Arro
 	for (idx_t offset = 0; offset < static_cast<idx_t>(array.length); offset += APPEND_CHUNK_SIZE) {
 		auto count = MinValue<idx_t>(APPEND_CHUNK_SIZE, static_cast<idx_t>(array.length) - offset);
 		chunk.Reset();
-		CopyArrowStructToDataChunk(array, schema, chunk, offset, count);
+		CopyProjectedArrowStructToDataChunk(array, schema, chunk, buf.identity_column_ids, offset, count);
 		BufferAppend(buf, chunk, admission_bytes);
 		result.rows += count;
 		result.batches++;
