@@ -154,7 +154,11 @@ For source builds, development commands, and WASM builds, see [CONTRIBUTING.md](
 
 ## Limits
 
-The file readers limit individual files to **100 MB** to prevent memory exhaustion. Live ingest accepts request bodies up to `max_body_bytes` and applies buffered-ingest backpressure through `max_buffered_bytes`; see the [Live Ingest Reference](https://smithclay.github.io/duckdb-otlp/reference/serve/#responses-and-status-codes).
+Early-stage and **single-node** (one daemon, one writer — no HA or horizontal scaling). Ingest has been benchmarked at ~100k logs/s on a 4-vCPU node; **querying at volume is unproven**, so test on your own data.
+
+- **Durability is the seal, not the `202`.** Live ingest buffers in memory and commits on a periodic group-commit ("seal"); a `202` means *accepted*, not durable. Call `otlp_flush`/`otlp_stop` before shutting down — a hard kill drops un-sealed rows (there is no WAL).
+- **Keep queries time-bounded.** Data lands roughly time-ordered, so queries scoped by `timestamp` (and `service_name`) prune well; unbounded scans are slow. There is **no full-text index** — `body` substring/regex search and `trace_id` point lookups are brute-force scans: cheap over a short window, expensive over a wide one.
+- **File reads** cap individual files at **100 MB**. **Live ingest** is HTTP-only (no gRPC, not in the WASM build), bounds request bodies via `max_body_bytes`, and applies `max_buffered_bytes` backpressure (returns `503`); see the [Live Ingest Reference](https://smithclay.github.io/duckdb-otlp/reference/serve/#responses-and-status-codes).
 
 ## Need Help?
 
