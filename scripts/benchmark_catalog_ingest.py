@@ -1186,7 +1186,7 @@ def send_load(
         raise BenchError(
             f"producer failed with exit {result.returncode}: {producer.get('error') or result.stderr[-2000:]}"
         )
-    if int(producer.get("schema_version") or 0) != 1:
+    if int(producer.get("schema_version") or 0) != 2:
         raise BenchError(f"unsupported producer result schema: {producer.get('schema_version')}")
     return producer_result_to_load(producer, batch_size), producer
 
@@ -1980,7 +1980,7 @@ def main() -> int:
         "body_payload_bytes": args.body_payload_bytes,
         "producer_concurrency": args.producer_concurrency,
         "producer_queue_depth": args.producer_queue_depth,
-        "producer_schema_version": 1,
+        "producer_schema_version": 2,
         "sample_interval_seconds": args.sample_interval,
         "randomized": not args.no_randomize,
         "random_seed": random_seed,
