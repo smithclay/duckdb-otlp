@@ -93,6 +93,9 @@ uv run python benchmark/otlp-log-ingest/run_aws.py cleanup \
 
 The default 4 CPU/8 GiB container limits target `c7g.xlarge`. Reduce the
 explicit consumer limits for a cheap `t4g.medium` smoke as shown above.
+Use `--seal-target-bytes` and `--seal-max-age-ms` to vary the daemon's
+background seal size and age triggers. Their defaults are 64 MiB and 5000 ms;
+`--max-buffered-bytes` is the separate admission/backpressure cap.
 
 `run` performs a 30-second smoke phase, 60-second warm-up, and 180-second
 measurement at 175,000 records/s with batches of 1,000. Use

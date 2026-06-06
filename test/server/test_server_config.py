@@ -113,6 +113,8 @@ def test_otlp_limits_are_configurable(tmp_path):
             "DUCKDB_OTLP_HTTP_THREADS": "4",
             "DUCKDB_OTLP_MAX_BODY_BYTES": "2097152",
             "DUCKDB_OTLP_MAX_BUFFERED_BYTES": "2147483648",
+            "DUCKDB_OTLP_SEAL_TARGET_BYTES": "134217728",
+            "DUCKDB_OTLP_SEAL_MAX_AGE_MS": "3000",
         },
         tmp_path,
     )
@@ -120,6 +122,8 @@ def test_otlp_limits_are_configurable(tmp_path):
     assert "http_threads := 4" in result.stdout
     assert "max_body_bytes := 2097152" in result.stdout
     assert "max_buffered_bytes := 2147483648" in result.stdout
+    assert "seal_target_bytes := 134217728" in result.stdout
+    assert "seal_max_age_ms := 3000" in result.stdout
 
 
 def test_default_token_warns(tmp_path):

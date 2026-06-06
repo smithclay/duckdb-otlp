@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as dt
 import gzip
 import json
@@ -110,9 +111,12 @@ def validate_config(args: argparse.Namespace) -> None:
         "measured_seconds",
         "retention_days",
         "max_runtime_hours",
+        "smoke_rate",
         "consumer_cpus",
         "consumer_memory_gib",
         "max_buffered_bytes",
+        "seal_target_bytes",
+        "seal_max_age_ms",
     ):
         if getattr(args, name) <= 0:
             raise BenchError(f"--{name.replace('_', '-')} must be positive")
@@ -165,7 +169,7 @@ def parse_rates(value: str) -> set[int]:
 
 
 def phases(args: argparse.Namespace, smoke_only: bool = False) -> list[Phase]:
-    result = [Phase("smoke", 10_000, args.smoke_seconds)]
+    result = [Phase("smoke", args.smoke_rate, args.smoke_seconds)]
     if smoke_only:
         return result
     result.append(Phase("warmup", args.rate, args.warmup_seconds))
@@ -475,6 +479,8 @@ def start_consumer(args: argparse.Namespace, state: dict[str, Any]) -> None:
             "-e OTEL_HTTP_ADDR=0.0.0.0:4318 -e DUCKDB_QUACK_ENABLED=1 -e DUCKDB_QUACK_ADDR=0.0.0.0:9494 "
             "-e DUCKDB_OTLP_HTTP_THREADS=4 -e DUCKDB_OTLP_MAX_BODY_BYTES=2097152 "
             f"-e DUCKDB_OTLP_MAX_BUFFERED_BYTES={args.max_buffered_bytes} "
+            f"-e DUCKDB_OTLP_SEAL_TARGET_BYTES={args.seal_target_bytes} "
+            f"-e DUCKDB_OTLP_SEAL_MAX_AGE_MS={args.seal_max_age_ms} "
             '-e DUCKDB_OTLP_TOKEN="$OTLP_TOKEN" -e DUCKDB_QUACK_TOKEN="$QUACK_TOKEN" '
             f"{args.image}",
             "for i in $(seq 1 180); do docker exec duckdb-otlp-benchmark "
@@ -488,15 +494,24 @@ def start_consumer(args: argparse.Namespace, state: dict[str, Any]) -> None:
 
 def quack_query(args: argparse.Namespace, state: dict[str, Any], sql: str) -> list[dict[str, Any]]:
     out = state["outputs"]
+    bucket = out["BucketName"]
+    query_id = secrets.token_hex(12)
+    result_path = f"/tmp/duckdb-otlp-query-{query_id}.json"
+    result_key = f"{args.run_id}/query-results/{query_id}.json"
     sql_literal = sql.replace("'", "''")
     command = (
+        f"set -euo pipefail; trap 'rm -f {result_path}' EXIT; "
         'export HOME=/root; source /opt/duckdb-otlp-benchmark/runtime.env; Q="$QUACK_TOKEN"; '
-        "rm -f /tmp/query.json; "
         '/usr/local/bin/duckdb -unsigned :memory: -c "LOAD quack; '
         f"COPY (FROM quack_query('quack:127.0.0.1:9494','{sql_literal}',token='${{Q}}')) "
-        "TO '/tmp/query.json' (FORMAT JSON);\" >/dev/null; cat /tmp/query.json"
+        f"TO '{result_path}' (FORMAT JSON);\" >/dev/null; "
+        f"aws s3 cp {result_path} s3://{bucket}/{result_key} --only-show-errors"
     )
-    raw = remote(args, out["ConsumerInstanceId"], [command], "query benchmark consumer").strip()
+    remote(args, out["ConsumerInstanceId"], [command], "query benchmark consumer")
+    try:
+        raw = aws(args, "s3", "cp", f"s3://{bucket}/{result_key}", "-", "--only-show-errors").stdout.strip()
+    finally:
+        aws(args, "s3", "rm", f"s3://{bucket}/{result_key}", "--only-show-errors", check=False)
     return [json.loads(line) for line in raw.splitlines() if line.strip()]
 
 
@@ -560,35 +575,62 @@ def start_phase(
     return ssm_send(args, out["ProducerInstanceId"], command, f"run {phase.name} load")
 
 
-def server_sample(args: argparse.Namespace, state: dict[str, Any], phase: Phase) -> dict[str, Any]:
-    rows = quack_query(args, state, "SELECT * FROM otlp_server_list()")
-    raw_stats = remote(
-        args,
-        state["outputs"]["ConsumerInstanceId"],
-        ["docker stats --no-stream --format '{{json .}}' duckdb-otlp-benchmark"],
-        "sample consumer container",
-    ).strip()
-    producer_stats = remote(
-        args,
-        state["outputs"]["ProducerInstanceId"],
-        [
-            f"PID=$(cat /opt/duckdb-otlp-benchmark/{phase.name}.pid 2>/dev/null || true); "
-            'test -n "$PID" && ps -o %cpu=,rss= -p "$PID" || true'
-        ],
-        "sample producer process",
-    ).split()
-    return {
-        "sampled_at": dt.datetime.now(dt.UTC).isoformat(),
-        "server": rows,
-        "container": json.loads(raw_stats) if raw_stats else None,
-        "producer": (
-            {
+def server_sample(
+    args: argparse.Namespace,
+    state: dict[str, Any],
+    phase: Phase,
+    errors: list[str] | None = None,
+) -> dict[str, Any]:
+    # Best-effort: under near-saturation load the daemon's Quack listener can be
+    # CPU-starved and a sample query times out. A dropped sample must never abort
+    # the run -- producer throughput, 503 counts, and end-of-phase reconciliation
+    # do not depend on mid-load sampling. Each piece degrades independently so a
+    # Quack timeout still leaves the container-CPU sample (which shows the
+    # saturation) intact, mirroring run_local's tolerant sampling thread.
+    def record(exc: Exception) -> None:
+        if errors is not None:
+            errors.append(str(exc))
+
+    try:
+        rows = quack_query(args, state, "SELECT * FROM otlp_server_list()")
+    except BenchError as exc:
+        rows = []
+        record(exc)
+    container = None
+    try:
+        raw_stats = remote(
+            args,
+            state["outputs"]["ConsumerInstanceId"],
+            ["docker stats --no-stream --format '{{json .}}' duckdb-otlp-benchmark"],
+            "sample consumer container",
+        ).strip()
+        if raw_stats:
+            container = json.loads(raw_stats)
+    except (BenchError, json.JSONDecodeError) as exc:
+        record(exc)
+    producer = None
+    try:
+        producer_stats = remote(
+            args,
+            state["outputs"]["ProducerInstanceId"],
+            [
+                f"PID=$(cat /opt/duckdb-otlp-benchmark/{phase.name}.pid 2>/dev/null || true); "
+                'test -n "$PID" && ps -o %cpu=,rss= -p "$PID" || true'
+            ],
+            "sample producer process",
+        ).split()
+        if len(producer_stats) == 2:
+            producer = {
                 "cpu_percent": float(producer_stats[0]),
                 "rss_bytes": int(producer_stats[1]) * 1024,
             }
-            if len(producer_stats) == 2
-            else None
-        ),
+    except BenchError as exc:
+        record(exc)
+    return {
+        "sampled_at": dt.datetime.now(dt.UTC).isoformat(),
+        "server": rows,
+        "container": container,
+        "producer": producer,
     }
 
 
@@ -597,47 +639,97 @@ def download_json(args: argparse.Namespace, bucket: str, key: str) -> dict[str, 
     return json.loads(result.stdout)
 
 
-def reconcile(
-    args: argparse.Namespace,
-    state: dict[str, Any],
-    run_id: str,
-    accepted: int,
-    *,
-    verify_sequences: bool = True,
-) -> dict[str, Any]:
-    where = f"""WHERE json_extract_string(log_attributes, '$."benchmark.run_id"') = '{run_id.replace("'", "''")}'"""
-    if not verify_sequences:
-        rows = quack_query(
-            args,
-            state,
-            "SELECT count(*) AS durable_rows FROM lake.otlp.otlp_logs",
-        )
-        result = rows[0] if rows else {}
-        result.update(
-            {
-                "accepted_records": accepted,
-                "sequence_validation": "skipped for cheap smoke",
-            }
-        )
-        return result
-    sql = f"""
-WITH rows AS (
-  SELECT try_cast(json_extract_string(log_attributes, '$."benchmark.sequence"') AS UBIGINT) AS sequence
-  FROM lake.otlp.otlp_logs
-  {where}
-)
-SELECT count(*) AS durable_rows,
-       count(DISTINCT sequence) AS unique_sequences,
-       count(*) - count(DISTINCT sequence) AS duplicate_sequences,
-       min(sequence) AS min_sequence,
-       max(sequence) AS max_sequence
-FROM rows
-"""
-    rows = quack_query(args, state, sql)
-    result = rows[0] if rows else {}
-    result["accepted_records"] = accepted
-    result["missing_accepted_sequences"] = max(0, accepted - int(result.get("unique_sequences") or 0))
-    return result
+def read_committed_total(args: argparse.Namespace, state: dict[str, Any]) -> int:
+    # Fast in-memory control-plane counter -- the daemon's post-COMMIT row tally,
+    # summed across signals, since startup. Read before/after a phase to get the
+    # rows durably committed during it without a catalog scan (no 5s Quack wall).
+    rows = quack_query(args, state, "SELECT committed_rows_total FROM otlp_server_list()")
+    return sum(int(row.get("committed_rows_total") or 0) for row in rows)
+
+
+def counter_reconcile(accepted: int, committed_before: int, committed_after: int) -> dict[str, Any]:
+    # Per-phase, hot-path durability gate: throughput + gross loss only. The
+    # committed counter is the writer's self-report; it cannot see duplicates,
+    # gaps, or queryability -- those are validated once, off the hot path, by
+    # ground_truth_reconcile() reading the actual lake.
+    return {
+        "method": "committed_rows_total delta (control-plane counter)",
+        "accepted_records": accepted,
+        "durable_rows": committed_after - committed_before,
+        "committed_rows_total_before": committed_before,
+        "committed_rows_total_after": committed_after,
+        "sequence_validation": "deferred-to-ground-truth-reconcile",
+        "missing_accepted_sequences": None,
+        "duplicate_sequences": None,
+    }
+
+
+def ground_truth_reconcile_sql() -> str:
+    # Read the durable lake directly: per-phase row count, uniqueness, and
+    # completeness, grouped by the producer-stamped benchmark.run_id.
+    seq = "try_cast(json_extract_string(log_attributes, '$.\"benchmark.sequence\"') AS UBIGINT)"
+    return f"""
+SELECT json_extract_string(log_attributes, '$."benchmark.run_id"') AS run_id,
+       count(*) AS durable_rows,
+       count(DISTINCT {seq}) AS unique_sequences,
+       count(*) - count(DISTINCT {seq}) AS duplicate_sequences,
+       min({seq}) AS min_sequence,
+       max({seq}) AS max_sequence
+FROM lake.otlp.otlp_logs
+GROUP BY run_id
+""".strip()
+
+
+def host_lake_query(args: argparse.Namespace, state: dict[str, Any], sql: str) -> list[dict[str, Any]]:
+    # Run a read query against the DuckLake catalog directly on the consumer host,
+    # off Quack -- so it has no 5s client read timeout, only the SSM execution
+    # timeout (--remote-timeout). The host duckdb loads ducklake/httpfs/aws from
+    # the offline extension cache staged into /root/.duckdb and reaches S3 via the
+    # instance role. The full script is shipped base64-encoded to avoid any
+    # shell/SQL quoting hazard. Requires the daemon stopped (catalog file lock).
+    out = state["outputs"]
+    bucket = out["BucketName"]
+    prefix = f"{args.run_id}/ducklake"
+    catalog = "/data/ducklake/catalog.duckdb"
+    query_id = secrets.token_hex(12)
+    result_path = f"/tmp/duckdb-otlp-lake-{query_id}.json"
+    sql_path = f"/tmp/duckdb-otlp-lake-{query_id}.sql"
+    result_key = f"{args.run_id}/query-results/{query_id}.json"
+    script = (
+        "LOAD ducklake;\nLOAD httpfs;\nLOAD aws;\n"
+        f"CREATE SECRET lake_s3 (TYPE s3, PROVIDER credential_chain, REGION '{args.region}');\n"
+        f"ATTACH 'ducklake:{catalog}' AS lake (DATA_PATH 's3://{bucket}/{prefix}', READ_ONLY);\n"
+        f"COPY (\n{sql}\n) TO '{result_path}' (FORMAT JSON);\n"
+    )
+    script_b64 = base64.b64encode(script.encode()).decode()
+    command = (
+        f"set -euo pipefail; trap 'rm -f {result_path} {sql_path}' EXIT; export HOME=/root; "
+        f"echo {script_b64} | base64 -d > {sql_path}; "
+        f"/usr/local/bin/duckdb -unsigned :memory: < {sql_path} >/dev/null; "
+        f"aws s3 cp {result_path} s3://{bucket}/{result_key} --only-show-errors"
+    )
+    remote(args, out["ConsumerInstanceId"], [command], "ground-truth lake reconcile")
+    try:
+        raw = aws(args, "s3", "cp", f"s3://{bucket}/{result_key}", "-", "--only-show-errors").stdout.strip()
+    finally:
+        aws(args, "s3", "rm", f"s3://{bucket}/{result_key}", "--only-show-errors", check=False)
+    return [json.loads(line) for line in raw.splitlines() if line.strip()]
+
+
+def ground_truth_reconcile(args: argparse.Namespace, state: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    # The single, authoritative correctness check -- run once, off the hot path.
+    # Stop the daemon (releases the catalog file lock; SIGTERM also seals any
+    # residual buffer), then read the durable lake directly for count/uniqueness/
+    # completeness per phase. Keyed by benchmark.run_id == "<run_id>-<phase>".
+    consumer = state["outputs"]["ConsumerInstanceId"]
+    remote(
+        args,
+        consumer,
+        ["set -euo pipefail", "docker stop -t 300 duckdb-otlp-benchmark >/dev/null 2>&1 || true"],
+        "stop daemon to release catalog lock",
+    )
+    rows = host_lake_query(args, state, ground_truth_reconcile_sql())
+    return {str(row["run_id"]): row for row in rows if row.get("run_id") is not None}
 
 
 def phase_seals(producer: dict[str, Any], seals: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -757,6 +849,8 @@ def summarize_samples(samples: list[dict[str, Any]], seals: list[dict[str, Any]]
             oldest_age.append(int(server["oldest_buffered_age_ms"]))
     successful_seals = [row for row in seals if row.get("success")]
     seal_durations = [float(row["duration_ms"]) for row in successful_seals]
+    append_durations = [float(row["append_duration_ms"]) for row in successful_seals]
+    commit_durations = [float(row["commit_duration_ms"]) for row in successful_seals]
     seal_rows = [int(row["rows_committed"]) for row in successful_seals]
     return {
         "producer_cpu_percent_average": (statistics.fmean(producer_cpu) if producer_cpu else None),
@@ -775,6 +869,8 @@ def summarize_samples(samples: list[dict[str, Any]], seals: list[dict[str, Any]]
         "seal_count": len(successful_seals),
         "seal_rows": percentile([float(value) for value in seal_rows]),
         "seal_duration_ms": percentile(seal_durations),
+        "seal_append_duration_ms": percentile(append_durations),
+        "seal_commit_duration_ms": percentile(commit_durations),
         "seal_failures": sum(1 for row in seals if not row.get("success")),
     }
 
@@ -866,9 +962,13 @@ def evaluate(phase: dict[str, Any]) -> list[str]:
         gates.append("final flush failed")
     if int(reconciliation.get("durable_rows") or 0) != int(producer.get("accepted_records") or 0):
         gates.append("durable rows did not equal accepted records")
-    if int(reconciliation.get("missing_accepted_sequences") or 0):
+    # Sequence uniqueness/completeness are validated once, off the hot path, by
+    # ground_truth_reconcile(); per phase they are deferred (None) and not gated.
+    if reconciliation.get("missing_accepted_sequences") is not None and int(
+        reconciliation["missing_accepted_sequences"]
+    ):
         gates.append("accepted sequence missing")
-    if int(reconciliation.get("duplicate_sequences") or 0):
+    if reconciliation.get("duplicate_sequences") is not None and int(reconciliation["duplicate_sequences"]):
         gates.append("duplicate sequence")
     samples = phase.get("samples") or []
     buffered = [int(sample["server"][0].get("buffered_rows") or 0) for sample in samples if sample.get("server")]
@@ -884,6 +984,31 @@ def evaluate(phase: dict[str, Any]) -> list[str]:
     return gates
 
 
+def drain_backlog(args: argparse.Namespace, state: dict[str, Any], deadline_seconds: float = 600.0) -> dict[str, Any]:
+    # Once the producer stops, the background sealer drains the buffer on its own
+    # size/age cadence -- internal daemon work that is NOT bound by Quack's ~5s
+    # client read timeout. So poll buffered_rows -> 0 with cheap in-memory
+    # otlp_server_list() queries (fast now that ingest load has ceased) instead of
+    # forcing one giant synchronous otlp_flush over a single timeout-bound POST.
+    # The subsequent flush then has little or nothing left to seal.
+    deadline = time.monotonic() + deadline_seconds
+    last_buffered: int | None = None
+    poll_errors = 0
+    while time.monotonic() < deadline:
+        try:
+            rows = quack_query(args, state, "SELECT buffered_rows FROM otlp_server_list()")
+        except BenchError:
+            # Transient starvation -- keep waiting; the final flush still guarantees durability.
+            poll_errors += 1
+            time.sleep(args.sample_interval)
+            continue
+        last_buffered = sum(int(row.get("buffered_rows") or 0) for row in rows)
+        if last_buffered == 0:
+            return {"drained": True, "residual_buffered_rows": 0, "poll_errors": poll_errors}
+        time.sleep(args.sample_interval)
+    return {"drained": False, "residual_buffered_rows": last_buffered, "poll_errors": poll_errors}
+
+
 def run_phase(
     args: argparse.Namespace,
     state: dict[str, Any],
@@ -891,11 +1016,13 @@ def run_phase(
     calibration: dict[str, Any],
 ) -> dict[str, Any]:
     started = dt.datetime.now(dt.UTC)
+    committed_before = read_committed_total(args, state)
     command_id = start_phase(args, state, phase, calibration)
     samples: list[dict[str, Any]] = []
+    sample_errors: list[str] = []
     while True:
         invocation = ssm_result(args, command_id, state["outputs"]["ProducerInstanceId"], wait=False)
-        samples.append(server_sample(args, state, phase))
+        samples.append(server_sample(args, state, phase, sample_errors))
         if invocation["Status"] not in {"Pending", "InProgress", "Delayed"}:
             if invocation["Status"] != "Success":
                 raise BenchError(invocation.get("StandardErrorContent") or invocation["Status"])
@@ -904,24 +1031,19 @@ def run_phase(
     bucket = state["outputs"]["BucketName"]
     producer = download_json(args, bucket, f"{args.run_id}/raw/{phase.name}-producer.json")
     flush_start = time.monotonic()
+    drain = drain_backlog(args, state)
     flush = quack_query(args, state, "SELECT * FROM otlp_flush('otlp:0.0.0.0:4318')")
     flush_seconds = time.monotonic() - flush_start
     server_final = quack_query(args, state, "SELECT * FROM otlp_server_list()")
     seals = quack_query(
         args,
         state,
-        "SELECT seal_sequence, started_unix_ms, completed_unix_ms, duration_ms, "
-        "rows_committed, admitted_bytes, success, error FROM otlp_seal_list()",
+        "SELECT completed_unix_ms, duration_ms, append_duration_ms, commit_duration_ms, rows_committed, success "
+        "FROM otlp_seal_list()",
     )
     current_seals = phase_seals(producer, seals)
-    phase_run_id = f"{args.run_id}-{phase.name}"
-    reconciliation = reconcile(
-        args,
-        state,
-        phase_run_id,
-        int(producer.get("accepted_records") or 0),
-        verify_sequences=phase.name != "smoke",
-    )
+    committed_after = sum(int(row.get("committed_rows_total") or 0) for row in server_final)
+    reconciliation = counter_reconcile(int(producer.get("accepted_records") or 0), committed_before, committed_after)
     finished = dt.datetime.now(dt.UTC)
     result = {
         "spec": phase.__dict__,
@@ -929,6 +1051,8 @@ def run_phase(
         "finished_at": finished.isoformat(),
         "producer": producer,
         "samples": samples,
+        "sample_errors": {"count": len(sample_errors), "examples": sample_errors[:3]},
+        "drain": drain,
         "flush": flush,
         "final_flush_seconds": flush_seconds,
         "server_final": server_final,
@@ -974,32 +1098,93 @@ def run_benchmark(args: argparse.Namespace, smoke_only: bool) -> dict[str, Any]:
             save_state(state)
             if not result["success"] and phase.name in {"smoke", "warmup"}:
                 break
-        write_reports(args, state, calibration)
+        # One authoritative correctness pass, off the hot path: stop the daemon and
+        # read the durable lake directly (count/uniqueness/completeness per phase).
+        # Tolerate a failure here so a host-read problem never discards the
+        # throughput results -- it just marks correctness unverified.
+        try:
+            ground_truth = ground_truth_reconcile(args, state)
+            ground_truth_error = None
+        except BenchError as exc:
+            ground_truth = {}
+            ground_truth_error = str(exc)
+        state["ground_truth_reconcile"] = ground_truth
+        state["ground_truth_error"] = ground_truth_error
+        save_state(state)
+        write_reports(args, state, calibration, ground_truth, ground_truth_error)
         return state
     finally:
         if not args.retain:
             cleanup(args)
 
 
-def write_reports(args: argparse.Namespace, state: dict[str, Any], calibration: dict[str, Any]) -> None:
+def phase_integrity(args: argparse.Namespace, name: str, result: dict[str, Any], gt: dict[str, Any]) -> dict[str, Any]:
+    # Authoritative per-phase correctness from the ground-truth lake read.
+    accepted = int(result["reconciliation"].get("accepted_records") or 0)
+    durable = int(gt.get("durable_rows") or 0)
+    unique = int(gt.get("unique_sequences") or 0)
+    duplicate = int(gt.get("duplicate_sequences") or 0)
+    missing = max(0, accepted - unique)
+    gates: list[str] = []
+    if not gt:
+        gates.append("ground-truth reconcile missing for phase")
+    else:
+        if durable != accepted:
+            gates.append("durable rows did not equal accepted records")
+        if duplicate:
+            gates.append("duplicate sequence")
+        if missing:
+            gates.append("accepted sequence missing")
+    return {
+        "run_id": f"{args.run_id}-{name}",
+        "accepted_records": accepted,
+        "durable_rows": durable,
+        "unique_sequences": unique,
+        "duplicate_sequences": duplicate,
+        "missing_accepted_sequences": missing,
+        "failed_gates": gates,
+        "ok": not gates,
+    }
+
+
+def write_reports(
+    args: argparse.Namespace,
+    state: dict[str, Any],
+    calibration: dict[str, Any],
+    ground_truth: dict[str, dict[str, Any]],
+    ground_truth_error: str | None = None,
+) -> None:
     results = {}
     for name in state["phases"]:
         path = output_dir(args.run_id) / f"{name}.json"
         if path.exists():
             results[name] = json.loads(path.read_text())
+    integrity = {
+        name: phase_integrity(args, name, result, ground_truth.get(f"{args.run_id}-{name}", {}))
+        for name, result in results.items()
+    }
     consolidated = {
         "schema_version": 1,
         "run_id": args.run_id,
         "topology": {
             "producer_instance_type": args.instance_type,
             "consumer_instance_type": args.instance_type,
+            "seal_target_bytes": args.seal_target_bytes,
+            "seal_max_age_ms": args.seal_max_age_ms,
             "architecture": "arm64",
             "ducklake_catalog": "consumer EBS",
             "parquet_data": f"s3://{state['outputs']['BucketName']}/{args.run_id}/ducklake",
         },
         "calibration": calibration,
         "phases": results,
-        "success": bool(results) and all(item["success"] for item in results.values()),
+        "ground_truth_reconcile": integrity,
+        "ground_truth_error": ground_truth_error,
+        "success": (
+            bool(results)
+            and all(item["success"] for item in results.values())
+            and ground_truth_error is None
+            and all(item["ok"] for item in integrity.values())
+        ),
     }
     write_json(output_dir(args.run_id) / "benchmark-results.json", consolidated)
     lines = [
@@ -1011,14 +1196,17 @@ def write_reports(args: argparse.Namespace, state: dict[str, Any], calibration: 
         f"- Calibration: {calibration['calibrated_gzip_bytes_per_record']:.2f} gzip bytes/record",
         "",
     ]
+    if ground_truth_error:
+        lines += [f"> Ground-truth reconcile did not complete: {ground_truth_error}", ""]
     for name, result in results.items():
         producer = result["producer"]
         latency = result["durability_latency"]
         resources = result["resources"]
+        gt = integrity[name]
         lines += [
             f"## {name}",
             "",
-            f"- Result: **{'pass' if result['success'] else 'fail'}**",
+            f"- Result: **{'pass' if result['success'] and gt['ok'] else 'fail'}**",
             f"- Generated / accepted: {producer.get('generated_records', 0):,} / "
             f"{producer.get('accepted_records', 0):,}",
             f"- Rejected / failed / ambiguous: {producer.get('rejected_records', 0):,} / "
@@ -1043,9 +1231,13 @@ def write_reports(args: argparse.Namespace, state: dict[str, Any], calibration: 
             f"- Oldest buffered-record age max: {resources.get('oldest_buffered_age_ms_max')} ms",
             f"- Seals / failures: {resources.get('seal_count')} / {resources.get('seal_failures')}; "
             f"seal duration p95: {resources['seal_duration_ms'].get('p95')} ms",
+            f"- Seal append / commit p95: {resources['seal_append_duration_ms'].get('p95')} / "
+            f"{resources['seal_commit_duration_ms'].get('p95')} ms",
             f"- Final flush: {result['final_flush_seconds']:.3f}s",
-            f"- Missing / duplicate: {result['reconciliation'].get('missing_accepted_sequences', 0)} / "
-            f"{result['reconciliation'].get('duplicate_sequences', 0)}",
+            f"- Durable rows (counter): {result['reconciliation'].get('durable_rows', 0):,} "
+            f"vs accepted {result['reconciliation'].get('accepted_records', 0):,}",
+            f"- Ground-truth durable / unique / missing / duplicate: {gt['durable_rows']:,} / "
+            f"{gt['unique_sequences']:,} / {gt['missing_accepted_sequences']:,} / {gt['duplicate_sequences']:,}",
             f"- Accepted-to-durable p95: {latency['accepted_to_durable_batch_ms'].get('p95')} ms "
             "(seal-bucket approximation)",
             f"- Parquet files / bytes: {result['storage']['parquet_file_count']} / "
@@ -1171,13 +1363,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-id", default=unique_run_id())
     parser.add_argument(
         "--region",
-        default=os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"),
+        default=os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-west-2",
     )
-    parser.add_argument("--profile", default=os.environ.get("AWS_PROFILE"))
+    parser.add_argument("--profile", default=os.environ.get("AWS_PROFILE") or "cli-dev")
     parser.add_argument("--instance-type", default="c7g.xlarge")
     parser.add_argument("--consumer-cpus", type=float, default=4)
     parser.add_argument("--consumer-memory-gib", type=int, default=8)
     parser.add_argument("--max-buffered-bytes", type=int, default=2_147_483_648)
+    parser.add_argument("--seal-target-bytes", type=int, default=64 * 1024 * 1024)
+    parser.add_argument("--seal-max-age-ms", type=int, default=5000)
     parser.add_argument("--consumer-volume-gib", type=int, default=100)
     parser.add_argument("--retention-days", type=int, default=1)
     parser.add_argument("--max-runtime-hours", type=int, default=4)
@@ -1191,6 +1385,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--queue-depth", type=int, default=8)
     parser.add_argument("--seed", type=int, default=20_260_605)
     parser.add_argument("--target-gzip-bytes-per-record", type=float, default=786)
+    parser.add_argument("--smoke-rate", type=int, default=10_000)
     parser.add_argument("--smoke-seconds", type=int, default=30)
     parser.add_argument("--warmup-seconds", type=int, default=60)
     parser.add_argument("--measured-seconds", type=int, default=180)

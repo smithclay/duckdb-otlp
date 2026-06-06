@@ -192,6 +192,9 @@ Resources:
                 Action: [s3:GetObject]
                 Resource: [!Sub '${DataBucket.Arn}/${RunId}/artifacts/*']
               - Effect: Allow
+                Action: [s3:PutObject]
+                Resource: [!Sub '${DataBucket.Arn}/${RunId}/query-results/*']
+              - Effect: Allow
                 Action:
                   - s3:GetObject
                   - s3:PutObject

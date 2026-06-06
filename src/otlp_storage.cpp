@@ -123,6 +123,8 @@ vector<OtlpStorageExtensionInfo::ServerSnapshot> OtlpStorageExtensionInfo::ListS
 		snap.last_error = server.LastError();
 		snap.buffered_rows = server.BufferedRows();
 		snap.admitted_bytes = server.AdmittedBytes();
+		snap.seal_target_bytes = server.SealTargetBytes();
+		snap.seal_max_age_ms = server.SealMaxAgeMs();
 		snap.oldest_buffered_age_ms = server.OldestBufferedAgeMs();
 		snap.last_seal_age_ms = server.LastSealAgeMs();
 		snap.seals_total = server.SealsTotal();

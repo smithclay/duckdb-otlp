@@ -19,9 +19,14 @@ CALL otlp_serve('otlp:127.0.0.1:55439', token := 'short');
 OTLP server token must be at least 16 characters long
 
 statement error
-CALL otlp_serve('otlp:127.0.0.1:55439', token := 'dev-token-123456', seal_target_bytes := 1024);
+CALL otlp_serve('otlp:127.0.0.1:55439', token := 'dev-token-123456', seal_target_bytes := 0);
 ----
-Invalid named parameter "seal_target_bytes"
+seal_target_bytes must be greater than zero
+
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55439', token := 'dev-token-123456', seal_max_age_ms := 0);
+----
+seal_max_age_ms must be greater than zero
 
 statement error
 CALL otlp_flush('otlp:127.0.0.1:55439', checkpoint := true);
@@ -40,7 +45,8 @@ Invalid named parameter "checkpoint_interval"
 
 query TTT
 SELECT listen_uri, listen_url, schema_name
-FROM otlp_serve('otlp:127.0.0.1:55439', token := 'dev-token-123456', schema := 'main', create_tables := true);
+FROM otlp_serve('otlp:127.0.0.1:55439', token := 'dev-token-123456', schema := 'main', create_tables := true,
+                seal_target_bytes := 1048576, seal_max_age_ms := 2500);
 ----
 otlp:127.0.0.1:55439	http://127.0.0.1:55439	main
 
@@ -75,6 +81,7 @@ query I
 SELECT count(*) FROM otlp_server_list()
 WHERE listen_uri = 'otlp:127.0.0.1:55439'
   AND buffered_rows = 0 AND admitted_bytes = 0
+  AND seal_target_bytes = 1048576 AND seal_max_age_ms = 2500
   AND oldest_buffered_age_ms IS NULL AND seals_total = 0
   AND committed_rows_total = 0
   AND last_seal_age_ms IS NULL AND seal_last_error IS NULL;

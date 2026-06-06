@@ -40,9 +40,8 @@ struct OtlpServerConfig {
 	idx_t http_threads = 0;
 	//! Internal buffered group-commit ("seal") defaults. Ingest buffers rows in memory
 	//! and a single writer seals them on a size or age trigger, avoiding per-request
-	//! Parquet files and write conflicts. seal_target_bytes / seal_max_age_ms are fixed
-	//! internal v0 defaults — deliberately NOT exposed as otlp_serve() named parameters
-	//! until a caller actually needs to tune the seal cadence.
+	//! Parquet files and write conflicts. These are exposed as advanced cadence knobs;
+	//! max_buffered_bytes remains the independent admission/backpressure cap.
 	//! Explicit otlp_flush is optional; it only requests an immediate seal for fresh
 	//! reads/durability while the server keeps running. otlp_stop performs a final seal.
 	idx_t seal_target_bytes = 64ULL * 1024ULL * 1024ULL; //! seal when admitted bytes reach this
@@ -78,6 +77,8 @@ struct OtlpSealEvent {
 	int64_t started_unix_ms = 0;
 	int64_t completed_unix_ms = 0;
 	int64_t duration_ms = 0;
+	int64_t append_duration_ms = 0;
+	int64_t commit_duration_ms = 0;
 	idx_t rows_committed = 0;
 	idx_t admitted_bytes_committed = 0;
 	bool success = false;
@@ -145,6 +146,12 @@ public:
 	idx_t AdmittedBytes() const {
 		return admitted_bytes.load();
 	}
+	idx_t SealTargetBytes() const {
+		return config.seal_target_bytes;
+	}
+	int64_t SealMaxAgeMs() const {
+		return config.seal_max_age_ms;
+	}
 	//! Milliseconds since the oldest currently buffered row was admitted, or -1 if empty.
 	int64_t OldestBufferedAgeMs() const;
 	idx_t SealsTotal() const {
@@ -211,8 +218,8 @@ private:
 	void RequestSeal();
 	bool SealAgeDue() const;
 	void MaybeRunCatalogMaintenance(idx_t sealed_rows, idx_t sealed_admission_bytes);
-	void RecordSealEvent(int64_t started_unix_ms, idx_t rows_committed, idx_t admitted_bytes_committed, bool success,
-	                     const string &error);
+	void RecordSealEvent(int64_t started_unix_ms, int64_t append_duration_ms, int64_t commit_duration_ms,
+	                     idx_t rows_committed, idx_t admitted_bytes_committed, bool success, const string &error);
 
 	void CreateOrValidateTable(Connection &con, OtlpSignalType signal_type, const string &table_name);
 	void GetSignalColumns(OtlpSignalType signal_type, vector<LogicalType> &types, vector<string> &names);

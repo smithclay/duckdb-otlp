@@ -321,13 +321,16 @@ vector<OtlpSealEvent> OtlpServer::SealHistory() const {
 	return vector<OtlpSealEvent>(seal_history.begin(), seal_history.end());
 }
 
-void OtlpServer::RecordSealEvent(int64_t started_unix_ms, idx_t rows_committed, idx_t admitted_bytes_committed,
-                                 bool success, const string &error) {
+void OtlpServer::RecordSealEvent(int64_t started_unix_ms, int64_t append_duration_ms, int64_t commit_duration_ms,
+                                 idx_t rows_committed, idx_t admitted_bytes_committed, bool success,
+                                 const string &error) {
 	OtlpSealEvent event;
 	event.seal_sequence = seal_sequence.fetch_add(1) + 1;
 	event.started_unix_ms = started_unix_ms;
 	event.completed_unix_ms = NowUnixMs();
 	event.duration_ms = std::max<int64_t>(0, event.completed_unix_ms - event.started_unix_ms);
+	event.append_duration_ms = append_duration_ms;
+	event.commit_duration_ms = commit_duration_ms;
 	event.rows_committed = rows_committed;
 	event.admitted_bytes_committed = admitted_bytes_committed;
 	event.success = success;
@@ -706,6 +709,8 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 	}
 	auto &allocator = Allocator::Get(*db);
 	auto seal_started_unix_ms = NowUnixMs();
+	int64_t append_duration_ms = 0;
+	int64_t commit_duration_ms = 0;
 
 	struct SealingBuffer {
 		unique_ptr<ColumnDataCollection> collection;
@@ -889,7 +894,8 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 			                                  static_cast<uint64_t>(exported_rows), static_cast<uint64_t>(total),
 			                                  failure_msg),
 			               LogLevel::LOG_WARNING);
-			RecordSealEvent(seal_started_unix_ms, exported_rows, sealed_admission_bytes, false, failure_msg);
+			RecordSealEvent(seal_started_unix_ms, append_duration_ms, commit_duration_ms, exported_rows,
+			                sealed_admission_bytes, false, failure_msg);
 			throw IOException(StringUtil::Format("parquet seal failed: %s", failure_msg));
 		}
 
@@ -903,12 +909,14 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 		}
 		LogServerEvent(StringUtil::Format("parquet seal: path=%s rows=%llu batches=%llu", config.parquet_export_path,
 		                                  static_cast<uint64_t>(result.rows), static_cast<uint64_t>(result.batches)));
-		RecordSealEvent(seal_started_unix_ms, result.rows, sealed_admission_bytes, true, "");
+		RecordSealEvent(seal_started_unix_ms, append_duration_ms, commit_duration_ms, result.rows,
+		                sealed_admission_bytes, true, "");
 		return result;
 	}
 
 	try {
 		RunSQL(*writer_con, "BEGIN TRANSACTION");
+		auto append_started = std::chrono::steady_clock::now();
 		for (idx_t i = 0; i < signal_buffers.size(); i++) {
 			if (sealing[i].rows == 0) {
 				continue;
@@ -918,7 +926,14 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 			                                          config.schema_name, buf.table_name);
 			result.rows += sealing[i].rows;
 		}
+		append_duration_ms =
+		    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - append_started)
+		        .count();
+		auto commit_started = std::chrono::steady_clock::now();
 		RunSQL(*writer_con, "COMMIT");
+		commit_duration_ms =
+		    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - commit_started)
+		        .count();
 	} catch (...) {
 		// catch(...) — not just std::exception — so a non-std throw can never escape and
 		// std::terminate the host process, and the buffer is always restored.
@@ -978,7 +993,7 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 			seal_last_error = msg;
 		}
 		LogServerEvent(StringUtil::Format("seal failed: %s", msg), LogLevel::LOG_WARNING);
-		RecordSealEvent(seal_started_unix_ms, 0, 0, false, msg);
+		RecordSealEvent(seal_started_unix_ms, append_duration_ms, commit_duration_ms, 0, 0, false, msg);
 		throw;
 	}
 
@@ -992,7 +1007,8 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 	}
 	LogServerEvent(StringUtil::Format("seal: catalog=%s rows=%llu batches=%llu", config.catalog_name,
 	                                  static_cast<uint64_t>(result.rows), static_cast<uint64_t>(result.batches)));
-	RecordSealEvent(seal_started_unix_ms, result.rows, sealed_admission_bytes, true, "");
+	RecordSealEvent(seal_started_unix_ms, append_duration_ms, commit_duration_ms, result.rows, sealed_admission_bytes,
+	                true, "");
 	if (allow_maintenance) {
 		MaybeRunCatalogMaintenance(result.rows, sealed_admission_bytes);
 	}

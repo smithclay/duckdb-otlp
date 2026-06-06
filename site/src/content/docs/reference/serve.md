@@ -10,7 +10,7 @@ For a runnable walkthrough, see the [Live Ingest Quickstart](../../quickstart/se
 
 ## Functions
 
-The extension registers four lifecycle functions:
+The extension registers four lifecycle functions and one diagnostic function:
 
 | Function | What it does |
 |----------|-------------|
@@ -18,6 +18,7 @@ The extension registers four lifecycle functions:
 | `otlp_flush(uri)` | Force a synchronous commit of buffered rows when readers need fresh data. Returns commit stats. It leaves catalog maintenance alone. |
 | `otlp_stop(uri)` | Stop the server listening on `uri` (commits remaining rows first). Returns a status string. |
 | `otlp_server_list()` | List all running servers with live counters, buffer state, and health. |
+| `otlp_seal_list()` | List recent seal attempts with append, commit, row, byte, and error telemetry. |
 
 ### `otlp_serve([uri], ...)`
 
@@ -42,6 +43,8 @@ SELECT * FROM otlp_serve('otlp:localhost:4318', catalog := 'lake', token := 'my-
 | `max_body_bytes` | UBIGINT | `16777216` (16 MiB) | Reject request bodies larger than this with `413`. Must be greater than zero. |
 | `http_threads` | UBIGINT | host-based bounded default | Worker threads for concurrent HTTP requests. Must be greater than zero when set. |
 | `max_buffered_bytes` | UBIGINT | `536870912` (512 MiB) | Backpressure cap. POSTs that would exceed this return `503`. |
+| `seal_target_bytes` | UBIGINT | `67108864` (64 MiB) | Request an asynchronous seal when admitted, uncommitted request bytes reach this threshold. Must be greater than zero. |
+| `seal_max_age_ms` | BIGINT | `5000` | Request an asynchronous seal when the oldest buffered row reaches this age. Must be greater than zero. |
 
 **Output columns** (one row):
 
@@ -128,13 +131,23 @@ FROM otlp_server_list();
 | `total_requests` | UBIGINT | Requests handled since startup (includes failures). |
 | `total_rows` | UBIGINT | Rows **accepted** (buffered) since startup. Once the buffer drains, this equals the rows committed. A `/v1/metrics` request counts rows across all four metric tables. |
 | `buffered_rows` | UBIGINT | Rows in the buffer that the writer has not committed. |
+| `admitted_bytes` | UBIGINT | Encoded request bytes admitted but not yet released by a successful seal. |
+| `seal_target_bytes` | UBIGINT | Configured size trigger for requesting a seal. |
+| `seal_max_age_ms` | BIGINT | Configured age trigger for requesting a seal. |
+| `oldest_buffered_age_ms` | BIGINT | Age (ms) of the oldest buffered row, or `NULL` when empty. |
 | `last_seal_age_ms` | BIGINT | Age (ms) since the last successful batch commit, or `NULL` if none has completed. |
 | `seals_total` | UBIGINT | Batch commits performed since startup. |
+| `committed_rows_total` | UBIGINT | Rows committed since startup. |
+| `seal_failures_total` | UBIGINT | Failed batch commits since startup. |
 | `is_listening` | BOOLEAN | `false` once the listener has fallen over (e.g. an error after a successful bind). |
 | `last_error` | VARCHAR | Last fatal listener error, or `NULL` if none. |
 | `seal_last_error` | VARCHAR | Last batch commit error, or `NULL` if none. |
 
 Use `is_listening` / `last_error` to detect a dead listener. Use `seal_last_error` to inspect writer failures, such as catalog conflicts.
+
+### `otlp_seal_list()`
+
+Lists the bounded in-memory history of recent seal attempts for all running servers. `duration_ms` covers the complete seal attempt. For transaction-backed targets, `append_duration_ms` measures appending buffered chunks into the destination tables and `commit_duration_ms` measures `COMMIT`, including catalog and object-storage work. The remaining duration is buffer swapping, transaction setup, and bookkeeping. Plain Parquet export does not have a transaction commit, so both phase fields are zero.
 
 ## Catalog targeting
 
@@ -256,6 +269,8 @@ The server **buffers ingest and commits rows in batches** for each target. Batch
 The project tracks a future durable raw-spool journal for at-least-once delivery.
 
 **Backpressure:** if admitting a request would exceed `max_buffered_bytes` (default 512 MiB) across in-flight and uncommitted accepted payloads, the POST returns `503` before parse/transform work. Clients should retry with backoff.
+
+**Seal cadence:** `seal_target_bytes` and `seal_max_age_ms` are size and age triggers for the single asynchronous writer. They control batching latency and file/transaction size; they do not raise durable write throughput. `max_buffered_bytes` remains the separate admission cap.
 
 **Keeping DuckLake tidy:** each batch commit can leave a small Parquet file per signal. For DuckLake, the server lets the catalog run its own maintenance through DuckDB's catalog-native `CHECKPOINT` machinery when recent ingest leaves enough admission headroom. The hook skips per-seal maintenance and stays outside the ingest transaction; a maintenance failure leaves committed rows intact. `otlp_flush` still forces only ingest durability and leaves compaction to catalog maintenance.
 

@@ -40,6 +40,8 @@ public:
 		string last_error;
 		idx_t buffered_rows;
 		idx_t admitted_bytes;
+		idx_t seal_target_bytes;
+		int64_t seal_max_age_ms;
 		int64_t oldest_buffered_age_ms;
 		int64_t last_seal_age_ms;
 		idx_t seals_total;
