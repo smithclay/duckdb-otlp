@@ -119,9 +119,10 @@ jobs:
           if-no-files-found: error
 
   # End-to-end smoke before publishing: package the amd64 daemon into the runtime image
-  # (reusing the compiled artifact, no recompile) and run the existing benchmark harness
-  # as a short local-ducklake e2e. The harness asserts committed rows == accepted records,
-  # so a durability/ingest regression fails here and blocks the publish.
+  # (reusing the compiled artifact, no recompile) and run a minimal local-ducklake e2e
+  # (scripts/smoke_test.py): boot the distroless image, POST one fixed OTLP/JSON log
+  # batch, flush, and assert the committed row count over Quack. A distroless-boot,
+  # ingest, seal, or DuckLake-commit regression fails here and blocks the publish.
   docker-smoke:
     name: Docker e2e smoke (local-ducklake)
     if: ${{ github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
@@ -149,12 +150,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: benchmark/otlp-log-ingest/producer/go.mod
-          cache-dependency-path: benchmark/otlp-log-ingest/producer/go.sum
-
       - name: Build amd64 runtime image (load)
         uses: docker/build-push-action@v6
         with:
@@ -175,14 +170,10 @@ jobs:
 
       - name: Run e2e smoke
         run: |
-          python3 scripts/benchmark_catalog_ingest.py \
-            --scenario local-ducklake \
+          python3 scripts/smoke_test.py \
             --image duckdb-otlp:smoke \
-            --duration 3 \
-            --rate 200 \
-            --batch-size 50 \
-            --startup-timeout 120 \
-            --output-dir output/smoke
+            --platform linux/amd64 \
+            --startup-timeout 120
 
   docker-image:
     name: Build and publish server image
