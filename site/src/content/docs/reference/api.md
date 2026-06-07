@@ -49,12 +49,13 @@ Returns exponential histogram metrics (27 columns) with scale, zero bucket, posi
 
 ## Live Ingest
 
-In native builds, you can run an HTTP server that accepts live OTLP/HTTP exports and streams them into the default DuckDB catalog or an attached writable catalog such as DuckLake or an Iceberg REST catalog. The server buffers rows and commits them in batches: a POST returns `202 Accepted`, and rows become durable at the next background commit or on graceful stop. Current native builds commit after about 5 seconds for the oldest buffered row, or when admitted request-body bytes reach about 64 MiB.
+In native builds, you can run an HTTP server that accepts live OTLP/HTTP exports and streams them into the default DuckDB catalog or an attached writable catalog such as DuckLake or an Iceberg REST catalog. The server buffers rows and commits them in batches: a POST returns `202 Accepted`, and rows become durable at the next background commit or on graceful stop. Current native builds commit after about 5 seconds for the oldest buffered row, or when admitted request-body bytes reach about 128 MiB.
 
 - **`otlp_serve([uri], catalog := '<attached_db>', ...)`** - Start the ingest server, target a catalog, and create/validate the target tables.
 - **`otlp_flush(uri)`** - Force a synchronous commit when readers need the latest accepted rows now.
 - **`otlp_stop(uri)`** - Stop the server listening on `uri` (commits remaining rows first).
 - **`otlp_server_list()`** - List running servers with live counters, buffer state, and health.
+- **`otlp_seal_list()`** - List recent seal attempts with append/commit timing, row/byte counts, and any error.
 
 See the [Serve Reference](../serve/) for parameters, catalog targeting, endpoints, auth, and buffered commit behavior. For task-oriented walkthroughs, start with the [Live Ingest Quickstart](../../quickstart/serve/), [Stream to Local DuckLake](../../guides/stream-to-local-ducklake/), [Stream to Remote DuckLake](../../guides/stream-to-remote-ducklake/), [Stream to Parquet](../../guides/stream-to-parquet/), [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/), or [Stream to Cloudflare R2 Data Catalog](../../guides/stream-to-r2-data-catalog/).
 

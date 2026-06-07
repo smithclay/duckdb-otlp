@@ -91,7 +91,7 @@ WHERE listen_uri = 'otlp:127.0.0.1:55439' AND catalog_name = '';
 query I
 SELECT count(*) FROM otlp_server_list()
 WHERE listen_uri = 'otlp:127.0.0.1:55439'
-  AND buffered_rows = 0 AND admitted_bytes = 0
+  AND buffered_rows = 0 AND buffered_bytes = 0 AND admitted_bytes = 0
   AND seal_target_bytes = 1048576 AND seal_max_age_ms = 2500
   AND oldest_buffered_age_ms IS NULL AND seals_total = 0
   AND committed_rows_total = 0

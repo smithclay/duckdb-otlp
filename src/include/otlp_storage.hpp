@@ -39,6 +39,7 @@ public:
 		bool is_listening;
 		string last_error;
 		idx_t buffered_rows;
+		idx_t buffered_bytes;
 		idx_t admitted_bytes;
 		idx_t seal_target_bytes;
 		int64_t seal_max_age_ms;

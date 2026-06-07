@@ -1,5 +1,6 @@
 #include "server_config.hpp"
 #include "storage/otlp_extension.hpp"
+#include "otlp_sql_util.hpp"
 
 #include "duckdb.hpp"
 #include "duckdb/common/error_data.hpp"
@@ -85,14 +86,6 @@ bool TryExecuteShutdown(duckdb::Connection &con, const duckdb::string &sql, cons
 	}
 }
 
-duckdb::string SqlEscape(const duckdb::string &value) {
-	return duckdb::StringUtil::Replace(value, "'", "''");
-}
-
-duckdb::string SqlQuote(const duckdb::string &value) {
-	return "'" + SqlEscape(value) + "'";
-}
-
 struct OtlpHealth {
 	bool found = false;
 	bool listening = false;
@@ -105,7 +98,7 @@ OtlpHealth QueryOtlpHealth(duckdb::Connection &con, const duckdb_otlp_server::Se
 	auto result =
 	    con.Query("SELECT is_listening, coalesce(last_error, ''), seal_failures_total, coalesce(seal_last_error, '') "
 	              "FROM otlp_server_list() WHERE listen_uri = " +
-	              SqlQuote(config.listen_uri) + " LIMIT 1");
+	              duckdb::SqlQuote(config.listen_uri) + " LIMIT 1");
 	CheckResult(*result, "otlp readiness");
 	auto chunk = result->Fetch();
 	if (!chunk || chunk->size() == 0) {
@@ -179,16 +172,6 @@ duckdb::string EnvOr(const char *name, const duckdb::string &fallback) {
 	return value && value[0] ? duckdb::string(value) : fallback;
 }
 
-bool EnvTruthy(const char *name) {
-	auto value = std::getenv(name);
-	if (!value || !value[0]) {
-		return false;
-	}
-	duckdb::string lowered(value);
-	return lowered == "1" || lowered == "true" || lowered == "TRUE" || lowered == "yes" || lowered == "YES" ||
-	       lowered == "on" || lowered == "ON";
-}
-
 int PortFromAddr(const duckdb::string &addr, int fallback) {
 	auto colon = addr.rfind(':');
 	if (colon == duckdb::string::npos) {
@@ -212,7 +195,7 @@ int RunHealthCheck() {
 	if (!duckdb::OtlpLoopbackHttpStatusOk(otlp_port, "/readyz")) {
 		return 1;
 	}
-	if (EnvTruthy("DUCKDB_QUACK_ENABLED") || EnvTruthy("QUACK_ENABLED")) {
+	if (duckdb_otlp_server::EnvTruthy("DUCKDB_QUACK_ENABLED") || duckdb_otlp_server::EnvTruthy("QUACK_ENABLED")) {
 		auto quack_addr = EnvOr("DUCKDB_QUACK_ADDR", EnvOr("QUACK_HTTP_ADDR", "0.0.0.0:9494"));
 		if (!duckdb::OtlpLoopbackHttpStatusOk(PortFromAddr(quack_addr, 9494), "/")) {
 			return 1;

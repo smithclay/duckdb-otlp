@@ -46,6 +46,8 @@ The extension emits typed tables based on the [OpenTelemetry ClickHouse exporter
 | `dropped_links_count` | INTEGER | Number of dropped links |
 | `flags` | INTEGER | Trace flags |
 
+The `duration_time_unix_nano` (span duration) and `status_status_message` (span status message) column names are taken verbatim from the [OpenTelemetry Arrow span schema](https://github.com/open-telemetry/otel-arrow/blob/main/docs/data_model.md) — they are intentional, not typos, and are kept as-is for data-model alignment even though `duration_time_unix_nano` holds a duration rather than an absolute timestamp.
+
 Each span is emitted once, even if multiple files are scanned. Use standard DuckDB SQL to join traces back to logs or metrics via `trace_id`/`span_id`.
 
 ## Logs (`read_otlp_logs`)
@@ -125,8 +127,8 @@ All gauge columns are included, plus the two sum-specific columns above.
 | `sum` | DOUBLE | Sum of all observations (optional) |
 | `min` | DOUBLE | Minimum observed value (optional) |
 | `max` | DOUBLE | Maximum observed value (optional) |
-| `bucket_counts` | VARCHAR | Bucket counts as JSON array of integers |
-| `explicit_bounds` | VARCHAR | Explicit bucket boundaries as JSON array of floats |
+| `bucket_counts` | BIGINT[] | Bucket counts (array of integers) |
+| `explicit_bounds` | DOUBLE[] | Explicit bucket boundaries (array of floats) |
 | `service_name` | VARCHAR | Service name from resource attributes |
 | `service_namespace` | VARCHAR | Service namespace from resource attributes |
 | `service_instance_id` | VARCHAR | Service instance ID from resource attributes |
@@ -158,9 +160,9 @@ All gauge columns are included, plus the two sum-specific columns above.
 | `zero_count` | BIGINT | Count of observations at zero |
 | `zero_threshold` | DOUBLE | Boundary for zero bucket (optional) |
 | `positive_offset` | INTEGER | Starting index for positive buckets |
-| `positive_bucket_counts` | VARCHAR | Positive bucket counts as JSON array |
+| `positive_bucket_counts` | BIGINT[] | Positive bucket counts (array of integers) |
 | `negative_offset` | INTEGER | Starting index for negative buckets |
-| `negative_bucket_counts` | VARCHAR | Negative bucket counts as JSON array |
+| `negative_bucket_counts` | BIGINT[] | Negative bucket counts (array of integers) |
 | `service_name` | VARCHAR | Service name from resource attributes |
 | `service_namespace` | VARCHAR | Service namespace from resource attributes |
 | `service_instance_id` | VARCHAR | Service instance ID from resource attributes |

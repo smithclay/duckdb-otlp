@@ -219,6 +219,11 @@ static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, D
 			const auto row_count = static_cast<idx_t>(lstate.current_batch.length);
 			const auto remaining = row_count - lstate.batch_offset;
 			const auto count = MinValue<idx_t>(STANDARD_VECTOR_SIZE, remaining);
+			// Projection pushdown only prunes the Arrow->DuckDB copy here: the Rust transform
+			// already parsed the payload and built every column of the batch (the FFI has no
+			// column mask), so unselected columns are materialized in Rust regardless. Skipping
+			// their copy is the smaller half of the per-column cost; a column-aware transform is
+			// the lever for the larger half and waits on the streaming backend.
 			CopyProjectedArrowStructToDataChunk(lstate.current_batch, bind_data.arrow_schema, output, lstate.column_ids,
 			                                    lstate.batch_offset, count);
 			lstate.batch_offset += count;
@@ -313,21 +318,6 @@ static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, D
 				break;
 			}
 
-			// Release helper: free a present batch's array+schema and mark it absent so the
-			// later release_others pass cannot double-free the chosen batch.
-			auto release_batch = [](OtlpArrowBatch &batch) {
-				if (!batch.present) {
-					return;
-				}
-				if (batch.array.release) {
-					batch.array.release(&batch.array);
-				}
-				if (batch.schema.release) {
-					batch.schema.release(&batch.schema);
-				}
-				batch.present = 0;
-			};
-
 			// Keep the chosen array; release its schema (we convert via the cached bind-time
 			// schema). If the chosen shape is absent, leave array unreleasable below.
 			if (chosen->present) {
@@ -343,10 +333,10 @@ static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, D
 			chosen->present = 0;
 
 			// Release every remaining present batch (array + schema) so nothing leaks.
-			release_batch(batches.gauge);
-			release_batch(batches.sum);
-			release_batch(batches.histogram);
-			release_batch(batches.exp_histogram);
+			ReleaseOtlpArrowBatch(batches.gauge);
+			ReleaseOtlpArrowBatch(batches.sum);
+			ReleaseOtlpArrowBatch(batches.histogram);
+			ReleaseOtlpArrowBatch(batches.exp_histogram);
 			break;
 		}
 		default:

@@ -15,6 +15,7 @@
 #include "otlp_arrow.hpp"
 #include "otlp_log.hpp"
 #include "otlp_server_internal.hpp"
+#include "otlp_sql_util.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -73,14 +74,6 @@ static bool TimingSafeEqual(const string &a, const string &b) {
 		diff |= static_cast<unsigned char>(a[i]) ^ static_cast<unsigned char>(b[i]);
 	}
 	return diff == 0;
-}
-
-static string QuoteIdentifier(const string &identifier) {
-	return "\"" + StringUtil::Replace(identifier, "\"", "\"\"") + "\"";
-}
-
-static string SqlQuote(const string &value) {
-	return "'" + StringUtil::Replace(value, "'", "''") + "'";
 }
 
 static string QualifiedTable(const string &catalog_name, const string &schema_name, const string &table_name) {
@@ -295,6 +288,26 @@ idx_t OtlpServer::BufferedRows() const {
 		rows += buf->buffered_rows;
 	}
 	return rows;
+}
+
+idx_t OtlpServer::BufferedBytes() const {
+	idx_t bytes = 0;
+	for (auto &buf : signal_buffers) {
+		std::lock_guard<std::mutex> lock(buf->mutex);
+		if (buf->collection) {
+			bytes += buf->collection->SizeInBytes();
+		}
+	}
+	return bytes;
+}
+
+bool OtlpServer::SealStalled() const {
+	if (seal_failures_total.load() == 0 || BufferedRows() == 0) {
+		return false;
+	}
+	static constexpr int64_t STALL_SEAL_CYCLES = 3;
+	auto last_seal_age = LastSealAgeMs();
+	return last_seal_age < 0 || last_seal_age > STALL_SEAL_CYCLES * config.seal_max_age_ms;
 }
 
 int64_t OtlpServer::OldestBufferedAgeMs() const {
@@ -593,23 +606,11 @@ void OtlpServer::BufferMetrics(const string &body, OtlpInputFormat format, OtlpI
 	OtlpStatus status =
 	    otlp_transform_metrics_all(format, reinterpret_cast<const uint8_t *>(body.data()), body.size(), &batches);
 
-	auto release_batch = [](OtlpArrowBatch &batch) {
-		if (!batch.present) {
-			return;
-		}
-		if (batch.array.release) {
-			batch.array.release(&batch.array);
-		}
-		if (batch.schema.release) {
-			batch.schema.release(&batch.schema);
-		}
-		batch.present = 0;
-	};
 	auto release_all = [&]() {
-		release_batch(batches.gauge);
-		release_batch(batches.sum);
-		release_batch(batches.histogram);
-		release_batch(batches.exp_histogram);
+		ReleaseOtlpArrowBatch(batches.gauge);
+		ReleaseOtlpArrowBatch(batches.sum);
+		ReleaseOtlpArrowBatch(batches.histogram);
+		ReleaseOtlpArrowBatch(batches.exp_histogram);
 	};
 
 	if (status != OTLP_OK) {
@@ -660,7 +661,7 @@ void OtlpServer::AppendArrowBatch(OtlpSignalBuffer &buf, ArrowArray &array, Arro
 	for (idx_t offset = 0; offset < static_cast<idx_t>(array.length); offset += APPEND_CHUNK_SIZE) {
 		auto count = MinValue<idx_t>(APPEND_CHUNK_SIZE, static_cast<idx_t>(array.length) - offset);
 		chunk.Reset();
-		CopyArrowStructToDataChunk(array, schema, chunk, offset, count);
+		CopyProjectedArrowStructToDataChunk(array, schema, chunk, buf.identity_column_ids, offset, count);
 		BufferAppend(buf, chunk, admission_bytes);
 		result.rows += count;
 		result.batches++;
@@ -829,9 +830,12 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 				}
 				break;
 			}
-			// COPY returned: these rows are durable in Parquet. The staging drop and the
-			// inspection view are best-effort and must never turn a durable export into a
-			// failure (that would re-buffer and re-export the rows).
+			// COPY returned success: these rows are durable in Parquet. exported[i] means
+			// exactly "this signal's COPY returned", NOT that the write is per-signal atomic —
+			// a partitioned COPY that throws part-way may already have written some partition
+			// files, so the re-buffer + retry below is at-least-once at signal granularity. The
+			// staging drop and the inspection view are best-effort and must never turn a durable
+			// export into a failure (that would re-buffer and re-export the rows).
 			exported[i] = true;
 			exported_rows += sealing[i].rows;
 			result.rows += sealing[i].rows;
@@ -1211,11 +1215,19 @@ void OtlpServer::ShutdownIngest() {
 	}
 	auto remaining_rows = BufferedRows();
 	if (remaining_rows > 0) {
-		LogServerEvent(
-		    StringUtil::Format("dropping %llu buffered rows on shutdown (database closed without graceful otlp_stop, "
-		                       "or repeated seal failure)",
-		                       static_cast<uint64_t>(remaining_rows)),
-		    LogLevel::LOG_WARNING);
+		// Distinguish the two loss causes: if the database is still alive the final seals were
+		// attempted and failed (graceful otlp_stop against a wedged backend) — surface the seal
+		// error; if db_ptr has expired this is the implicit DB-teardown path where SealOnce no-ops.
+		string cause;
+		if (db_ptr.lock()) {
+			auto last_error = SealLastError();
+			cause = last_error.empty() ? "repeated seal failure" : "repeated seal failure: " + last_error;
+		} else {
+			cause = "database closed without graceful otlp_stop";
+		}
+		LogServerEvent(StringUtil::Format("dropping %llu buffered rows on shutdown (%s)",
+		                                  static_cast<uint64_t>(remaining_rows), cause),
+		               LogLevel::LOG_WARNING);
 	}
 	{
 		std::lock_guard<std::mutex> writer_lock(writer_mutex);

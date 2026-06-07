@@ -7,6 +7,11 @@
 
 namespace duckdb_otlp_server {
 
+//! True when environment variable `name` is set to a recognized truthy value
+//! (1/true/yes/on and their upper-case spellings). Shared by FromEnv() and the
+//! daemon's healthcheck subcommand so the accepted set has one definition.
+bool EnvTruthy(const char *name);
+
 struct ServerConfig {
 	duckdb::string mode;
 	duckdb::string database;

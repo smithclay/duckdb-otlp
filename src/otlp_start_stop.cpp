@@ -306,6 +306,9 @@ static unique_ptr<FunctionData> OtlpServerListBind(ClientContext &context, Table
 	return_types.emplace_back(OtlpBigIntType());
 	names.emplace_back("maintenance_last_error");
 	return_types.emplace_back(OtlpVarcharType());
+	// Appended (not inserted next to buffered_rows) so existing column positions are unchanged.
+	names.emplace_back("buffered_bytes");
+	return_types.emplace_back(OtlpUBigIntType());
 	return make_uniq<OtlpServerListFunctionData>();
 }
 
@@ -351,6 +354,7 @@ static void OtlpServerList(ClientContext &context, TableFunctionInput &data_p, D
 		                                              : Value::BIGINT(s.last_maintenance_age_ms));
 		output.SetValue(
 		    24, row, s.maintenance_last_error.empty() ? Value(LogicalType::VARCHAR) : Value(s.maintenance_last_error));
+		output.SetValue(25, row, Value::UBIGINT(s.buffered_bytes));
 		row++;
 		bind_data.offset++;
 	}

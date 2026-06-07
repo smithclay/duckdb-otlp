@@ -10,7 +10,7 @@ For a runnable walkthrough, see the [Live Ingest Quickstart](../../quickstart/se
 
 ## Functions
 
-The extension registers four lifecycle functions and one diagnostic function:
+The extension registers five server functions (four lifecycle, one diagnostic):
 
 | Function | What it does |
 |----------|-------------|
@@ -134,6 +134,7 @@ FROM otlp_server_list();
 | `total_rows` | UBIGINT | Rows **accepted** (buffered) since startup. Once the buffer drains, this equals the rows committed. A `/v1/metrics` request counts rows across all four metric tables. |
 | `buffered_rows` | UBIGINT | Rows in the buffer that the writer has not committed. |
 | `admitted_bytes` | UBIGINT | Encoded request bytes admitted but not yet released by a successful seal. |
+| `buffered_bytes` | UBIGINT | Approximate decoded heap held by the in-memory buffers. Unlike `admitted_bytes` (which bounds *encoded input* via `max_buffered_bytes`), this reflects the real memory footprint and grows unbounded while a seal is stuck — watch it to detect backpressure-vs-OOM risk. |
 | `seal_target_bytes` | UBIGINT | Configured size trigger for requesting a seal. |
 | `seal_max_age_ms` | BIGINT | Configured age trigger for requesting a seal. |
 | `oldest_buffered_age_ms` | BIGINT | Age (ms) of the oldest buffered row, or `NULL` when empty. |
@@ -157,7 +158,7 @@ Lists the bounded in-memory history of recent seal attempts for all running serv
 
 ## Catalog targeting
 
-The target of a server is `<catalog>.<schema>.<table>`:
+The target of a server is `<catalog>.<schema>.<table>`. The live-ingest tables keep the same column names as the file readers, but the nanosecond timestamp columns (`time_unix_nano`, `start_time_unix_nano`, …) are stored as DuckDB `TIMESTAMP` (microsecond) for catalog compatibility, where the file readers expose `TIMESTAMP_NS` — so a query that mixes a live table with `read_otlp_*` sees two types and loses sub-microsecond precision on the live side (see the [Schema Reference](../schemas/#type-system-notes)).
 
 - **Default catalog** (`catalog` omitted): rows land in the connection's default catalog, either an in-memory database or the file you opened DuckDB with. Use this zero-setup path when you do not need a lakehouse catalog. The server still buffers ingest (a POST returns `202`); rows become durable in that database at the next background commit.
 - **DuckLake catalog** (`catalog := '<attached_db>'`): rows stream into a [DuckLake](https://ducklake.select) lakehouse with Parquet data files on local or object storage, tracked by a catalog. Attach the catalog first, then name it:
@@ -190,6 +191,8 @@ Listen URIs use the `otlp:` scheme:
 
 By default, `otlp_serve` allows only `localhost`, `127.0.0.1`, and `::1`. To bind to any other host (for example `0.0.0.0` to accept remote exporters), pass `allow_other_hostname := true`. `otlp_serve` rejects non-localhost hosts before it binds a socket.
 
+The scalar function **`otlp_uri_parser(uri)`** parses an `otlp:` URI and returns a `STRUCT(host VARCHAR, port USMALLINT, ipv6 BOOLEAN, url VARCHAR)` — the same parsing `otlp_serve` uses, useful for validating a URI or deriving the `http://` base URL up front.
+
 ## HTTP endpoints
 
 The `http://` base URL from `listen_url` exposes:
@@ -200,7 +203,7 @@ The `http://` base URL from `listen_url` exposes:
 | POST | `/v1/traces` | Ingest traces into `otlp_traces`. |
 | POST | `/v1/metrics` | Ingest metrics. Fans out across all four metric tables: `otlp_metrics_gauge`, `otlp_metrics_sum`, `otlp_metrics_histogram`, `otlp_metrics_exp_histogram`. |
 | GET | `/healthz` | Liveness probe. Returns `200` with `{"status":"ok"}`. No auth required. |
-| GET | `/readyz` | Readiness probe. Returns `200` with `{"status":"ready"}` once the listener is bound. No auth required. |
+| GET | `/readyz` | Readiness probe. Returns `200` with `{"status":"ready"}` once the listener is bound, and `503` with `{"status":"degraded"}` when buffered rows are not committing (a seal has failed, rows are still buffered, and the last successful seal is absent or several seal cycles old). No auth required. |
 
 Tables live in `<catalog>.<schema>`, chosen by `otlp_serve(catalog := ..., schema := ...)`.
 
