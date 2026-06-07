@@ -26,3 +26,6 @@ __pycache__/
 site/.astro/
 site/dist/
 site/node_modules/
+
+# Internal review/tracking notes (kept locally, not committed)
+docs/internal/
