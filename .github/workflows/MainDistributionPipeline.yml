@@ -33,19 +33,20 @@ env:
 jobs:
   duckdb-stable-build:
     name: Build extension binaries
-    # extension-ci-tools pinned to b3af38e2 (2026-05-22), the commit that pins the
-    # Windows runner to `windows-2025-vs2026`. The v1.5.3 ci-tools branch still uses
-    # `windows-latest`, whose updated MSVC can no longer compile DuckDB's bundled fmt
-    # (`stdext::checked_array_iterator` was removed) — see the fmt C2653/C7525 errors.
-    # DuckDB itself stays at v1.5.3 (its latest release); only the CI tooling moves.
-    # Revert to @v1.5.3 once that runner fix is backported to the v1.5.3 branch.
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@b3af38e253b9be5cec4dcb5cb3e7c80c35634609
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.3
     with:
       duckdb_version: v1.5.3
-      ci_tools_version: b3af38e253b9be5cec4dcb5cb3e7c80c35634609
+      ci_tools_version: v1.5.3
       extension_name: otlp
       extra_toolchains: rust
-      exclude_archs: "wasm_mvp;wasm_threads;linux_amd64_musl"
+      # Windows is excluded: DuckDB v1.5.3's bundled fmt no longer compiles on any
+      # current GitHub Windows MSVC image (`stdext::checked_array_iterator` removed →
+      # fmt errors C2653/C7525), and v1.5.3 is the latest DuckDB release, so there is
+      # no newer DuckDB to move to. Bumping extension-ci-tools to the newer
+      # `windows-2025-vs2026` runner did not help (that MSVC is newer still). Re-enable
+      # by removing windows_amd64;windows_amd64_mingw once a DuckDB release ships an
+      # MSVC-compatible fmt.
+      exclude_archs: "wasm_mvp;wasm_threads;linux_amd64_musl;windows_amd64;windows_amd64_mingw"
 
   # Cheap guard so daemon breakage fails on PRs and feature-branch pushes without paying
   # for the 2-arch publish path. Compiles amd64 natively and warms the shared cache
