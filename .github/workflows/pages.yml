@@ -72,8 +72,8 @@ jobs:
             arch="${arch#${prefix}}"
             src="${dir}${EXT_NAME}.duckdb_extension"
             if [ ! -f "$src" ]; then
-              echo "::warning::no ${EXT_NAME}.duckdb_extension in ${dir}, skipping ${arch}"
-              continue
+              echo "::error::no ${EXT_NAME}.duckdb_extension in ${dir} for ${arch}"
+              exit 1
             fi
             out="_extension_repository/${DUCKDB_VERSION}/${arch}"
             mkdir -p "$out"
@@ -214,7 +214,8 @@ jobs:
           fi
 
           if [ "$restored" -eq 0 ]; then
-            echo "::warning::No extension repository artifact found; deploying site without extension binaries"
+            echo "::error::No extension repository artifact found; cannot deploy site with complete extension binaries"
+            exit 1
           fi
 
       - name: Upload Pages artifact

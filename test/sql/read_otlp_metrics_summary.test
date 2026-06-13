@@ -1,0 +1,40 @@
+# name: test/sql/read_otlp_metrics_summary.test
+# description: Test behavior when metrics file contains only summary data points (skipped_summaries path)
+# group: [sql]
+
+require otlp
+
+# A file with only summary data points returns 0 rows for each typed reader
+# because the Rust backend emits no gauge/sum/histogram/exp_histogram batches.
+# The summary signal is not surfaced (summary support is not yet implemented).
+
+# gauge reader: 0 rows for a summary-only file
+query I
+SELECT COUNT(*) FROM read_otlp_metrics_gauge('test/data/metrics_summary_only.jsonl');
+----
+0
+
+# sum reader: 0 rows for a summary-only file
+query I
+SELECT COUNT(*) FROM read_otlp_metrics_sum('test/data/metrics_summary_only.jsonl');
+----
+0
+
+# histogram reader: 0 rows for a summary-only file
+query I
+SELECT COUNT(*) FROM read_otlp_metrics_histogram('test/data/metrics_summary_only.jsonl');
+----
+0
+
+# exp_histogram reader: 0 rows for a summary-only file
+query I
+SELECT COUNT(*) FROM read_otlp_metrics_exp_histogram('test/data/metrics_summary_only.jsonl');
+----
+0
+
+# read_otlp_metrics_summary throws NotImplementedException at bind time regardless
+# of file contents — the file argument never reaches the scan function.
+statement error
+SELECT * FROM read_otlp_metrics_summary('test/data/metrics_summary_only.jsonl');
+----
+Summary metrics not yet supported

@@ -226,6 +226,10 @@ static unique_ptr<FunctionData> OtlpStopBind(ClientContext &context, TableFuncti
 	bind_data->listen_uri = OtlpUri(uri_value.GetValue<string>());
 	names.emplace_back("status");
 	return_types.emplace_back(OtlpVarcharType());
+	// Rows still buffered after the final shutdown drain failed (dropped). 0 on a clean stop.
+	// Lets the daemon / an orchestrator detect a data-dropping shutdown (review finding M4).
+	names.emplace_back("dropped_rows");
+	return_types.emplace_back(OtlpUBigIntType());
 	return std::move(bind_data);
 }
 
@@ -235,11 +239,19 @@ static void OtlpStop(ClientContext &context, TableFunctionInput &data_p, DataChu
 		return;
 	}
 	auto &state = OtlpStorageExtensionInfo::GetState(*context.db);
-	if (state.StopServer(context, bind_data.listen_uri)) {
-		output.SetValue(0, 0, StringUtil::Format("Stopped listening on %s", bind_data.listen_uri.Uri()));
+	auto stop = state.StopServer(context, bind_data.listen_uri);
+	if (stop.found) {
+		if (stop.dropped_rows > 0) {
+			output.SetValue(0, 0,
+			                StringUtil::Format("Stopped listening on %s; dropped %llu un-sealed buffered rows",
+			                                   bind_data.listen_uri.Uri(), static_cast<uint64_t>(stop.dropped_rows)));
+		} else {
+			output.SetValue(0, 0, StringUtil::Format("Stopped listening on %s", bind_data.listen_uri.Uri()));
+		}
 	} else {
 		output.SetValue(0, 0, StringUtil::Format("No server found listening on %s", bind_data.listen_uri.Uri()));
 	}
+	output.SetValue(1, 0, Value::UBIGINT(stop.dropped_rows));
 	output.SetCardinality(1);
 	bind_data.finished = true;
 }

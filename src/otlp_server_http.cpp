@@ -202,6 +202,14 @@ OtlpServer::OtlpServer(ClientContext &context, const OtlpUri &uri_p, const OtlpS
 	}
 	is_running.store(true);
 	listen_thread = std::thread(ListenThread, this);
+	// Close the TOCTOU window between our is_running flag and httplib's own is_running_
+	// (which only flips true once the listener enters listen_internal()). Until then,
+	// Server::stop() short-circuits to a no-op, so a StopAccepting()/SIGTERM issued in
+	// this window would leave the listener blocked in accept() forever and Close() would
+	// join a thread that never exits. wait_until_ready() spins until the accept loop is
+	// live; the socket is already bound synchronously above, so it cannot block forever
+	// (it also returns immediately if the listener is decommissioned).
+	impl->server->wait_until_ready();
 }
 
 void OtlpServer::StopAccepting() {

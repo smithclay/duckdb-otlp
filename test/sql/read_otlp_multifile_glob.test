@@ -1,0 +1,27 @@
+# name: test/sql/read_otlp_multifile_glob.test
+# description: Test multi-file glob where one file is valid and one is malformed
+# group: [sql]
+
+require otlp
+
+# Verify each file individually first.
+
+# The valid file produces one span.
+query I
+SELECT COUNT(*) FROM read_otlp_traces('test/data/multifile_valid_traces.jsonl');
+----
+1
+
+# The malformed file alone errors with a parse error.
+statement error
+SELECT COUNT(*) FROM read_otlp_traces('test/data/multifile_malformed_traces.jsonl');
+----
+OTLP parse error
+
+# A glob that matches both files should also error because the malformed file
+# cannot be parsed. The error propagates from whichever thread processes the
+# bad file first (file-parallel scan).
+statement error
+SELECT COUNT(*) FROM read_otlp_traces('test/data/multifile_*.jsonl');
+----
+OTLP parse error

@@ -244,7 +244,14 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 			if (start < 0 || end < start) {
 				throw IOException("Invalid Arrow large_utf8 offsets: start=%lld end=%lld", start, end);
 			}
-			string_data[i] = StringVector::AddString(output, data + start, static_cast<idx_t>(end - start));
+			int64_t length = end - start;
+			// DuckDB string_t stores length as uint32_t; reject strings that exceed that limit.
+			// This is also a wasm32/32-bit safety gate: an unchecked cast to idx_t (uint32_t on
+			// 32-bit) would silently truncate lengths above 4 GiB.
+			if (length > static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
+				throw IOException("Arrow large_utf8 string length %lld exceeds DuckDB string_t 32-bit limit", length);
+			}
+			string_data[i] = StringVector::AddString(output, data + start, static_cast<idx_t>(length));
 		}
 	} else if (fmt == "l" || fmt == "L" || fmt == "i" || fmt == "I" || fmt == "s" || fmt == "S" || fmt == "c" ||
 	           fmt == "C") {
@@ -379,7 +386,15 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 				mask.SetInvalid(i);
 				continue;
 			}
-			const uint8_t *row = bytes + array_idx * static_cast<size_t>(width);
+			// Guard against wasm32/32-bit pointer-arithmetic wrap: compute the byte offset as
+			// uint64_t before indexing so that large array_idx * width cannot silently truncate
+			// on targets where size_t is 32 bits.
+			uint64_t byte_offset = static_cast<uint64_t>(array_idx) * static_cast<uint64_t>(width);
+			if (byte_offset > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+				throw IOException("Arrow FixedSizeBinary byte offset overflows size_t (array_idx=%llu width=%d)",
+				                  static_cast<uint64_t>(array_idx), width);
+			}
+			const uint8_t *row = bytes + static_cast<size_t>(byte_offset);
 			for (int b = 0; b < width; b++) {
 				buf[2 * static_cast<size_t>(b)] = hex[row[b] >> 4];
 				buf[2 * static_cast<size_t>(b) + 1] = hex[row[b] & 0x0F];
@@ -434,7 +449,17 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 		auto &child_vec = ListVector::GetEntry(output);
 		if (child_count > 0) {
 			ArrowArray child_view = *array.children[0];
-			child_view.offset = array.children[0]->offset + first_child;
+			// Producer invariant: child array offset must be 0. The list path adds first_child
+			// (from the parent offsets buffer) onto the child's own offset to slice the child
+			// array. If the child offset were non-zero the two shifts would compound and silently
+			// corrupt every list entry. The Rust otlp2records backend always produces offset==0
+			// here, but third-party Arrow producers may not.
+			if (array.children[0]->offset != 0) {
+				throw IOException("Arrow list child array has non-zero offset (%lld); this producer violates the "
+				                  "expected invariant that child offset is 0",
+				                  static_cast<int64_t>(array.children[0]->offset));
+			}
+			child_view.offset = first_child;
 			CopyArrowToDuckDB(child_view, *schema.children[0], child_vec, child_count);
 		}
 		ListVector::SetListSize(output, child_count);

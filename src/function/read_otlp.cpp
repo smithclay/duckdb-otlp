@@ -12,6 +12,7 @@
 #include "duckdb/main/extension/extension_loader.hpp"
 
 #include "otlp_arrow.hpp"
+#include "otlp_ingest_limits.hpp"
 
 // Include the Rust FFI header
 #include "otlp2records.h"
@@ -54,7 +55,9 @@ struct ReadOTLPRustGlobalState : public GlobalTableFunctionState {
 	idx_t MaxThreads() const override {
 		// One file per thread: each thread pulls a distinct file via next_file and
 		// keeps fully isolated local state (file_buffer/current_batch). bind_data
-		// (schema) is read-only, so multi-file globs scan in parallel.
+		// (schema) is read-only, so multi-file globs scan in parallel. NOTE: parallelism
+		// is per-file, so a glob that resolves to a SINGLE file (the common case for one
+		// path argument) is processed single-threaded — there is no intra-file split.
 		return MaxValue<idx_t>(1, file_count);
 	}
 };
@@ -249,12 +252,15 @@ static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, D
 
 		// Whole-file materialization: the entire file is read into file_buffer and the whole
 		// file is transformed into a single ArrowArray held in memory at once (input is capped
-		// at MAX_FILE_SIZE below). This is the prototype approach; a streaming/chunked reader
-		// that incrementally parses and yields batches is the intended future direction.
+		// at otlp_limits::MAX_READ_FILE_BYTES below). This is the prototype approach; a
+		// streaming/chunked reader that incrementally parses and yields batches is the intended
+		// future direction.
 		auto file_size = handle->GetFileSize();
 
-		// Limit file size to 100MB for safety
-		constexpr idx_t MAX_FILE_SIZE = 100ULL * 1024ULL * 1024ULL;
+		// Cap the whole-file read for safety. This bounds an entire file materialized at once and
+		// is intentionally distinct from the live server's per-request body cap
+		// (otlp_limits::DEFAULT_MAX_BODY_BYTES); see otlp_ingest_limits.hpp for why the two differ.
+		constexpr idx_t MAX_FILE_SIZE = otlp_limits::MAX_READ_FILE_BYTES;
 		if (file_size > MAX_FILE_SIZE) {
 			throw IOException("File %s is too large (%llu bytes). Maximum supported size is 100MB.", path,
 			                  static_cast<uint64_t>(file_size));
@@ -366,53 +372,36 @@ static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, D
 // ============================================================================
 
 void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
-	// read_otlp_logs
-	TableFunction logs_func("read_otlp_logs", {LogicalType::VARCHAR}, ReadOTLPRustScan, ReadOTLPLogsRustBind,
-	                        ReadOTLPRustInitGlobal, ReadOTLPRustInitLocal);
-	logs_func.projection_pushdown = true;
-	logs_func.filter_pushdown = false;
-	loader.RegisterFunction(logs_func);
+	// The six supported read_otlp_* functions are identical except for their name and signal-specific
+	// bind function: same scan/init, single VARCHAR arg, projection pushdown on / filter pushdown off.
+	// Drive them from a table so the shared shape lives in one place. (The two unsupported functions
+	// below differ materially — different scan, no init, no pushdown — and stay hand-written.)
+	struct ReadOtlpReg {
+		const char *name;
+		table_function_bind_t bind;
+	};
+	const ReadOtlpReg supported[] = {
+	    {"read_otlp_logs", ReadOTLPLogsRustBind},
+	    {"read_otlp_traces", ReadOTLPTracesRustBind},
+	    {"read_otlp_metrics_gauge", ReadOTLPMetricsGaugeRustBind},
+	    {"read_otlp_metrics_sum", ReadOTLPMetricsSumRustBind},
+	    {"read_otlp_metrics_exp_histogram", ReadOTLPMetricsExpHistogramRustBind},
+	    {"read_otlp_metrics_histogram", ReadOTLPMetricsHistogramRustBind},
+	};
+	for (const auto &reg : supported) {
+		TableFunction func(reg.name, {LogicalType::VARCHAR}, ReadOTLPRustScan, reg.bind, ReadOTLPRustInitGlobal,
+		                   ReadOTLPRustInitLocal);
+		func.projection_pushdown = true;
+		func.filter_pushdown = false;
+		loader.RegisterFunction(func);
+	}
 
-	// read_otlp_traces
-	TableFunction traces_func("read_otlp_traces", {LogicalType::VARCHAR}, ReadOTLPRustScan, ReadOTLPTracesRustBind,
-	                          ReadOTLPRustInitGlobal, ReadOTLPRustInitLocal);
-	traces_func.projection_pushdown = true;
-	traces_func.filter_pushdown = false;
-	loader.RegisterFunction(traces_func);
-
-	// read_otlp_metrics_gauge
-	TableFunction gauge_func("read_otlp_metrics_gauge", {LogicalType::VARCHAR}, ReadOTLPRustScan,
-	                         ReadOTLPMetricsGaugeRustBind, ReadOTLPRustInitGlobal, ReadOTLPRustInitLocal);
-	gauge_func.projection_pushdown = true;
-	gauge_func.filter_pushdown = false;
-	loader.RegisterFunction(gauge_func);
-
-	// read_otlp_metrics_sum
-	TableFunction sum_func("read_otlp_metrics_sum", {LogicalType::VARCHAR}, ReadOTLPRustScan,
-	                       ReadOTLPMetricsSumRustBind, ReadOTLPRustInitGlobal, ReadOTLPRustInitLocal);
-	sum_func.projection_pushdown = true;
-	sum_func.filter_pushdown = false;
-	loader.RegisterFunction(sum_func);
-
+	// read_otlp_metrics: registered solely to throw a not-implemented error at bind time.
 	TableFunction metrics_func("read_otlp_metrics", {LogicalType::VARCHAR}, ReadOTLPMetricsUnsupportedScan,
 	                           ReadOTLPMetricsUnionUnsupportedBind);
 	loader.RegisterFunction(metrics_func);
 
-	// read_otlp_metrics_exp_histogram
-	TableFunction exp_histogram_func("read_otlp_metrics_exp_histogram", {LogicalType::VARCHAR}, ReadOTLPRustScan,
-	                                 ReadOTLPMetricsExpHistogramRustBind, ReadOTLPRustInitGlobal,
-	                                 ReadOTLPRustInitLocal);
-	exp_histogram_func.projection_pushdown = true;
-	exp_histogram_func.filter_pushdown = false;
-	loader.RegisterFunction(exp_histogram_func);
-
-	// read_otlp_metrics_histogram
-	TableFunction histogram_func("read_otlp_metrics_histogram", {LogicalType::VARCHAR}, ReadOTLPRustScan,
-	                             ReadOTLPMetricsHistogramRustBind, ReadOTLPRustInitGlobal, ReadOTLPRustInitLocal);
-	histogram_func.projection_pushdown = true;
-	histogram_func.filter_pushdown = false;
-	loader.RegisterFunction(histogram_func);
-
+	// read_otlp_metrics_summary: likewise registered solely to throw a not-implemented error.
 	TableFunction summary_func("read_otlp_metrics_summary", {LogicalType::VARCHAR}, ReadOTLPMetricsUnsupportedScan,
 	                           ReadOTLPMetricsSummaryRustBind);
 	loader.RegisterFunction(summary_func);

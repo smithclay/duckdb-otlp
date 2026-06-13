@@ -1,0 +1,76 @@
+# name: test/sql/read_otlp_metrics_histogram_ndjson.test
+# description: verify read_otlp_metrics_histogram with NDJSON (one record per line) input
+# group: [sql]
+
+require otlp
+
+# The NDJSON fixture contains the same histogram payload as metrics_all_types.jsonl
+# (line 3 of that file) but as a standalone NDJSON file. Expected outputs are
+# identical to those in read_otlp_metrics_histogram.test.
+
+# Test basic query and row count
+query I
+SELECT COUNT(*) FROM read_otlp_metrics_histogram('test/data/metrics_histogram_ndjson.jsonl');
+----
+1
+
+# Test metric name
+query I
+SELECT name FROM read_otlp_metrics_histogram('test/data/metrics_histogram_ndjson.jsonl');
+----
+latency.hist
+
+# Test metric description
+query I
+SELECT description FROM read_otlp_metrics_histogram('test/data/metrics_histogram_ndjson.jsonl');
+----
+Latency
+
+# Test unit
+query I
+SELECT unit FROM read_otlp_metrics_histogram('test/data/metrics_histogram_ndjson.jsonl');
+----
+ms
+
+# Test count value
+query I
+SELECT count FROM read_otlp_metrics_histogram('test/data/metrics_histogram_ndjson.jsonl');
+----
+50
+
+# Test sum value
+query R
+SELECT sum FROM read_otlp_metrics_histogram('test/data/metrics_histogram_ndjson.jsonl');
+----
+250.0
+
+# Test bucket_counts
+query I
+SELECT bucket_counts FROM read_otlp_metrics_histogram('test/data/metrics_histogram_ndjson.jsonl');
+----
+[5, 10, 15, 12, 8]
+
+# Test explicit_bounds
+query I
+SELECT explicit_bounds FROM read_otlp_metrics_histogram('test/data/metrics_histogram_ndjson.jsonl');
+----
+[5.0, 10.0, 20.0, 50.0]
+
+# Test service_name extraction
+query I
+SELECT service_name FROM read_otlp_metrics_histogram('test/data/metrics_histogram_ndjson.jsonl');
+----
+test-service
+
+# Test metric_attributes
+query I
+SELECT metric_attributes FROM read_otlp_metrics_histogram('test/data/metrics_histogram_ndjson.jsonl');
+----
+{"endpoint":"/health"}
+
+# Test unsigned OTLP counts are exposed as signed SQL integers for catalog compatibility
+query II
+SELECT typeof(count), typeof(bucket_counts)
+FROM read_otlp_metrics_histogram('test/data/metrics_histogram_ndjson.jsonl');
+----
+BIGINT	BIGINT[]

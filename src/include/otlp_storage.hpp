@@ -24,7 +24,14 @@ public:
 	static OtlpStorageExtensionInfo &GetState(const DatabaseInstance &instance);
 
 	OtlpServer &CreateServer(ClientContext &context, const OtlpUri &listen_uri, const OtlpServerConfig &config);
-	bool StopServer(ClientContext &context, const OtlpUri &listen_uri);
+
+	struct StopResult {
+		bool found = false;
+		//! Rows still buffered after the final shutdown drain failed (dropped). 0 on a clean stop.
+		//! Lets otlp_stop / the daemon distinguish a clean shutdown from a data-dropping one (M4).
+		idx_t dropped_rows = 0;
+	};
+	StopResult StopServer(ClientContext &context, const OtlpUri &listen_uri);
 
 	struct ServerSnapshot {
 		string listen_uri;
@@ -76,9 +83,18 @@ public:
 
 private:
 	void StopAllServers();
+	//! Throw a clean InvalidInputException if the registry has begun teardown. MUST be called
+	//! with servers_mutex held. Guards multi-connection library embedders that race a registry
+	//! operation against a concurrent DB close, so a post-teardown access fails cleanly instead
+	//! of racing freed server state (review finding L4).
+	void EnsureNotShutDown() const;
 
 private:
 	std::mutex servers_mutex;
+	//! Set true under servers_mutex at the start of teardown (StopAllServers, called from the
+	//! destructor). Once set, registry operations refuse to run (EnsureNotShutDown). Guarded by
+	//! servers_mutex so it is observed consistently with the servers map (review finding L4).
+	bool shutting_down = false;
 	//! shared_ptr (not unique_ptr) so FlushServer can hold a ref across a slow seal
 	//! with servers_mutex released; the server can't be freed mid-flush, and a
 	//! concurrent otlp_stop/db-close isn't blocked by the seal.

@@ -9,6 +9,7 @@
 #include <limits>
 #include <sstream>
 #include <system_error>
+#include <utility>
 
 namespace duckdb_otlp_server {
 namespace {
@@ -283,6 +284,73 @@ int64_t ParsePositiveInt64Env(const char *name, int64_t fallback) {
 	}
 }
 
+// Cloudflare R2 access/secret-key env-var resolution. The candidate lists are identical across
+// every R2 mode (r2-data-catalog, r2-local-ducklake, r2-neon-ducklake), so they live here once.
+struct R2Credentials {
+	string access_key_var;
+	string secret_key_var;
+};
+
+R2Credentials ResolveR2Credentials(const string &label) {
+	R2Credentials creds;
+	creds.access_key_var = RequireAnyEnv(label + " access key",
+	                                     {"CLOUDFLARE_ACCESS_KEY_ID", "R2_ACCESS_KEY_ID", "CLOUDFLARE_S3_ACCESS_KEY_ID",
+	                                      "CLOUDFLARE_R2_ACCESS_KEY_ID", "CLOUDFLARE_S3_KEY_ID"});
+	creds.secret_key_var =
+	    RequireAnyEnv(label + " secret key",
+	                  {"CLOUDFLARE_SECRET_ACCESS_KEY", "R2_SECRET_ACCESS_KEY", "CLOUDFLARE_S3_SECRET_ACCESS_KEY",
+	                   "CLOUDFLARE_R2_SECRET_ACCESS_KEY", "CLOUDFLARE_S3_SECRET_KEY"});
+	return creds;
+}
+
+// The KEY_ID/SECRET R2 storage secret block, byte-identical across the three R2 modes. The key/secret
+// are referenced through getvariable() (via EnvSql) so the values never appear in the generated SQL.
+// Returns the secret statement with a leading newline and a trailing ");\n" so it can be injected via
+// %s exactly where the modes previously inlined it.
+string BuildR2StorageSecret(ServerConfig &config, const string &secret_name, const R2Credentials &creds,
+                            const string &endpoint) {
+	return StringUtil::Format(R"SQL(
+CREATE OR REPLACE SECRET %s (
+  TYPE s3,
+  KEY_ID %s,
+  SECRET %s,
+  REGION 'auto',
+  ENDPOINT %s,
+  URL_STYLE 'path'
+);
+)SQL",
+	                          secret_name, EnvSql(config, creds.access_key_var), EnvSql(config, creds.secret_key_var),
+	                          SqlQuote(endpoint));
+}
+
+// The PROVIDER credential_chain S3 secret block shared by the parquet and s3-tables modes. Both pick
+// CHAIN config + PROFILE when an AWS profile is set, else CHAIN env, then emit the region; the parquet
+// mode additionally appends an optional endpoint and url_style (s3-tables passes both empty). The block
+// has a leading newline and a trailing ");\n" so it injects via %s exactly where it was inlined before.
+string BuildCredentialChainSecret(const string &secret_name, const string &region, const string &profile,
+                                  const string &endpoint, const string &url_style) {
+	auto secret_sql = StringUtil::Format(R"SQL(
+CREATE OR REPLACE SECRET %s (
+  TYPE s3,
+  PROVIDER credential_chain,
+)SQL",
+	                                     secret_name);
+	if (!profile.empty()) {
+		secret_sql += StringUtil::Format("  CHAIN config,\n  PROFILE %s,\n", SqlQuote(profile));
+	} else {
+		secret_sql += "  CHAIN env,\n";
+	}
+	secret_sql += StringUtil::Format("  REGION %s", SqlQuote(region));
+	if (!endpoint.empty()) {
+		secret_sql += StringUtil::Format(",\n  ENDPOINT %s", SqlQuote(EndpointHost(endpoint)));
+	}
+	if (!url_style.empty()) {
+		secret_sql += StringUtil::Format(",\n  URL_STYLE %s", SqlQuote(url_style));
+	}
+	secret_sql += "\n);\n";
+	return secret_sql;
+}
+
 void ConfigureLocalDuckLake(ServerConfig &config) {
 	config.mode_extensions = {"ducklake", "otlp"};
 	config.catalog = CatalogDefault(Env("DUCKLAKE_NAME", "otel"));
@@ -345,13 +413,7 @@ void ConfigureR2DataCatalog(ServerConfig &config) {
 	config.schema = SchemaDefault("otlp");
 	auto catalog_token_var =
 	    RequireAnyEnv("Cloudflare catalog token", {"CLOUDFLARE_CATALOG_TOKEN", "CLOUDFLARE_API_TOKEN"});
-	auto access_key_var = RequireAnyEnv("Cloudflare R2 access key",
-	                                    {"CLOUDFLARE_ACCESS_KEY_ID", "R2_ACCESS_KEY_ID", "CLOUDFLARE_S3_ACCESS_KEY_ID",
-	                                     "CLOUDFLARE_R2_ACCESS_KEY_ID", "CLOUDFLARE_S3_KEY_ID"});
-	auto secret_key_var =
-	    RequireAnyEnv("Cloudflare R2 secret key",
-	                  {"CLOUDFLARE_SECRET_ACCESS_KEY", "R2_SECRET_ACCESS_KEY", "CLOUDFLARE_S3_SECRET_ACCESS_KEY",
-	                   "CLOUDFLARE_R2_SECRET_ACCESS_KEY", "CLOUDFLARE_S3_SECRET_KEY"});
+	auto creds = ResolveR2Credentials("Cloudflare R2");
 	RequireAnyEnv("Cloudflare R2 bucket", {"CLOUDFLARE_R2_BUCKET", "R2_BUCKET_NAME", "R2_BUCKET"});
 	RequireEnv("CLOUDFLARE_ACCOUNT_ID", config.mode);
 	auto catalog_uri = RequireEnv("CLOUDFLARE_CATALOG_URI", config.mode);
@@ -364,22 +426,14 @@ void ConfigureR2DataCatalog(ServerConfig &config) {
 		                            "CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_R2_BUCKET");
 	}
 	auto endpoint = R2EndpointDefault(config.mode);
+	auto storage_secret = BuildR2StorageSecret(config, "cloudflare_r2_secret", creds, endpoint);
 
 	config.mode_setup_sql = StringUtil::Format(
 	    R"SQL(
 INSTALL iceberg;
 INSTALL httpfs;
 LOAD iceberg;
-LOAD httpfs;
-CREATE OR REPLACE SECRET cloudflare_r2_secret (
-  TYPE s3,
-  KEY_ID %s,
-  SECRET %s,
-  REGION 'auto',
-  ENDPOINT %s,
-  URL_STYLE 'path'
-);
-CREATE OR REPLACE SECRET cloudflare_catalog_secret (
+LOAD httpfs;%sCREATE OR REPLACE SECRET cloudflare_catalog_secret (
   TYPE ICEBERG,
   TOKEN %s
 );
@@ -389,8 +443,8 @@ ATTACH %s AS %s (
   SECRET cloudflare_catalog_secret
 );
 )SQL",
-	    EnvSql(config, access_key_var), EnvSql(config, secret_key_var), SqlQuote(endpoint),
-	    EnvSql(config, catalog_token_var), SqlQuote(warehouse), QuoteIdentifier(config.catalog), SqlQuote(catalog_uri));
+	    storage_secret, EnvSql(config, catalog_token_var), SqlQuote(warehouse), QuoteIdentifier(config.catalog),
+	    SqlQuote(catalog_uri));
 }
 
 void ConfigureParquet(ServerConfig &config) {
@@ -425,24 +479,7 @@ void ConfigureParquet(ServerConfig &config) {
 	auto endpoint = Env("S3_ENDPOINT", Env("AWS_S3_ENDPOINT"));
 	auto url_style = Env("S3_URL_STYLE", Env("AWS_S3_URL_STYLE"));
 
-	auto secret_sql = StringUtil::Format(R"SQL(
-CREATE OR REPLACE SECRET plain_s3_secret (
-  TYPE s3,
-  PROVIDER credential_chain,
-)SQL");
-	if (!profile.empty()) {
-		secret_sql += StringUtil::Format("  CHAIN config,\n  PROFILE %s,\n", SqlQuote(profile));
-	} else {
-		secret_sql += "  CHAIN env,\n";
-	}
-	secret_sql += StringUtil::Format("  REGION %s", SqlQuote(region));
-	if (!endpoint.empty()) {
-		secret_sql += StringUtil::Format(",\n  ENDPOINT %s", SqlQuote(EndpointHost(endpoint)));
-	}
-	if (!url_style.empty()) {
-		secret_sql += StringUtil::Format(",\n  URL_STYLE %s", SqlQuote(url_style));
-	}
-	secret_sql += "\n);\n";
+	auto secret_sql = BuildCredentialChainSecret("plain_s3_secret", region, profile, endpoint, url_style);
 
 	config.mode_setup_sql = StringUtil::Format(R"SQL(
 INSTALL aws;
@@ -457,50 +494,31 @@ void ConfigureR2LocalDuckLake(ServerConfig &config) {
 	config.mode_extensions = {"ducklake", "httpfs", "otlp"};
 	config.catalog = CatalogDefault(Env("DUCKLAKE_NAME", "lake"));
 	config.schema = SchemaDefault("otlp");
-	auto access_key_var =
-	    RequireAnyEnv("R2 access key", {"CLOUDFLARE_ACCESS_KEY_ID", "R2_ACCESS_KEY_ID", "CLOUDFLARE_S3_ACCESS_KEY_ID",
-	                                    "CLOUDFLARE_R2_ACCESS_KEY_ID", "CLOUDFLARE_S3_KEY_ID"});
-	auto secret_key_var = RequireAnyEnv(
-	    "R2 secret key", {"CLOUDFLARE_SECRET_ACCESS_KEY", "R2_SECRET_ACCESS_KEY", "CLOUDFLARE_S3_SECRET_ACCESS_KEY",
-	                      "CLOUDFLARE_R2_SECRET_ACCESS_KEY", "CLOUDFLARE_S3_SECRET_KEY"});
+	auto creds = ResolveR2Credentials("R2");
 	RequireAnyEnv("R2 bucket", {"CLOUDFLARE_R2_BUCKET", "R2_BUCKET_NAME", "R2_BUCKET"});
 	auto catalog_path = Env("DUCKLAKE_CATALOG_PATH", config.data_dir + "/ducklake/catalog.duckdb");
 	auto data_path = Env("DUCKLAKE_DATA_PATH", R2DataPath());
 	CreateParentDirectory(catalog_path);
 	auto endpoint = R2EndpointDefault(config.mode);
+	auto storage_secret = BuildR2StorageSecret(config, "r2_storage", creds, endpoint);
 
-	config.mode_setup_sql =
-	    StringUtil::Format(R"SQL(
+	config.mode_setup_sql = StringUtil::Format(R"SQL(
 INSTALL ducklake;
 INSTALL httpfs;
 LOAD ducklake;
-LOAD httpfs;
-CREATE OR REPLACE SECRET r2_storage (
-  TYPE s3,
-  KEY_ID %s,
-  SECRET %s,
-  REGION 'auto',
-  ENDPOINT %s,
-  URL_STYLE 'path'
-);
-ATTACH %s AS %s (
+LOAD httpfs;%sATTACH %s AS %s (
   DATA_PATH %s
 );
 )SQL",
-	                       EnvSql(config, access_key_var), EnvSql(config, secret_key_var), SqlQuote(endpoint),
-	                       SqlQuote("ducklake:" + catalog_path), QuoteIdentifier(config.catalog), SqlQuote(data_path));
+	                                           storage_secret, SqlQuote("ducklake:" + catalog_path),
+	                                           QuoteIdentifier(config.catalog), SqlQuote(data_path));
 }
 
 void ConfigureR2NeonDuckLake(ServerConfig &config) {
 	config.mode_extensions = {"ducklake", "postgres", "httpfs", "otlp"};
 	config.catalog = CatalogDefault(Env("DUCKLAKE_NAME", "lake"));
 	config.schema = SchemaDefault("otlp");
-	auto access_key_var =
-	    RequireAnyEnv("R2 access key", {"CLOUDFLARE_ACCESS_KEY_ID", "R2_ACCESS_KEY_ID", "CLOUDFLARE_S3_ACCESS_KEY_ID",
-	                                    "CLOUDFLARE_R2_ACCESS_KEY_ID", "CLOUDFLARE_S3_KEY_ID"});
-	auto secret_key_var = RequireAnyEnv(
-	    "R2 secret key", {"CLOUDFLARE_SECRET_ACCESS_KEY", "R2_SECRET_ACCESS_KEY", "CLOUDFLARE_S3_SECRET_ACCESS_KEY",
-	                      "CLOUDFLARE_R2_SECRET_ACCESS_KEY", "CLOUDFLARE_S3_SECRET_KEY"});
+	auto creds = ResolveR2Credentials("R2");
 	RequireAnyEnv("R2 bucket", {"CLOUDFLARE_R2_BUCKET", "R2_BUCKET_NAME", "R2_BUCKET"});
 	RequireEnv("NEON_PGHOST", config.mode);
 	RequireEnv("NEON_PGDATABASE", config.mode);
@@ -508,6 +526,7 @@ void ConfigureR2NeonDuckLake(ServerConfig &config) {
 	RequireEnv("NEON_PGPASSWORD", config.mode);
 	auto data_path = Env("DUCKLAKE_DATA_PATH", R2DataPath());
 	auto endpoint = R2EndpointDefault(config.mode);
+	auto storage_secret = BuildR2StorageSecret(config, "r2_storage", creds, endpoint);
 
 	config.mode_setup_sql = StringUtil::Format(
 	    R"SQL(
@@ -516,16 +535,7 @@ INSTALL postgres;
 INSTALL httpfs;
 LOAD ducklake;
 LOAD postgres;
-LOAD httpfs;
-CREATE OR REPLACE SECRET r2_storage (
-  TYPE s3,
-  KEY_ID %s,
-  SECRET %s,
-  REGION 'auto',
-  ENDPOINT %s,
-  URL_STYLE 'path'
-);
-CREATE OR REPLACE SECRET postgres_secret (
+LOAD httpfs;%sCREATE OR REPLACE SECRET postgres_secret (
   TYPE postgres,
   HOST %s,
   PORT %s,
@@ -542,10 +552,9 @@ CREATE OR REPLACE SECRET ducklake_secret (
 );
 ATTACH 'ducklake:ducklake_secret' AS %s;
 )SQL",
-	    EnvSql(config, access_key_var), EnvSql(config, secret_key_var), SqlQuote(endpoint),
-	    EnvSql(config, "NEON_PGHOST"), EnvSql(config, "NEON_PGPORT", "5432"), EnvSql(config, "NEON_PGDATABASE"),
-	    EnvSql(config, "NEON_PGUSER"), EnvSql(config, "NEON_PGPASSWORD"), EnvSql(config, "NEON_PGSSLMODE", "require"),
-	    SqlQuote(data_path), QuoteIdentifier(config.catalog));
+	    storage_secret, EnvSql(config, "NEON_PGHOST"), EnvSql(config, "NEON_PGPORT", "5432"),
+	    EnvSql(config, "NEON_PGDATABASE"), EnvSql(config, "NEON_PGUSER"), EnvSql(config, "NEON_PGPASSWORD"),
+	    EnvSql(config, "NEON_PGSSLMODE", "require"), SqlQuote(data_path), QuoteIdentifier(config.catalog));
 }
 
 void ConfigureS3Tables(ServerConfig &config) {
@@ -575,17 +584,10 @@ void ConfigureS3Tables(ServerConfig &config) {
 		                            config.mode);
 	}
 	auto profile = Env("AWS_PROFILE", Env("AWS_DEFAULT_PROFILE"));
-	auto secret_sql = StringUtil::Format(R"SQL(
-CREATE OR REPLACE SECRET s3_tables_secret (
-  TYPE s3,
-  PROVIDER credential_chain,
-)SQL");
-	if (!profile.empty()) {
-		secret_sql += StringUtil::Format("  CHAIN config,\n  PROFILE %s,\n", SqlQuote(profile));
-	} else {
-		secret_sql += "  CHAIN env,\n";
-	}
-	secret_sql += StringUtil::Format("  REGION %s\n);\n", SqlQuote(region));
+	// s3-tables uses the same credential_chain secret as the parquet mode, minus the optional
+	// endpoint/url_style (both empty here).
+	auto secret_sql = BuildCredentialChainSecret("s3_tables_secret", region, profile, /*endpoint=*/"",
+	                                             /*url_style=*/"");
 
 	config.mode_setup_sql = StringUtil::Format(R"SQL(
 INSTALL iceberg;
@@ -651,13 +653,16 @@ ServerConfig ServerConfig::FromEnv() {
 	config.dry_run = Truthy(Env("DRY_RUN", "0"));
 	config.startup_timeout_secs = ParsePositiveIntEnv("DUCKDB_OTLP_STARTUP_TIMEOUT", 60);
 	config.http_threads = ParsePositiveUInt64Env("DUCKDB_OTLP_HTTP_THREADS", 0);
-	config.max_body_bytes = ParsePositiveUInt64Env("DUCKDB_OTLP_MAX_BODY_BYTES", 16ULL * 1024ULL * 1024ULL);
-	config.max_buffered_bytes = ParsePositiveUInt64Env("DUCKDB_OTLP_MAX_BUFFERED_BYTES", 512ULL * 1024ULL * 1024ULL);
-	config.seal_target_bytes = ParsePositiveUInt64Env("DUCKDB_OTLP_SEAL_TARGET_BYTES", 128ULL * 1024ULL * 1024ULL);
-	config.seal_max_age_ms = ParsePositiveInt64Env("DUCKDB_OTLP_SEAL_MAX_AGE_MS", 5000);
-	config.target_file_size = ParsePositiveUInt64Env("DUCKDB_OTLP_TARGET_FILE_SIZE", 256ULL * 1024ULL * 1024ULL);
+	config.max_body_bytes = ParsePositiveUInt64Env("DUCKDB_OTLP_MAX_BODY_BYTES", otlp_limits::DEFAULT_MAX_BODY_BYTES);
+	config.max_buffered_bytes =
+	    ParsePositiveUInt64Env("DUCKDB_OTLP_MAX_BUFFERED_BYTES", otlp_limits::DEFAULT_MAX_BUFFERED_BYTES);
+	config.seal_target_bytes =
+	    ParsePositiveUInt64Env("DUCKDB_OTLP_SEAL_TARGET_BYTES", otlp_limits::DEFAULT_SEAL_TARGET_BYTES);
+	config.seal_max_age_ms = ParsePositiveInt64Env("DUCKDB_OTLP_SEAL_MAX_AGE_MS", otlp_limits::DEFAULT_SEAL_MAX_AGE_MS);
+	config.target_file_size =
+	    ParsePositiveUInt64Env("DUCKDB_OTLP_TARGET_FILE_SIZE", otlp_limits::DEFAULT_TARGET_FILE_SIZE);
 	config.maintenance_retention_ms =
-	    ParsePositiveInt64Env("DUCKDB_OTLP_MAINTENANCE_RETENTION_MS", 15LL * 60LL * 1000LL);
+	    ParsePositiveInt64Env("DUCKDB_OTLP_MAINTENANCE_RETENTION_MS", otlp_limits::DEFAULT_MAINTENANCE_RETENTION_MS);
 
 	auto quack_token_var = FirstEnv({"DUCKDB_QUACK_TOKEN", "QUACK_AUTH_TOKEN"});
 	if (config.quack_enabled && quack_token_var.empty()) {
@@ -680,13 +685,22 @@ string ServerConfig::StartOtlpSql() const {
 	                      : StringUtil::Format(",\n    http_threads := %llu", static_cast<uint64_t>(http_threads));
 	// These ingest limits are declared in three places that must stay in lockstep: the ServerConfig
 	// fields (server_config.hpp), the env parsing in FromEnv(), and this otlp_serve() param emission.
-	// Keep the order/format specifiers aligned — a %llu/%lld mismatch against a field's type is silent.
-	auto limits_sql = StringUtil::Format(
-	    ",\n    max_body_bytes := %llu,\n    max_buffered_bytes := %llu,\n    seal_target_bytes := %llu,\n    "
-	    "seal_max_age_ms := %lld,\n    target_file_size := %llu,\n    maintenance_retention_ms := %lld",
-	    static_cast<uint64_t>(max_body_bytes), static_cast<uint64_t>(max_buffered_bytes),
-	    static_cast<uint64_t>(seal_target_bytes), static_cast<int64_t>(seal_max_age_ms),
-	    static_cast<uint64_t>(target_file_size), static_cast<int64_t>(maintenance_retention_ms));
+	// Emit them from a single {name, value} table so a new limit is added in one place and the
+	// hand-aligned %llu/%lld format strings (whose mismatch against a field's type was a silent
+	// corruption surface) are gone. Every value is a non-negative integer rendered as plain decimal,
+	// so signedness does not affect the emitted text. Each entry contributes ",\n    <name> := <value>".
+	const std::pair<const char *, uint64_t> limits[] = {
+	    {"max_body_bytes", static_cast<uint64_t>(max_body_bytes)},
+	    {"max_buffered_bytes", static_cast<uint64_t>(max_buffered_bytes)},
+	    {"seal_target_bytes", static_cast<uint64_t>(seal_target_bytes)},
+	    {"seal_max_age_ms", static_cast<uint64_t>(seal_max_age_ms)},
+	    {"target_file_size", static_cast<uint64_t>(target_file_size)},
+	    {"maintenance_retention_ms", static_cast<uint64_t>(maintenance_retention_ms)},
+	};
+	string limits_sql;
+	for (const auto &limit : limits) {
+		limits_sql += StringUtil::Format(",\n    %s := %llu", limit.first, limit.second);
+	}
 	auto export_sql = parquet_export_path.empty()
 	                      ? string("")
 	                      : StringUtil::Format(",\n    parquet_export_path := %s", SqlQuote(parquet_export_path));
@@ -728,7 +742,9 @@ FROM quack_serve(
 }
 
 string ServerConfig::StopOtlpSql() const {
-	return StringUtil::Format("SELECT status FROM otlp_stop(%s);", SqlQuote(listen_uri));
+	// dropped_rows is non-zero only when the final shutdown drain failed and rows were dropped;
+	// main.cpp reads it to exit non-zero on a data-dropping shutdown (review finding M4).
+	return StringUtil::Format("SELECT status, dropped_rows FROM otlp_stop(%s);", SqlQuote(listen_uri));
 }
 
 string ServerConfig::StopQuackSql() const {

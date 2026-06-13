@@ -95,16 +95,16 @@ def wait_for_health(port: int, timeout: float) -> None:
     while time.monotonic() < deadline:
         try:
             conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-            conn.request("GET", "/healthz")
+            conn.request("GET", "/readyz")
             resp = conn.getresponse()
             body = resp.read()
             conn.close()
-            if resp.status == 200 and b"ok" in body:
+            if resp.status == 200 and b"ready" in body:
                 return
         except OSError as exc:
             last_error = str(exc)
         time.sleep(1)
-    raise SystemExit(f"server did not become healthy on port {port}: {last_error}")
+    raise SystemExit(f"server did not become ready on port {port}: {last_error}")
 
 
 def post_logs(port: int, token: str, body: bytes, content_encoding: str | None = None) -> tuple[int, str]:

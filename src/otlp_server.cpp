@@ -22,6 +22,13 @@
 #include <filesystem>
 #include <sstream>
 
+#ifndef __EMSCRIPTEN__
+// Only for the host-aware healthcheck probe (OtlpHttpStatusOk) at the bottom of this file. The
+// HTTP server itself lives in otlp_server_http.cpp; both TUs are in the same archive, so the
+// header-only library's inline symbols deduplicate at link time.
+#include "httplib.hpp"
+#endif
+
 namespace duckdb {
 
 static int64_t NowUnixMs();
@@ -431,20 +438,15 @@ void OtlpServer::ReleaseAdmission(idx_t bytes) {
 	}
 	auto current = admitted_bytes.load();
 	while (true) {
+		// An over-release means the admission accounting is out of balance (we are releasing
+		// more than was reserved). Surface it in debug/CI; release builds still clamp at 0 so a
+		// bug can never wrap the counter to a huge value and wedge admission.
+		D_ASSERT(current >= bytes);
 		auto next = current > bytes ? current - bytes : 0;
 		if (admitted_bytes.compare_exchange_weak(current, next)) {
 			return;
 		}
 	}
-}
-
-void OtlpServer::ClaimUnsealedAdmission(idx_t &bytes) {
-	if (bytes == 0) {
-		return;
-	}
-	std::lock_guard<std::mutex> lock(admission_mutex);
-	unsealed_admission_bytes += bytes;
-	bytes = 0;
 }
 
 void OtlpServer::EnsureTargetTables() {
@@ -529,6 +531,13 @@ OtlpIngestResult OtlpServer::Ingest(OtlpRequestKind kind, const string &content_
 	// cannot all pass the check and allocate work beyond max_buffered_bytes. The
 	// reservation moves into the unsealed-row counter when rows are buffered and is
 	// released only after those rows seal; parse/validation failures release it immediately.
+	//
+	// Peak transient memory ceiling: ~max_buffered_bytes + http_threads * max_body_bytes.
+	// `body` is already the DECOMPRESSED payload (httplib content-decodes before calling
+	// Ingest) and is bounded by max_body_bytes, but that decompression+materialization
+	// happens BEFORE this reservation. So each of the http_threads workers can hold up to
+	// one max_body_bytes body in flight that is not yet charged against admission, on top of
+	// the max_buffered_bytes that admission itself bounds.
 	auto reservation_bytes = MaxValue<idx_t>(body.size(), 1024);
 	idx_t admitted_before = 0;
 	if (!TryReserveAdmission(reservation_bytes, admitted_before)) {
@@ -591,13 +600,20 @@ void OtlpServer::BufferSignal(OtlpSignalType signal_type, const string &body, Ot
 			schema.release(&schema);
 		}
 	};
+	vector<StagedSignal> staged;
 	try {
-		AppendArrowBatch(buf, array, schema, result, admission_bytes);
+		// Single signal: stage off to the side, then move into the live buffer as the final step.
+		// A conversion failure leaves the live buffer untouched (nothing to roll back).
+		auto stage = StageArrowBatch(signal_type, array, schema);
+		if (stage.rows > 0) {
+			staged.push_back(std::move(stage));
+		}
 	} catch (...) {
 		release();
 		throw;
 	}
 	release();
+	CommitStaged(staged, result, admission_bytes);
 }
 
 void OtlpServer::BufferMetrics(const string &body, OtlpInputFormat format, OtlpIngestResult &result,
@@ -618,80 +634,158 @@ void OtlpServer::BufferMetrics(const string &body, OtlpInputFormat format, OtlpI
 		throw OtlpHttpError(400, StringUtil::Format("OTLP parse failed for metrics: %s", otlp_status_message(status)));
 	}
 
+	// Stage ALL four metric sub-signals into LOCAL collections first; only once every present
+	// sub-signal has converted do we move them into the live buffers (CommitStaged). A failure
+	// while converting a later sub-signal therefore leaves the live buffers untouched, so a
+	// correct client retry buffers everything exactly once instead of double-buffering the
+	// sub-signals that happened to convert before the failure (review finding H3).
+	vector<StagedSignal> staged;
+	try {
+		if (batches.gauge.present) {
+			auto stage = StageArrowBatch(OTLP_SIGNAL_METRICS_GAUGE, batches.gauge.array, batches.gauge.schema);
+			if (stage.rows > 0) {
+				staged.push_back(std::move(stage));
+			}
+		}
+#ifdef DUCKDB_OTLP_ENABLE_TEST_SEAM
+		// Test-only fault injection: throw AFTER the first sub-signal has converted into its local
+		// staging collection but BEFORE any sub-signal is moved into a live buffer, so the harness can
+		// assert that a mid-conversion failure leaves NO rows buffered and admission untouched. Null
+		// (and the whole branch absent) in production builds.
+		if (metrics_stage_fault_hook_for_test) {
+			metrics_stage_fault_hook_for_test();
+		}
+#endif
+		if (batches.sum.present) {
+			auto stage = StageArrowBatch(OTLP_SIGNAL_METRICS_SUM, batches.sum.array, batches.sum.schema);
+			if (stage.rows > 0) {
+				staged.push_back(std::move(stage));
+			}
+		}
+		if (batches.histogram.present) {
+			auto stage =
+			    StageArrowBatch(OTLP_SIGNAL_METRICS_HISTOGRAM, batches.histogram.array, batches.histogram.schema);
+			if (stage.rows > 0) {
+				staged.push_back(std::move(stage));
+			}
+		}
+		if (batches.exp_histogram.present) {
+			auto stage = StageArrowBatch(OTLP_SIGNAL_METRICS_EXP_HISTOGRAM, batches.exp_histogram.array,
+			                             batches.exp_histogram.schema);
+			if (stage.rows > 0) {
+				staged.push_back(std::move(stage));
+			}
+		}
+	} catch (...) {
+		// `staged` (local collections only) is discarded; the live buffers were never touched.
+		release_all();
+		throw;
+	}
+	release_all();
+
+	// Only the skipped-counters are advanced before the all-or-nothing commit; they describe what
+	// the Rust transform dropped during parse, not what we buffer, so they are safe to report even
+	// if a later sub-signal had failed to convert (it would not, since the throw above precedes here).
 	result.skipped_summaries += batches.skipped_summaries;
 	result.skipped_nan_values += batches.skipped_nan_values;
 	result.skipped_infinity_values += batches.skipped_infinity_values;
 	result.skipped_missing_values += batches.skipped_missing_values;
 
-	try {
-		if (batches.gauge.present) {
-			AppendArrowBatch(BufferFor(OTLP_SIGNAL_METRICS_GAUGE), batches.gauge.array, batches.gauge.schema, result,
-			                 admission_bytes);
-		}
-		if (batches.sum.present) {
-			AppendArrowBatch(BufferFor(OTLP_SIGNAL_METRICS_SUM), batches.sum.array, batches.sum.schema, result,
-			                 admission_bytes);
-		}
-		if (batches.histogram.present) {
-			AppendArrowBatch(BufferFor(OTLP_SIGNAL_METRICS_HISTOGRAM), batches.histogram.array,
-			                 batches.histogram.schema, result, admission_bytes);
-		}
-		if (batches.exp_histogram.present) {
-			AppendArrowBatch(BufferFor(OTLP_SIGNAL_METRICS_EXP_HISTOGRAM), batches.exp_histogram.array,
-			                 batches.exp_histogram.schema, result, admission_bytes);
-		}
-	} catch (...) {
-		release_all();
-		throw;
-	}
-	release_all();
+	CommitStaged(staged, result, admission_bytes);
 }
 
-void OtlpServer::AppendArrowBatch(OtlpSignalBuffer &buf, ArrowArray &array, ArrowSchema &schema,
-                                  OtlpIngestResult &result, idx_t &admission_bytes) {
+OtlpServer::StagedSignal OtlpServer::StageArrowBatch(OtlpSignalType signal_type, ArrowArray &array,
+                                                     ArrowSchema &schema) {
+	auto &buf = BufferFor(signal_type);
+	StagedSignal staged;
+	staged.signal_type = signal_type;
 	if (array.length <= 0) {
-		return;
+		return staged;
 	}
-	DataChunk chunk;
 	auto db = db_ptr.lock();
 	if (!db) {
 		throw IOException("Database was closed");
 	}
-	chunk.Initialize(Allocator::Get(*db), buf.types, APPEND_CHUNK_SIZE);
+	auto &allocator = Allocator::Get(*db);
+	staged.collection = make_uniq<ColumnDataCollection>(allocator, buf.types);
+	DataChunk chunk;
+	chunk.Initialize(allocator, buf.types, APPEND_CHUNK_SIZE);
 	for (idx_t offset = 0; offset < static_cast<idx_t>(array.length); offset += APPEND_CHUNK_SIZE) {
 		auto count = MinValue<idx_t>(APPEND_CHUNK_SIZE, static_cast<idx_t>(array.length) - offset);
 		chunk.Reset();
 		CopyProjectedArrowStructToDataChunk(array, schema, chunk, buf.identity_column_ids, offset, count);
-		BufferAppend(buf, chunk, admission_bytes);
-		result.rows += count;
-		result.batches++;
+		StageAppend(*staged.collection, chunk);
+		staged.rows += count;
+		staged.batches++;
 	}
+	return staged;
 }
 
-void OtlpServer::BufferAppend(OtlpSignalBuffer &buf, DataChunk &chunk, idx_t &admission_bytes) {
-	auto rows = chunk.size();
-	if (rows == 0) {
+void OtlpServer::StageAppend(ColumnDataCollection &collection, DataChunk &chunk) {
+	if (chunk.size() == 0) {
 		return;
 	}
-	{
+	collection.Append(chunk);
+}
+
+void OtlpServer::CommitStaged(vector<StagedSignal> &staged, OtlpIngestResult &result, idx_t &admission_bytes) {
+	if (staged.empty()) {
+		// Nothing buffered: the request's admission stays unclaimed and Ingest releases it.
+		return;
+	}
+	idx_t total_rows = 0;
+	for (auto &s : staged) {
+		total_rows += s.rows;
+	}
+	// Attribute this request's admitted bytes to the signal(s) it buffers into, exactly ONCE.
+	// Single-signal requests give the whole amount to their one signal; a multi-sub-signal metrics
+	// request splits its bytes across its sub-signals by rows, with the remainder assigned to the
+	// last staged signal so the per-signal shares sum EXACTLY to admission_bytes (no bytes lost or
+	// double-counted). This one-time split is what M2 keeps; the failure-cycle re-split is gone.
+	idx_t admission_remaining = admission_bytes;
+	auto now = std::chrono::steady_clock::now();
+	for (idx_t i = 0; i < staged.size(); i++) {
+		auto &s = staged[i];
+		idx_t share;
+		if (i + 1 == staged.size()) {
+			share = admission_remaining; // last signal soaks up the rounding remainder
+		} else {
+			share = (total_rows > 0) ? (admission_bytes * s.rows / total_rows) : 0;
+		}
+		admission_remaining -= share;
+		auto &buf = BufferFor(s.signal_type);
 		std::lock_guard<std::mutex> lock(buf.mutex);
-		buf.collection->Append(chunk);
+		buf.collection->Combine(*s.collection);
 		if (!buf.have_unsealed) {
 			buf.have_unsealed = true;
-			buf.first_unsealed = std::chrono::steady_clock::now();
+			buf.first_unsealed = now;
 		}
-		buf.buffered_rows += rows;
-		ClaimUnsealedAdmission(admission_bytes);
+		buf.buffered_rows += s.rows;
+		buf.unsealed_admission_bytes += share;
+		result.rows += s.rows;
+		result.batches += s.batches;
 	}
-	// The single real byte counter (admitted-and-not-yet-sealed body bytes) drives the
-	// size trigger; the exact COPY size is whatever the buffered chunks hold at seal time.
+	admission_bytes = 0; // the reservation is now attributed to the live buffers (per-signal)
+	// The size trigger reads `admitted_bytes`: the global in-flight admission counter, which
+	// is every reserved request body (in-flight reservations included, NOT just the bytes
+	// already attached to buffered rows). So the trigger may fire slightly ahead of what is
+	// physically buffered; the exact COPY size is whatever the buffered chunks hold at seal time.
 	if (admitted_bytes.load() >= config.seal_target_bytes) {
 		RequestSeal();
 	}
 }
 
 void OtlpServer::RequestSeal() {
-	flush_requested.store(true);
+	// Set the trigger flag UNDER sealer_mutex so it cannot land in the window after the sealer
+	// thread evaluates its wait predicate but before it actually blocks in wait_for — that would
+	// be a lost wakeup. The predicate reads flush_requested atomically, so the flag set is correct
+	// lock-free today, but pairing the store with the same mutex the waiter holds is what makes the
+	// happens-before edge robust against future predicate changes. notify_one may stay outside the
+	// lock (notifying a not-yet-waiting thread is harmless; the predicate re-check catches the flag).
+	{
+		std::lock_guard<std::mutex> lock(sealer_mutex);
+		flush_requested.store(true);
+	}
 	sealer_cv.notify_one();
 }
 
@@ -708,6 +802,117 @@ static int64_t AgeMsSince(int64_t last_unix_ms) {
 	return now >= last_unix_ms ? now - last_unix_ms : 0;
 }
 
+OtlpServer::SealingPlan OtlpServer::SwapBuffersForSeal(Allocator &allocator) {
+	// Pre-allocate the fresh empty collections outside the lock so the critical section only
+	// does pointer swaps + counter resets, not allocation.
+	std::vector<unique_ptr<ColumnDataCollection>> fresh;
+	fresh.reserve(signal_buffers.size());
+	for (auto &buf : signal_buffers) {
+		fresh.push_back(make_uniq<ColumnDataCollection>(allocator, buf->types));
+	}
+
+	// Swap each buffer out for a fresh empty collection so workers keep filling during
+	// the (potentially slow) COPY. The moved-out collections are owned solely by the plan.
+	SealingPlan plan;
+	plan.signals.reserve(signal_buffers.size());
+	{
+		std::vector<std::unique_lock<std::mutex>> locks;
+		locks.reserve(signal_buffers.size());
+		for (auto &buf : signal_buffers) {
+			locks.emplace_back(buf->mutex);
+		}
+		for (idx_t i = 0; i < signal_buffers.size(); i++) {
+			auto &buf = *signal_buffers[i];
+			SealingSignal state;
+			state.collection = std::move(buf.collection);
+			state.rows = buf.buffered_rows;
+			// Carry this signal's EXACT admission bytes into the plan (parallel to its rows) so a
+			// partial parquet failure can restore them wholesale without re-splitting an aggregate
+			// (M2). The plan's aggregate is just the sum, so the catalog all-or-nothing path is
+			// unchanged.
+			state.admission_bytes = buf.unsealed_admission_bytes;
+			plan.sealed_admission_bytes += buf.unsealed_admission_bytes;
+			// Capture the swapped-out rows' original buffering time so a failed-seal RestoreUnsealed
+			// can preserve their true age (M3). buf.first_unsealed is only valid when these rows
+			// exist; for an empty signal (rows == 0) it is never read on restore.
+			state.first_unsealed = buf.first_unsealed;
+			plan.total_rows += state.rows;
+
+			buf.collection = std::move(fresh[i]);
+			buf.buffered_rows = 0;
+			buf.unsealed_admission_bytes = 0;
+			buf.have_unsealed = false;
+			plan.signals.push_back(std::move(state));
+		}
+	}
+	return plan;
+}
+
+idx_t OtlpServer::RestoreUnsealed(SealingPlan &plan, const std::vector<bool> &restore) {
+	// Re-buffer the selected signals ahead of any rows workers appended during the seal
+	// (old rows first, preserving order), re-acquiring the per-signal locks in the same
+	// forward order. Each restored signal puts back its OWN admission bytes (guarded by the same
+	// per-signal lock as buffered_rows) — no proportional re-split, so repeated partial failures
+	// cannot drift the budget (M2).
+	idx_t restored_rows = 0;
+	std::vector<std::unique_lock<std::mutex>> locks;
+	locks.reserve(signal_buffers.size());
+	for (auto &buf : signal_buffers) {
+		locks.emplace_back(buf->mutex);
+	}
+	for (idx_t i = 0; i < signal_buffers.size(); i++) {
+		auto &state = plan.signals[i];
+		if (state.rows == 0 || !restore[i]) {
+			continue;
+		}
+		auto &buf = *signal_buffers[i];
+		state.collection->Combine(*buf.collection); // old rows, then live rows
+		buf.collection = std::move(state.collection);
+		buf.buffered_rows += state.rows;
+		buf.unsealed_admission_bytes += state.admission_bytes;
+		// Preserve the TRUE age of the restored rows (M3): the buffer's first_unsealed must be the
+		// OLDEST of {the swapped-out rows' original time, the live rows' time}. Workers may have
+		// appended NEW rows during the seal, each with their own (later) first_unsealed; the
+		// swapped-out rows are older, so resetting to now() (or even to the live time) would
+		// under-report how long the restored rows have been stuck across consecutive seal failures.
+		if (buf.have_unsealed) {
+			// Live rows arrived during the seal; keep whichever first_unsealed is older.
+			buf.first_unsealed = std::min(state.first_unsealed, buf.first_unsealed);
+		} else {
+			// No live rows: just carry the swapped-out rows' original time forward.
+			buf.first_unsealed = state.first_unsealed;
+		}
+		buf.have_unsealed = true;
+		restored_rows += state.rows;
+	}
+	return restored_rows;
+}
+
+void OtlpServer::RecordSealOutcome(bool success, idx_t rows_committed, idx_t admitted_bytes_committed,
+                                   int64_t seal_started_unix_ms, int64_t append_duration_ms, int64_t commit_duration_ms,
+                                   const string &error) {
+	// Order is load-bearing: increment the running counters BEFORE RecordSealEvent snapshots
+	// them into the seal-history event (see OtlpSealEvent comment), and update last_seal_unix_ms
+	// + seal_last_error in the same place both protocols expect.
+	if (success) {
+		seals_total.fetch_add(1);
+		committed_rows_total.fetch_add(rows_committed);
+		last_seal_unix_ms.store(NowUnixMs());
+		{
+			std::lock_guard<std::mutex> elock(seal_error_mutex);
+			seal_last_error.clear();
+		}
+	} else {
+		seal_failures_total.fetch_add(1);
+		{
+			std::lock_guard<std::mutex> elock(seal_error_mutex);
+			seal_last_error = error;
+		}
+	}
+	RecordSealEvent(seal_started_unix_ms, append_duration_ms, commit_duration_ms, rows_committed,
+	                admitted_bytes_committed, success, error);
+}
+
 OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 	std::lock_guard<std::mutex> writer_lock(writer_mutex);
 	if (!writer_con) {
@@ -719,57 +924,29 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 	}
 	auto &allocator = Allocator::Get(*db);
 	auto seal_started_unix_ms = NowUnixMs();
-	int64_t append_duration_ms = 0;
-	int64_t commit_duration_ms = 0;
 
-	struct SealingBuffer {
-		unique_ptr<ColumnDataCollection> collection;
-		idx_t rows = 0;
-	};
+	auto plan = SwapBuffersForSeal(allocator);
 
-	std::vector<unique_ptr<ColumnDataCollection>> fresh;
-	fresh.reserve(signal_buffers.size());
-	for (auto &buf : signal_buffers) {
-		fresh.push_back(make_uniq<ColumnDataCollection>(allocator, buf->types));
-	}
-
-	// Swap each buffer out for a fresh empty collection so workers keep filling during
-	// the (potentially slow) COPY. The moved-out collections are owned solely here.
-	std::vector<SealingBuffer> sealing;
-	idx_t total = 0;
-	idx_t sealed_admission_bytes = 0;
-	{
-		std::vector<std::unique_lock<std::mutex>> locks;
-		locks.reserve(signal_buffers.size());
-		for (auto &buf : signal_buffers) {
-			locks.emplace_back(buf->mutex);
-		}
-		sealing.reserve(signal_buffers.size());
-		std::lock_guard<std::mutex> admission_lock(admission_mutex);
-		sealed_admission_bytes = unsealed_admission_bytes;
-		unsealed_admission_bytes = 0;
-		for (idx_t i = 0; i < signal_buffers.size(); i++) {
-			auto &buf = *signal_buffers[i];
-			SealingBuffer state;
-			state.collection = std::move(buf.collection);
-			state.rows = buf.buffered_rows;
-			total += state.rows;
-
-			buf.collection = std::move(fresh[i]);
-			buf.buffered_rows = 0;
-			buf.have_unsealed = false;
-			sealing.push_back(std::move(state));
-		}
-	}
-
-	OtlpIngestResult result;
-	if (total == 0) {
-		ReleaseAdmission(sealed_admission_bytes);
+	if (plan.total_rows == 0) {
+		ReleaseAdmission(plan.sealed_admission_bytes);
 		last_seal_unix_ms.store(NowUnixMs());
-		return result;
+		return OtlpIngestResult {};
 	}
 
 	if (!config.parquet_export_path.empty()) {
+		return SealParquet(plan, seal_started_unix_ms);
+	}
+	return SealCatalog(plan, seal_started_unix_ms, allow_maintenance, *db);
+}
+
+OtlpIngestResult OtlpServer::SealParquet(SealingPlan &plan, int64_t seal_started_unix_ms) {
+	int64_t append_duration_ms = 0;
+	int64_t commit_duration_ms = 0;
+	idx_t total = plan.total_rows;
+	idx_t sealed_admission_bytes = plan.sealed_admission_bytes;
+	auto &sealing = plan.signals;
+	OtlpIngestResult result;
+	{
 		// Plain Parquet export path. Each signal is exported independently — there is no
 		// shared transaction and no local destination table, so nothing is double-written
 		// (the Parquet dataset is the only durable store). A COPY is a filesystem/object-
@@ -810,6 +987,16 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 				RunSQL(*writer_con, ddl);
 				result.batches +=
 				    AppendCollectionToTable(*writer_con, *sealing[i].collection, string(), string(), staging);
+#ifdef DUCKDB_OTLP_ENABLE_TEST_SEAM
+				// Test-only fault injection: simulate a per-signal COPY failure so the harness can
+				// assert the at-least-once partial-export + proportional-admission re-buffer path.
+				// Null (and the whole branch absent) in production builds. Thrown before the COPY
+				// so this signal is NOT exported (the catch below re-buffers it, like a real
+				// mid-write COPY failure).
+				if (parquet_seal_fault_hook_for_test) {
+					parquet_seal_fault_hook_for_test(i);
+				}
+#endif
 				RunSQL(*writer_con, BuildParquetExportSql(staging, buf.table_name, config.parquet_export_path));
 			} catch (std::exception &ex) {
 				failed = true;
@@ -857,79 +1044,62 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 		}
 
 		if (failed) {
-			// Re-buffer only the signals that did NOT export, ahead of any rows workers
-			// appended during the COPY (old rows first, preserving order).
-			idx_t restored_rows = total - exported_rows;
-			{
-				std::vector<std::unique_lock<std::mutex>> locks;
-				locks.reserve(signal_buffers.size());
-				for (auto &buf : signal_buffers) {
-					locks.emplace_back(buf->mutex);
+			// Re-buffer only the signals that did NOT export, ahead of any rows workers appended
+			// during the COPY (old rows first, preserving order). Admission is split EXACTLY by
+			// signal: each un-exported signal puts back its OWN admission bytes (carried in the
+			// plan) and the exported signals' shares are released. No proportional re-split, so
+			// repeated partial failures cannot cumulatively over-release the budget (M2).
+			// `exported` (false = not exported -> restore) is exactly the restore mask: signals
+			// that did export are NOT re-buffered (no cross-signal duplication).
+			std::vector<bool> restore(signal_buffers.size());
+			idx_t restored_admission = 0;
+			for (idx_t i = 0; i < signal_buffers.size(); i++) {
+				restore[i] = !exported[i];
+				if (restore[i]) {
+					restored_admission += sealing[i].admission_bytes;
 				}
-				for (idx_t i = 0; i < signal_buffers.size(); i++) {
-					if (exported[i] || sealing[i].rows == 0) {
-						continue;
-					}
-					auto &buf = *signal_buffers[i];
-					sealing[i].collection->Combine(*buf.collection); // old rows, then live rows
-					buf.collection = std::move(sealing[i].collection);
-					buf.buffered_rows += sealing[i].rows;
-					buf.have_unsealed = true;
-					buf.first_unsealed = std::chrono::steady_clock::now();
-				}
-				// Split the aggregate admission proportionally by rows: keep the un-exported
-				// share in the unsealed pool and release the exported share below.
-				// admitted_bytes is an approximate throughput proxy, so this is sufficient.
-				idx_t restored_admission =
-				    static_cast<idx_t>(static_cast<double>(sealed_admission_bytes) *
-				                       static_cast<double>(restored_rows) / static_cast<double>(total));
-				if (restored_admission > sealed_admission_bytes) {
-					restored_admission = sealed_admission_bytes;
-				}
-				std::lock_guard<std::mutex> admission_lock(admission_mutex);
-				unsealed_admission_bytes += restored_admission;
-				sealed_admission_bytes -= restored_admission;
 			}
+			RestoreUnsealed(plan, restore);
+			// The exported share is exactly the aggregate minus the restored per-signal sum.
+			sealed_admission_bytes -= restored_admission;
 			ReleaseAdmission(sealed_admission_bytes); // release only the exported share
 			if (exported_rows > 0) {
 				// Some signals were durably written; advance the seal clock for them but do
 				// not count this as a fully successful seal.
 				last_seal_unix_ms.store(NowUnixMs());
 			}
-			seal_failures_total.fetch_add(1);
 			// Parquet COPY is not transactional, so the exported share is durable even though the
 			// seal failed overall. Count it in committed_rows_total (it reflects rows on disk, not
 			// successful seals); this is why otlp_seal_list() can show success=false with
-			// rows_committed > 0. The transaction path below adds nothing on failure (rollback).
+			// rows_committed > 0. Bumped BEFORE RecordSealOutcome so the snapshotted event total
+			// includes it. The transaction path adds nothing on failure (rollback).
 			committed_rows_total.fetch_add(exported_rows);
-			{
-				std::lock_guard<std::mutex> elock(seal_error_mutex);
-				seal_last_error = failure_msg;
-			}
 			LogServerEvent(StringUtil::Format("parquet seal failed at signal %llu (%llu/%llu rows exported): %s",
 			                                  static_cast<uint64_t>(failed_signal),
 			                                  static_cast<uint64_t>(exported_rows), static_cast<uint64_t>(total),
 			                                  failure_msg),
 			               LogLevel::LOG_WARNING);
-			RecordSealEvent(seal_started_unix_ms, append_duration_ms, commit_duration_ms, exported_rows,
-			                sealed_admission_bytes, false, failure_msg);
+			RecordSealOutcome(false, exported_rows, sealed_admission_bytes, seal_started_unix_ms, append_duration_ms,
+			                  commit_duration_ms, failure_msg);
 			throw IOException(StringUtil::Format("parquet seal failed: %s", failure_msg));
 		}
 
 		ReleaseAdmission(sealed_admission_bytes);
-		seals_total.fetch_add(1);
-		committed_rows_total.fetch_add(result.rows);
-		last_seal_unix_ms.store(NowUnixMs());
-		{
-			std::lock_guard<std::mutex> elock(seal_error_mutex);
-			seal_last_error.clear();
-		}
 		LogServerEvent(StringUtil::Format("parquet seal: path=%s rows=%llu batches=%llu", config.parquet_export_path,
 		                                  static_cast<uint64_t>(result.rows), static_cast<uint64_t>(result.batches)));
-		RecordSealEvent(seal_started_unix_ms, append_duration_ms, commit_duration_ms, result.rows,
-		                sealed_admission_bytes, true, "");
+		RecordSealOutcome(true, result.rows, sealed_admission_bytes, seal_started_unix_ms, append_duration_ms,
+		                  commit_duration_ms, "");
 		return result;
 	}
+}
+
+OtlpIngestResult OtlpServer::SealCatalog(SealingPlan &plan, int64_t seal_started_unix_ms, bool allow_maintenance,
+                                         DatabaseInstance &db) {
+	int64_t append_duration_ms = 0;
+	int64_t commit_duration_ms = 0;
+	idx_t sealed_admission_bytes = plan.sealed_admission_bytes;
+	auto &sealing = plan.signals;
+	OtlpIngestResult result;
 
 	try {
 		RunSQL(*writer_con, "BEGIN TRANSACTION");
@@ -946,6 +1116,15 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 		append_duration_ms =
 		    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - append_started)
 		        .count();
+#ifdef DUCKDB_OTLP_ENABLE_TEST_SEAM
+		// Test-only fault injection: simulate a commit-time seal failure so the harness can
+		// assert the re-buffer/retry invariants. Null (and the whole branch absent) in
+		// production builds; throws here so the rows are still staged-but-uncommitted, exactly
+		// like a real COMMIT failure, exercising the catch/rollback/re-buffer path below.
+		if (seal_fault_hook_for_test) {
+			seal_fault_hook_for_test();
+		}
+#endif
 		auto commit_started = std::chrono::steady_clock::now();
 		RunSQL(*writer_con, "COMMIT");
 		commit_duration_ms =
@@ -973,59 +1152,33 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 			// transaction. Rebuild it so the next seal can recover instead of failing
 			// forever on BEGIN.
 			try {
-				writer_con = make_uniq<Connection>(*db);
+				writer_con = make_uniq<Connection>(db);
 				writer_con->context->config.enable_progress_bar = false;
 			} catch (...) {
 			}
 		}
-		// Restore the un-sealed rows ahead of whatever workers buffered during the COPY,
-		// so nothing is lost and order is preserved. Only the old (swapped-out) rows are
-		// re-counted; the live rows were already counted as they were appended. Resetting
-		// first_unsealed to now loses precise row age across consecutive seal failures,
-		// which is acceptable — the age trigger just restarts its clock.
+		// Restore ALL un-sealed rows ahead of whatever workers buffered during the COPY, so
+		// nothing is lost and order is preserved (RestoreUnsealed with an all-true mask). Only
+		// the old (swapped-out) rows are re-counted; the live rows were already counted as they
+		// were appended. Each restored signal puts its OWN admission bytes back (nothing committed,
+		// so nothing is released; the per-signal sum equals the aggregate, so the all-or-nothing
+		// path is unchanged). RestoreUnsealed preserves the swapped-out rows' original
+		// first_unsealed (M3), so oldest_buffered_age_ms keeps reporting the true age across
+		// consecutive seal failures instead of resetting to now on each failure.
 		{
-			std::vector<std::unique_lock<std::mutex>> locks;
-			locks.reserve(signal_buffers.size());
-			for (auto &buf : signal_buffers) {
-				locks.emplace_back(buf->mutex);
-			}
-			for (idx_t i = 0; i < signal_buffers.size(); i++) {
-				auto &state = sealing[i];
-				if (state.rows == 0) {
-					continue;
-				}
-				auto &buf = *signal_buffers[i];
-				state.collection->Combine(*buf.collection); // old rows, then live rows
-				buf.collection = std::move(state.collection);
-				buf.buffered_rows += state.rows;
-				buf.have_unsealed = true;
-				buf.first_unsealed = std::chrono::steady_clock::now();
-			}
-			std::lock_guard<std::mutex> admission_lock(admission_mutex);
-			unsealed_admission_bytes += sealed_admission_bytes;
-		}
-		seal_failures_total.fetch_add(1);
-		{
-			std::lock_guard<std::mutex> elock(seal_error_mutex);
-			seal_last_error = msg;
+			std::vector<bool> restore(signal_buffers.size(), true);
+			RestoreUnsealed(plan, restore);
 		}
 		LogServerEvent(StringUtil::Format("seal failed: %s", msg), LogLevel::LOG_WARNING);
-		RecordSealEvent(seal_started_unix_ms, append_duration_ms, commit_duration_ms, 0, 0, false, msg);
+		RecordSealOutcome(false, 0, 0, seal_started_unix_ms, append_duration_ms, commit_duration_ms, msg);
 		throw;
 	}
 
 	ReleaseAdmission(sealed_admission_bytes);
-	seals_total.fetch_add(1);
-	committed_rows_total.fetch_add(result.rows);
-	last_seal_unix_ms.store(NowUnixMs());
-	{
-		std::lock_guard<std::mutex> elock(seal_error_mutex);
-		seal_last_error.clear();
-	}
 	LogServerEvent(StringUtil::Format("seal: catalog=%s rows=%llu batches=%llu", config.catalog_name,
 	                                  static_cast<uint64_t>(result.rows), static_cast<uint64_t>(result.batches)));
-	RecordSealEvent(seal_started_unix_ms, append_duration_ms, commit_duration_ms, result.rows, sealed_admission_bytes,
-	                true, "");
+	RecordSealOutcome(true, result.rows, sealed_admission_bytes, seal_started_unix_ms, append_duration_ms,
+	                  commit_duration_ms, "");
 	if (allow_maintenance) {
 		MaybeRunCatalogMaintenance(result.rows, sealed_admission_bytes);
 	}
@@ -1130,11 +1283,21 @@ void OtlpServer::ConfigureCatalogMaintenanceOptions() {
 		LogServerEvent(StringUtil::Format(
 		    "catalog maintenance options set: catalog=%s target_file_size=%lluMB retention=%llds", config.catalog_name,
 		    static_cast<uint64_t>(target_mb), static_cast<long long>(retention_s)));
-	} catch (std::exception &ex) {
+	} catch (...) {
 		// Not a DuckLake catalog (or options unsupported): leave defaults; maintenance will
-		// DISABLE on its first CHECKPOINT if the catalog can't be checkpointed at all.
-		LogServerEvent(StringUtil::Format("catalog maintenance options not applied for catalog=%s: %s",
-		                                  config.catalog_name, ex.what()));
+		// DISABLE on its first CHECKPOINT if the catalog can't be checkpointed at all. catch(...)
+		// — not just std::exception — so a non-std throw can't escape this best-effort startup
+		// path and lose the reason; extract the message the same way SealCatalog/Maybe... do.
+		string msg;
+		try {
+			throw;
+		} catch (std::exception &ex) {
+			msg = ex.what();
+		} catch (...) {
+			msg = "unknown (non-std) exception during catalog maintenance option setup";
+		}
+		LogServerEvent(
+		    StringUtil::Format("catalog maintenance options not applied for catalog=%s: %s", config.catalog_name, msg));
 	}
 }
 
@@ -1191,9 +1354,9 @@ OtlpIngestResult OtlpServer::FlushNow() {
 	return SealOnce(false);
 }
 
-void OtlpServer::ShutdownIngest() {
+idx_t OtlpServer::ShutdownIngest() {
 	if (ingest_shutdown_done.exchange(true)) {
-		return; // idempotent: Close() and ~OtlpServer() may both call this
+		return 0; // idempotent: Close() and ~OtlpServer() may both call this; nothing left to drain
 	}
 	sealer_stop.store(true);
 	sealer_cv.notify_all();
@@ -1215,6 +1378,9 @@ void OtlpServer::ShutdownIngest() {
 	}
 	auto remaining_rows = BufferedRows();
 	if (remaining_rows > 0) {
+		// Record the dropped-row count so the storage layer / otlp_stop / daemon can fail a
+		// data-dropping shutdown loudly (review finding M4) instead of reporting clean success.
+		shutdown_dropped_rows.store(remaining_rows);
 		// Distinguish the two loss causes: if the database is still alive the final seals were
 		// attempted and failed (graceful otlp_stop against a wedged backend) — surface the seal
 		// error; if db_ptr has expired this is the implicit DB-teardown path where SealOnce no-ops.
@@ -1233,6 +1399,24 @@ void OtlpServer::ShutdownIngest() {
 		std::lock_guard<std::mutex> writer_lock(writer_mutex);
 		writer_con.reset();
 	}
+	return remaining_rows;
 }
+
+#ifndef __EMSCRIPTEN__
+// Host-aware HTTP probe backing the daemon's `healthcheck` subcommand. The loopback-only
+// OtlpLoopbackHttpStatusOk (otlp_server_http.cpp) cannot reach a server bound to an explicit
+// non-loopback interface (e.g. OTEL_HTTP_ADDR=192.168.x.x:4318), which made the container
+// HEALTHCHECK probe 127.0.0.1 and fail forever on a healthy server (review finding M5). This
+// lets the daemon probe the CONFIGURED host. httplib::Client lives in this TU (same archive as
+// otlp_server_http.cpp); it does not touch the request-side gzip decompressor, so the link-order
+// concern in CMakeLists does not apply here.
+bool OtlpHttpStatusOk(const string &host, int port, const string &path) {
+	duckdb_httplib::Client client(host, port);
+	client.set_connection_timeout(2, 0);
+	client.set_read_timeout(2, 0);
+	auto res = client.Get(path);
+	return res && res->status >= 200 && res->status < 400;
+}
+#endif
 
 } // namespace duckdb
