@@ -105,11 +105,22 @@ message(STATUS "otlp2records source: ${OTLP2RECORDS_SOURCE_DIR}")
 message(STATUS "otlp2records target: ${RUST_TARGET}")
 message(STATUS "otlp2records build type: ${CARGO_BUILD_TYPE}")
 
+# Rebuild trigger for the Rust library. An add_custom_command with no DEPENDS
+# only re-runs when its OUTPUT is MISSING, so bumping the otlp2records submodule
+# (sources change, but the .a already exists) would silently keep linking a
+# stale archive. List the crate's sources and manifests so any content change
+# relinks. CONFIGURE_DEPENDS re-globs at build time so added/removed .rs files
+# are picked up without a manual re-configure.
+file(GLOB_RECURSE OTLP2RECORDS_RUST_SOURCES CONFIGURE_DEPENDS
+     "${OTLP2RECORDS_SOURCE_DIR}/src/*.rs")
+
 # Custom command to build Rust library
 add_custom_command(
   OUTPUT ${OTLP2RECORDS_LIB_PATH}
   COMMAND cargo build ${CARGO_BUILD_FLAGS} --target ${RUST_TARGET} --features
           ffi
+  DEPENDS ${OTLP2RECORDS_RUST_SOURCES} "${OTLP2RECORDS_SOURCE_DIR}/Cargo.toml"
+          "${OTLP2RECORDS_SOURCE_DIR}/Cargo.lock"
   WORKING_DIRECTORY ${OTLP2RECORDS_SOURCE_DIR}
   COMMENT "Building otlp2records Rust library (${CARGO_BUILD_TYPE})"
   VERBATIM)
