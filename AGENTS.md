@@ -82,7 +82,7 @@ make wasm_threads
 # - ./build/wasm_eh/extension/otlp/otlp.duckdb_extension.wasm
 ```
 
-**Note**: WASM builds support both JSON and Protobuf formats.
+**Note**: WASM builds support OTLP JSON and Protobuf, plus OTAP reads (`read_otap_*`) limited to uncompressed/LZ4 — the `otap-zstd` feature is native-only, so Zstandard OTAP is not decodable on WASM.
 
 ### Testing
 ```bash
@@ -233,3 +233,9 @@ Prefer one canonical page per topic and link to it instead of duplicating exampl
   - Not available on the wasm build.
 - Summary metrics are not yet supported
 - The union metrics function (`read_otlp_metrics`) is not yet implemented
+- **OTAP reads (`read_otap_*`)** decode canonical `BatchArrowRecords` files into the same flattened schemas as `read_otlp_*`, with these constraints:
+  - **One self-contained message per file.** Each file is decoded with one stateful decoder as a single `BatchArrowRecords`. A file holding several concatenated messages, or a "reuse" message that omits its schema/dictionaries and depends on a prior message in the same decoder session, is not supported and surfaces an `OTAP decode error`.
+  - **Envelopes are per-signal.** Canonical OTAP carries one signal family (logs *or* traces *or* metrics) per message, so use the reader that matches the file. A metrics envelope can hold several metric *shapes* at once — one file feeds `read_otap_metrics_gauge`/`_sum`/`_histogram`/`_exp_histogram`, each of which extracts its shape (the rest are released), exactly like `read_otlp_metrics_*`. Summary data points are counted as skipped.
+  - **Wrong/foreign payloads are a hard error, never silent.** Calling a reader on a file of a different signal (or an envelope mixing incompatible payloads) throws `OTAP decode error … Parse failed` rather than returning partial or mis-typed rows.
+  - **Compression:** native builds decode uncompressed, LZ4, and Zstandard (the producer default, via `otap-zstd`); WASM decodes uncompressed/LZ4 only.
+  - **File reads only** — OTAP is not accepted by the live HTTP ingest server.

@@ -48,6 +48,13 @@ SELECT time_unix_nano, service_name, severity_text, body FROM read_otlp_logs('ht
 SELECT trace_id, name, duration_time_unix_nano FROM read_otlp_traces('https://github.com/smithclay/duckdb-otlp/raw/refs/heads/main/test/data/otlp_traces.pb') ORDER BY duration_time_unix_nano DESC;
 ```
 
+Read the columnar OpenTelemetry Arrow Protocol (OTAP) with the `read_otap_*` readers. They emit the same schemas as `read_otlp_*`; pick the reader that matches your input encoding:
+
+```sql
+-- Decode an OTAP (BatchArrowRecords) file into the same flattened log schema
+SELECT time_unix_nano, service_name, severity_text, body FROM read_otap_logs('logs.bar');
+```
+
 ## Quickstart: Stream OpenTelemetry data
 
 You can start a server that accepts OpenTelemetry data from instrumented code, AI agents such as [Claude Code or Codex](https://smithclay.github.io/duckdb-otlp/guides/store-agent-traces-local-ducklake/), or OpenTelemetry Collectors. 
@@ -111,6 +118,7 @@ The schemas align with a normalized ClickStack-inspired version of the [OpenTele
 ## What You Can Do
 
 - Read OTLP traces, logs, gauges, sums/counters, histograms, and exponential histograms from files.
+- Read the columnar OpenTelemetry Arrow Protocol (OTAP) with the `read_otap_*` functions, which produce the same schemas as `read_otlp_*`.
 - Stream live OTLP/HTTP exports into the default DuckDB catalog, an attached [DuckLake](https://ducklake.select) lakehouse, or an Iceberg REST catalog such as Amazon S3 Tables or Cloudflare R2 Data Catalog.
 - Convert telemetry to Parquet files and save to cloud storage.
 - Query local files, globs, S3, HTTP(S), Azure Blob, and GCS paths through DuckDB file systems.
@@ -141,6 +149,7 @@ The schemas align with a normalized ClickStack-inspired version of the [OpenTele
 | `read_otlp_metrics_sum(path)` | Read sum/counter metrics |
 | `read_otlp_metrics_histogram(path)` | Read standard histogram metrics |
 | `read_otlp_metrics_exp_histogram(path)` | Read exponential histogram metrics |
+| `read_otap_traces/logs/metrics_*(path)` | Read OpenTelemetry Arrow Protocol (OTAP) files into the same schemas as the `read_otlp_*` readers |
 | `otlp_serve([uri], ...)` | Start a native OTLP/HTTP ingest server |
 | `otlp_flush(uri)` | Optionally force buffered ingest rows to commit to the target catalog now |
 | `otlp_stop(uri)` | Stop a server after committing remaining rows |

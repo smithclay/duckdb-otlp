@@ -62,6 +62,8 @@ OTAP is the columnar Arrow encoding of OpenTelemetry data (canonical `BatchArrow
 
 Because OTAP and OTLP mean different things, they are separate functions rather than a format flag — pick the reader that matches your input encoding. Each file must be a self-contained `BatchArrowRecords` message; one file is decoded with one decoder. Streams that span multiple files relying on cross-message Arrow dictionary reuse are not supported by the file readers.
 
+**One signal per file, multiple metric shapes per file.** A canonical OTAP message carries one signal family — logs *or* traces *or* metrics — so call the reader that matches the file. A single metrics file can hold several metric shapes at once: `read_otap_metrics_gauge`, `read_otap_metrics_sum`, `read_otap_metrics_histogram`, and `read_otap_metrics_exp_histogram` each extract their shape from the same file, just like the `read_otlp_metrics_*` readers (summary points are skipped). Pointing a reader at a file of a different signal, or at an envelope that mixes incompatible payloads, is a hard error — it never returns partial or mis-typed rows.
+
 **Compression:** OpenTelemetry producers default to Zstandard. Native builds decode uncompressed, LZ4, and Zstandard OTAP. The WebAssembly build decodes uncompressed and LZ4 only (no Zstandard); a Zstandard OTAP file there fails with an Arrow IPC error.
 
 ## Live Ingest

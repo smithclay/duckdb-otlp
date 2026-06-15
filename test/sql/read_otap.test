@@ -31,6 +31,13 @@ SELECT COUNT(*) FROM read_otap_metrics_histogram('test/data/otap/metrics-initial
 ----
 1
 
+# One metrics file carries multiple metric shapes; each shape-specific reader
+# extracts its own (the rest are released), like the read_otlp_metrics_* readers.
+query I
+SELECT COUNT(*) FROM read_otap_metrics_exp_histogram('test/data/otap/metrics-initial.bar');
+----
+1
+
 # --- OTAP normalizes to the same flattened records as OTLP. Decoding the OTAP
 # --- form must equal transforming the equivalent OTLP protobuf, row-for-row
 # --- (both directions: no extra or missing rows).
@@ -138,5 +145,18 @@ OTAP decode error
 # canonical BatchArrowRecords envelope).
 statement error
 SELECT * FROM read_otap_logs('test/data/otap/logs-initial.otlp');
+----
+OTAP decode error
+
+# Wrong signal: a metrics envelope fed to the logs reader carries no Logs payload
+# and only metric payloads, so it is rejected rather than mis-decoded.
+statement error
+SELECT * FROM read_otap_logs('test/data/otap/metrics-initial.bar');
+----
+OTAP decode error
+
+# Wrong signal: a logs envelope fed to a metrics reader is likewise a hard error.
+statement error
+SELECT * FROM read_otap_metrics_gauge('test/data/otap/logs-initial.bar');
 ----
 OTAP decode error
