@@ -69,6 +69,18 @@ else()
   set(CARGO_BUILD_FLAGS "--release")
 endif()
 
+# Cargo feature selection. `ffi` is always on (the C ABI the extension links).
+# Native targets also enable `otap-zstd` so OTAP streams from real OpenTelemetry
+# collectors (whose Producer defaults to Zstandard) decode. That feature pulls
+# in Arrow's Zstd backend, which compiles a bundled C library, so it is left OFF
+# for Emscripten/WASM (no C toolchain there) — OTAP on WASM is then limited to
+# uncompressed/LZ4 streams.
+if(EMSCRIPTEN)
+  set(OTLP2RECORDS_CARGO_FEATURES "ffi")
+else()
+  set(OTLP2RECORDS_CARGO_FEATURES "ffi,otap-zstd")
+endif()
+
 # Path to otlp2records source (defaults to submodule)
 if(NOT DEFINED OTLP2RECORDS_SOURCE_DIR)
   set(OTLP2RECORDS_SOURCE_DIR
@@ -104,6 +116,7 @@ set(OTLP2RECORDS_INCLUDE_DIR "${OTLP2RECORDS_SOURCE_DIR}/include")
 message(STATUS "otlp2records source: ${OTLP2RECORDS_SOURCE_DIR}")
 message(STATUS "otlp2records target: ${RUST_TARGET}")
 message(STATUS "otlp2records build type: ${CARGO_BUILD_TYPE}")
+message(STATUS "otlp2records features: ${OTLP2RECORDS_CARGO_FEATURES}")
 
 # Rebuild trigger for the Rust library. An add_custom_command with no DEPENDS
 # only re-runs when its OUTPUT is MISSING, so bumping the otlp2records submodule
@@ -118,7 +131,7 @@ file(GLOB_RECURSE OTLP2RECORDS_RUST_SOURCES CONFIGURE_DEPENDS
 add_custom_command(
   OUTPUT ${OTLP2RECORDS_LIB_PATH}
   COMMAND cargo build ${CARGO_BUILD_FLAGS} --target ${RUST_TARGET} --features
-          ffi
+          ${OTLP2RECORDS_CARGO_FEATURES}
   DEPENDS ${OTLP2RECORDS_RUST_SOURCES} "${OTLP2RECORDS_SOURCE_DIR}/Cargo.toml"
           "${OTLP2RECORDS_SOURCE_DIR}/Cargo.lock"
   WORKING_DIRECTORY ${OTLP2RECORDS_SOURCE_DIR}

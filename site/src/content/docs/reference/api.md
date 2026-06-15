@@ -2,7 +2,7 @@
 title: "API Reference"
 ---
 
-The DuckDB OpenTelemetry Extension API includes file readers and live-ingest functions. All file readers accept a path or glob pattern and detect OTLP JSON, JSONL, and protobuf. Native builds also support live ingest.
+The DuckDB OpenTelemetry Extension API includes file readers and live-ingest functions. The OTLP file readers accept a path or glob pattern and detect OTLP JSON, JSONL, and protobuf; the separate OTAP readers decode the columnar Arrow encoding (`BatchArrowRecords`). Native builds also support live ingest.
 
 ## Table Functions
 
@@ -46,6 +46,23 @@ Returns exponential histogram metrics (27 columns) with scale, zero bucket, posi
 **Parameters:** Same as `read_otlp_traces`
 
 `read_otlp_metrics(path)` and `read_otlp_metrics_summary(path)` are registered placeholders. Use the shape-specific metric readers above.
+
+### OpenTelemetry Arrow Protocol (OTAP)
+
+OTAP is the columnar Arrow encoding of OpenTelemetry data (canonical `BatchArrowRecords`), distinct from OTLP's protobuf/JSON wire format. The `read_otap_*` readers decode OTAP files into the **same flattened schemas** as their `read_otlp_*` counterparts — only the input encoding differs:
+
+- **`read_otap_traces(path)`**
+- **`read_otap_logs(path)`**
+- **`read_otap_metrics_gauge(path)`**
+- **`read_otap_metrics_sum(path)`**
+- **`read_otap_metrics_histogram(path)`**
+- **`read_otap_metrics_exp_histogram(path)`**
+
+**Parameters:** Same as `read_otlp_traces` (a path or glob).
+
+Because OTAP and OTLP mean different things, they are separate functions rather than a format flag — pick the reader that matches your input encoding. Each file must be a self-contained `BatchArrowRecords` message; one file is decoded with one decoder. Streams that span multiple files relying on cross-message Arrow dictionary reuse are not supported by the file readers.
+
+**Compression:** OpenTelemetry producers default to Zstandard. Native builds decode uncompressed, LZ4, and Zstandard OTAP. The WebAssembly build decodes uncompressed and LZ4 only (no Zstandard); a Zstandard OTAP file there fails with an Arrow IPC error.
 
 ## Live Ingest
 

@@ -1,0 +1,142 @@
+# name: test/sql/read_otap.test
+# description: read_otap_* table functions decode OpenTelemetry Arrow Protocol (OTAP) files
+# group: [sql]
+
+require otlp
+
+# --- Basic decode: one self-contained BatchArrowRecords (.bar) per signal ---
+
+query I
+SELECT COUNT(*) FROM read_otap_logs('test/data/otap/logs-initial.bar');
+----
+3
+
+query I
+SELECT COUNT(*) FROM read_otap_traces('test/data/otap/traces-initial.bar');
+----
+1
+
+query I
+SELECT COUNT(*) FROM read_otap_metrics_gauge('test/data/otap/metrics-initial.bar');
+----
+1
+
+query I
+SELECT COUNT(*) FROM read_otap_metrics_sum('test/data/otap/metrics-initial.bar');
+----
+1
+
+query I
+SELECT COUNT(*) FROM read_otap_metrics_histogram('test/data/otap/metrics-initial.bar');
+----
+1
+
+# --- OTAP normalizes to the same flattened records as OTLP. Decoding the OTAP
+# --- form must equal transforming the equivalent OTLP protobuf, row-for-row
+# --- (both directions: no extra or missing rows).
+
+query I
+SELECT COUNT(*) FROM (
+    SELECT * FROM read_otap_logs('test/data/otap/logs-initial.bar')
+    EXCEPT
+    SELECT * FROM read_otlp_logs('test/data/otap/logs-initial.otlp')
+);
+----
+0
+
+query I
+SELECT COUNT(*) FROM (
+    SELECT * FROM read_otlp_logs('test/data/otap/logs-initial.otlp')
+    EXCEPT
+    SELECT * FROM read_otap_logs('test/data/otap/logs-initial.bar')
+);
+----
+0
+
+query I
+SELECT COUNT(*) FROM (
+    SELECT * FROM read_otap_traces('test/data/otap/traces-initial.bar')
+    EXCEPT
+    SELECT * FROM read_otlp_traces('test/data/otap/traces-initial.otlp')
+);
+----
+0
+
+# --- Zstandard-compressed OTAP (the default for real OpenTelemetry collectors).
+# --- Requires the native build's otap-zstd feature; decodes to the same rows as
+# --- the equivalent OTLP.
+
+query I
+SELECT COUNT(*) FROM read_otap_logs('test/data/otap/logs-zstd.bar');
+----
+3
+
+query I
+SELECT COUNT(*) FROM (
+    SELECT * FROM read_otap_logs('test/data/otap/logs-zstd.bar')
+    EXCEPT
+    SELECT * FROM read_otlp_logs('test/data/otap/logs-initial.otlp')
+);
+----
+0
+
+# --- Schema parity: read_otap_logs exposes the same columns as read_otlp_logs.
+
+query I
+SELECT COUNT(*) FROM (
+    SELECT column_name FROM (DESCRIBE SELECT * FROM read_otap_logs('test/data/otap/logs-initial.bar'))
+    EXCEPT
+    SELECT column_name FROM (DESCRIBE SELECT * FROM read_otlp_logs('test/data/otap/logs-initial.otlp'))
+);
+----
+0
+
+# --- A few representative values survive the round-trip. (Full-row content
+# --- parity with OTLP is already asserted above; these are stable spot checks.)
+
+query T
+SELECT DISTINCT service_name FROM read_otap_logs('test/data/otap/logs-initial.bar');
+----
+fixture-service
+
+query I
+SELECT COUNT(*) FROM read_otap_logs('test/data/otap/logs-initial.bar') WHERE severity_text = 'INFO';
+----
+2
+
+# --- Projection pushdown still works (only requested columns copied).
+
+query I
+SELECT COUNT(*) FROM (SELECT severity_number FROM read_otap_logs('test/data/otap/logs-initial.bar'));
+----
+3
+
+# --- Globs resolve like the OTLP readers.
+
+query I
+SELECT COUNT(*) FROM read_otap_logs('test/data/otap/logs-initial.bar');
+----
+3
+
+# --- Error handling ---
+
+# Missing file: same message as the OTLP readers.
+statement error
+SELECT * FROM read_otap_logs('test/data/otap/does-not-exist.bar');
+----
+No files found that match the pattern
+
+# A "reuse" message omits its schema/dictionaries and is only decodable in the
+# same decoder session as the initial message. Decoded alone (one decoder per
+# file), it must fail rather than mis-decode.
+statement error
+SELECT * FROM read_otap_logs('test/data/otap/logs-reuse.bar');
+----
+OTAP decode error
+
+# Feeding an OTLP protobuf to the OTAP reader is a hard error (it is not a
+# canonical BatchArrowRecords envelope).
+statement error
+SELECT * FROM read_otap_logs('test/data/otap/logs-initial.otlp');
+----
+OTAP decode error

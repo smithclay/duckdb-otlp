@@ -124,9 +124,11 @@ The extension ships table functions, live ingest functions, and a native daemon.
 
 Column names use `snake_case` (e.g., `trace_id`, `span_name`, `service_name`).
 
+A parallel set of `read_otap_*` functions (same six signals, identical output schemas) decodes the OpenTelemetry Arrow Protocol (canonical `BatchArrowRecords`) instead of OTLP protobuf/JSON. OTAP and OTLP are deliberately separate functions, not a `format` flag, because they are different protocols. Each file is decoded as one self-contained message via the crate's stateful OTAP decoder FFI (`otlp_otap_decoder_new`/`_decode_logs`/`_decode_traces`/`_decode_metrics`/`_decoder_free`). Native builds enable the `otap-zstd` cargo feature so Zstandard streams (the producer default) decode; WASM builds do not (uncompressed/LZ4 only).
+
 ### Core Components
 
-- **Rust Backend (`external/otlp2records`)**: Rust library that parses OTLP JSON, NDJSON, and protobuf and returns Arrow arrays via the C Data Interface
+- **Rust Backend (`external/otlp2records`)**: Rust library that parses OTLP JSON, NDJSON, and protobuf — and decodes OTAP (`BatchArrowRecords`) via a stateful decoder — returning Arrow arrays via the C Data Interface
 - **FFI Bridge (`src/function/read_otlp.cpp`)**: Table function implementations that drive the Rust backend over FFI
 - **Arrow conversion (`src/otlp_arrow.cpp`)**: Converts the Arrow arrays returned by Rust into DuckDB DataChunks
 - **Live ingest server (`src/otlp_server.cpp`, `src/otlp_server_http.cpp`)**: Native OTLP/HTTP ingest implementation for `/v1/logs`, `/v1/traces`, and `/v1/metrics`

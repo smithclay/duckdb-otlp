@@ -23,10 +23,24 @@ namespace duckdb {
 // Bind Data
 // ============================================================================
 
+// OTAP decoder handle freed via RAII. otlp_otap_decoder_free(nullptr) is a
+// documented no-op, so this is safe even if construction left a null handle.
+struct OtapDecoderDeleter {
+	void operator()(OtlpOtapDecoder *decoder) const noexcept {
+		otlp_otap_decoder_free(decoder);
+	}
+};
+using OtapDecoderPtr = unique_ptr<OtlpOtapDecoder, OtapDecoderDeleter>;
+
 struct ReadOTLPRustBindData : public TableFunctionData {
 	vector<string> files;
 	OtlpSignalType signal_type;
 	OtlpInputFormat format;
+	// True for the read_otap_* functions: input is the OpenTelemetry Arrow
+	// Protocol (canonical BatchArrowRecords), decoded via the stateful OTAP
+	// decoder FFI instead of the one-shot OTLP transform. Output schema is
+	// identical (OTAP normalizes to the same flattened records).
+	bool is_otap = false;
 
 	// Schema from Rust (cached at bind time)
 	ArrowSchema arrow_schema;
@@ -86,7 +100,7 @@ struct ReadOTLPRustLocalState : public LocalTableFunctionState {
 
 static unique_ptr<FunctionData> ReadOTLPRustBind(ClientContext &context, TableFunctionBindInput &input,
                                                  vector<LogicalType> &return_types, vector<string> &names,
-                                                 OtlpSignalType signal_type) {
+                                                 OtlpSignalType signal_type, bool is_otap = false) {
 	auto result = make_uniq<ReadOTLPRustBindData>();
 
 	// Get file pattern from first argument
@@ -104,6 +118,7 @@ static unique_ptr<FunctionData> ReadOTLPRustBind(ClientContext &context, TableFu
 
 	result->signal_type = signal_type;
 	result->format = OTLP_FORMAT_AUTO;
+	result->is_otap = is_otap;
 
 	// Get schema from Rust
 	OtlpStatus status = otlp_get_schema(signal_type, &result->arrow_schema);
@@ -172,6 +187,41 @@ static unique_ptr<FunctionData> ReadOTLPMetricsExpHistogramRustBind(ClientContex
 	return ReadOTLPRustBind(context, input, return_types, names, OTLP_SIGNAL_METRICS_EXP_HISTOGRAM);
 }
 
+// OTAP bind functions: same schema as their read_otlp_* counterparts, but the
+// scan decodes canonical OTAP (BatchArrowRecords) via the stateful decoder FFI.
+static unique_ptr<FunctionData> ReadOTAPLogsRustBind(ClientContext &context, TableFunctionBindInput &input,
+                                                     vector<LogicalType> &return_types, vector<string> &names) {
+	return ReadOTLPRustBind(context, input, return_types, names, OTLP_SIGNAL_LOGS, /*is_otap=*/true);
+}
+
+static unique_ptr<FunctionData> ReadOTAPTracesRustBind(ClientContext &context, TableFunctionBindInput &input,
+                                                       vector<LogicalType> &return_types, vector<string> &names) {
+	return ReadOTLPRustBind(context, input, return_types, names, OTLP_SIGNAL_TRACES, /*is_otap=*/true);
+}
+
+static unique_ptr<FunctionData> ReadOTAPMetricsGaugeRustBind(ClientContext &context, TableFunctionBindInput &input,
+                                                             vector<LogicalType> &return_types, vector<string> &names) {
+	return ReadOTLPRustBind(context, input, return_types, names, OTLP_SIGNAL_METRICS_GAUGE, /*is_otap=*/true);
+}
+
+static unique_ptr<FunctionData> ReadOTAPMetricsSumRustBind(ClientContext &context, TableFunctionBindInput &input,
+                                                           vector<LogicalType> &return_types, vector<string> &names) {
+	return ReadOTLPRustBind(context, input, return_types, names, OTLP_SIGNAL_METRICS_SUM, /*is_otap=*/true);
+}
+
+static unique_ptr<FunctionData> ReadOTAPMetricsHistogramRustBind(ClientContext &context, TableFunctionBindInput &input,
+                                                                 vector<LogicalType> &return_types,
+                                                                 vector<string> &names) {
+	return ReadOTLPRustBind(context, input, return_types, names, OTLP_SIGNAL_METRICS_HISTOGRAM, /*is_otap=*/true);
+}
+
+static unique_ptr<FunctionData> ReadOTAPMetricsExpHistogramRustBind(ClientContext &context,
+                                                                    TableFunctionBindInput &input,
+                                                                    vector<LogicalType> &return_types,
+                                                                    vector<string> &names) {
+	return ReadOTLPRustBind(context, input, return_types, names, OTLP_SIGNAL_METRICS_EXP_HISTOGRAM, /*is_otap=*/true);
+}
+
 static unique_ptr<FunctionData> ReadOTLPMetricsSummaryRustBind(ClientContext &context, TableFunctionBindInput &input,
                                                                vector<LogicalType> &return_types,
                                                                vector<string> &names) {
@@ -202,6 +252,121 @@ static unique_ptr<LocalTableFunctionState> ReadOTLPRustInitLocal(ExecutionContex
 	auto result = make_uniq<ReadOTLPRustLocalState>();
 	result->column_ids = input.column_ids;
 	return std::move(result);
+}
+
+// ============================================================================
+// Decode helpers
+// ============================================================================
+
+// Pick the requested metric shape's array out of a fully-populated batch set:
+// release the chosen shape's schema (conversion uses the cached bind-time
+// schema) and every other present batch, returning the chosen array (a no-op
+// empty array if that shape had no rows). Shared by the OTLP and OTAP metric
+// paths, which both yield an OtlpMetricsArrowBatches from one parse/decode.
+static ArrowArray SelectMetricShapeArray(OtlpMetricsArrowBatches &batches, OtlpSignalType signal_type) {
+	OtlpArrowBatch *chosen = nullptr;
+	switch (signal_type) {
+	case OTLP_SIGNAL_METRICS_GAUGE:
+		chosen = &batches.gauge;
+		break;
+	case OTLP_SIGNAL_METRICS_SUM:
+		chosen = &batches.sum;
+		break;
+	case OTLP_SIGNAL_METRICS_HISTOGRAM:
+		chosen = &batches.histogram;
+		break;
+	default: // OTLP_SIGNAL_METRICS_EXP_HISTOGRAM
+		chosen = &batches.exp_histogram;
+		break;
+	}
+
+	ArrowArray array;
+	if (chosen->present) {
+		// Keep the chosen array; release its schema (we convert via the cached
+		// bind-time schema).
+		if (chosen->schema.release) {
+			chosen->schema.release(&chosen->schema);
+		}
+		array = chosen->array;
+	} else {
+		// No rows for this shape: synthesize an empty, no-op array.
+		array = {};
+	}
+	// Prevent the chosen batch from being released as an "other" below.
+	chosen->present = 0;
+
+	// Release every remaining present batch (array + schema) so nothing leaks.
+	ReleaseOtlpArrowBatch(batches.gauge);
+	ReleaseOtlpArrowBatch(batches.sum);
+	ReleaseOtlpArrowBatch(batches.histogram);
+	ReleaseOtlpArrowBatch(batches.exp_histogram);
+	return array;
+}
+
+// Decode one fully-buffered file into a single Arrow array for the bound signal,
+// dispatching to the stateful OTAP decoder or the one-shot OTLP transform. Any
+// schema returned alongside the array is released here (conversion uses the
+// cached bind-time schema); the caller owns and must release the returned array.
+static ArrowArray DecodeFileToArray(const ReadOTLPRustBindData &bind_data, const uint8_t *input_bytes, idx_t input_len,
+                                    const string &path) {
+	const bool single_shape = bind_data.signal_type == OTLP_SIGNAL_LOGS || bind_data.signal_type == OTLP_SIGNAL_TRACES;
+	ArrowArray array;
+	ArrowSchema schema;
+
+	if (bind_data.is_otap) {
+		// OTAP is stateful, but each file is one self-contained BatchArrowRecords
+		// message, so one decoder + one decode call per file. (A stream split
+		// across multiple files with cross-message dictionary reuse is not
+		// supported by this one-decoder-per-file model.)
+		OtapDecoderPtr decoder(otlp_otap_decoder_new());
+		if (!decoder) {
+			throw IOException("Failed to allocate OTAP decoder for %s", path);
+		}
+		if (single_shape) {
+			OtlpStatus status = bind_data.signal_type == OTLP_SIGNAL_LOGS
+			                        ? otlp_otap_decode_logs(decoder.get(), input_bytes, input_len, &array, &schema)
+			                        : otlp_otap_decode_traces(decoder.get(), input_bytes, input_len, &array, &schema);
+			if (status != OTLP_OK) {
+				throw IOException("OTAP decode error on %s: %s", path, otlp_status_message(status));
+			}
+			if (schema.release) {
+				schema.release(&schema);
+			}
+			return array;
+		}
+		OtlpMetricsArrowBatches batches = {};
+		OtlpStatus status = otlp_otap_decode_metrics(decoder.get(), input_bytes, input_len, &batches);
+		if (status != OTLP_OK) {
+			// On failure no batch is present; nothing to release.
+			throw IOException("OTAP decode error on %s: %s", path, otlp_status_message(status));
+		}
+		return SelectMetricShapeArray(batches, bind_data.signal_type);
+	}
+
+	// OTLP: protobuf/JSON/NDJSON, auto-detected by the Rust backend.
+	if (single_shape) {
+		// Logs/Traces have a single shape; otlp_transform is the canonical verb for them.
+		OtlpStatus status =
+		    otlp_transform(bind_data.signal_type, bind_data.format, input_bytes, input_len, &array, &schema);
+		if (status != OTLP_OK) {
+			throw IOException("OTLP parse error on %s: %s", path, otlp_status_message(status));
+		}
+		// Schema was cached at bind time; release this copy and keep only the array.
+		if (schema.release) {
+			schema.release(&schema);
+		}
+		return array;
+	}
+	// Metrics: one parse yields all four shapes (otlp_transform_metrics_all is the
+	// single canonical metric verb). SelectMetricShapeArray keeps the requested
+	// shape and releases the rest.
+	OtlpMetricsArrowBatches batches = {};
+	OtlpStatus status = otlp_transform_metrics_all(bind_data.format, input_bytes, input_len, &batches);
+	if (status != OTLP_OK) {
+		// On failure no batch is present; nothing to release.
+		throw IOException("OTLP parse error on %s: %s", path, otlp_status_message(status));
+	}
+	return SelectMetricShapeArray(batches, bind_data.signal_type);
 }
 
 // ============================================================================
@@ -273,81 +438,9 @@ static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, D
 			                  static_cast<int64_t>(file_size), static_cast<uint64_t>(bytes_read));
 		}
 
-		ArrowArray array;
-		ArrowSchema schema;
 		const auto *input_bytes = reinterpret_cast<const uint8_t *>(lstate.file_buffer.data());
 		const auto input_len = lstate.file_buffer.size();
-
-		switch (bind_data.signal_type) {
-		case OTLP_SIGNAL_LOGS:
-		case OTLP_SIGNAL_TRACES: {
-			// Logs/Traces have a single shape; otlp_transform is the canonical verb for them.
-			OtlpStatus status =
-			    otlp_transform(bind_data.signal_type, bind_data.format, input_bytes, input_len, &array, &schema);
-			if (status != OTLP_OK) {
-				throw IOException("OTLP parse error on %s: %s", path, otlp_status_message(status));
-			}
-			// Schema was cached at bind time; release this copy and keep only the array.
-			if (schema.release) {
-				schema.release(&schema);
-			}
-			break;
-		}
-		case OTLP_SIGNAL_METRICS_GAUGE:
-		case OTLP_SIGNAL_METRICS_SUM:
-		case OTLP_SIGNAL_METRICS_HISTOGRAM:
-		case OTLP_SIGNAL_METRICS_EXP_HISTOGRAM: {
-			// Metrics: one parse yields all four shapes (otlp_transform_metrics_all is the single
-			// canonical metric verb). Keep only the requested shape's array; release every other
-			// present batch's array+schema plus the chosen batch's schema (the cached bind-time
-			// schema is used for conversion).
-			OtlpMetricsArrowBatches batches = {};
-			OtlpStatus status = otlp_transform_metrics_all(bind_data.format, input_bytes, input_len, &batches);
-			if (status != OTLP_OK) {
-				// On failure no batch is present; nothing to release.
-				throw IOException("OTLP parse error on %s: %s", path, otlp_status_message(status));
-			}
-
-			OtlpArrowBatch *chosen = nullptr;
-			switch (bind_data.signal_type) {
-			case OTLP_SIGNAL_METRICS_GAUGE:
-				chosen = &batches.gauge;
-				break;
-			case OTLP_SIGNAL_METRICS_SUM:
-				chosen = &batches.sum;
-				break;
-			case OTLP_SIGNAL_METRICS_HISTOGRAM:
-				chosen = &batches.histogram;
-				break;
-			default: // OTLP_SIGNAL_METRICS_EXP_HISTOGRAM
-				chosen = &batches.exp_histogram;
-				break;
-			}
-
-			// Keep the chosen array; release its schema (we convert via the cached bind-time
-			// schema). If the chosen shape is absent, leave array unreleasable below.
-			if (chosen->present) {
-				if (chosen->schema.release) {
-					chosen->schema.release(&chosen->schema);
-				}
-				array = chosen->array;
-			} else {
-				// No rows for this shape: synthesize an empty, no-op array.
-				array = {};
-			}
-			// Prevent the chosen batch from being released as an "other" below.
-			chosen->present = 0;
-
-			// Release every remaining present batch (array + schema) so nothing leaks.
-			ReleaseOtlpArrowBatch(batches.gauge);
-			ReleaseOtlpArrowBatch(batches.sum);
-			ReleaseOtlpArrowBatch(batches.histogram);
-			ReleaseOtlpArrowBatch(batches.exp_histogram);
-			break;
-		}
-		default:
-			throw IOException("Unsupported OTLP signal type for read scan");
-		}
+		ArrowArray array = DecodeFileToArray(bind_data, input_bytes, input_len, path);
 
 		if (array.length < 0) {
 			if (array.release) {
@@ -387,6 +480,13 @@ void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
 	    {"read_otlp_metrics_sum", ReadOTLPMetricsSumRustBind},
 	    {"read_otlp_metrics_exp_histogram", ReadOTLPMetricsExpHistogramRustBind},
 	    {"read_otlp_metrics_histogram", ReadOTLPMetricsHistogramRustBind},
+	    // read_otap_*: OpenTelemetry Arrow Protocol input, same schemas/scan as above.
+	    {"read_otap_logs", ReadOTAPLogsRustBind},
+	    {"read_otap_traces", ReadOTAPTracesRustBind},
+	    {"read_otap_metrics_gauge", ReadOTAPMetricsGaugeRustBind},
+	    {"read_otap_metrics_sum", ReadOTAPMetricsSumRustBind},
+	    {"read_otap_metrics_exp_histogram", ReadOTAPMetricsExpHistogramRustBind},
+	    {"read_otap_metrics_histogram", ReadOTAPMetricsHistogramRustBind},
 	};
 	for (const auto &reg : supported) {
 		TableFunction func(reg.name, {LogicalType::VARCHAR}, ReadOTLPRustScan, reg.bind, ReadOTLPRustInitGlobal,
