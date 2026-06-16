@@ -26,6 +26,7 @@ set(EXTENSION_SOURCES
     src/otlp_uri.cpp
     src/otlp_server.cpp
     src/otlp_server_http.cpp
+    src/otlp_server_grpc.cpp
     src/otlp_storage.cpp
     src/otlp_start_stop.cpp)
 

@@ -24,8 +24,16 @@ class ColumnDataCollection;
 class DataChunk;
 struct OtlpSignalBuffer;
 
+//! Wire transport for live ingest. HTTP is the OTLP/HTTP server (cpp-httplib);
+//! GRPC is the OTLP/gRPC + OTAP/Arrow server (an embedded tonic server reached
+//! through the otlp2records FFI). Selected by the listen URI scheme: otlp: =>
+//! HTTP, otap: => GRPC.
+enum class OtlpTransport { HTTP, GRPC };
+
 struct OtlpServerConfig {
 	string token;
+	//! Wire transport. Defaults to HTTP; set to GRPC for the otap: scheme.
+	OtlpTransport transport = OtlpTransport::HTTP;
 	//! Target catalog (attached database). Empty = the connection's default catalog.
 	//! Set this to an attached writable catalog name for lakehouse ingest.
 	string catalog_name;
@@ -257,8 +265,33 @@ public:
 	}
 #endif
 
+	// --- gRPC transport bridge ---
+	// The gRPC server lives in the otlp2records crate and reaches back into this
+	// server through a C callback. These two entry points are the bridge the free
+	// callback in otlp_server_grpc.cpp invokes (it holds an OtlpServer* as its
+	// user_data). Public only because that callback has C linkage and cannot be a
+	// member; not part of the general API.
+
+	//! Buffer one already-decoded Arrow batch into `signal_type`'s buffer, applying
+	//! the same admission/backpressure + stage + group-commit path as the HTTP
+	//! ingest path. `input_bytes` is the wire size charged against admission. The
+	//! array/schema are borrowed (copied, never released here). Returns the gRPC
+	//! mapped status (OTLP_INGEST_OK / _RESOURCE_EXHAUSTED / _INTERNAL).
+	OtlpIngestStatus IngestDecodedArrowBatch(OtlpSignalType signal_type, idx_t input_bytes, ArrowArray &array,
+	                                         ArrowSchema &schema);
+	//! Validate a gRPC request's `authorization` metadata against the server token
+	//! (shares OtlpServer::CheckAuth with the HTTP path).
+	bool CheckGrpcAuth(const string &authorization) const;
+
 private:
 	bool CheckAuth(const string &authorization, const string &api_key) const;
+	//! Start the embedded gRPC server (otap: transport). Binds synchronously so an
+	//! address-in-use surfaces to otlp_serve/otap_serve; on failure seals/stops the
+	//! sealer and throws. No-op shell on wasm.
+	void StartGrpc();
+	//! Graceful gRPC shutdown: stop accepting, drain in-flight requests, join the
+	//! runtime, free the handle. Idempotent. Must run before ShutdownIngest().
+	void StopGrpc();
 	OtlpIngestResult Ingest(OtlpRequestKind kind, const string &content_type, const string &content_encoding,
 	                        const string &body);
 	void EnsureTargetTables();
@@ -450,6 +483,9 @@ private:
 	// --- HTTP transport (httplib). PIMPL so httplib.hpp stays out of this header. ---
 	class Impl;
 	unique_ptr<Impl> impl;
+	// --- gRPC transport. Opaque handle owned by the otlp2records crate (tonic
+	// server + tokio runtime); null unless config.transport == GRPC. ---
+	OtlpGrpcServer *grpc_handle = nullptr;
 	std::atomic<bool> is_running {false};
 	std::atomic<bool> listener_failed {false};
 	mutable mutex error_mutex;

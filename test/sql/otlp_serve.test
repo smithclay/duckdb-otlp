@@ -170,3 +170,39 @@ query T
 SELECT status FROM otlp_stop('otlp:127.0.0.1:55444');
 ----
 Stopped listening on otlp:127.0.0.1:55444
+
+# --- gRPC transport (otap:) control plane ---
+# otap_serve binds a real gRPC listener (the data path is exercised by
+# test/manual/otap_serve_grpc.py; SQLLogicTest cannot drive a gRPC client). The
+# lifecycle/registry surface mirrors HTTP, and the canonical URI keeps the otap:
+# scheme so it is a distinct registry key.
+
+query TT
+SELECT listen_uri, schema_name
+FROM otap_serve('otap:127.0.0.1:55460', token := 'dev-token-123456', schema := 'main');
+----
+otap:127.0.0.1:55460	main
+
+# a freshly-started gRPC server reports itself listening with no error
+query I
+SELECT count(*) FROM otlp_server_list()
+WHERE listen_uri = 'otap:127.0.0.1:55460' AND is_listening AND last_error IS NULL;
+----
+1
+
+query T
+SELECT status FROM otlp_stop('otap:127.0.0.1:55460');
+----
+Stopped listening on otap:127.0.0.1:55460
+
+# otlp_serve with the otap: scheme also selects the gRPC transport, and the
+# canonical key preserves the scheme (otap:, not otlp:)
+query T
+SELECT listen_uri FROM otlp_serve('otap:127.0.0.1:55461', token := 'dev-token-123456');
+----
+otap:127.0.0.1:55461
+
+query T
+SELECT status FROM otlp_stop('otap:127.0.0.1:55461');
+----
+Stopped listening on otap:127.0.0.1:55461

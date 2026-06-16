@@ -38,14 +38,15 @@ struct OtlpStartStopFunctionData : public TableFunctionData {
 	OtlpServerConfig config;
 };
 
-static unique_ptr<FunctionData> OtlpServeBind(ClientContext &context, TableFunctionBindInput &input,
-                                              vector<LogicalType> &return_types, vector<string> &names) {
+static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableFunctionBindInput &input,
+                                                  vector<LogicalType> &return_types, vector<string> &names,
+                                                  const string &default_uri) {
 #ifdef __EMSCRIPTEN__
-	throw NotImplementedException("otlp_serve is not implemented for the wasm platform");
+	throw NotImplementedException("live OTLP ingest is not implemented for the wasm platform");
 #endif
 
 	auto bind_data = make_uniq<OtlpStartStopFunctionData>();
-	string listen_uri = "otlp:localhost:4318";
+	string listen_uri = default_uri;
 	if (!input.inputs.empty()) {
 		auto &uri_value = input.inputs[0];
 		if (uri_value.IsNull() || uri_value.GetValue<string>().empty()) {
@@ -55,6 +56,10 @@ static unique_ptr<FunctionData> OtlpServeBind(ClientContext &context, TableFunct
 	}
 
 	bind_data->listen_uri = OtlpUri(listen_uri);
+	// The wire transport follows the URI scheme: otap: => gRPC (OTLP/gRPC unary +
+	// OTAP/Arrow streaming), otlp: => HTTP. So otlp_serve('otap:...') and
+	// otap_serve(...) both select the gRPC transport.
+	bind_data->config.transport = bind_data->listen_uri.IsGrpc() ? OtlpTransport::GRPC : OtlpTransport::HTTP;
 
 	auto allow_other_hostname = input.named_parameters.find("allow_other_hostname") != input.named_parameters.end() &&
 	                            input.named_parameters["allow_other_hostname"].GetValue<bool>();
@@ -168,6 +173,16 @@ static unique_ptr<FunctionData> OtlpServeBind(ClientContext &context, TableFunct
 	return std::move(bind_data);
 }
 
+static unique_ptr<FunctionData> OtlpServeBind(ClientContext &context, TableFunctionBindInput &input,
+                                              vector<LogicalType> &return_types, vector<string> &names) {
+	return OtlpServeBindImpl(context, input, return_types, names, "otlp:localhost:4318");
+}
+
+static unique_ptr<FunctionData> OtapServeBind(ClientContext &context, TableFunctionBindInput &input,
+                                              vector<LogicalType> &return_types, vector<string> &names) {
+	return OtlpServeBindImpl(context, input, return_types, names, "otap:localhost:4317");
+}
+
 static void OtlpServe(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
 	auto &bind_data = data_p.bind_data->CastNoConst<OtlpStartStopFunctionData>();
 	if (bind_data.finished) {
@@ -194,9 +209,9 @@ static void OtlpServe(ClientContext &context, TableFunctionInput &data_p, DataCh
 	output.SetCardinality(1);
 }
 
-TableFunctionSet OtlpServeFunction::GetFunction() {
-	TableFunctionSet set("otlp_serve");
-	auto fun = TableFunction("otlp_serve", {OtlpVarcharType()}, OtlpServe, OtlpServeBind);
+static TableFunctionSet BuildServeFunctionSet(const string &name, table_function_bind_t bind) {
+	TableFunctionSet set(name);
+	auto fun = TableFunction(name, {OtlpVarcharType()}, OtlpServe, bind);
 	fun.named_parameters["token"] = OtlpVarcharType();
 	fun.named_parameters["catalog"] = OtlpVarcharType();
 	fun.named_parameters["schema"] = OtlpVarcharType();
@@ -204,6 +219,8 @@ TableFunctionSet OtlpServeFunction::GetFunction() {
 	fun.named_parameters["create_tables"] = OtlpBooleanType();
 	fun.named_parameters["allow_other_hostname"] = OtlpBooleanType();
 	fun.named_parameters["max_body_bytes"] = OtlpUBigIntType();
+	// http_threads sizes the HTTP worker pool; ignored by the gRPC transport (the
+	// tonic server sizes its own runtime), but accepted on both for a uniform surface.
 	fun.named_parameters["http_threads"] = OtlpUBigIntType();
 	fun.named_parameters["max_buffered_bytes"] = OtlpUBigIntType();
 	fun.named_parameters["seal_target_bytes"] = OtlpUBigIntType();
@@ -214,6 +231,14 @@ TableFunctionSet OtlpServeFunction::GetFunction() {
 	fun.arguments.clear();
 	set.AddFunction(fun);
 	return set;
+}
+
+TableFunctionSet OtlpServeFunction::GetFunction() {
+	return BuildServeFunctionSet("otlp_serve", OtlpServeBind);
+}
+
+TableFunctionSet OtapServeFunction::GetFunction() {
+	return BuildServeFunctionSet("otap_serve", OtapServeBind);
 }
 
 static unique_ptr<FunctionData> OtlpStopBind(ClientContext &context, TableFunctionBindInput &input,

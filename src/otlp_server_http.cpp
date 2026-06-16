@@ -93,6 +93,15 @@ OtlpServer::OtlpServer(ClientContext &context, const OtlpUri &uri_p, const OtlpS
 	ConfigureCatalogMaintenanceOptions();
 	StartSealer();
 
+	if (config.transport == OtlpTransport::GRPC) {
+		// gRPC transport: the embedded tonic server (in otlp2records) owns its own
+		// runtime and binds synchronously, so there is no httplib listener or
+		// listen_thread. StartGrpc() seals + rethrows on bind failure, matching the
+		// httplib path below.
+		StartGrpc();
+		return;
+	}
+
 	impl->server = make_uniq<duckdb_httplib::Server>();
 	auto http_threads = config.http_threads == 0 ? DefaultHttpThreads() : config.http_threads;
 	// The worker-pool size bounds how many connections we serve at once (each keep-alive
@@ -216,6 +225,12 @@ void OtlpServer::StopAccepting() {
 	// Closes the listening socket only. Idempotent. Safe to call from a
 	// request-handler thread — does not wait on httplib's task queue.
 	if (is_running.exchange(false)) {
+		if (config.transport == OtlpTransport::GRPC) {
+			// The gRPC graceful shutdown + runtime join happens in Close()/StopGrpc();
+			// it must not run here because a request-handler (tokio worker) thread
+			// would deadlock joining its own runtime.
+			return;
+		}
 		impl->server->stop();
 	}
 }
@@ -226,7 +241,11 @@ void OtlpServer::Close() {
 	// listener's exit path inside httplib joins all workers, so a worker
 	// joining the listener would deadlock through that chain.
 	StopAccepting();
-	if (listen_thread.joinable()) {
+	if (config.transport == OtlpTransport::GRPC) {
+		// Graceful gRPC shutdown drains in-flight requests (so their buffered rows are
+		// included) and joins the runtime before the final seal.
+		StopGrpc();
+	} else if (listen_thread.joinable()) {
 		listen_thread.join();
 	}
 	// Workers are now joined: stop the sealer and drain the remaining buffer before

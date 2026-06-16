@@ -78,7 +78,12 @@ endif()
 if(EMSCRIPTEN)
   set(OTLP2RECORDS_CARGO_FEATURES "ffi")
 else()
-  set(OTLP2RECORDS_CARGO_FEATURES "ffi,otap-zstd")
+  # Native targets also enable `grpc`, which embeds a tonic gRPC ingest server
+  # (OTLP/gRPC unary + OTAP/Arrow streaming) reached over the C ABI. It pulls in
+  # a tokio runtime + tonic transport, statically linked into the archive (no
+  # new system shared libraries), and is left OFF for Emscripten/WASM (no
+  # runtime or sockets there).
+  set(OTLP2RECORDS_CARGO_FEATURES "ffi,otap-zstd,grpc")
 endif()
 
 # Path to otlp2records source (defaults to submodule)
