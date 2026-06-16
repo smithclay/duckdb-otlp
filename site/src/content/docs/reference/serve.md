@@ -4,7 +4,7 @@ title: "OTLP HTTP Ingest Server"
 
 You can run an embedded HTTP server that accepts live OTLP/HTTP exports and streams them into DuckDB. Point any OpenTelemetry exporter at the server. The server buffers rows, then commits them in batches to the connection's default catalog, a DuckLake lakehouse, or another attached writable catalog such as an Iceberg REST catalog.
 
-Native extension builds include the server. WASM builds omit it. Live ingestion uses HTTP only, with no gRPC listener.
+Native extension builds include the server (WASM builds omit it). Two transports are available, chosen by the listen URI scheme: **`otlp:`** runs the OTLP/HTTP server documented on this page; **`otap:`** runs a gRPC server. See [gRPC transport](#grpc-transport) below.
 
 For a runnable walkthrough, see the [Live Ingest Quickstart](../../quickstart/serve/). For lakehouse examples, see [Stream to Local DuckLake](../../guides/stream-to-local-ducklake/), [Stream to Remote DuckLake](../../guides/stream-to-remote-ducklake/), [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/), and [Stream to Cloudflare R2 Data Catalog](../../guides/stream-to-r2-data-catalog/). For plain files or object storage, see [Stream to Parquet](../../guides/stream-to-parquet/). For the implementation model, see [Architecture](../../architecture/#otlp-http-ingest-server).
 
@@ -181,17 +181,18 @@ Each batch commit writes **one Parquet data file per signal** plus one DuckLake 
 
 ## URI scheme
 
-Listen URIs use the `otlp:` scheme:
+The listen URI scheme selects the transport: `otlp:` is the OTLP/HTTP server (default port 4318); `otap:` is the [gRPC server](#grpc-transport) (default port 4317).
 
-| Form | Example |
-|------|---------|
-| `otlp:host:port` | `otlp:localhost:4318` |
-| `otlp://host:port` | `otlp://127.0.0.1:4318` |
-| IPv6 (host in brackets) | `otlp:[::1]:4318` |
+| Form | Example | Transport |
+|------|---------|-----------|
+| `otlp:host:port` | `otlp:localhost:4318` | HTTP |
+| `otlp://host:port` | `otlp://127.0.0.1:4318` | HTTP |
+| `otap:host:port` | `otap:localhost:4317` | gRPC |
+| IPv6 (host in brackets) | `otlp:[::1]:4318` | HTTP |
 
-By default, `otlp_serve` allows only `localhost`, `127.0.0.1`, and `::1`. To bind to any other host (for example `0.0.0.0` to accept remote exporters), pass `allow_other_hostname := true`. `otlp_serve` rejects non-localhost hosts before it binds a socket.
+The scheme is part of the canonical key, so `otap:host:4317` and `otlp:host:4318` are distinct servers in `otlp_server_list` / `otlp_stop` / `otlp_flush`. By default, `otlp_serve`/`otap_serve` allow only `localhost`, `127.0.0.1`, and `::1`. To bind to any other host (for example `0.0.0.0` to accept remote exporters), pass `allow_other_hostname := true`; non-localhost hosts are rejected before a socket is bound.
 
-The scalar function **`otlp_uri_parser(uri)`** parses an `otlp:` URI and returns a `STRUCT(host VARCHAR, port USMALLINT, ipv6 BOOLEAN, url VARCHAR)` — the same parsing `otlp_serve` uses, useful for validating a URI or deriving the `http://` base URL up front.
+The scalar function **`otlp_uri_parser(uri)`** parses an `otlp:`/`otap:` URI and returns a `STRUCT(host VARCHAR, port USMALLINT, ipv6 BOOLEAN, url VARCHAR)` — the same parsing the serve functions use, useful for validating a URI up front.
 
 ## HTTP endpoints
 
@@ -233,6 +234,24 @@ Every POST must present the configured token through one of these headers:
 The server checks the two headers independently, so a malformed `Authorization` header does not mask a valid `x-api-key`. A missing or invalid token returns `401`. The server compares tokens with a constant-time check.
 
 Tokens must be at least 16 characters. Auto-generated tokens (when `token` is omitted) are 32 hex characters (128 bits of entropy).
+
+## gRPC transport
+
+`otap_serve` (or `otlp_serve('otap:...')`) starts a gRPC server instead of the HTTP one. It shares everything below the wire: the same parameters, catalog/Parquet targeting, token auth, buffered group-commit ("seal") path, backpressure cap, and lifecycle functions (`otlp_flush` / `otlp_stop` / `otlp_server_list` / `otlp_seal_list`). It defaults to `otap:localhost:4317`.
+
+The gRPC server hosts two families of services on one listener, for all six signals:
+
+| Service | RPC | Wire format |
+|---------|-----|-------------|
+| `opentelemetry.proto.collector.{logs,trace,metrics}.v1.{Logs,Trace,Metrics}Service` | `Export` (unary) | Standard **OTLP/gRPC** |
+| `opentelemetry.proto.experimental.arrow.v1.Arrow{Logs,Traces,Metrics}Service` | `Arrow{Logs,Traces,Metrics}` (bidirectional streaming) | **OTAP/Arrow** (`stream BatchArrowRecords` → `stream BatchStatus`) |
+
+Notes:
+
+- **Auth** is the bearer token in the gRPC `authorization` metadata (`Bearer <token>`); a bad token is rejected with `UNAUTHENTICATED`. Backpressure surfaces as `RESOURCE_EXHAUSTED` (the gRPC equivalent of HTTP `503`).
+- **OTAP streaming** keeps one stateful decoder per stream, so later messages can reuse the Arrow dictionaries/schemas established by earlier ones. The server returns one `BatchStatus` per received `BatchArrowRecords`. A message that fails to decode is nacked and the stream is closed (the decoder is poisoned); a message nacked for backpressure leaves the stream open.
+- **Metrics** decode into up to four shapes per message, each buffered independently — a backpressure nack partway through a metrics message can leave earlier shapes buffered.
+- The gRPC stack (tokio + tonic) is statically linked into the extension; it adds no new shared-library dependencies and, like the HTTP server, is native-only (absent from WASM builds).
 
 ## Responses and status codes
 

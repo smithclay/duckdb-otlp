@@ -132,8 +132,9 @@ A parallel set of `read_otap_*` functions (same six signals, identical output sc
 - **FFI Bridge (`src/function/read_otlp.cpp`)**: Table function implementations that drive the Rust backend over FFI
 - **Arrow conversion (`src/otlp_arrow.cpp`)**: Converts the Arrow arrays returned by Rust into DuckDB DataChunks
 - **Live ingest server (`src/otlp_server.cpp`, `src/otlp_server_http.cpp`)**: Native OTLP/HTTP ingest implementation for `/v1/logs`, `/v1/traces`, and `/v1/metrics`
+- **gRPC transport bridge (`src/otlp_server_grpc.cpp`)**: Bridges the embedded tonic gRPC server (in `otlp2records`) into the same buffering/seal core as the HTTP path via a per-batch C callback. Serves OTLP/gRPC unary + OTAP/Arrow streaming for the `otap:` scheme
 - **Buffered storage (`src/otlp_storage.cpp`)**: Per-signal buffering and serialized background seal/group-commit path
-- **Start/stop SQL functions (`src/otlp_start_stop.cpp`)**: `otlp_serve`, `otlp_stop`, `otlp_flush`, and `otlp_server_list`
+- **Start/stop SQL functions (`src/otlp_start_stop.cpp`)**: `otlp_serve` (HTTP), `otap_serve` (gRPC), `otlp_stop`, `otlp_flush`, and `otlp_server_list`
 - **Native daemon (`src/server/`)**: `duckdb-otlp-server` binary that embeds DuckDB, loads the static OTLP extension, executes mode setup, starts `otlp_serve` and optional `quack_serve`, handles SIGTERM/SIGINT, then calls `quack_stop`/`otlp_stop`
 - **Format Detection**: Automatic detection of JSON/NDJSON vs protobuf formats (handled by the Rust backend)
 
@@ -183,9 +184,11 @@ src/
 ├── function/
 │   └── read_otlp.cpp          # FFI bridge / `read_otlp_*` table functions
 ├── otlp_arrow.cpp             # Arrow → DuckDB DataChunk conversion
-├── otlp_server.cpp            # HTTP OTLP ingest server
+├── otlp_server.cpp            # Shared ingest core (admission, buffering, seal)
+├── otlp_server_http.cpp       # HTTP transport (cpp-httplib)
+├── otlp_server_grpc.cpp       # gRPC transport bridge (tonic, via otlp2records FFI)
 ├── otlp_storage.cpp           # Buffered group-commit / seal storage
-├── otlp_start_stop.cpp        # `otlp_serve` / `otlp_stop` / `otlp_flush` functions
+├── otlp_start_stop.cpp        # `otlp_serve` / `otap_serve` / `otlp_stop` / `otlp_flush`
 ├── otlp_uri.cpp               # URI parsing/validation
 └── include/                   # Public headers (otlp_*.hpp)
 
@@ -224,7 +227,9 @@ Prefer one canonical page per topic and link to it instead of duplicating exampl
 
 ## Known Limitations
 
-- Live OTLP ingestion is supported over **HTTP** (`otlp_serve` / `otlp_stop` / `otlp_server_list` / `otlp_flush`), not gRPC. The HTTP server (`src/otlp_server.cpp`) accepts OTLP/JSON, OTLP/NDJSON, and OTLP/protobuf POSTs to `/v1/logs`, `/v1/traces`, `/v1/metrics`.
+- Live ingestion is supported over **HTTP** (`otlp:` scheme, default port 4318) and **gRPC** (`otap:` scheme, default port 4317). `otlp_stop` / `otlp_flush` / `otlp_server_list` are transport-agnostic — they dispatch by the scheme-aware canonical listen URI, so `otap:host:4317` and `otlp:host:4318` are distinct servers.
+  - **HTTP** (`otlp_serve`, `src/otlp_server.cpp`): OTLP/JSON, OTLP/NDJSON, and OTLP/protobuf POSTs to `/v1/logs`, `/v1/traces`, `/v1/metrics`.
+  - **gRPC** (`otap_serve`, `src/otlp_server_grpc.cpp` + the embedded tonic server in `otlp2records`): both standard **OTLP/gRPC** unary `Export` and canonical **OTAP/Arrow** bidirectional streaming (`Arrow{Logs,Traces,Metrics}Service`, `stream BatchArrowRecords` → `stream BatchStatus`), for all six signals. `otlp_serve('otap:...')` selects gRPC too. The gRPC stack (tokio + tonic) is statically linked into the otlp2records archive — no new shared libraries — and is native-only (absent from the WASM build, like the HTTP server). OTAP streams keep one stateful decoder per stream (cross-message Arrow dictionary reuse). Metric shapes are buffered per-shape, so a backpressure nack partway through a metrics message can leave earlier shapes buffered.
   - **Catalog targeting**: `otlp_serve(uri, catalog := '<attached_db>')` streams into an attached catalog. Set it to a DuckLake catalog to land data as Parquet in a lakehouse; empty = the default (in-memory/file) catalog.
   - **Buffered group-commit ("seal")**: ingest is buffered in memory (per-signal `ColumnDataCollection` with per-signal locking) and a single background sealer thread group-commits on internal size/age triggers or an explicit `otlp_flush`. One seal = one transaction (for DuckLake: one Parquet file per signal + one snapshot), so a single serialized writer avoids DuckLake's optimistic-concurrency conflicts and tiny-file churn. The configurable httplib worker pool only parses/converts/buffers concurrently.
   - **Durability**: ingest is buffered in memory and durability is the seal. A POST returns **`202 Accepted`** (`{"status":"buffered",...}`) once rows are parsed and buffered in memory, but not yet durable; they commit at the next seal. **`otlp_stop` and `otlp_flush` seal remaining rows before returning; a plain database/connection close does NOT** — buffered-but-un-sealed rows can be lost, so callers must `otlp_stop`/`otlp_flush` before closing the database. Backpressure: `max_buffered_bytes` (default 512 MiB) bounds cumulative *admitted request-body bytes*, not decoded buffer heap — each request reserves `max(body_size, 1024)` input bytes against this budget (the decoded columnar size differs from the encoded/compressed input size). A request whose admission would exceed the budget is rejected with **`503`**.

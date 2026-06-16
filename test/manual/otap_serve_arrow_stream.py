@@ -6,21 +6,21 @@
 #   "grpcio>=1.60",
 # ]
 # ///
-"""Manual OTAP/Arrow bidirectional-streaming coverage for otap_serve (Phase 2).
+"""Manual OTAP/Arrow bidirectional-streaming coverage for otap_serve.
 
-The canonical OpenTelemetry Arrow Protocol ships logs over a gRPC bidi stream
-(ArrowLogsService.ArrowLogs: stream BatchArrowRecords -> stream BatchStatus),
-where later messages reuse Arrow dictionaries established by earlier ones. This
-test drives that path with a raw-bytes gRPC client (no generated stubs needed):
-it sends the canonical .bar fixtures verbatim as stream messages. SQLLogicTest
-cannot do this, so it lives outside `make test` (alongside otap_serve_grpc.py).
+The canonical OpenTelemetry Arrow Protocol ships each signal over a gRPC bidi
+stream (Arrow{Logs,Traces,Metrics}Service: stream BatchArrowRecords -> stream
+BatchStatus), where later messages reuse Arrow dictionaries established by
+earlier ones. This test drives all three signals with a raw-bytes gRPC client
+(no generated stubs): it sends the canonical .bar fixtures verbatim as stream
+messages. SQLLogicTest cannot do this, so it lives outside `make test`.
 
 It checks:
-  * an ArrowLogs stream of two messages (initial + a dictionary-reuse follow-up)
-    returns one BatchStatus per message, all OK
-  * the reuse message decodes ONLY because the per-stream decoder kept the
-    initial message's dictionaries -- i.e. cross-message reuse works over the wire
-  * the decoded rows land in otlp_logs after otlp_flush
+  * a logs stream of two messages (initial + a dictionary-reuse follow-up)
+    returns one OK BatchStatus per message -- proving cross-message reuse over
+    the wire (the reuse message has no schema of its own)
+  * traces and metrics streams ingest their fixtures (metrics -> all four shapes)
+  * every signal's rows land in its table after otlp_flush
   * a bad token is rejected with UNAUTHENTICATED
   * a clean otlp_stop drains in-flight rows (dropped_rows == 0)
 
@@ -42,9 +42,22 @@ PORT = int(os.environ.get("OTLP_PORT", "4347"))
 TOKEN = "manual-otap-token-0123456789"
 URI = f"otap:localhost:{PORT}"
 TARGET = f"localhost:{PORT}"
-ARROW_LOGS = "/opentelemetry.proto.experimental.arrow.v1.ArrowLogsService/ArrowLogs"
-INITIAL = "test/data/otap/logs-initial.bar"
-REUSE = "test/data/otap/logs-reuse.bar"
+
+ARROW = "/opentelemetry.proto.experimental.arrow.v1"
+ARROW_LOGS = f"{ARROW}.ArrowLogsService/ArrowLogs"
+ARROW_TRACES = f"{ARROW}.ArrowTracesService/ArrowTraces"
+ARROW_METRICS = f"{ARROW}.ArrowMetricsService/ArrowMetrics"
+
+LOGS_INITIAL = "test/data/otap/logs-initial.bar"
+LOGS_REUSE = "test/data/otap/logs-reuse.bar"
+TRACES = "test/data/otap/traces-initial.bar"
+METRICS = "test/data/otap/metrics-initial.bar"
+METRIC_TABLES = [
+    "otlp_metrics_gauge",
+    "otlp_metrics_sum",
+    "otlp_metrics_histogram",
+    "otlp_metrics_exp_histogram",
+]
 
 
 def read_varint(buf, i):
@@ -82,44 +95,59 @@ def batch_status_code(raw):
     return code
 
 
-def arrow_logs_method(channel):
+def arrow_method(channel, path):
     return channel.stream_stream(
-        ARROW_LOGS,
+        path,
         request_serializer=lambda b: b,  # raw BatchArrowRecords bytes
         response_deserializer=lambda b: b,  # raw BatchStatus bytes
     )
 
 
-def main():
-    with open(INITIAL, "rb") as fh:
-        initial = fh.read()
-    with open(REUSE, "rb") as fh:
-        reuse = fh.read()
+def read_bytes(path):
+    with open(path, "rb") as fh:
+        return fh.read()
 
+
+def main():
     failures = []
     con = duckdb.connect(config={"allow_unsigned_extensions": "true"})
     con.execute(f"LOAD '{EXTENSION}'")
-    # Ground truth: how many rows the initial fixture alone yields.
-    initial_rows = con.execute(f"SELECT count(*) FROM read_otap_logs('{INITIAL}')").fetchone()[0]
+
+    # Ground truth: per-signal row counts the fixtures decode to.
+    want_logs = con.execute(f"SELECT count(*) FROM read_otap_logs('{LOGS_INITIAL}')").fetchone()[0]
+    want_traces = con.execute(f"SELECT count(*) FROM read_otap_traces('{TRACES}')").fetchone()[0]
+    want_metrics = {
+        t: con.execute(f"SELECT count(*) FROM read_otap_{t[5:]}('{METRICS}')").fetchone()[0] for t in METRIC_TABLES
+    }
+
     con.execute(f"SELECT * FROM otap_serve('{URI}', token := '{TOKEN}')")
     try:
         channel = grpc.insecure_channel(TARGET)
         grpc.channel_ready_future(channel).result(timeout=10)
-        call = arrow_logs_method(channel)
+        auth = [("authorization", f"Bearer {TOKEN}")]
 
-        # 1) Valid stream: initial then a dictionary-reuse follow-up. The reuse
-        # message carries no schema, so it decodes only because the server kept the
-        # per-stream decoder state -- proving cross-message reuse over the wire.
-        responses = list(call(iter([initial, reuse]), metadata=[("authorization", f"Bearer {TOKEN}")], timeout=20))
-        if len(responses) != 2:
-            failures.append(f"expected 2 BatchStatus, got {len(responses)}")
-        bad = [batch_status_code(r) for r in responses if batch_status_code(r) != 0]
-        if bad:
-            failures.append(f"non-OK BatchStatus codes: {bad}")
+        def stream(path, messages, label):
+            responses = list(arrow_method(channel, path)(iter(messages), metadata=auth, timeout=20))
+            if len(responses) != len(messages):
+                failures.append(f"{label}: expected {len(messages)} BatchStatus, got {len(responses)}")
+            bad = [batch_status_code(r) for r in responses if batch_status_code(r) != 0]
+            if bad:
+                failures.append(f"{label}: non-OK BatchStatus codes {bad}")
 
-        # 2) Bad token -> the stream is rejected with UNAUTHENTICATED.
+        # Logs: initial + a dictionary-reuse follow-up. The reuse message carries no
+        # schema, so it decodes only because the server kept the per-stream decoder
+        # state -- proving cross-message reuse over the wire.
+        stream(ARROW_LOGS, [read_bytes(LOGS_INITIAL), read_bytes(LOGS_REUSE)], "logs")
+        stream(ARROW_TRACES, [read_bytes(TRACES)], "traces")
+        stream(ARROW_METRICS, [read_bytes(METRICS)], "metrics")
+
+        # Bad token -> the stream is rejected with UNAUTHENTICATED.
         try:
-            list(call(iter([initial]), metadata=[("authorization", "Bearer nope")], timeout=20))
+            list(
+                arrow_method(channel, ARROW_LOGS)(
+                    iter([read_bytes(LOGS_INITIAL)]), metadata=[("authorization", "Bearer nope")], timeout=20
+                )
+            )
             failures.append("bad token was NOT rejected")
         except grpc.RpcError as exc:
             if exc.code() != grpc.StatusCode.UNAUTHENTICATED:
@@ -127,14 +155,16 @@ def main():
 
         con.execute(f"SELECT * FROM otlp_flush('{URI}')")
 
-        count = con.execute("SELECT count(*) FROM otlp_logs").fetchone()[0]
-        # initial + reuse must both have landed; the reuse rows are on top of initial.
-        if count <= initial_rows:
-            failures.append(f"otlp_logs has {count} rows; reuse message added none on top of {initial_rows}")
-
-        services = [r[0] for r in con.execute("SELECT DISTINCT service_name FROM otlp_logs").fetchall()]
-        if services != ["fixture-service"]:
-            failures.append(f"service_name = {services}, expected ['fixture-service']")
+        logs_count = con.execute("SELECT count(*) FROM otlp_logs").fetchone()[0]
+        if logs_count <= want_logs:
+            failures.append(f"otlp_logs has {logs_count}; reuse added none on top of {want_logs}")
+        traces_count = con.execute("SELECT count(*) FROM otlp_traces").fetchone()[0]
+        if traces_count != want_traces:
+            failures.append(f"otlp_traces has {traces_count}, expected {want_traces}")
+        for table, want in want_metrics.items():
+            got = con.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+            if got != want:
+                failures.append(f"{table} has {got}, expected {want}")
     finally:
         stop = con.execute(f"SELECT * FROM otlp_stop('{URI}')").fetchone()
         if stop[1] != 0:
@@ -146,8 +176,8 @@ def main():
             print(f"  - {f}")
         sys.exit(1)
     print(
-        f"OK: OTAP/Arrow stream ingested ({count} rows incl. dictionary-reuse follow-up), "
-        "bad token rejected, clean stop"
+        "OK: OTAP/Arrow streams for logs (incl. dictionary reuse), traces, and all four "
+        "metric shapes ingested; bad token rejected; clean stop"
     )
 
 

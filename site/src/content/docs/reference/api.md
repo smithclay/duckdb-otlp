@@ -68,9 +68,12 @@ Because OTAP and OTLP mean different things, they are separate functions rather 
 
 ## Live Ingest
 
-In native builds, you can run an HTTP server that accepts live OTLP/HTTP exports and streams them into the default DuckDB catalog or an attached writable catalog such as DuckLake or an Iceberg REST catalog. The server buffers rows and commits them in batches: a POST returns `202 Accepted`, and rows become durable at the next background commit or on graceful stop. Current native builds commit after about 5 seconds for the oldest buffered row, or when admitted request-body bytes reach about 128 MiB.
+In native builds, you can run a server that accepts live telemetry over **HTTP** or **gRPC** and streams it into the default DuckDB catalog or an attached writable catalog such as DuckLake or an Iceberg REST catalog. The server buffers rows and commits them in batches: an accepted request returns immediately (HTTP `202 Accepted` / gRPC `OK`), and rows become durable at the next background commit or on graceful stop. Current native builds commit after about 5 seconds for the oldest buffered row, or when admitted request-body bytes reach about 128 MiB.
 
-- **`otlp_serve([uri], catalog := '<attached_db>', ...)`** - Start the ingest server, target a catalog, and create/validate the target tables.
+The transport is selected by the listen URI scheme: `otlp:` is the **OTLP/HTTP** server (default port 4318); `otap:` is the **gRPC** server (default port 4317), which serves both standard **OTLP/gRPC** unary `Export` and the canonical **OTAP/Arrow** bidirectional streaming services (`Arrow{Logs,Traces,Metrics}Service`) for all six signals. The lifecycle functions below are transport-agnostic.
+
+- **`otlp_serve([uri], catalog := '<attached_db>', ...)`** - Start an **OTLP/HTTP** ingest server (`otlp:` scheme), target a catalog, and create/validate the target tables.
+- **`otap_serve([uri], catalog := '<attached_db>', ...)`** - Start a **gRPC** ingest server (`otap:` scheme; defaults to `otap:localhost:4317`). Same parameters as `otlp_serve`; `otlp_serve('otap:...')` is equivalent. OTAP/Arrow streams keep one stateful decoder per stream (cross-message Arrow dictionary reuse).
 - **`otlp_flush(uri)`** - Force a synchronous commit when readers need the latest accepted rows now.
 - **`otlp_stop(uri)`** - Stop the server listening on `uri` (commits remaining rows first).
 - **`otlp_server_list()`** - List running servers with live counters, buffer state, and health.
