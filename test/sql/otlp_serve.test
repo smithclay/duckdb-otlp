@@ -171,11 +171,12 @@ SELECT status FROM otlp_stop('otlp:127.0.0.1:55444');
 ----
 Stopped listening on otlp:127.0.0.1:55444
 
-# --- gRPC transport (otap:) control plane ---
-# otap_serve binds a real gRPC listener (the data path is exercised by
-# test/manual/otap_serve_grpc.py; SQLLogicTest cannot drive a gRPC client). The
-# lifecycle/registry surface mirrors HTTP, and the canonical URI keeps the otap:
-# scheme so it is a distinct registry key.
+# --- gRPC transport control plane ---
+# Two gRPC entry points, each strictly bound to its scheme: otap_serve('otap:...')
+# serves OTAP/Arrow streaming; otlp_serve('otlp:...', transport := 'grpc') serves
+# OTLP/gRPC unary Export. The data paths are exercised by test/manual/otlp_serve_grpc.py
+# (unary) and otap_serve_arrow_stream.py (streaming) -- SQLLogicTest cannot drive a gRPC
+# client. The canonical URI keeps its scheme, so each is a distinct registry key.
 
 query TT
 SELECT listen_uri, schema_name
@@ -195,14 +196,42 @@ SELECT status FROM otlp_stop('otap:127.0.0.1:55460');
 ----
 Stopped listening on otap:127.0.0.1:55460
 
-# otlp_serve with the otap: scheme also selects the gRPC transport, and the
-# canonical key preserves the scheme (otap:, not otlp:)
+# otlp_serve runs OTLP/gRPC unary under the otlp: scheme via transport := 'grpc'.
+# The transport is NOT encoded in the scheme, so the canonical key stays otlp:.
 query T
-SELECT listen_uri FROM otlp_serve('otap:127.0.0.1:55461', token := 'dev-token-123456');
+SELECT listen_uri FROM otlp_serve('otlp:127.0.0.1:55461', token := 'dev-token-123456', transport := 'grpc');
 ----
-otap:127.0.0.1:55461
+otlp:127.0.0.1:55461
+
+query I
+SELECT count(*) FROM otlp_server_list()
+WHERE listen_uri = 'otlp:127.0.0.1:55461' AND is_listening AND last_error IS NULL;
+----
+1
 
 query T
-SELECT status FROM otlp_stop('otap:127.0.0.1:55461');
+SELECT status FROM otlp_stop('otlp:127.0.0.1:55461');
 ----
-Stopped listening on otap:127.0.0.1:55461
+Stopped listening on otlp:127.0.0.1:55461
+
+# Scheme/function binding is strict: URIs are never mixed across the two functions.
+statement error
+SELECT listen_uri FROM otlp_serve('otap:127.0.0.1:55462', token := 'dev-token-123456');
+----
+otlp_serve requires an 'otlp:' URI
+
+statement error
+SELECT listen_uri FROM otap_serve('otlp:127.0.0.1:55463', token := 'dev-token-123456');
+----
+otap_serve requires an 'otap:' URI
+
+# transport accepts only http/grpc; otap_serve is gRPC-only.
+statement error
+SELECT listen_uri FROM otlp_serve('otlp:127.0.0.1:55464', token := 'dev-token-123456', transport := 'bogus');
+----
+transport must be 'http' or 'grpc'
+
+statement error
+SELECT listen_uri FROM otap_serve('otap:127.0.0.1:55465', token := 'dev-token-123456', transport := 'http');
+----
+otap_serve is gRPC-only

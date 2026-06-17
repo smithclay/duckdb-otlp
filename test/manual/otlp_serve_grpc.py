@@ -7,13 +7,14 @@
 #   "opentelemetry-proto>=1.20",
 # ]
 # ///
-"""Manual OTLP/gRPC unary ingest coverage for otap_serve.
+"""Manual OTLP/gRPC unary ingest coverage for otlp_serve(transport := 'grpc').
 
-SQLLogicTest cannot drive a gRPC client, so this lives outside `make test`
-(it mirrors test/manual/otlp_serve_concurrency.py, which covers the HTTP
-server). The server runs in-process via the duckdb Python module; the gRPC
-client talks to it over loopback. It checks the standard OTLP/gRPC unary
-Export RPCs for all three signals:
+OTLP/gRPC unary Export is served by otlp_serve under the otlp: scheme with
+transport := 'grpc' (otap_serve serves only OTAP/Arrow streaming). SQLLogicTest
+cannot drive a gRPC client, so this lives outside `make test` (it mirrors
+test/manual/otlp_serve_concurrency.py, which covers the HTTP server). The server
+runs in-process via the duckdb Python module; the gRPC client talks to it over
+loopback. It checks the standard OTLP/gRPC unary Export RPCs for all three signals:
 
   * LogsService / TraceService / MetricsService Export with a valid Bearer token
     -> rows land in otlp_logs / otlp_traces / otlp_metrics_{gauge,sum}
@@ -22,9 +23,9 @@ Export RPCs for all three signals:
 
 Run (requires a built loadable extension; `uv` resolves the deps):
 
-    uv run --script test/manual/otap_serve_grpc.py
+    uv run --script test/manual/otlp_serve_grpc.py
     OTLP_EXTENSION=build/release/extension/otlp/otlp.duckdb_extension \\
-        OTLP_PORT=4327 uv run --script test/manual/otap_serve_grpc.py
+        OTLP_PORT=4327 uv run --script test/manual/otlp_serve_grpc.py
 """
 
 import os
@@ -53,7 +54,7 @@ from opentelemetry.proto.trace.v1 import trace_pb2 as trace
 EXTENSION = os.environ.get("OTLP_EXTENSION", "build/release/extension/otlp/otlp.duckdb_extension")
 PORT = int(os.environ.get("OTLP_PORT", "4327"))
 TOKEN = "manual-grpc-token-0123456789"
-URI = f"otap:localhost:{PORT}"
+URI = f"otlp:localhost:{PORT}"
 TARGET = f"localhost:{PORT}"
 TS = 1_700_000_000_000_000_000
 
@@ -132,7 +133,7 @@ def main():
     failures = []
     con = duckdb.connect(config={"allow_unsigned_extensions": "true"})
     con.execute(f"LOAD '{EXTENSION}'")
-    con.execute(f"SELECT * FROM otap_serve('{URI}', token := '{TOKEN}')")
+    con.execute(f"SELECT * FROM otlp_serve('{URI}', token := '{TOKEN}', transport := 'grpc')")
     try:
         channel = grpc.insecure_channel(TARGET)
         grpc.channel_ready_future(channel).result(timeout=10)

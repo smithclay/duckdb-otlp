@@ -40,7 +40,7 @@ struct OtlpStartStopFunctionData : public TableFunctionData {
 
 static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableFunctionBindInput &input,
                                                   vector<LogicalType> &return_types, vector<string> &names,
-                                                  const string &default_uri) {
+                                                  const string &default_uri, const string &required_scheme) {
 #ifdef __EMSCRIPTEN__
 	throw NotImplementedException("live OTLP ingest is not implemented for the wasm platform");
 #endif
@@ -56,10 +56,39 @@ static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableF
 	}
 
 	bind_data->listen_uri = OtlpUri(listen_uri);
-	// The wire transport follows the URI scheme: otap: => gRPC (OTLP/gRPC unary +
-	// OTAP/Arrow streaming), otlp: => HTTP. So otlp_serve('otap:...') and
-	// otap_serve(...) both select the gRPC transport.
-	bind_data->config.transport = bind_data->listen_uri.IsGrpc() ? OtlpTransport::GRPC : OtlpTransport::HTTP;
+	// Strict scheme/function binding: otlp_serve serves the OTLP protocol (otlp:),
+	// otap_serve serves OTAP/Arrow (otap:). A mismatched scheme is rejected so the
+	// two functions never overlap and URIs are never mixed across them.
+	if (bind_data->listen_uri.Scheme() != required_scheme) {
+		throw InvalidInputException("%s requires an '%s:' URI, but got an '%s:' URI",
+		                            required_scheme == "otap" ? "otap_serve" : "otlp_serve", required_scheme,
+		                            bind_data->listen_uri.Scheme());
+	}
+
+	// Transport + which gRPC services to register. otap: is always OTAP/Arrow over
+	// gRPC. otlp: is HTTP by default; transport := 'grpc' runs OTLP/gRPC unary
+	// Export on the same otlp: scheme (no otap: mixing). The two gRPC listeners are
+	// disjoint: otlp: registers only the unary services, otap: only the Arrow ones.
+	string transport_opt;
+	if (input.named_parameters.find("transport") != input.named_parameters.end()) {
+		transport_opt = StringUtil::Lower(input.named_parameters["transport"].GetValue<string>());
+	}
+	if (required_scheme == "otap") {
+		if (!transport_opt.empty() && transport_opt != "grpc") {
+			throw InvalidInputException("otap_serve is gRPC-only; transport must be 'grpc' or omitted (got '%s')",
+			                            transport_opt);
+		}
+		bind_data->config.transport = OtlpTransport::GRPC;
+		bind_data->config.grpc_service_flags = OTLP_GRPC_SERVICE_OTAP_ARROW;
+	} else if (transport_opt.empty() || transport_opt == "http") {
+		bind_data->config.transport = OtlpTransport::HTTP;
+		bind_data->config.grpc_service_flags = 0;
+	} else if (transport_opt == "grpc") {
+		bind_data->config.transport = OtlpTransport::GRPC;
+		bind_data->config.grpc_service_flags = OTLP_GRPC_SERVICE_OTLP_UNARY;
+	} else {
+		throw InvalidInputException("transport must be 'http' or 'grpc' (got '%s')", transport_opt);
+	}
 
 	auto allow_other_hostname = input.named_parameters.find("allow_other_hostname") != input.named_parameters.end() &&
 	                            input.named_parameters["allow_other_hostname"].GetValue<bool>();
@@ -175,12 +204,12 @@ static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableF
 
 static unique_ptr<FunctionData> OtlpServeBind(ClientContext &context, TableFunctionBindInput &input,
                                               vector<LogicalType> &return_types, vector<string> &names) {
-	return OtlpServeBindImpl(context, input, return_types, names, "otlp:localhost:4318");
+	return OtlpServeBindImpl(context, input, return_types, names, "otlp:localhost:4318", "otlp");
 }
 
 static unique_ptr<FunctionData> OtapServeBind(ClientContext &context, TableFunctionBindInput &input,
                                               vector<LogicalType> &return_types, vector<string> &names) {
-	return OtlpServeBindImpl(context, input, return_types, names, "otap:localhost:4317");
+	return OtlpServeBindImpl(context, input, return_types, names, "otap:localhost:4317", "otap");
 }
 
 static void OtlpServe(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
@@ -218,6 +247,9 @@ static TableFunctionSet BuildServeFunctionSet(const string &name, table_function
 	fun.named_parameters["parquet_export_path"] = OtlpVarcharType();
 	fun.named_parameters["create_tables"] = OtlpBooleanType();
 	fun.named_parameters["allow_other_hostname"] = OtlpBooleanType();
+	// otlp_serve: 'http' (default) or 'grpc' (OTLP/gRPC unary). otap_serve is gRPC-only
+	// (OTAP/Arrow) and accepts only 'grpc' or omission.
+	fun.named_parameters["transport"] = OtlpVarcharType();
 	fun.named_parameters["max_body_bytes"] = OtlpUBigIntType();
 	// http_threads sizes the HTTP worker pool; ignored by the gRPC transport (the
 	// tonic server sizes its own runtime), but accepted on both for a uniform surface.

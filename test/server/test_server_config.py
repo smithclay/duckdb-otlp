@@ -83,6 +83,23 @@ def test_local_ducklake_boot_sql(tmp_path):
     assert "a-private-token-123456" not in out
 
 
+def test_otap_listen_uri_routes_to_otap_serve(tmp_path):
+    # An otap: listen URI must dispatch to otap_serve (OTAP/Arrow), never otlp_serve;
+    # the two serve functions are bound to their own scheme and reject the other's.
+    result = run(
+        {
+            "DUCKDB_MODE": "local-ducklake",
+            "DUCKDB_OTLP_TOKEN": "a-private-token-123456",
+            "DUCKDB_OTLP_LISTEN_URI": "otap:127.0.0.1:4317",
+        },
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert "FROM otap_serve(" in out
+    assert "FROM otlp_serve(" not in out
+
+
 def test_aws_ducklake_uses_instance_role_and_local_catalog(tmp_path):
     catalog = tmp_path / "ducklake" / "catalog.duckdb"
     result = run(

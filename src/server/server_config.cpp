@@ -706,6 +706,10 @@ string ServerConfig::StartOtlpSql() const {
 	                      : StringUtil::Format(",\n    parquet_export_path := %s", SqlQuote(parquet_export_path));
 	auto schema_target =
 	    catalog.empty() ? QuoteIdentifier(schema) : QuoteIdentifier(catalog) + "." + QuoteIdentifier(schema);
+	// Pick the serve function by scheme so listen URIs are never mixed across them:
+	// otap: -> otap_serve (OTAP/Arrow streaming), otlp: -> otlp_serve (OTLP/HTTP). The
+	// daemon defaults to otlp: (HTTP); set DUCKDB_OTLP_LISTEN_URI=otap:host:4317 for OTAP.
+	const char *serve_fn = StringUtil::StartsWith(listen_uri, "otap:") ? "otap_serve" : "otlp_serve";
 	// The token is read at execution time from a session variable (set via the C++ API in
 	// main.cpp) rather than interpolated as a literal, so it never appears in the generated
 	// SQL string (which DRY_RUN=1 prints to stdout and the engine can echo in error
@@ -713,7 +717,7 @@ string ServerConfig::StartOtlpSql() const {
 	return StringUtil::Format(R"SQL(
 CREATE SCHEMA IF NOT EXISTS %s;
 SELECT listen_url, catalog_name, schema_name
-FROM otlp_serve(
+FROM %s(
     %s,
     catalog := %s,
     schema := %s,
@@ -721,8 +725,8 @@ FROM otlp_serve(
     allow_other_hostname := true%s%s%s
 );
 )SQL",
-	                          schema_target, SqlQuote(listen_uri), SqlQuote(catalog), SqlQuote(schema), thread_sql,
-	                          limits_sql, export_sql);
+	                          schema_target, serve_fn, SqlQuote(listen_uri), SqlQuote(catalog), SqlQuote(schema),
+	                          thread_sql, limits_sql, export_sql);
 }
 
 string ServerConfig::StartQuackSql() const {

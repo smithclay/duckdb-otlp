@@ -32,8 +32,12 @@ enum class OtlpTransport { HTTP, GRPC };
 
 struct OtlpServerConfig {
 	string token;
-	//! Wire transport. Defaults to HTTP; set to GRPC for the otap: scheme.
+	//! Wire transport. Defaults to HTTP; GRPC for otap_serve or otlp_serve(transport:='grpc').
 	OtlpTransport transport = OtlpTransport::HTTP;
+	//! When transport == GRPC, OR of OTLP_GRPC_SERVICE_* bits selecting which gRPC service
+	//! families the listener registers: OTLP_GRPC_SERVICE_OTLP_UNARY for otlp_serve(grpc),
+	//! OTLP_GRPC_SERVICE_OTAP_ARROW for otap_serve. Unused for HTTP. 0 would register both.
+	uint32_t grpc_service_flags = 0;
 	//! Target catalog (attached database). Empty = the connection's default catalog.
 	//! Set this to an attached writable catalog name for lakehouse ingest.
 	string catalog_name;
