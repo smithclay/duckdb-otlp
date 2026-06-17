@@ -99,8 +99,12 @@ void OtlpServer::StartGrpc() {
 
 	char err_buf[256] = {0};
 	try {
+		// Cap a single received gRPC message at the same per-request body limit as the
+		// HTTP path, so one OTLP Export / OTAP BatchArrowRecords shares one size bound
+		// across transports (otherwise tonic's 4 MiB default would silently differ).
 		grpc_handle = otlp_grpc_server_start(addr.data(), addr.size(), &OtlpGrpcBatchThunk, &OtlpGrpcAuthThunk,
-		                                     static_cast<void *>(this), err_buf, sizeof(err_buf));
+		                                     static_cast<void *>(this), static_cast<uint64_t>(config.max_body_bytes),
+		                                     err_buf, sizeof(err_buf));
 	} catch (...) {
 		// The sealer thread is already running; tear it down so a joinable thread is
 		// never destroyed (mirrors the httplib bind-failure path).
