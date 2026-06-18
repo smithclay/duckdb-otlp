@@ -23,10 +23,17 @@
 #include <sstream>
 
 #ifndef __EMSCRIPTEN__
-// Only for the host-aware healthcheck probe (OtlpHttpStatusOk) at the bottom of this file. The
-// HTTP server itself lives in otlp_server_http.cpp; both TUs are in the same archive, so the
-// header-only library's inline symbols deduplicate at link time.
+// Only for the host-aware healthcheck probes (OtlpHttpStatusOk / OtlpTcpConnectOk) at the bottom
+// of this file. The HTTP server itself lives in otlp_server_http.cpp; both TUs are in the same
+// archive, so the header-only library's inline symbols deduplicate at link time.
 #include "httplib.hpp"
+
+#include <cerrno>
+#include <fcntl.h>
+#include <netdb.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
 #endif
 
 namespace duckdb {
@@ -1416,6 +1423,43 @@ bool OtlpHttpStatusOk(const string &host, int port, const string &path) {
 	client.set_read_timeout(2, 0);
 	auto res = client.Get(path);
 	return res && res->status >= 200 && res->status < 400;
+}
+
+// TCP-connect probe backing the daemon healthcheck for the gRPC (otap:) transport, which speaks
+// HTTP/2 and exposes no HTTP/1.1 /readyz endpoint. A successful connect confirms the tonic
+// listener is bound and accepting (the daemon binds synchronously before serving). 2s timeout.
+bool OtlpTcpConnectOk(const string &host, int port) {
+	struct addrinfo hints {};
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_socktype = SOCK_STREAM;
+	struct addrinfo *res = nullptr;
+	if (getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res) != 0 || res == nullptr) {
+		return false;
+	}
+	bool ok = false;
+	for (auto *ai = res; ai != nullptr && !ok; ai = ai->ai_next) {
+		int fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+		if (fd < 0) {
+			continue;
+		}
+		auto flags = fcntl(fd, F_GETFL, 0);
+		fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+		if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) {
+			ok = true; // connected immediately (loopback)
+		} else if (errno == EINPROGRESS) {
+			struct pollfd pfd {};
+			pfd.fd = fd;
+			pfd.events = POLLOUT;
+			if (poll(&pfd, 1, 2000) > 0 && (pfd.revents & POLLOUT) != 0) {
+				int err = 0;
+				socklen_t len = sizeof(err);
+				ok = getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) == 0 && err == 0;
+			}
+		}
+		close(fd);
+	}
+	freeaddrinfo(res);
+	return ok;
 }
 #endif
 

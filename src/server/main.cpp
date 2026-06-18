@@ -20,6 +20,7 @@ namespace duckdb {
 // Defined in otlp_server.cpp (linked into the daemon). Declared here rather than including
 // otlp_server.hpp, whose transitive includes are not on the daemon's include path.
 bool OtlpHttpStatusOk(const string &host, int port, const string &path);
+bool OtlpTcpConnectOk(const string &host, int port);
 } // namespace duckdb
 
 namespace {
@@ -258,7 +259,25 @@ bool HealthProbe(const duckdb::string &addr, const duckdb::string &path, int por
 // OTLP /readyz, plus the Quack root when Quack is enabled. Returns a process exit code (0 healthy,
 // 1 unhealthy).
 int RunHealthCheck() {
-	if (!HealthProbe(EnvOr("OTEL_HTTP_ADDR", "0.0.0.0:4318"), "/readyz", 4318)) {
+	// Probe the daemon's actual transport, derived from the same listen URI server_config uses.
+	// otap: is a gRPC (HTTP/2) listener with no HTTP /readyz, so a TCP connect is the liveness
+	// signal there; otlp: keeps the HTTP /readyz probe. Parsing the URI (rather than only
+	// OTEL_HTTP_ADDR) also probes the actual port when DUCKDB_OTLP_LISTEN_URI overrides it.
+	auto listen_uri = EnvOr("DUCKDB_OTLP_LISTEN_URI", "otlp:" + EnvOr("OTEL_HTTP_ADDR", "0.0.0.0:4318"));
+	bool is_grpc = duckdb::StringUtil::StartsWith(listen_uri, "otap:");
+	auto addr = listen_uri;
+	for (const char *prefix : {"otap://", "otlp://", "otap:", "otlp:"}) {
+		duckdb::string p(prefix);
+		if (duckdb::StringUtil::StartsWith(addr, p)) {
+			addr = addr.substr(p.size());
+			break;
+		}
+	}
+	if (is_grpc) {
+		if (!duckdb::OtlpTcpConnectOk(HealthCheckHost(addr), PortFromAddr(addr, 4317))) {
+			return 1;
+		}
+	} else if (!HealthProbe(addr, "/readyz", 4318)) {
 		return 1;
 	}
 	if (duckdb_otlp_server::EnvTruthy("DUCKDB_QUACK_ENABLED") || duckdb_otlp_server::EnvTruthy("QUACK_ENABLED")) {

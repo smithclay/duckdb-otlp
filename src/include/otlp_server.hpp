@@ -506,6 +506,10 @@ bool OtlpLoopbackHttpStatusOk(int port, const string &path);
 //! a server bound to an explicit non-loopback interface is reachable (review finding M5). Defined
 //! in otlp_server.cpp; not built for wasm.
 bool OtlpHttpStatusOk(const string &host, int port, const string &path);
+//! TCP-connect probe for the daemon healthcheck's gRPC (otap:) transport, which has no HTTP
+//! /readyz endpoint. Returns true if a connection to <host>:<port> succeeds within 2s. Defined
+//! in otlp_server.cpp; not built for wasm.
+bool OtlpTcpConnectOk(const string &host, int port);
 #endif
 
 } // namespace duckdb
