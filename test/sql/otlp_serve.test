@@ -13,6 +13,15 @@
 
 require otlp
 
+# The live ingest server (HTTP + gRPC) is native-only: it needs OS sockets and a
+# real thread pool, neither of which exists in the wasm32 sandbox, so otlp_serve /
+# otap_serve throw "not implemented for the wasm platform" there. `require 64bit`
+# keeps this whole file running on every native build (always 64-bit) while
+# skipping it on wasm (wasm32 is 32-bit). It also makes the out-of-tree haybarn
+# wasm sqllogictest runner skip the file instead of reporting these native-only
+# functions as failures. See AGENTS.md "Known Limitations": ingest is native-only.
+require 64bit
+
 statement error
 CALL otlp_serve('otlp:127.0.0.1:55439', token := 'short');
 ----
