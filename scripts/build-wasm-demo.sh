@@ -5,20 +5,25 @@
 # WHY THIS IS SPECIAL (and not just `make wasm_eh`):
 # The demo page runs @duckdb/duckdb-wasm@1.33.1-dev56.0 (DuckDB v1.5.4), whose runtime is
 # built with wasm-native exceptions. A loadable extension only links into that runtime if:
-#   1. it is built against the SAME DuckDB the runtime uses — v1.5.4 + duckdb-wasm's own
-#      DuckDB patches (scripts/wasm-demo/patches/duckdb/, applied with `patch -p1 --forward`);
+#   1. it is built against the SAME DuckDB the runtime uses — the v1.5.4 tag; and
 #   2. it is compiled with the SAME emscripten the runtime uses — 3.1.71; and
 #   3. the Rust FFI lib (otlp2records) is built WITHOUT unwinding (panic=immediate-abort).
 #      Rust on wasm32-unknown-emscripten emits legacy SjLj `invoke_*` exception/longjmp
 #      trampolines that the wasm-native-EH host does NOT provide; immediate-abort drops them.
 #      (Verified: without it the extension throws "function signature mismatch" at load.)
 #
-# This is a DEMO-ONLY build. The repo's native submodule pin now also tracks DuckDB v1.5.4,
-# so the DuckDB *version* matches — but this build still diverges from a plain `make wasm_eh`:
-# it applies duckdb-wasm's own DuckDB patches and builds the Rust lib without unwinding, which
-# native builds do not. The submodule + Makefile are restored on exit. Re-run after changing
-# the extension sources or bumping the demo's duckdb-wasm version (also re-vendor patches,
-# see scripts/wasm-demo/patches/README.md, and update the version in site/public/wasm-demo/app.js).
+# NOTE: duckdb-wasm applies its own patches to DuckDB before building the runtime, but those
+# are runtime-build concerns (extension-install URLs, repo preferences, wasm code-size) — none
+# change a shared struct's layout or a host-resolved symbol, so the extension is ABI-identical
+# with or without them. Measured: a no-patch build has the IDENTICAL wasm import surface (372
+# imports, 0 invoke_*) and loads + runs read_otlp_logs in dev56 headless Chrome. We therefore
+# build against the plain v1.5.4 tag and do NOT vendor/apply the patches.
+#
+# This is a DEMO-ONLY build. The repo's native submodule pin now also tracks DuckDB v1.5.4, so
+# the DuckDB *version* matches — this build still diverges from a plain `make wasm_eh` only in
+# the emscripten pin and the immediate-abort Rust lib. The submodule + Makefile are restored on
+# exit. Re-run after changing the extension sources or bumping the demo's duckdb-wasm version
+# (and update the version in site/public/wasm-demo/app.js).
 #
 # Prereqs: rustup nightly + rust-src (for -Zbuild-std), an emsdk with 3.1.71, vcpkg bootstrapped.
 set -euo pipefail
@@ -29,7 +34,6 @@ EMSDK_DIR=${EMSDK_DIR:-${EMSDK:-$HOME/workspace/emsdk}}
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 cd "$REPO"
-PATCHES="$REPO/scripts/wasm-demo/patches/duckdb"
 DEMO_OUT="$REPO/site/public/wasm-demo/otlp.duckdb_extension.wasm"
 
 ORIG_DUCKDB=$(git -C duckdb rev-parse HEAD)
@@ -48,10 +52,9 @@ source "$EMSDK_DIR/emsdk_env.sh" >/dev/null 2>&1
 echo "Using $(emcc --version | head -1)"
 rustup component add rust-src --toolchain nightly >/dev/null 2>&1 || true
 
-# DuckDB v1.5.4 + duckdb-wasm patches
+# DuckDB v1.5.4 (plain tag — no duckdb-wasm patches; see header NOTE for why they're unneeded)
 git -C duckdb fetch --depth 1 origin tag "$DUCKDB_TAG" 2>/dev/null || true
 git -C duckdb checkout -q "$DUCKDB_TAG"
-cat "$PATCHES"/*.patch | patch -p1 --forward -d duckdb || true   # --forward skips already-upstream hunks
 
 # Stamp the metadata version + build the Rust lib with panic=immediate-abort (drops SjLj invoke_*)
 # Force the metadata stamp to the demo's target DuckDB version regardless of the Makefile
