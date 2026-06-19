@@ -6,7 +6,7 @@ Use the DuckDB OpenTelemetry Extension to query OpenTelemetry files, try the nat
 
 ## Prerequisites
 
-- DuckDB 1.5.3 or later.
+- DuckDB 1.5.4 or later.
 - OpenTelemetry data
 - Docker (if you want to use the server daemon image)
 
@@ -97,7 +97,7 @@ CALL quack_serve(
 
 Quack now serves this DuckDB instance — including `otlp_logs` and the other signal tables — on port `9494`. Use a token separate from the ingest token: `dev-token-123456` protects OTLP ingest on `4318`, and `dev-quack-token-123456` protects query access on `9494`. To accept only same-host connections, bind to `quack:localhost:9494` and drop `allow_other_hostname`.
 
-Quack grants full SQL read/write access to this DuckDB connection, so treat the token as an administrative credential. Quack is experimental in DuckDB 1.5.3. Run it on trusted networks, and put it behind a TLS-terminating reverse proxy for remote access.
+Quack grants full SQL read/write access to this DuckDB connection, so treat the token as an administrative credential. Quack is experimental in DuckDB 1.5.4. Run it on trusted networks, and put it behind a TLS-terminating reverse proxy for remote access.
 
 ## 6. Query with Quack from Another Host
 

@@ -17,9 +17,10 @@
 #include <thread>
 
 namespace duckdb {
-// Defined in otlp_server_http.cpp (linked into the daemon). Declared here rather than
-// including otlp_server.hpp, whose transitive includes are not on the daemon's include path.
-bool OtlpLoopbackHttpStatusOk(int port, const string &path);
+// Defined in otlp_server.cpp (linked into the daemon). Declared here rather than including
+// otlp_server.hpp, whose transitive includes are not on the daemon's include path.
+bool OtlpHttpStatusOk(const string &host, int port, const string &path);
+bool OtlpTcpConnectOk(const string &host, int port);
 } // namespace duckdb
 
 namespace {
@@ -79,6 +80,33 @@ void Execute(duckdb::Connection &con, const duckdb::string &sql, const duckdb::s
 bool TryExecuteShutdown(duckdb::Connection &con, const duckdb::string &sql, const duckdb::string &label) {
 	try {
 		Execute(con, sql, label, true);
+		return true;
+	} catch (std::exception &ex) {
+		std::cerr << "ERROR during " << label << ": " << ex.what() << '\n';
+		return false;
+	}
+}
+
+// Run the OTLP shutdown SQL (otlp_stop), which seals remaining buffered rows. otlp_stop
+// returns (status, dropped_rows): dropped_rows is non-zero only when the final drain failed
+// and rows were dropped. Returns false (so main() exits non-zero) on either a thrown error
+// OR a dropped-row count > 0, so an orchestrator can tell a clean shutdown from a
+// data-dropping one (review finding M4).
+bool TryExecuteOtlpShutdown(duckdb::Connection &con, const duckdb::string &sql, const duckdb::string &label) {
+	try {
+		auto result = con.Query(sql);
+		CheckResult(*result, label);
+		result->Print();
+		auto chunk = result->Fetch();
+		uint64_t dropped_rows = 0;
+		if (chunk && chunk->size() > 0 && chunk->ColumnCount() >= 2) {
+			dropped_rows = chunk->GetValue(1, 0).GetValue<uint64_t>();
+		}
+		if (dropped_rows > 0) {
+			std::cerr << "ERROR: " << label << " dropped " << dropped_rows
+			          << " un-sealed buffered rows (the final seal failed); shutting down NON-CLEAN.\n";
+			return false;
+		}
 		return true;
 	} catch (std::exception &ex) {
 		std::cerr << "ERROR during " << label << ": " << ex.what() << '\n';
@@ -187,17 +215,74 @@ int PortFromAddr(const duckdb::string &addr, int fallback) {
 	return fallback;
 }
 
+// Host portion of a "host:port" / "[ipv6]:port" bind address (no scheme). Empty host -> "".
+duckdb::string HostFromAddr(const duckdb::string &addr) {
+	if (!addr.empty() && addr[0] == '[') {
+		// [ipv6]:port — return the literal inside the brackets.
+		auto close = addr.find(']');
+		if (close != duckdb::string::npos) {
+			return addr.substr(1, close - 1);
+		}
+		return addr;
+	}
+	auto colon = addr.rfind(':');
+	if (colon == duckdb::string::npos) {
+		return addr; // bare host, no port
+	}
+	return addr.substr(0, colon);
+}
+
+// The host the healthcheck should probe for a server bound to `addr`. A wildcard/unspecified bind
+// (0.0.0.0, ::, empty) is reachable on loopback, so probe loopback (the previous behavior). An
+// explicit interface (e.g. 192.168.1.5) is NOT reachable on loopback, so probe it directly —
+// otherwise the container HEALTHCHECK fails forever on a healthy server (review finding M5).
+duckdb::string HealthCheckHost(const duckdb::string &addr) {
+	auto host = HostFromAddr(addr);
+	if (host.empty() || host == "0.0.0.0" || host == "::" || host == "[::]") {
+		return "127.0.0.1";
+	}
+	return host;
+}
+
+// Probe GET http://<host>:<port><path>. Loopback for a wildcard host, the configured host
+// otherwise (review finding M5).
+bool HealthProbe(const duckdb::string &addr, const duckdb::string &path, int port_fallback) {
+	auto host = HealthCheckHost(addr);
+	auto port = PortFromAddr(addr, port_fallback);
+	return duckdb::OtlpHttpStatusOk(host, port, path);
+}
+
 // Container HEALTHCHECK entry point. Distroless images ship no shell/curl, so the daemon
-// probes itself over loopback. Mirrors the previous shell check: OTLP /readyz, plus the
-// Quack root when Quack is enabled. Returns a process exit code (0 healthy, 1 unhealthy).
+// probes itself. It probes the CONFIGURED bind host (loopback for a 0.0.0.0/:: wildcard bind,
+// the explicit interface otherwise — see HealthCheckHost), so a non-loopback bind is supported
+// without a forever-failing loopback probe (review finding M5). Mirrors the previous shell check:
+// OTLP /readyz, plus the Quack root when Quack is enabled. Returns a process exit code (0 healthy,
+// 1 unhealthy).
 int RunHealthCheck() {
-	auto otlp_port = PortFromAddr(EnvOr("OTEL_HTTP_ADDR", "0.0.0.0:4318"), 4318);
-	if (!duckdb::OtlpLoopbackHttpStatusOk(otlp_port, "/readyz")) {
+	// Probe the daemon's actual transport, derived from the same listen URI server_config uses.
+	// otap: is a gRPC (HTTP/2) listener with no HTTP /readyz, so a TCP connect is the liveness
+	// signal there; otlp: keeps the HTTP /readyz probe. Parsing the URI (rather than only
+	// OTEL_HTTP_ADDR) also probes the actual port when DUCKDB_OTLP_LISTEN_URI overrides it.
+	auto listen_uri = EnvOr("DUCKDB_OTLP_LISTEN_URI", "otlp:" + EnvOr("OTEL_HTTP_ADDR", "0.0.0.0:4318"));
+	bool is_grpc = duckdb::StringUtil::StartsWith(listen_uri, "otap:");
+	auto addr = listen_uri;
+	for (const char *prefix : {"otap://", "otlp://", "otap:", "otlp:"}) {
+		duckdb::string p(prefix);
+		if (duckdb::StringUtil::StartsWith(addr, p)) {
+			addr = addr.substr(p.size());
+			break;
+		}
+	}
+	if (is_grpc) {
+		if (!duckdb::OtlpTcpConnectOk(HealthCheckHost(addr), PortFromAddr(addr, 4317))) {
+			return 1;
+		}
+	} else if (!HealthProbe(addr, "/readyz", 4318)) {
 		return 1;
 	}
 	if (duckdb_otlp_server::EnvTruthy("DUCKDB_QUACK_ENABLED") || duckdb_otlp_server::EnvTruthy("QUACK_ENABLED")) {
 		auto quack_addr = EnvOr("DUCKDB_QUACK_ADDR", EnvOr("QUACK_HTTP_ADDR", "0.0.0.0:9494"));
-		if (!duckdb::OtlpLoopbackHttpStatusOk(PortFromAddr(quack_addr, 9494), "/")) {
+		if (!HealthProbe(quack_addr, "/", 9494)) {
 			return 1;
 		}
 	}
@@ -321,7 +406,10 @@ int main(int argc, char **argv) {
 				std::this_thread::sleep_for(std::chrono::milliseconds(100));
 			}
 		});
-		// Always join the watcher, even if startup throws.
+		// Always stop + join the watcher, even if startup throws. This is the SOLE owner of the
+		// join: the happy path below only flips startup_complete (so the watcher stops interrupting
+		// once serving begins) and leaves the join to this guard, so there is no second, redundant
+		// join to keep in sync (review finding L10).
 		struct WatcherGuard {
 			std::atomic<bool> &done;
 			std::thread &worker;
@@ -361,8 +449,9 @@ int main(int argc, char **argv) {
 		if (!WaitForReady(con, config) && !shutdown_requested) {
 			throw std::runtime_error("Timed out waiting for OTLP listener readiness");
 		}
+		// Stop the watcher from interrupting now that startup is done; the WatcherGuard joins it on
+		// scope exit (see above), so no explicit join here (review finding L10).
 		startup_complete.store(true);
-		interrupt_watcher.join();
 
 		std::cout << "DuckDB initialization complete\n";
 		std::cout << "Starting server..." << '\n';
@@ -374,7 +463,7 @@ int main(int argc, char **argv) {
 		if (config.quack_enabled) {
 			shutdown_ok = TryExecuteShutdown(con, config.StopQuackSql(), "quack shutdown") && shutdown_ok;
 		}
-		shutdown_ok = TryExecuteShutdown(con, config.StopOtlpSql(), "otlp shutdown") && shutdown_ok;
+		shutdown_ok = TryExecuteOtlpShutdown(con, config.StopOtlpSql(), "otlp shutdown") && shutdown_ok;
 		return listener_ok && shutdown_ok ? 0 : 1;
 	} catch (std::exception &ex) {
 		if (shutdown_requested) {

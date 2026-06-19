@@ -1,0 +1,38 @@
+# name: test/sql/read_otlp_timestamp_overflow.test
+# description: End-to-end coverage for the Rust u64_to_i64 timestamp guard. OTLP timeUnixNano
+# group: [sql]
+
+#             is an unsigned 64-bit nanosecond count; the Rust backend's u64_to_i64 helper
+#             returns a Decode error (it does NOT clamp/saturate/null) when a value exceeds
+#             i64::MAX, which surfaces from the FFI as OtlpStatus::ParseFailed and is thrown
+#             by the read scan as an IOException ("OTLP parse error ...: Parse failed").
+
+require otlp
+
+# Normal (boundary) timestamp just under i64::MAX (9223372036854775000 < 9223372036854775807)
+# parses cleanly and lands as a TIMESTAMP_NS value (raw nanoseconds, timestamp_ns_as_timestamp=false).
+query TTT
+SELECT time_unix_nano, service_name, body FROM read_otlp_logs('test/data/ts_boundary_logs.jsonl');
+----
+2262-04-11 23:47:16.854775	boundary-service	timestamp just under i64::MAX
+
+# The boundary column is exposed as TIMESTAMP_NS (not clamped to a smaller width).
+query T
+SELECT typeof(time_unix_nano) FROM read_otlp_logs('test/data/ts_boundary_logs.jsonl');
+----
+TIMESTAMP_NS
+
+# A timeUnixNano > i64::MAX (18446744073709551000) overflows the u64_to_i64 guard. The guard
+# fails the parse (no clamp/null/saturate); the whole read errors out rather than emitting a row.
+statement error
+SELECT time_unix_nano FROM read_otlp_logs('test/data/ts_overflow_logs.jsonl');
+----
+OTLP parse error on test/data/ts_overflow_logs.jsonl: Parse failed
+
+# The overflow is fatal for the parse, so even COUNT(*) (no timestamp projection forced through
+# the converter) errors — the guard runs during Arrow batch construction in Rust, before any rows
+# are handed to DuckDB.
+statement error
+SELECT COUNT(*) FROM read_otlp_logs('test/data/ts_overflow_logs.jsonl');
+----
+OTLP parse error on test/data/ts_overflow_logs.jsonl: Parse failed

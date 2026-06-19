@@ -9,4 +9,4 @@
 [submodule "external/otlp2records"]
 	path = external/otlp2records
 	url = https://github.com/smithclay/otlp2records.git
-	branch = v0.9.0
+	branch = v0.10.0

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "duckdb/common/string.hpp"
+#include "otlp_ingest_limits.hpp"
 
 #include <cstdint>
 #include <vector>

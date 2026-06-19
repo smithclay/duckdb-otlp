@@ -9,6 +9,11 @@
     <script src="https://cdn.jsdelivr.net/npm/ace-builds@1.32.0/src-min-noconflict/ace.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/ace-builds@1.32.0/src-min-noconflict/mode-sql.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/ace-builds@1.32.0/src-min-noconflict/theme-chrome.js"></script>
+    <!-- duckdb-wasm's pinned dist ESM imports apache-arrow as a bare specifier; resolve it
+         to the major it depends on (^17). Must precede the app.js module script. -->
+    <script type="importmap">
+    { "imports": { "apache-arrow": "https://cdn.jsdelivr.net/npm/apache-arrow@17/+esm" } }
+    </script>
 </head>
 <body>
     <main class="container">

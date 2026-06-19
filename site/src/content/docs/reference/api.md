@@ -2,7 +2,7 @@
 title: "API Reference"
 ---
 
-The DuckDB OpenTelemetry Extension API includes file readers and live-ingest functions. All file readers accept a path or glob pattern and detect OTLP JSON, JSONL, and protobuf. Native builds also support live ingest.
+The DuckDB OpenTelemetry Extension API includes file readers and live-ingest functions. The OTLP file readers accept a path or glob pattern and detect OTLP JSON, JSONL, and protobuf; the separate OTAP readers decode the columnar Arrow encoding (`BatchArrowRecords`). Native builds also support live ingest.
 
 ## Table Functions
 
@@ -47,11 +47,33 @@ Returns exponential histogram metrics (27 columns) with scale, zero bucket, posi
 
 `read_otlp_metrics(path)` and `read_otlp_metrics_summary(path)` are registered placeholders. Use the shape-specific metric readers above.
 
+### OpenTelemetry Arrow Protocol (OTAP)
+
+OTAP is the columnar Arrow encoding of OpenTelemetry data (canonical `BatchArrowRecords`), distinct from OTLP's protobuf/JSON wire format. The `read_otap_*` readers decode OTAP files into the **same flattened schemas** as their `read_otlp_*` counterparts — only the input encoding differs:
+
+- **`read_otap_traces(path)`**
+- **`read_otap_logs(path)`**
+- **`read_otap_metrics_gauge(path)`**
+- **`read_otap_metrics_sum(path)`**
+- **`read_otap_metrics_histogram(path)`**
+- **`read_otap_metrics_exp_histogram(path)`**
+
+**Parameters:** Same as `read_otlp_traces` (a path or glob).
+
+Because OTAP and OTLP mean different things, they are separate functions rather than a format flag — pick the reader that matches your input encoding. Each file must be a self-contained `BatchArrowRecords` message; one file is decoded with one decoder. Streams that span multiple files relying on cross-message Arrow dictionary reuse are not supported by the file readers.
+
+**One signal per file, multiple metric shapes per file.** A canonical OTAP message carries one signal family — logs *or* traces *or* metrics — so call the reader that matches the file. A single metrics file can hold several metric shapes at once: `read_otap_metrics_gauge`, `read_otap_metrics_sum`, `read_otap_metrics_histogram`, and `read_otap_metrics_exp_histogram` each extract their shape from the same file, just like the `read_otlp_metrics_*` readers (summary points are skipped). Pointing a reader at a file of a different signal, or at an envelope that mixes incompatible payloads, is a hard error — it never returns partial or mis-typed rows.
+
+**Compression:** OpenTelemetry producers default to Zstandard. Native builds decode uncompressed, LZ4, and Zstandard OTAP. The WebAssembly build decodes uncompressed and LZ4 only (no Zstandard); a Zstandard OTAP file there fails with an Arrow IPC error.
+
 ## Live Ingest
 
-In native builds, you can run an HTTP server that accepts live OTLP/HTTP exports and streams them into the default DuckDB catalog or an attached writable catalog such as DuckLake or an Iceberg REST catalog. The server buffers rows and commits them in batches: a POST returns `202 Accepted`, and rows become durable at the next background commit or on graceful stop. Current native builds commit after about 5 seconds for the oldest buffered row, or when admitted request-body bytes reach about 128 MiB.
+In native builds, you can run a server that accepts live telemetry over **HTTP** or **gRPC** and streams it into the default DuckDB catalog or an attached writable catalog such as DuckLake or an Iceberg REST catalog. The server buffers rows and commits them in batches: an accepted request returns immediately (HTTP `202 Accepted` / gRPC `OK`), and rows become durable at the next background commit or on graceful stop. Current native builds commit after about 5 seconds for the oldest buffered row, or when admitted request-body bytes reach about 128 MiB.
 
-- **`otlp_serve([uri], catalog := '<attached_db>', ...)`** - Start the ingest server, target a catalog, and create/validate the target tables.
+Each serve function is bound to its own URI scheme (no mixing). `otlp_serve` runs the **OTLP** protocol on the `otlp:` scheme: **OTLP/HTTP** by default (port 4318), or standard **OTLP/gRPC** unary `Export` with `transport := 'grpc'`. `otap_serve` runs the canonical **OTAP/Arrow** bidirectional streaming services (`Arrow{Logs,Traces,Metrics}Service`, all six signals) over gRPC on the `otap:` scheme (port 4317). The two gRPC service sets are disjoint — `otlp_serve(transport := 'grpc')` serves only OTLP unary, `otap_serve` only OTAP/Arrow. The lifecycle functions below are transport-agnostic.
+
+- **`otlp_serve([uri], transport := 'http'|'grpc', catalog := '<attached_db>', ...)`** - Start an **OTLP** ingest server on the `otlp:` scheme, target a catalog, and create/validate the target tables. `transport` defaults to `'http'` (OTLP/HTTP); `'grpc'` serves OTLP/gRPC unary `Export`.
+- **`otap_serve([uri], catalog := '<attached_db>', ...)`** - Start an **OTAP/Arrow** gRPC streaming server (`otap:` scheme; defaults to `otap:localhost:4317`, gRPC-only). Same parameters as `otlp_serve`. OTAP/Arrow streams keep one stateful decoder per stream (cross-message Arrow dictionary reuse).
 - **`otlp_flush(uri)`** - Force a synchronous commit when readers need the latest accepted rows now.
 - **`otlp_stop(uri)`** - Stop the server listening on `uri` (commits remaining rows first).
 - **`otlp_server_list()`** - List running servers with live counters, buffer state, and health.

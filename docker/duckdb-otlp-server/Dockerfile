@@ -18,7 +18,7 @@
 
 FROM rust:1-bookworm AS builder
 
-ARG DUCKDB_VERSION=v1.5.3
+ARG DUCKDB_VERSION=v1.5.4
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -42,7 +42,7 @@ COPY --from=builder /src/build/release/extension/otlp/duckdb_otlp_server /duckdb
 
 FROM debian:bookworm-slim AS deps
 
-ARG DUCKDB_VERSION=v1.5.3
+ARG DUCKDB_VERSION=v1.5.4
 ARG TARGETARCH
 # Runtime user in the distroless nonroot image.
 ARG RUN_UID=65532

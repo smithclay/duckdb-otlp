@@ -124,3 +124,33 @@ statement error
 select unnest(otlp_uri_parser('otlp:[]'));
 ----
 Missing IPv6 address
+
+# M9: host validation - hostname with a space
+statement error
+select unnest(otlp_uri_parser('otlp:my host'));
+----
+Invalid character in OTLP hostname
+
+# M9: host validation - path-traversal-ish hostname
+statement error
+select unnest(otlp_uri_parser('otlp:../etc/passwd'));
+----
+Invalid character in OTLP hostname
+
+# M9: host validation - malformed IPv6 with invalid inner chars
+statement error
+select unnest(otlp_uri_parser('otlp:[::1!bad]'));
+----
+Invalid character in IPv6 address
+
+# M9: positive case - normal hostname still parses
+query IIII
+select unnest(otlp_uri_parser('otlp:my-host.example.com'));
+----
+my-host.example.com	4318	false	http://my-host.example.com:4318
+
+# M9: positive case - IPv6 loopback still parses
+query IIII
+select unnest(otlp_uri_parser('otlp:[::1]'));
+----
+::1	4318	true	http://[::1]:4318

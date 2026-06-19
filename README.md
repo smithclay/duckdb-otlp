@@ -2,7 +2,7 @@
 
 [![Build](https://github.com/smithclay/duckdb-otlp/actions/workflows/MainDistributionPipeline.yml/badge.svg)](https://github.com/smithclay/duckdb-otlp/actions/workflows/MainDistributionPipeline.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![DuckDB](https://img.shields.io/badge/DuckDB-%E2%89%A5%201.5.3-FFF000?logo=duckdb&logoColor=black)](https://duckdb.org)
+[![DuckDB](https://img.shields.io/badge/DuckDB-%E2%89%A5%201.5.4-FFF000?logo=duckdb&logoColor=black)](https://duckdb.org)
 [![Docs](https://img.shields.io/badge/docs-online-4c9aff)](https://smithclay.github.io/duckdb-otlp/)
 
 DuckDB extension for querying and storing OpenTelemetry traces, logs, and metrics with SQL.
@@ -11,7 +11,7 @@ As of v0.5, the extension has an embedded HTTP server that lets you stream live 
 
 ## Quickstart: Read OpenTelemetry data
 
-Install and load the extension in `duckdb` v1.5.3 or higher:
+Install and load the extension in `duckdb` v1.5.4 or higher:
 
 ```sql
 -- Note: v0.5.0 is still pending publication
@@ -48,6 +48,13 @@ SELECT time_unix_nano, service_name, severity_text, body FROM read_otlp_logs('ht
 SELECT trace_id, name, duration_time_unix_nano FROM read_otlp_traces('https://github.com/smithclay/duckdb-otlp/raw/refs/heads/main/test/data/otlp_traces.pb') ORDER BY duration_time_unix_nano DESC;
 ```
 
+Read the columnar OpenTelemetry Arrow Protocol (OTAP) with the `read_otap_*` readers. They emit the same schemas as `read_otlp_*`; pick the reader that matches your input encoding:
+
+```sql
+-- Decode an OTAP (BatchArrowRecords) file into the same flattened log schema
+SELECT time_unix_nano, service_name, severity_text, body FROM read_otap_logs('logs.bar');
+```
+
 ## Quickstart: Stream OpenTelemetry data
 
 You can start a server that accepts OpenTelemetry data from instrumented code, AI agents such as [Claude Code or Codex](https://smithclay.github.io/duckdb-otlp/guides/store-agent-traces-local-ducklake/), or OpenTelemetry Collectors. 
@@ -79,7 +86,7 @@ To query the running daemon using Quack protocol, [see docs here](https://smithc
 
 ```sql
 -- See instructions above for loading otlp extension
--- Inside DuckDB 1.5.3+
+-- Inside DuckDB 1.5.4+
 FROM otlp_serve(
     'otlp:localhost:4318',
     token := 'dev-token-123456'
@@ -111,7 +118,8 @@ The schemas align with a normalized ClickStack-inspired version of the [OpenTele
 ## What You Can Do
 
 - Read OTLP traces, logs, gauges, sums/counters, histograms, and exponential histograms from files.
-- Stream live OTLP/HTTP exports into the default DuckDB catalog, an attached [DuckLake](https://ducklake.select) lakehouse, or an Iceberg REST catalog such as Amazon S3 Tables or Cloudflare R2 Data Catalog.
+- Read the columnar OpenTelemetry Arrow Protocol (OTAP) with the `read_otap_*` functions, which produce the same schemas as `read_otlp_*`.
+- Stream live telemetry over **OTLP** (`otlp_serve` — OTLP/HTTP, or standard OTLP/gRPC unary with `transport := 'grpc'`) or the **OpenTelemetry Arrow Protocol** (`otap_serve` — OTAP/Arrow bidirectional gRPC streaming) into the default DuckDB catalog, an attached [DuckLake](https://ducklake.select) lakehouse, or an Iceberg REST catalog such as Amazon S3 Tables or Cloudflare R2 Data Catalog.
 - Convert telemetry to Parquet files and save to cloud storage.
 - Query local files, globs, S3, HTTP(S), Azure Blob, and GCS paths through DuckDB file systems.
 - Use the browser demo for JSON, JSONL, and protobuf exploration with DuckDB-WASM: [Interactive Demo](https://smithclay.github.io/duckdb-otlp/demo/).
@@ -141,7 +149,9 @@ The schemas align with a normalized ClickStack-inspired version of the [OpenTele
 | `read_otlp_metrics_sum(path)` | Read sum/counter metrics |
 | `read_otlp_metrics_histogram(path)` | Read standard histogram metrics |
 | `read_otlp_metrics_exp_histogram(path)` | Read exponential histogram metrics |
-| `otlp_serve([uri], ...)` | Start a native OTLP/HTTP ingest server |
+| `read_otap_traces/logs/metrics_*(path)` | Read OpenTelemetry Arrow Protocol (OTAP) files into the same schemas as the `read_otlp_*` readers |
+| `otlp_serve([uri], ...)` | Start a native OTLP ingest server (`otlp:` scheme): OTLP/HTTP, or OTLP/gRPC unary with `transport := 'grpc'` |
+| `otap_serve([uri], ...)` | Start a native OTAP/Arrow gRPC streaming ingest server (`otap:` scheme) |
 | `otlp_flush(uri)` | Optionally force buffered ingest rows to commit to the target catalog now |
 | `otlp_stop(uri)` | Stop a server after committing remaining rows |
 | `otlp_server_list()` | Inspect running servers and ingest counters |
@@ -163,7 +173,7 @@ Early-stage and **single-node** (one daemon, one writer — no HA or horizontal 
 
 - **Durability is the seal, not the `202`.** Live ingest buffers in memory and commits on a periodic group-commit ("seal"); a `202` means *accepted*, not durable. Call `otlp_flush`/`otlp_stop` before shutting down — a hard kill drops un-sealed rows (there is no WAL).
 - **Keep queries time-bounded.** Data lands roughly time-ordered, so queries scoped by `timestamp` (and `service_name`) prune well; unbounded scans are slow. There is **no full-text index** — `body` substring/regex search and `trace_id` point lookups are brute-force scans: cheap over a short window, expensive over a wide one.
-- **File reads** cap individual files at **100 MB**. **Live ingest** is HTTP-only (no gRPC, not in the WASM build), bounds request bodies via `max_body_bytes`, and applies `max_buffered_bytes` backpressure (returns `503`); see the [Live Ingest Reference](https://smithclay.github.io/duckdb-otlp/reference/serve/#responses-and-status-codes).
+- **File reads** cap individual files at **100 MB**. **Live ingest** runs via `otlp_serve` (OTLP/HTTP, or OTLP/gRPC unary with `transport := 'grpc'`) and `otap_serve` (OTAP/Arrow gRPC streaming); both are native-only (not in the WASM build), bound request bodies, and apply `max_buffered_bytes` backpressure (`503` / `RESOURCE_EXHAUSTED`); see the [Live Ingest Reference](https://smithclay.github.io/duckdb-otlp/reference/serve/#responses-and-status-codes).
 
 ## Need Help?
 

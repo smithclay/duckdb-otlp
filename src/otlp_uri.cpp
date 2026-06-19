@@ -6,6 +6,25 @@ namespace duckdb {
 
 namespace {
 
+static void ValidateHost(const string &host, bool is_ipv6) {
+	if (is_ipv6) {
+		// IPv6 literal content (between the brackets): hex digits, colons, dots (for
+		// v4-mapped addresses like ::ffff:192.0.2.1), and '%' for zone IDs.
+		for (char c : host) {
+			if (!isxdigit((unsigned char)c) && c != ':' && c != '.' && c != '%') {
+				throw InvalidInputException("Invalid character in IPv6 address");
+			}
+		}
+	} else {
+		// Regular hostname: alphanumerics, hyphens, dots.
+		for (char c : host) {
+			if (!isalnum((unsigned char)c) && c != '-' && c != '.') {
+				throw InvalidInputException("Invalid character in OTLP hostname");
+			}
+		}
+	}
+}
+
 static uint16_t ParsePort(const string &port_str) {
 	if (port_str.empty()) {
 		throw InvalidInputException("Invalid OTLP listen port");
@@ -25,13 +44,25 @@ static uint16_t ParsePort(const string &port_str) {
 OtlpUri::OtlpUri(string uri_p) : uri(std::move(uri_p)) {
 	StringUtil::Trim(uri);
 	string remainder;
-	if (StringUtil::StartsWith(uri, "otlp://")) {
+	// otap: selects the gRPC transport and defaults to the OTLP/OTAP gRPC port
+	// 4317; otlp: selects the HTTP transport and defaults to 4318.
+	uint16_t default_port = 4318;
+	if (StringUtil::StartsWith(uri, "otap://")) {
+		scheme = "otap";
+		default_port = 4317;
+		remainder = uri.substr(strlen("otap://"));
+	} else if (StringUtil::StartsWith(uri, "otap:")) {
+		scheme = "otap";
+		default_port = 4317;
+		remainder = uri.substr(strlen("otap:"));
+	} else if (StringUtil::StartsWith(uri, "otlp://")) {
 		remainder = uri.substr(strlen("otlp://"));
 	} else if (StringUtil::StartsWith(uri, "otlp:")) {
 		remainder = uri.substr(strlen("otlp:"));
 	} else {
-		throw InvalidInputException("Invalid OTLP listen URI, needs to start with 'otlp:'");
+		throw InvalidInputException("Invalid OTLP listen URI, needs to start with 'otlp:' or 'otap:'");
 	}
+	port = default_port;
 	if (remainder.empty()) {
 		remainder = "localhost";
 	}
@@ -46,6 +77,7 @@ OtlpUri::OtlpUri(string uri_p) : uri(std::move(uri_p)) {
 		if (host.empty()) {
 			throw InvalidInputException("Missing IPv6 address");
 		}
+		ValidateHost(host, true);
 		remainder = remainder.substr(pos + 1);
 		if (StringUtil::StartsWith(remainder, ":")) {
 			remainder = remainder.substr(1);
@@ -64,6 +96,7 @@ OtlpUri::OtlpUri(string uri_p) : uri(std::move(uri_p)) {
 		if (host.empty()) {
 			throw InvalidInputException("Missing OTLP listen hostname");
 		}
+		ValidateHost(host, false);
 	}
 
 	http = StringUtil::Format("http://%s:%d", ipv6 ? "[" + host + "]" : host, port);

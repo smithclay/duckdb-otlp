@@ -41,6 +41,13 @@ struct OtlpSignalBuffer {
 	std::mutex mutex;
 	unique_ptr<ColumnDataCollection> collection;
 	idx_t buffered_rows = 0;
+	//! Admission bytes attributed to this signal's buffered rows, parallel to buffered_rows and
+	//! guarded by the same mutex. A request's admitted bytes are attributed to the signal(s) it
+	//! buffers into exactly once at buffer time (a multi-sub-signal metrics request splits its
+	//! bytes across its sub-signals by rows, once). Carried into SealingSignal at swap time so a
+	//! failed seal restores the EXACT per-signal admission for un-sealed signals instead of
+	//! re-splitting an aggregate proportionally each failure cycle (review finding M2).
+	idx_t unsealed_admission_bytes = 0;
 	bool have_unsealed = false;
 	std::chrono::steady_clock::time_point first_unsealed;
 

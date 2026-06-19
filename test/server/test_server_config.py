@@ -16,6 +16,7 @@ Point the tests at a binary with DUCKDB_OTLP_SERVER_BIN, or rely on the default
 from __future__ import annotations
 
 import os
+import socket
 import subprocess
 from pathlib import Path
 
@@ -81,6 +82,23 @@ def test_local_ducklake_boot_sql(tmp_path):
     # Token is read from a session variable, never interpolated.
     assert "getvariable('duckdb_otlp_effective_token')" in out
     assert "a-private-token-123456" not in out
+
+
+def test_otap_listen_uri_routes_to_otap_serve(tmp_path):
+    # An otap: listen URI must dispatch to otap_serve (OTAP/Arrow), never otlp_serve;
+    # the two serve functions are bound to their own scheme and reject the other's.
+    result = run(
+        {
+            "DUCKDB_MODE": "local-ducklake",
+            "DUCKDB_OTLP_TOKEN": "a-private-token-123456",
+            "DUCKDB_OTLP_LISTEN_URI": "otap:127.0.0.1:4317",
+        },
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert "FROM otap_serve(" in out
+    assert "FROM otlp_serve(" not in out
 
 
 def test_aws_ducklake_uses_instance_role_and_local_catalog(tmp_path):
@@ -215,3 +233,45 @@ def test_missing_required_var_names_the_var(tmp_path):
     assert result.returncode == 1
     assert "exception_type" not in result.stderr
     assert "CLOUDFLARE" in result.stderr
+
+
+def _healthcheck(env: dict) -> int:
+    """Run the daemon's `healthcheck` subcommand with a clean env; return its exit code."""
+    full_env = {"PATH": os.environ.get("PATH", "")}
+    full_env.update(env)
+    return subprocess.run(
+        [str(SERVER_BIN), "healthcheck"],
+        env=full_env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    ).returncode
+
+
+def test_grpc_healthcheck_uses_tcp_connect():
+    # otap: (gRPC/HTTP2) has no HTTP /readyz, so the healthcheck TCP-connects: a bound listener
+    # is healthy, the same port with nothing listening is not.
+    sock = socket.socket()
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.listen(16)
+    try:
+        assert _healthcheck({"DUCKDB_OTLP_LISTEN_URI": f"otap:127.0.0.1:{port}"}) == 0
+    finally:
+        sock.close()
+    assert _healthcheck({"DUCKDB_OTLP_LISTEN_URI": f"otap:127.0.0.1:{port}"}) == 1
+
+
+def test_http_healthcheck_needs_real_http_not_just_tcp():
+    # otlp: (HTTP) must get a real /readyz response; a bare TCP listener that never speaks HTTP
+    # is unhealthy -- proving the HTTP and gRPC probes are distinct.
+    sock = socket.socket()
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.listen(16)
+    try:
+        assert _healthcheck({"DUCKDB_OTLP_LISTEN_URI": f"otlp:127.0.0.1:{port}"}) == 1
+    finally:
+        sock.close()

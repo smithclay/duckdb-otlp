@@ -1,0 +1,1 @@
+{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"overflow-service"}}]},"scopeLogs":[{"scope":{"name":"overflow-logger"},"logRecords":[{"timeUnixNano":"18446744073709551000","severityNumber":9,"severityText":"INFO","body":{"stringValue":"timestamp past i64::MAX"}}]}]}]}

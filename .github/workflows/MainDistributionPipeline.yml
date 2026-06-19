@@ -33,19 +33,29 @@ env:
 jobs:
   duckdb-stable-build:
     name: Build extension binaries
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.3
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.4
     with:
-      duckdb_version: v1.5.3
-      ci_tools_version: v1.5.3
+      duckdb_version: v1.5.4
+      ci_tools_version: v1.5.4
       extension_name: otlp
       extra_toolchains: rust
-      exclude_archs: "wasm_mvp;wasm_threads;linux_amd64_musl"
+      # Windows is excluded: through v1.5.3, DuckDB's bundled fmt no longer compiled on any
+      # current GitHub Windows MSVC image (`stdext::checked_array_iterator` removed →
+      # fmt errors C2653/C7525), and bumping extension-ci-tools to the newer
+      # `windows-2025-vs2026` runner did not help (that MSVC is newer still). v1.5.4 has not
+      # been re-validated on Windows, so it stays excluded conservatively. Re-enable by
+      # removing windows_amd64;windows_amd64_mingw once a DuckDB release is confirmed to ship
+      # an MSVC-compatible fmt.
+      exclude_archs: "wasm_mvp;wasm_threads;linux_amd64_musl;windows_amd64;windows_amd64_mingw"
 
   # Cheap guard so daemon breakage fails on PRs and feature-branch pushes without paying
   # for the 2-arch publish path. Compiles amd64 natively and warms the shared cache
-  # that the publish path (daemon-linux) reuses on main.
+  # that the publish path (daemon-linux) reuses on main. Then packages that same amd64
+  # binary into the runtime-prebuilt image (no recompile) and runs the local-ducklake
+  # e2e smoke (scripts/smoke_test.py) so an ingest/seal/distroless-boot regression is
+  # caught on the PR instead of only post-merge by docker-smoke on main.
   daemon-compile:
-    name: Compile + config-test daemon (amd64)
+    name: Compile + config-test + e2e smoke daemon (amd64)
     if: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/v')) }}
     runs-on: ubuntu-latest
     steps:
@@ -77,6 +87,39 @@ jobs:
           chmod +x daemon-bin/duckdb-otlp-server
           DUCKDB_OTLP_SERVER_BIN="$PWD/daemon-bin/duckdb-otlp-server" \
             uv run --with pytest pytest test/server -q
+
+      - name: Prepare Docker build context
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p docker-bin/amd64
+          cp daemon-bin/duckdb-otlp-server docker-bin/amd64/duckdb-otlp-server
+          chmod +x docker-bin/amd64/duckdb-otlp-server
+
+      - name: Build amd64 runtime image (load)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/duckdb-otlp-server/Dockerfile
+          target: runtime-prebuilt
+          platforms: linux/amd64
+          load: true
+          tags: duckdb-otlp:smoke
+          cache-from: type=gha,scope=docker-runtime
+
+      - name: Install duckdb CLI (host, for Quack queries)
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/duckdb/duckdb/releases/download/v1.5.4/duckdb_cli-linux-amd64.zip" -o /tmp/duckdb.zip
+          sudo unzip -o /tmp/duckdb.zip -d /usr/local/bin
+          duckdb --version
+
+      - name: Run e2e smoke
+        run: |
+          python3 scripts/smoke_test.py \
+            --image duckdb-otlp:smoke \
+            --platform linux/amd64 \
+            --startup-timeout 120
 
   daemon-linux:
     name: Build server daemon (${{ matrix.arch }})
@@ -166,7 +209,7 @@ jobs:
       - name: Install duckdb CLI (host, for Quack queries)
         run: |
           set -euo pipefail
-          curl -fsSL "https://github.com/duckdb/duckdb/releases/download/v1.5.3/duckdb_cli-linux-amd64.zip" -o /tmp/duckdb.zip
+          curl -fsSL "https://github.com/duckdb/duckdb/releases/download/v1.5.4/duckdb_cli-linux-amd64.zip" -o /tmp/duckdb.zip
           sudo unzip -o /tmp/duckdb.zip -d /usr/local/bin
           duckdb --version
 
@@ -246,8 +289,8 @@ jobs:
 
   code-quality-check:
     name: Code Quality Check
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v1.5.3
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v1.5.4
     with:
-      duckdb_version: v1.5.3
-      ci_tools_version: v1.5.3
+      duckdb_version: v1.5.4
+      ci_tools_version: v1.5.4
       extension_name: otlp
