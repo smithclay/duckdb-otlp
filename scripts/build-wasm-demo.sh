@@ -13,8 +13,10 @@
 #      trampolines that the wasm-native-EH host does NOT provide; immediate-abort drops them.
 #      (Verified: without it the extension throws "function signature mismatch" at load.)
 #
-# This is a DEMO-ONLY build, decoupled from the repo's pinned DuckDB submodule (v1.5.3) used
-# for native builds. The submodule + Makefile are restored on exit. Re-run after changing
+# This is a DEMO-ONLY build. The repo's native submodule pin now also tracks DuckDB v1.5.4,
+# so the DuckDB *version* matches — but this build still diverges from a plain `make wasm_eh`:
+# it applies duckdb-wasm's own DuckDB patches and builds the Rust lib without unwinding, which
+# native builds do not. The submodule + Makefile are restored on exit. Re-run after changing
 # the extension sources or bumping the demo's duckdb-wasm version (also re-vendor patches,
 # see scripts/wasm-demo/patches/README.md, and update the version in site/public/wasm-demo/app.js).
 #
@@ -52,7 +54,9 @@ git -C duckdb checkout -q "$DUCKDB_TAG"
 cat "$PATCHES"/*.patch | patch -p1 --forward -d duckdb || true   # --forward skips already-upstream hunks
 
 # Stamp the metadata version + build the Rust lib with panic=immediate-abort (drops SjLj invoke_*)
-sed -i.bak "s/VERSION_FIELD=\"v1.5.3\"/VERSION_FIELD=\"$VERSION_FIELD\"/" Makefile
+# Force the metadata stamp to the demo's target DuckDB version regardless of the Makefile
+# default (which tracks the native submodule pin — now also v1.5.4, but may diverge later).
+sed -i.bak -E "s/VERSION_FIELD=\"v[0-9.]+\"/VERSION_FIELD=\"$VERSION_FIELD\"/" Makefile
 sed -i.bak 's|cd external/otlp2records && cargo build --target wasm32-unknown-emscripten --release --features ffi|cd external/otlp2records \&\& RUSTFLAGS="-Zunstable-options -Cpanic=immediate-abort" cargo +nightly build --target wasm32-unknown-emscripten --release --features ffi -Z build-std=std,panic_abort|' Makefile
 rm -f Makefile.bak
 

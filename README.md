@@ -2,7 +2,7 @@
 
 [![Build](https://github.com/smithclay/duckdb-otlp/actions/workflows/MainDistributionPipeline.yml/badge.svg)](https://github.com/smithclay/duckdb-otlp/actions/workflows/MainDistributionPipeline.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![DuckDB](https://img.shields.io/badge/DuckDB-%E2%89%A5%201.5.3-FFF000?logo=duckdb&logoColor=black)](https://duckdb.org)
+[![DuckDB](https://img.shields.io/badge/DuckDB-%E2%89%A5%201.5.4-FFF000?logo=duckdb&logoColor=black)](https://duckdb.org)
 [![Docs](https://img.shields.io/badge/docs-online-4c9aff)](https://smithclay.github.io/duckdb-otlp/)
 
 DuckDB extension for querying and storing OpenTelemetry traces, logs, and metrics with SQL.
@@ -11,7 +11,7 @@ As of v0.5, the extension has an embedded HTTP server that lets you stream live 
 
 ## Quickstart: Read OpenTelemetry data
 
-Install and load the extension in `duckdb` v1.5.3 or higher:
+Install and load the extension in `duckdb` v1.5.4 or higher:
 
 ```sql
 -- Note: v0.5.0 is still pending publication
@@ -86,7 +86,7 @@ To query the running daemon using Quack protocol, [see docs here](https://smithc
 
 ```sql
 -- See instructions above for loading otlp extension
--- Inside DuckDB 1.5.3+
+-- Inside DuckDB 1.5.4+
 FROM otlp_serve(
     'otlp:localhost:4318',
     token := 'dev-token-123456'
