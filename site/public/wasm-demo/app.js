@@ -1,4 +1,8 @@
-import * as duckdb from 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@latest/+esm';
+// Pinned to duckdb-wasm 1.33.1-dev56.0 (DuckDB v1.5.4), matching the DuckDB version the
+// otlp.duckdb_extension.wasm in this folder is built against. Use the pinned /dist ESM (NOT
+// /+esm): the /+esm rebundle's worker-message protocol mismatches the /dist worker and throws
+// "r is not a function". apache-arrow is resolved via the import map in index.html.
+import * as duckdb from 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.33.1-dev56.0/dist/duckdb-browser.mjs';
 
 // Global state
 let db = null;
@@ -26,16 +30,16 @@ async function initDuckDB() {
     try {
         showStatus('Initializing DuckDB WASM...', 'loading');
 
-        // Select bundle based on browser capabilities
-        // Note: Extension built with Emscripten 3.1.73, duckdb-wasm 1.32.0 uses 3.1.71
+        // Select bundle based on browser capabilities. Bundle URLs must be the SAME
+        // duckdb-wasm version as the API import above so the worker-message protocol matches.
         const bundle = await duckdb.selectBundle({
             mvp: {
-                mainModule: 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/dist/duckdb-mvp.wasm',
-                mainWorker: 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/dist/duckdb-browser-mvp.worker.js',
+                mainModule: 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.33.1-dev56.0/dist/duckdb-mvp.wasm',
+                mainWorker: 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.33.1-dev56.0/dist/duckdb-browser-mvp.worker.js',
             },
             eh: {
-                mainModule: 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/dist/duckdb-eh.wasm',
-                mainWorker: 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/dist/duckdb-browser-eh.worker.js',
+                mainModule: 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.33.1-dev56.0/dist/duckdb-eh.wasm',
+                mainWorker: 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.33.1-dev56.0/dist/duckdb-browser-eh.worker.js',
             },
         });
 
