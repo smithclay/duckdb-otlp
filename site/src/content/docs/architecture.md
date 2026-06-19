@@ -13,7 +13,8 @@ The DuckDB OpenTelemetry Extension exposes typed readers for OpenTelemetry Proto
 The extension includes:
 - Table functions: `read_otlp_traces`, `read_otlp_logs`
 - Metrics functions: `read_otlp_metrics_gauge`, `read_otlp_metrics_sum`, `read_otlp_metrics_histogram`, `read_otlp_metrics_exp_histogram`
-- Live ingest functions: `otlp_serve`, `otlp_flush`, `otlp_stop`, `otlp_server_list` (native builds only). See [OTLP HTTP Ingest Server](#otlp-http-ingest-server)
+- Live ingest functions: `otlp_serve` (OTLP/HTTP, or OTLP/gRPC with `transport := 'grpc'`), `otap_serve` (OTAP/Arrow streaming), `otlp_flush`, `otlp_stop`, `otlp_server_list`, `otlp_seal_list` (native builds only). See [Live Ingest Server](#otlp-http-ingest-server)
+- OTAP file readers: `read_otap_traces`, `read_otap_logs`, `read_otap_metrics_gauge`, `read_otap_metrics_sum`, `read_otap_metrics_histogram`, `read_otap_metrics_exp_histogram` — decode OTAP `BatchArrowRecords` files into the same schemas as the `read_otlp_*` readers
 
 ## How It Works
 
@@ -62,9 +63,9 @@ Arrow bridge copies arrays into DuckDB DataChunks
 
 ## OTLP HTTP Ingest Server
 
-Alongside the file readers, the extension can run an embedded HTTP server that accepts live OTLP/HTTP exports and streams them into a DuckDB catalog: the connection's default in-memory/file catalog, an attached DuckLake lakehouse, or another writable catalog such as an Iceberg REST catalog. The extension registers it as a **storage extension**, so the database owns running servers and tears them down with it. See the [Serve Reference](../reference/serve/) for the SQL API.
+Alongside the file readers, the extension can run an embedded server that accepts live OpenTelemetry exports and streams them into a DuckDB catalog: the connection's default in-memory/file catalog, an attached DuckLake lakehouse, or another writable catalog such as an Iceberg REST catalog. The extension registers it as a **storage extension**, so the database owns running servers and tears them down with it. See the [Serve Reference](../reference/serve/) for the SQL API.
 
-The server requires a native build. Live ingestion uses HTTP only, with no gRPC listener.
+The server requires a native build (WASM omits it). Three wire protocols feed the same buffering/seal core: **OTLP/HTTP** (`otlp_serve`, the default), **OTLP/gRPC** unary (`otlp_serve(transport := 'grpc')`), and **OTAP/Arrow** bidirectional streaming (`otap_serve`). The HTTP transport uses httplib; both gRPC families run on an embedded tonic server bridged in via `src/otlp_server_grpc.cpp`.
 
 The server **buffers ingest and commits rows in batches**. Worker threads validate, convert, and append rows into an in-memory buffer, then return `202`. A single background writer commits the buffer to the target in one transaction. That model keeps the DuckLake path practical: one Parquet data file per signal per batch commit, and one serialized writer that avoids DuckLake optimistic-concurrency retries.
 
@@ -74,8 +75,9 @@ The server **buffers ingest and commits rows in batches**. Worker threads valida
 |-----------|----------|------|
 | `OtlpServer` | `src/otlp_server.cpp` / `src/include/otlp_server.hpp` | Base server: token validation/auth, content-type → format selection, Arrow → DuckDB conversion, the in-memory buffer, and the background writer that commits batches into the target catalog. |
 | `HttpOtlpServer` | `src/otlp_server.cpp` | `OtlpServer` subclass wrapping httplib. Owns the worker pool and the `/v1/logs`, `/v1/traces`, `/v1/metrics`, `/healthz`, and `/readyz` routes; binds the socket synchronously so callers see bind failures. |
-| `OtlpStorageExtensionInfo` | `src/include/otlp_storage.hpp` | Database-scoped registry of running servers (keyed by listen URI). Backs `CreateServer` / `FlushServer` / `StopServer` / `ListServers`, and stops every server when the database closes. It cannot commit buffered rows at that point; see the durability note below. |
-| Lifecycle functions | `src/otlp_start_stop.cpp` | The `otlp_serve`, `otlp_flush`, `otlp_stop`, and `otlp_server_list` table functions that drive the registry. |
+| gRPC transport bridge | `src/otlp_server_grpc.cpp` | Bridges the embedded tonic gRPC server (in `otlp2records`) into the same buffering/seal core via a per-batch C callback. A `service_flags` arg selects the disjoint service family per listener: OTLP/gRPC unary `Export` (for `otlp_serve(transport := 'grpc')`) or OTAP/Arrow streaming (for `otap_serve`). |
+| `OtlpStorageExtensionInfo` | `src/include/otlp_storage.hpp` | Database-scoped registry of running servers (keyed by scheme-aware listen URI). Backs `CreateServer` / `FlushServer` / `StopServer` / `ListServers`, and stops every server when the database closes. It cannot commit buffered rows at that point; see the durability note below. |
+| Lifecycle functions | `src/otlp_start_stop.cpp` | The `otlp_serve`, `otap_serve`, `otlp_flush`, `otlp_stop`, `otlp_server_list`, and `otlp_seal_list` table functions that drive the registry. |
 
 ### Request flow
 
@@ -167,7 +169,7 @@ Python dependencies (via `uv`):
 
 ## Known Limitations
 
-- Live OTLP ingestion supports **HTTP** (`otlp_serve` / `otlp_flush` / `otlp_stop` / `otlp_server_list`). There is no gRPC listener. See [OTLP HTTP Ingest Server](#otlp-http-ingest-server). Ingest is buffered (a POST returns `202`) and durable at the next background commit or graceful `otlp_stop`; a crash loses buffered-but-uncommitted rows (at-most-once). The project tracks a durable raw-spool journal for at-least-once delivery. The server requires a native build.
+- Live ingestion supports **OTLP/HTTP**, **OTLP/gRPC** (`otlp_serve(transport := 'grpc')`), and **OTAP/Arrow** bidirectional streaming (`otap_serve`), for all six signals. All transports share one buffering/seal core and the transport-agnostic lifecycle functions (`otlp_flush` / `otlp_stop` / `otlp_server_list` / `otlp_seal_list`). See [Live Ingest Server](#otlp-http-ingest-server). Ingest is buffered (an accepted request returns HTTP `202` / gRPC `OK`) and durable at the next background commit or graceful `otlp_stop`; a crash loses buffered-but-uncommitted rows (at-most-once). The project tracks a durable raw-spool journal for at-least-once delivery. The server requires a native build (WASM omits it entirely).
 - **WASM builds support JSON, JSONL, and protobuf file reads only**. Native builds add live ingest.
 - Protobuf parsing requires the protobuf runtime in builds that include protobuf support.
 - Summary metrics are registered placeholders
