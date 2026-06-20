@@ -77,13 +77,36 @@ jobs:
           for dir in artifacts/${prefix}*/; do
             arch="$(basename "$dir")"
             arch="${arch#${prefix}}"
+            out="_extension_repository/${DUCKDB_VERSION}/${arch}"
+            mkdir -p "$out"
+
+            # WASM artifacts ship as <name>.duckdb_extension.wasm and are loaded by
+            # duckdb-wasm over plain HTTP. The canonical repository serves them
+            # brotli-compressed with `Content-Encoding: br`, but GitHub Pages cannot set
+            # that header, so publish the wasm binary UNCOMPRESSED: the browser fetch then
+            # hands raw wasm to the loader, exactly like the in-repo wasm demo
+            # (site/public/wasm-demo/) does today.
+            if [[ "$arch" == wasm* ]]; then
+              src="${dir}${EXT_NAME}.duckdb_extension.wasm"
+              if [ ! -f "$src" ]; then
+                echo "::error::no ${EXT_NAME}.duckdb_extension.wasm in ${dir} for ${arch}"
+                exit 1
+              fi
+              # Normalize to the unsigned 256-byte zero signature, then publish raw.
+              cp "$src" work.bin
+              truncate -s -256 work.bin
+              dd if=/dev/zero bs=256 count=1 status=none >> work.bin
+              mv work.bin "${out}/${EXT_NAME}.duckdb_extension.wasm"
+              echo "packaged ${arch} (wasm, uncompressed)"
+              found=$((found + 1))
+              continue
+            fi
+
             src="${dir}${EXT_NAME}.duckdb_extension"
             if [ ! -f "$src" ]; then
               echo "::error::no ${EXT_NAME}.duckdb_extension in ${dir} for ${arch}"
               exit 1
             fi
-            out="_extension_repository/${DUCKDB_VERSION}/${arch}"
-            mkdir -p "$out"
             # Match the official unsigned packaging: replace any existing
             # signature placeholder with the unsigned 256-byte zero signature,
             # then gzip for DuckDB's native extension repository path.
@@ -117,7 +140,7 @@ jobs:
             echo "INSTALL ${EXT_NAME} FROM '${PAGES_BASE_URL}';"
             echo "LOAD ${EXT_NAME};</pre>"
             echo "<h2>Available binaries</h2><ul>"
-            for f in $(cd _extension_repository && find "${DUCKDB_VERSION}" -name '*.duckdb_extension.gz' | sort); do
+            for f in $(cd _extension_repository && find "${DUCKDB_VERSION}" \( -name '*.duckdb_extension.gz' -o -name '*.duckdb_extension.wasm' \) | sort); do
               echo "<li><a href=\"../${f}\">${f}</a></li>"
             done
             echo "</ul>"
