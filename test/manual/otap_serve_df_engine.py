@@ -18,10 +18,15 @@ end. It is deliberately boring:
      receiver) and `crypto-ring` (the rustls provider), both of which we need.
   2. start `otap_serve(disable_auth := true)` on a loopback port
   3. run df_engine with a generated config: a `traffic_generator` receiver
-     (logs only, bounded) -> an `otap` exporter pointed at our port
-  4. poll until the generated logs land in `otlp_logs`, then verify count +
-     that rows carry real structured content (a service name)
+     (logs, traces, and metrics, bounded) -> an `otap` exporter at our port
+  4. poll until all three signals land, then verify per-signal counts and that
+     rows carry real structured content (logs: service name; traces: trace id;
+     metrics: a metric name, fanned out across multiple shape tables)
   5. tear everything down
+
+The traffic generator emits gauge/sum/histogram metrics (not exponential
+histograms), so the metrics check asserts a non-empty fan-out across >= 2 of the
+four metric shape tables rather than requiring a specific shape.
 
 Why `disable_auth`: the otel-arrow OTAP exporter (`GrpcClientSettings`) has no
 way to attach a bearer token -- no config field, no env var. So a real OTAP
@@ -64,6 +69,13 @@ DATAFLOW_DIR = OTEL_ARROW_DIR / "rust" / "otap-dataflow"
 DF_ENGINE_BIN = DATAFLOW_DIR / "target" / "debug" / "df_engine"
 URI = f"otap:127.0.0.1:{PORT}"
 
+METRIC_TABLES = [
+    "otlp_metrics_gauge",
+    "otlp_metrics_sum",
+    "otlp_metrics_histogram",
+    "otlp_metrics_exp_histogram",
+]
+
 CONFIG_TEMPLATE = """version: otel_dataflow/v1
 engine: {{}}
 groups:
@@ -83,9 +95,9 @@ groups:
               traffic_config:
                 signals_per_second: {sps}
                 max_signal_count: {count}
-                metric_weight: 0
-                trace_weight: 0
-                log_weight: 30
+                metric_weight: 10
+                trace_weight: 10
+                log_weight: 10
               registry_path: {registry}
           exporter:
             type: exporter:otap
@@ -103,6 +115,20 @@ groups:
 
 def eprint(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
+
+
+def signal_counts(con):
+    """Return (logs, traces, {shape_table: count}) for the six target tables."""
+    logs = con.execute("SELECT count(*) FROM otlp_logs").fetchone()[0]
+    traces = con.execute("SELECT count(*) FROM otlp_traces").fetchone()[0]
+    shapes = {t: con.execute(f"SELECT count(*) FROM {t}").fetchone()[0] for t in METRIC_TABLES}
+    return logs, traces, shapes
+
+
+def col_present(con, table, column):
+    """True if at least one row in `table` has a non-empty `column` value."""
+    sql = f"SELECT count(*) FROM {table} WHERE {column} IS NOT NULL AND {column} <> ''"
+    return con.execute(sql).fetchone()[0] > 0
 
 
 def build_df_engine() -> None:
@@ -151,33 +177,59 @@ def main() -> int:
     )
 
     failures = []
-    landed = 0
+    logs = traces = 0
+    shapes = {t: 0 for t in METRIC_TABLES}
     try:
+        # Wait until all three signal families have landed and the grand total
+        # crosses SIGNAL_COUNT (a lower bound; the generator's per-core fan-out
+        # makes the true total much larger).
         deadline = time.monotonic() + DEADLINE_SECONDS
         while time.monotonic() < deadline:
             con.execute(f"SELECT * FROM otlp_flush('{URI}')")
-            landed = con.execute("SELECT count(*) FROM otlp_logs").fetchone()[0]
-            if landed >= SIGNAL_COUNT:
+            logs, traces, shapes = signal_counts(con)
+            metrics = sum(shapes.values())
+            if logs > 0 and traces > 0 and metrics > 0 and (logs + traces + metrics) >= SIGNAL_COUNT:
                 break
             if df.poll() is not None:
-                failures.append(f"df_engine exited early (code {df.returncode}) with only {landed} rows")
+                failures.append(
+                    f"df_engine exited early (code {df.returncode}); logs={logs} traces={traces} metrics={metrics}"
+                )
                 break
             time.sleep(1)
         else:
-            failures.append(f"timed out after {DEADLINE_SECONDS:.0f}s with {landed}/{SIGNAL_COUNT} rows")
+            failures.append(
+                f"timed out after {DEADLINE_SECONDS:.0f}s (logs={logs} traces={traces} metrics={sum(shapes.values())})"
+            )
 
         con.execute(f"SELECT * FROM otlp_flush('{URI}')")
-        landed = con.execute("SELECT count(*) FROM otlp_logs").fetchone()[0]
-        if landed < SIGNAL_COUNT:
-            failures.append(f"only {landed}/{SIGNAL_COUNT} log rows landed")
+        logs, traces, shapes = signal_counts(con)
+        metrics = sum(shapes.values())
 
-        # Content spot-check: a real OTAP decode yields structured rows, not just a
-        # row count. Every generated log should carry a resource service name.
-        with_service = con.execute(
-            "SELECT count(*) FROM otlp_logs WHERE service_name IS NOT NULL AND service_name <> ''"
-        ).fetchone()[0]
-        if with_service == 0:
-            failures.append("no log rows carry a service_name (OTAP decode produced empty content?)")
+        # Each family must land -- proving traces and metrics decode (distinct Arrow
+        # schemas), not just logs.
+        if logs == 0:
+            failures.append("no log rows landed")
+        if traces == 0:
+            failures.append("no trace rows landed")
+        if metrics == 0:
+            failures.append("no metric rows landed")
+
+        # Content spot-checks: a real OTAP decode yields structured rows, not just a
+        # count. Check a signal-specific column per family.
+        if logs and not col_present(con, "otlp_logs", "service_name"):
+            failures.append("no log rows carry a service_name")
+        if traces and not col_present(con, "otlp_traces", "trace_id"):
+            failures.append("no trace rows carry a trace_id")
+
+        # Metrics fan out: one OTAP metrics message decodes into several shapes. The
+        # generator emits gauge/sum/histogram (no exponential histograms), so assert
+        # a non-empty fan-out across >= 2 shape tables plus a named metric somewhere,
+        # rather than pinning a specific shape.
+        nonempty = [t for t, c in shapes.items() if c > 0]
+        if metrics and len(nonempty) < 2:
+            failures.append(f"metrics landed in only {nonempty}; expected fan-out across >= 2 shapes")
+        if nonempty and not any(col_present(con, t, "name") for t in nonempty):
+            failures.append("no metric rows carry a metric name")
     finally:
         df.terminate()
         try:
@@ -201,7 +253,11 @@ def main() -> int:
             print("--- end df_engine log ---")
         return 1
     os.unlink(df_log.name)
-    print(f"OK: otel-arrow df_engine streamed {landed} logs over OTAP/gRPC into otlp_logs (anonymous serve)")
+    shape_summary = ", ".join(f"{t.replace('otlp_metrics_', '')}={shapes[t]}" for t in METRIC_TABLES)
+    print(
+        f"OK: otel-arrow df_engine streamed logs={logs} traces={traces} metrics={sum(shapes.values())} "
+        f"({shape_summary}) over OTAP/gRPC into the otlp_* tables (anonymous serve)"
+    )
     return 0
 
 
