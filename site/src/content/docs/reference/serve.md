@@ -48,7 +48,8 @@ SELECT * FROM otlp_serve('otlp:localhost:4318', catalog := 'lake', token := 'my-
 |-----------|------|---------|-------------|
 | `uri` (positional) | VARCHAR | `otlp:localhost:4318` | Listen URI. See [URI scheme](#uri-scheme). |
 | `catalog` | VARCHAR | *(default catalog)* | Name of the target catalog. Empty means the connection's **default catalog** (in-memory or file). Set this to an attached writable catalog such as DuckLake or an Iceberg REST catalog to stream OTLP into a lakehouse. See [Catalog targeting](#catalog-targeting). |
-| `token` | VARCHAR | *(random, see below)* | Auth token clients must present. Must be at least 16 characters. If you omit it, `otlp_serve` generates a random 32-hex-character token and returns it in `auth_token`. |
+| `token` | VARCHAR | *(random, see below)* | Auth token clients must present. Must be at least 16 characters. If you omit it, `otlp_serve` generates a random 32-hex-character token and returns it in `auth_token`. Ignored when `disable_auth := true`. |
+| `disable_auth` | BOOLEAN | `false` | Accept every request **without** checking the token. No token is generated or validated, and `auth_token` comes back empty. Opt-in for trusted local networks and for producers that cannot attach a bearer token (e.g. the otel-arrow OTAP exporter). See [Authentication](#authentication). |
 | `schema` | VARCHAR | `main` | Schema (within the catalog) that holds the target tables. |
 | `parquet_export_path` | VARCHAR | *(none)* | Plain Parquet export root. When set, each seal writes the sealed rows to `<root>/<table>/year=YYYY/month=MM/day=DD/*.parquet` as the **only** durable store (no local table copy); a read-only view per signal is created over the files for inspection. Mutually exclusive with a `catalog` target. Export is **at-least-once** (a `COPY` cannot be rolled back). |
 | `create_tables` | BOOLEAN | `true` | Create the six target tables if they don't exist. When `false`, the tables must already exist with the expected columns or `otlp_serve` fails fast. |
@@ -266,6 +267,12 @@ The server checks the two headers independently, so a malformed `Authorization` 
 
 Tokens must be at least 16 characters. Auto-generated tokens (when `token` is omitted) are 32 hex characters (128 bits of entropy).
 
+### Disabling authentication
+
+`disable_auth := true` turns auth off entirely: the server accepts every request without checking any header, mints no token, and returns an empty `auth_token`. The same flag applies to the gRPC transports (`otlp_serve(transport := 'grpc')` and `otap_serve`), which otherwise reject a bad token with `UNAUTHENTICATED`.
+
+This exists for two cases: trusted, network-isolated deployments, and OTLP/OTAP producers that have no way to attach a bearer token — notably the otel-arrow OTAP exporter, which has no header/auth configuration. It is **off by default**; only enable it when the listener is otherwise protected (loopback bind, private network, or a sidecar that terminates auth), since anyone who can reach the port can write to your tables.
+
 ## gRPC transport
 
 There are two gRPC entry points, each bound to its own scheme and serving a **disjoint** service family, for all six signals:
@@ -282,7 +289,7 @@ Both share everything below the wire: the same parameters, catalog/Parquet targe
 
 Notes:
 
-- **Auth** is the bearer token in the gRPC `authorization` metadata (`Bearer <token>`); a bad token is rejected with `UNAUTHENTICATED`. Backpressure surfaces as `RESOURCE_EXHAUSTED` (the gRPC equivalent of HTTP `503`).
+- **Auth** is the bearer token in the gRPC `authorization` metadata (`Bearer <token>`); a bad token is rejected with `UNAUTHENTICATED`, unless [`disable_auth`](#disabling-authentication) is set. Backpressure surfaces as `RESOURCE_EXHAUSTED` (the gRPC equivalent of HTTP `503`).
 - **OTAP streaming** keeps one stateful decoder per stream, so later messages can reuse the Arrow dictionaries/schemas established by earlier ones. The server returns one `BatchStatus` per received `BatchArrowRecords`. A message that fails to decode is nacked and the stream is closed (the decoder is poisoned); a message nacked for backpressure leaves the stream open.
 - **Metrics** decode into up to four shapes per message, each buffered independently — a backpressure nack partway through a metrics message can leave earlier shapes buffered.
 - The gRPC stack (tokio + tonic) is statically linked into the extension; it adds no new shared-library dependencies and, like the HTTP server, is native-only (absent from WASM builds).

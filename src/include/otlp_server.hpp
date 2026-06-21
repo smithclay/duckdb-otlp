@@ -32,6 +32,11 @@ enum class OtlpTransport { HTTP, GRPC };
 
 struct OtlpServerConfig {
 	string token;
+	//! Opt-in: accept every request without checking the bearer token / x-api-key. Defaults
+	//! to false (auth required). Intended for trusted local networks and for producers that
+	//! cannot attach a bearer token (e.g. the otel-arrow OTAP exporter has no auth-header
+	//! config). When true, no token is generated or validated at bind time.
+	bool disable_auth = false;
 	//! Wire transport. Defaults to HTTP; GRPC for otap_serve or otlp_serve(transport:='grpc').
 	OtlpTransport transport = OtlpTransport::HTTP;
 	//! When transport == GRPC, OR of OTLP_GRPC_SERVICE_* bits selecting which gRPC service

@@ -411,6 +411,10 @@ string OtlpServer::GenerateRandomToken(DatabaseInstance &db) {
 }
 
 bool OtlpServer::CheckAuth(const string &authorization, const string &api_key) const {
+	// Opt-in anonymous mode: skip all credential checks. Off by default; see disable_auth.
+	if (config.disable_auth) {
+		return true;
+	}
 	// Accept the request if EITHER a Bearer token OR an x-api-key matches. Checking
 	// both independently avoids a wrong/malformed Authorization header masking a
 	// valid x-api-key (and vice versa). RFC 7235 schemes are case-insensitive.

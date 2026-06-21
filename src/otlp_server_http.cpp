@@ -76,7 +76,10 @@ bool OtlpLoopbackHttpStatusOk(int port, const string &path) {
 
 OtlpServer::OtlpServer(ClientContext &context, const OtlpUri &uri_p, const OtlpServerConfig &config_p)
     : db_ptr(context.db), uri(uri_p), config(config_p), impl(make_uniq<Impl>()) {
-	ValidateToken(config.token);
+	// Anonymous mode (opt-in) runs with no token; only enforce the floor when auth is on.
+	if (!config.disable_auth) {
+		ValidateToken(config.token);
+	}
 	auto db = db_ptr.lock();
 	if (!db) {
 		throw InternalException("Database was closed");

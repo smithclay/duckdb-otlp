@@ -139,6 +139,31 @@ WHERE listen_uri = 'otlp:127.0.0.1:55439';
 ----
 0
 
+# disable_auth opt-in: anonymous serve mints no token (auth_token is empty) and
+# skips the >= 16 char token floor. Used by tokenless producers (e.g. the
+# otel-arrow OTAP exporter, which cannot attach a bearer token). See
+# test/manual/otap_serve_df_engine.py.
+query TT
+SELECT listen_uri, auth_token
+FROM otap_serve('otap:127.0.0.1:55445', disable_auth := true);
+----
+otap:127.0.0.1:55445	(empty)
+
+query T
+SELECT status FROM otlp_stop('otap:127.0.0.1:55445');
+----
+Stopped listening on otap:127.0.0.1:55445
+
+# disable_auth coexists with an explicitly supplied (and intentionally short) token
+# without tripping the token-length floor, since auth is off.
+query T
+SELECT listen_uri FROM otap_serve('otap:127.0.0.1:55446', disable_auth := true, token := 'x');
+----
+otap:127.0.0.1:55446
+
+statement ok
+CALL otlp_stop('otap:127.0.0.1:55446');
+
 # non-localhost binds require allow_other_hostname (rejected before binding a socket)
 statement error
 CALL otlp_serve('otlp:0.0.0.0:55440', token := 'dev-token-123456');

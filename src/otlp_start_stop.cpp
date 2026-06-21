@@ -97,12 +97,18 @@ static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableF
 		    "Only localhost is allowed as an OTLP hostname by default; set allow_other_hostname=true to override");
 	}
 
+	bind_data->config.disable_auth = input.named_parameters.find("disable_auth") != input.named_parameters.end() &&
+	                                 input.named_parameters["disable_auth"].GetValue<bool>();
+
 	if (input.named_parameters.find("token") != input.named_parameters.end()) {
 		bind_data->config.token = input.named_parameters["token"].GetValue<string>();
-	} else {
+	} else if (!bind_data->config.disable_auth) {
+		// Anonymous mode needs no token; only mint one when auth is enforced.
 		bind_data->config.token = OtlpServer::GenerateRandomToken(*context.db);
 	}
-	OtlpServer::ValidateToken(bind_data->config.token);
+	if (!bind_data->config.disable_auth) {
+		OtlpServer::ValidateToken(bind_data->config.token);
+	}
 
 	if (input.named_parameters.find("catalog") != input.named_parameters.end()) {
 		// Empty catalog = the connection's default catalog. A non-empty value targets
@@ -242,6 +248,8 @@ static TableFunctionSet BuildServeFunctionSet(const string &name, table_function
 	TableFunctionSet set(name);
 	auto fun = TableFunction(name, {OtlpVarcharType()}, OtlpServe, bind);
 	fun.named_parameters["token"] = OtlpVarcharType();
+	// Opt-in anonymous ingest (no bearer/x-api-key check). Off by default.
+	fun.named_parameters["disable_auth"] = OtlpBooleanType();
 	fun.named_parameters["catalog"] = OtlpVarcharType();
 	fun.named_parameters["schema"] = OtlpVarcharType();
 	fun.named_parameters["parquet_export_path"] = OtlpVarcharType();
