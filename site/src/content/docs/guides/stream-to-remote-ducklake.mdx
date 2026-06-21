@@ -4,7 +4,6 @@ title: "How to Stream OTLP to Remote DuckLake"
 
 import PostLogRecord from '../../../components/docs/PostLogRecord.astro';
 import QueryCommittedRows from '../../../components/docs/QueryCommittedRows.astro';
-import RunManually from '../../../components/docs/RunManually.astro';
 import StopCleanly from '../../../components/docs/StopCleanly.astro';
 
 Use the `duckdb-otlp` Docker image in `r2-neon-ducklake` mode to stream OTLP/HTTP exports into DuckLake with a Neon Postgres catalog and Cloudflare R2 data files.
@@ -133,12 +132,88 @@ docker stop duckdb-otlp
 
 Then delete the R2 prefix or bucket and remove the Neon database or branch you created for this guide.
 
-<RunManually
-  mode="r2-neon-ducklake"
-  token="dev-token-123456"
-  catalog="lake"
-  schema="otlp"
-/>
+## Run manually
+
+To run this configuration in a DuckDB 1.5.4+ shell instead of the daemon, execute the SQL below. Replace bracketed values with the corresponding values from this guide. Keep the shell open while clients send telemetry.
+
+```bash
+duckdb duckdb-otlp-control.duckdb
+```
+
+```sql
+-- The daemon embeds otlp statically; the shell loads the extension explicitly.
+INSTALL otlp FROM community;
+LOAD otlp;
+
+-- Configure R2 storage and the Neon-backed DuckLake catalog.
+INSTALL ducklake;
+INSTALL postgres;
+INSTALL httpfs;
+LOAD ducklake;
+LOAD postgres;
+LOAD httpfs;
+CREATE OR REPLACE SECRET r2_storage (
+  TYPE s3,
+  KEY_ID '<r2-s3-access-key-id>',
+  SECRET '<r2-s3-secret-access-key>',
+  REGION 'auto',
+  ENDPOINT '<account-id>.r2.cloudflarestorage.com',
+  URL_STYLE 'path'
+);
+CREATE OR REPLACE SECRET postgres_secret (
+  TYPE postgres,
+  HOST '<neon-host>',
+  PORT 5432,
+  DATABASE '<database>',
+  USER '<user>',
+  PASSWORD '<password>',
+  SSLMODE 'require'
+);
+CREATE OR REPLACE SECRET ducklake_secret (
+  TYPE ducklake,
+  METADATA_PATH '',
+  DATA_PATH 's3://<bucket-name>/duckdb-otlp/',
+  METADATA_PARAMETERS MAP {'TYPE': 'postgres', 'SECRET': 'postgres_secret'}
+);
+ATTACH 'ducklake:ducklake_secret' AS lake;
+
+-- Create the target schema before starting ingestion.
+CREATE SCHEMA IF NOT EXISTS lake.otlp;
+
+-- Match the daemon's default-catalog setting for unqualified queries.
+USE lake;
+
+-- Start OTLP/HTTP. Seal cadence, file sizes, and buffer limits use defaults;
+-- override only as needed — see the Live Ingest Reference:
+-- https://smithclay.github.io/duckdb-otlp/reference/serve/
+SELECT listen_url, catalog_name, schema_name
+FROM otlp_serve(
+  'otlp:0.0.0.0:4318',
+  catalog := 'lake',
+  schema := 'otlp',
+  token := 'dev-token-123456',
+  allow_other_hostname := true
+);
+
+-- The guide's daemon configuration also enables Quack.
+INSTALL quack;
+LOAD quack;
+SELECT listen_uri
+FROM quack_serve(
+  'quack:0.0.0.0:9494',
+  token := 'dev-quack-token-123456',
+  allow_other_hostname := true
+);
+```
+
+Before closing DuckDB, stop both listeners cleanly:
+
+```sql
+-- Stop Quack, then commit buffered telemetry and stop OTLP.
+CALL quack_stop('quack:0.0.0.0:9494');
+SELECT status, dropped_rows
+FROM otlp_stop('otlp:0.0.0.0:4318');
+```
 
 ## Troubleshooting
 

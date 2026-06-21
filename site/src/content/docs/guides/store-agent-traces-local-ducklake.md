@@ -205,20 +205,16 @@ ATTACH 'ducklake:data/ducklake/catalog.duckdb' AS lake (
 CREATE SCHEMA IF NOT EXISTS lake.main;
 USE lake;
 
--- Start OTLP/HTTP with the same values emitted by the daemon.
+-- Start OTLP/HTTP. Seal cadence, file sizes, and buffer limits use defaults;
+-- override only as needed — see the Live Ingest Reference:
+-- https://smithclay.github.io/duckdb-otlp/reference/serve/
 SELECT listen_url, catalog_name, schema_name
 FROM otlp_serve(
   'otlp:0.0.0.0:4318',
   catalog := 'lake',
   schema := 'main',
   token := 'dev-otlp-token-123456',
-  allow_other_hostname := true,
-  max_body_bytes := 16777216,             -- 16 MiB per request
-  max_buffered_bytes := 536870912,        -- 512 MiB before backpressure
-  seal_target_bytes := 134217728,         -- seal at 128 MiB admitted
-  seal_max_age_ms := 5000,                -- or after 5 seconds
-  target_file_size := 268435456,          -- target 256 MiB files
-  maintenance_retention_ms := 900000      -- retain seal metadata for 15 minutes
+  allow_other_hostname := true
 );
 
 -- This guide also enables Quack for inspection from another DuckDB process.

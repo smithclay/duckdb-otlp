@@ -60,6 +60,7 @@ export default defineConfig({
               link: "/guides/store-agent-traces-local-ducklake/",
             },
             { label: "Stream to Parquet", link: "/guides/stream-to-parquet/" },
+            { label: "Stream to Vortex", link: "/guides/stream-to-vortex/" },
             {
               label: "Stream to S3 Tables",
               link: "/guides/stream-to-s3-tables/",

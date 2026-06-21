@@ -21,6 +21,7 @@ Do analysis on metrics, logs, or traces or export telemetry to anything DuckDB s
 - **[How to stream to Amazon S3 Tables](guides/stream-to-s3-tables/)** - land OTLP/HTTP rows in Amazon S3 Tables as an Iceberg catalog.
 - **[How to stream to Cloudflare R2 Data Catalog](guides/stream-to-r2-data-catalog/)** - land OTLP/HTTP rows in Cloudflare R2 Data Catalog as an Iceberg catalog.
 - **[How to export telemetry to Parquet](guides/exporting-to-parquet/)** - write traces, logs, and metrics to reusable Parquet datasets.
+- **[How to stream to Vortex](guides/stream-to-vortex/)** - convert OTLP files to Vortex columnar files locally with `COPY ... (FORMAT vortex)`.
 
 ## Set up data sources
 
