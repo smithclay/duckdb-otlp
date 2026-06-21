@@ -9,6 +9,8 @@ The examples follow the Claude Code [monitoring](https://code.claude.com/docs/en
 
 ## Start the Local Writer
 
+Prefer to run manually in the DuckDB shell? See [Run manually](#run-manually).
+
 Create a Docker volume for DuckLake metadata and Parquet data:
 
 ```bash
@@ -177,6 +179,66 @@ docker stop duckdb-otlp
 ```
 
 During shutdown, the image sends `otlp_stop('otlp:0.0.0.0:4318')` to DuckDB so the process commits remaining buffered rows before it exits.
+
+## Run manually
+
+To run this configuration in a DuckDB 1.5.4+ shell instead of the daemon, create the local DuckLake directories and open a control database:
+
+```bash
+mkdir -p data/ducklake/storage
+duckdb data/duckdb-otlp-control.duckdb
+```
+
+Then execute the same setup and server commands used by the guide's daemon configuration. The daemon embeds `otlp` statically; the shell loads it explicitly.
+
+```sql
+-- Load the extensions and attach the local DuckLake catalog.
+INSTALL otlp FROM community;
+LOAD otlp;
+INSTALL ducklake;
+LOAD ducklake;
+ATTACH 'ducklake:data/ducklake/catalog.duckdb' AS lake (
+  DATA_PATH 'data/ducklake/storage'
+);
+
+-- Create the target schema and make its catalog the default.
+CREATE SCHEMA IF NOT EXISTS lake.main;
+USE lake;
+
+-- Start OTLP/HTTP with the same values emitted by the daemon.
+SELECT listen_url, catalog_name, schema_name
+FROM otlp_serve(
+  'otlp:0.0.0.0:4318',
+  catalog := 'lake',
+  schema := 'main',
+  token := 'dev-otlp-token-123456',
+  allow_other_hostname := true,
+  max_body_bytes := 16777216,             -- 16 MiB per request
+  max_buffered_bytes := 536870912,        -- 512 MiB before backpressure
+  seal_target_bytes := 134217728,         -- seal at 128 MiB admitted
+  seal_max_age_ms := 5000,                -- or after 5 seconds
+  target_file_size := 268435456,          -- target 256 MiB files
+  maintenance_retention_ms := 900000      -- retain seal metadata for 15 minutes
+);
+
+-- This guide also enables Quack for inspection from another DuckDB process.
+INSTALL quack;
+LOAD quack;
+SELECT listen_uri
+FROM quack_serve(
+  'quack:0.0.0.0:9494',
+  token := 'dev-quack-token-123456',
+  allow_other_hostname := true
+);
+```
+
+Keep the shell open while the agents send telemetry. Before closing it, stop both listeners cleanly:
+
+```sql
+CALL quack_stop('quack:0.0.0.0:9494');
+SELECT status, dropped_rows
+FROM otlp_stop('otlp:0.0.0.0:4318');
+```
 
 ## If No Traces Appear
 

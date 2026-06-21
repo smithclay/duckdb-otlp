@@ -4,6 +4,7 @@ description: "Run the duckdb-otlp Docker image as the OTLP writer, enable Quack,
 ---
 
 import PostLogRecord from '../../../components/docs/PostLogRecord.astro';
+import RunManually from '../../../components/docs/RunManually.astro';
 import StopCleanly from '../../../components/docs/StopCleanly.astro';
 
 Run the `duckdb-otlp` Docker image in `local-ducklake` mode, enable the image's Quack server, and connect to it from a DuckDB process outside Docker.
@@ -32,6 +33,8 @@ DUCKDB_QUACK_TOKEN=dev-quack-token-123456
 Local DuckLake mode uses `DUCKLAKE_CATALOG_PATH=/data/ducklake/catalog.duckdb` and `DUCKLAKE_DATA_PATH=/data/ducklake/storage` by default. Set those variables when you want DuckLake metadata or Parquet files somewhere else inside the mounted `/data` volume.
 
 ## Start the server
+
+Prefer to run the same services manually in the DuckDB shell? See [Run manually](#run-manually).
 
 ```bash
 mkdir -p data
@@ -148,6 +151,13 @@ FROM quack_query(
 Use `USE otel` plus plain table names for interactive exploration; push aggregations into `query` / `quack_query` when you do not want to stream every row to the client.
 
 <StopCleanly />
+
+<RunManually
+  mode="local-ducklake"
+  token="dev-token-123456"
+  catalog="lake"
+  schema="main"
+/>
 
 ## Clean up
 

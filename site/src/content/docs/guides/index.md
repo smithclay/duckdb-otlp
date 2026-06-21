@@ -13,6 +13,5 @@ Use these guides when you know the task you want to complete.
 - [How to stream to Amazon S3 Tables](stream-to-s3-tables/)
 - [How to stream to Cloudflare R2 Data Catalog](stream-to-r2-data-catalog/)
 - [How to export telemetry to Parquet](exporting-to-parquet/)
-- [How to handle malformed input](error-handling/)
 
-For exact signatures and columns, use [API Reference](../reference/api/) and [Schema Reference](../reference/schemas/).
+For exact signatures, columns, and failure conditions, use [API Reference](../reference/api/), [Schema Reference](../reference/schemas/), and [Error Reference](../reference/error-handling/).

@@ -68,7 +68,6 @@ export default defineConfig({
               label: "Stream to R2 Data Catalog",
               link: "/guides/stream-to-r2-data-catalog/",
             },
-            { label: "Error Handling", link: "/guides/error-handling/" },
           ],
         },
         {
@@ -77,6 +76,7 @@ export default defineConfig({
             { label: "API", link: "/reference/api/" },
             { label: "Schemas", link: "/reference/schemas/" },
             { label: "Live Ingest", link: "/reference/serve/" },
+            { label: "Errors", link: "/reference/error-handling/" },
             { label: "Performance", link: "/reference/performance/" },
           ],
         },

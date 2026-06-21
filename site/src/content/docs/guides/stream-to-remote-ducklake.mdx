@@ -4,6 +4,7 @@ title: "How to Stream OTLP to Remote DuckLake"
 
 import PostLogRecord from '../../../components/docs/PostLogRecord.astro';
 import QueryCommittedRows from '../../../components/docs/QueryCommittedRows.astro';
+import RunManually from '../../../components/docs/RunManually.astro';
 import StopCleanly from '../../../components/docs/StopCleanly.astro';
 
 Use the `duckdb-otlp` Docker image in `r2-neon-ducklake` mode to stream OTLP/HTTP exports into DuckLake with a Neon Postgres catalog and Cloudflare R2 data files.
@@ -67,6 +68,8 @@ If you use a custom R2 endpoint, add `CLOUDFLARE_R2_ENDPOINT=<endpoint-host>`.
 
 ## Start the server
 
+Prefer to run manually in the DuckDB shell? See [Run manually](#run-manually).
+
 ```bash
 docker run --rm --name duckdb-otlp \
   --env-file remote-ducklake.env \
@@ -129,6 +132,13 @@ docker stop duckdb-otlp
 ```
 
 Then delete the R2 prefix or bucket and remove the Neon database or branch you created for this guide.
+
+<RunManually
+  mode="r2-neon-ducklake"
+  token="dev-token-123456"
+  catalog="lake"
+  schema="otlp"
+/>
 
 ## Troubleshooting
 

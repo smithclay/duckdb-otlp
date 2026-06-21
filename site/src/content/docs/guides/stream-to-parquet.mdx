@@ -3,6 +3,7 @@ title: "How to Stream OTLP to Parquet"
 ---
 
 import PostLogRecord from '../../../components/docs/PostLogRecord.astro';
+import RunManually from '../../../components/docs/RunManually.astro';
 import StopCleanly from '../../../components/docs/StopCleanly.astro';
 
 Use the `duckdb-otlp` Docker image in `parquet` mode to stream OTLP/HTTP exports into partitioned Parquet files.
@@ -60,6 +61,8 @@ DUCKDB_QUACK_TOKEN=dev-quack-token-123456
 You can also use `S3_BUCKET` and `S3_PREFIX` instead of `PARQUET_EXPORT_PATH`; those resolve to `s3://$S3_BUCKET/$S3_PREFIX`.
 
 ## Start the server
+
+Prefer to run manually in the DuckDB shell? See [Run manually](#run-manually).
 
 For local Parquet output:
 
@@ -197,6 +200,12 @@ aws s3 rm "s3://duckdb-otlp-telemetry/otlp/" \
   --region us-west-2 \
   --recursive
 ```
+
+<RunManually
+  mode="parquet"
+  token="dev-token-123456"
+  schema="otlp"
+/>
 
 ## Troubleshooting
 
