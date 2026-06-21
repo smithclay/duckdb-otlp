@@ -4,6 +4,7 @@ title: "How to Stream OTLP to Amazon S3 Tables"
 
 import PostLogRecord from '../../../components/docs/PostLogRecord.astro';
 import QueryCommittedRows from '../../../components/docs/QueryCommittedRows.astro';
+import RunManually from '../../../components/docs/RunManually.astro';
 import StopCleanly from '../../../components/docs/StopCleanly.astro';
 
 Use the `duckdb-otlp` Docker image in `s3-tables` mode to stream OTLP/HTTP exports into an Iceberg catalog hosted by **Amazon S3 Tables**.
@@ -126,6 +127,8 @@ Replace `<table-bucket-arn>` with the `TABLE_BUCKET_ARN` value from CloudFormati
 
 ## Start the server
 
+Prefer to run manually in the DuckDB shell? See [Run manually](#run-manually).
+
 Mount your AWS config read-only so DuckDB can use the configured profile:
 
 ```bash
@@ -200,6 +203,13 @@ aws cloudformation wait stack-delete-complete \
   --region "$AWS_REGION" \
   --stack-name "$STACK_NAME"
 ```
+
+<RunManually
+  mode="s3-tables"
+  token="dev-token-123456"
+  catalog="s3tables"
+  schema="otlp"
+/>
 
 ## Troubleshooting
 

@@ -19,7 +19,6 @@ Start here for `duckdb-otlp`: installation, file readers, live ingest, the brows
 - **[How to stream to Amazon S3 Tables](guides/stream-to-s3-tables/)** - land OTLP/HTTP rows in Amazon S3 Tables as an Iceberg catalog.
 - **[How to stream to Cloudflare R2 Data Catalog](guides/stream-to-r2-data-catalog/)** - land OTLP/HTTP rows in Cloudflare R2 Data Catalog as an Iceberg catalog.
 - **[How to export telemetry to Parquet](guides/exporting-to-parquet/)** - write traces, logs, and metrics to reusable Parquet datasets.
-- **[How to handle malformed input](guides/error-handling/)** - diagnose reader and ingest errors.
 
 ## Set up data sources
 
@@ -32,6 +31,7 @@ Start here for `duckdb-otlp`: installation, file readers, live ingest, the brows
 - **[API Reference](reference/api/)** - file readers and live ingest functions.
 - **[Schema Reference](reference/schemas/)** - columns for traces, logs, gauges, sums, histograms, and exponential histograms.
 - **[Live Ingest Reference](reference/serve/)** - `otlp_serve`, `otlp_flush`, `otlp_stop`, `otlp_server_list`, HTTP endpoints, auth, buffering, and durability.
+- **[Error Reference](reference/error-handling/)** - file reader failures and live-ingest error responses.
 - **[Performance Reference](reference/performance/)** - file formats, projection, file sizes, materialization, and live ingest notes.
 
 ## Project internals

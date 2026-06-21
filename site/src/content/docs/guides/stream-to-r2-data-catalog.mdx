@@ -4,6 +4,7 @@ title: "How to Stream OTLP to Cloudflare R2 Data Catalog"
 
 import PostLogRecord from '../../../components/docs/PostLogRecord.astro';
 import QueryCommittedRows from '../../../components/docs/QueryCommittedRows.astro';
+import RunManually from '../../../components/docs/RunManually.astro';
 import StopCleanly from '../../../components/docs/StopCleanly.astro';
 
 Use the `duckdb-otlp` Docker image in `r2-data-catalog` mode to stream OTLP/HTTP exports into an Iceberg catalog hosted by **Cloudflare R2 Data Catalog**.
@@ -94,6 +95,8 @@ CLOUDFLARE_CATALOG_TOKEN=<r2-admin-read-write-token>
 
 ## Start the server
 
+Prefer to run manually in the DuckDB shell? See [Run manually](#run-manually).
+
 ```bash
 docker run --rm --name duckdb-otlp \
   --env-file cloudflare.env \
@@ -177,6 +180,13 @@ curl -fsS \
 
 wrangler r2 bucket delete "$R2_BUCKET_NAME"
 ```
+
+<RunManually
+  mode="r2-data-catalog"
+  token="dev-token-123456"
+  catalog="r2catalog"
+  schema="otlp"
+/>
 
 ## Troubleshooting
 

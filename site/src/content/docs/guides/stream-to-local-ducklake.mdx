@@ -4,6 +4,7 @@ title: "How to Stream OTLP to Local DuckLake"
 
 import PostLogRecord from '../../../components/docs/PostLogRecord.astro';
 import QueryCommittedRows from '../../../components/docs/QueryCommittedRows.astro';
+import RunManually from '../../../components/docs/RunManually.astro';
 import StopCleanly from '../../../components/docs/StopCleanly.astro';
 
 Use the `duckdb-otlp` Docker image in `local-ducklake` mode to stream OTLP/HTTP exports into a local DuckLake lakehouse.
@@ -32,6 +33,8 @@ DUCKDB_QUACK_TOKEN=dev-quack-token-123456
 `DUCKLAKE_CATALOG_PATH` stores DuckLake metadata. `DUCKLAKE_DATA_PATH` stores Parquet data files.
 
 ## Start the server
+
+Prefer to run manually in the DuckDB shell? See [Run manually](#run-manually).
 
 ```bash
 mkdir -p data
@@ -71,6 +74,13 @@ Leave the container running while clients send OTLP/HTTP requests.
 <StopCleanly />
 
 `otlp_flush` seals buffered ingest rows. Run DuckDB or DuckLake maintenance commands when you need compaction.
+
+<RunManually
+  mode="local-ducklake"
+  token="dev-token-123456"
+  catalog="lake"
+  schema="main"
+/>
 
 ## See also
 

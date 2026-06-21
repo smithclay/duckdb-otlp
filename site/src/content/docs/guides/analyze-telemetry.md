@@ -127,4 +127,4 @@ FROM read_otlp_logs('logs/*.jsonl')
 WHERE json_extract_string(resource_attributes, '$."deployment.environment"') = 'prod';
 ```
 
-For malformed files or unexpected parse errors, see [How to handle malformed input](../error-handling/).
+For malformed files or unexpected parse errors, see the [Error Reference](../../reference/error-handling/).

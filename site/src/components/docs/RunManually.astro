@@ -1,0 +1,204 @@
+---
+import { Code } from '@astrojs/starlight/components';
+
+type Mode =
+  | 'local-ducklake'
+  | 'parquet'
+  | 'r2-data-catalog'
+  | 'r2-neon-ducklake'
+  | 's3-tables';
+
+interface Props {
+  mode: Mode;
+  token: string;
+  catalog?: string;
+  schema: string;
+}
+
+const { mode, token, catalog = '', schema } = Astro.props;
+
+const modeSetup: Record<Mode, string> = {
+  'local-ducklake': `-- Attach the local DuckLake catalog used by the Docker guide.
+INSTALL ducklake;
+LOAD ducklake;
+ATTACH 'ducklake:data/ducklake/catalog.duckdb' AS ${catalog} (
+  DATA_PATH 'data/ducklake/storage'
+);`,
+  parquet: `-- Local Parquet needs no storage extension setup.`,
+  'r2-data-catalog': `-- Configure R2 object storage and attach the Iceberg REST catalog.
+INSTALL iceberg;
+INSTALL httpfs;
+LOAD iceberg;
+LOAD httpfs;
+CREATE OR REPLACE SECRET cloudflare_r2_secret (
+  TYPE s3,
+  KEY_ID '<r2-s3-access-key-id>',
+  SECRET '<r2-s3-secret-access-key>',
+  REGION 'auto',
+  ENDPOINT '<account-id>.r2.cloudflarestorage.com',
+  URL_STYLE 'path'
+);
+CREATE OR REPLACE SECRET cloudflare_catalog_secret (
+  TYPE iceberg,
+  TOKEN '<r2-admin-read-write-token>'
+);
+ATTACH '<account-id>_<bucket-name>' AS ${catalog} (
+  TYPE iceberg,
+  ENDPOINT 'https://catalog.cloudflarestorage.com/<account-id>/<bucket-name>',
+  SECRET cloudflare_catalog_secret
+);`,
+  'r2-neon-ducklake': `-- Configure R2 storage and the Neon-backed DuckLake catalog.
+INSTALL ducklake;
+INSTALL postgres;
+INSTALL httpfs;
+LOAD ducklake;
+LOAD postgres;
+LOAD httpfs;
+CREATE OR REPLACE SECRET r2_storage (
+  TYPE s3,
+  KEY_ID '<r2-s3-access-key-id>',
+  SECRET '<r2-s3-secret-access-key>',
+  REGION 'auto',
+  ENDPOINT '<account-id>.r2.cloudflarestorage.com',
+  URL_STYLE 'path'
+);
+CREATE OR REPLACE SECRET postgres_secret (
+  TYPE postgres,
+  HOST '<neon-host>',
+  PORT 5432,
+  DATABASE '<database>',
+  USER '<user>',
+  PASSWORD '<password>',
+  SSLMODE 'require'
+);
+CREATE OR REPLACE SECRET ducklake_secret (
+  TYPE ducklake,
+  METADATA_PATH '',
+  DATA_PATH 's3://<bucket-name>/duckdb-otlp/',
+  METADATA_PARAMETERS MAP {'TYPE': 'postgres', 'SECRET': 'postgres_secret'}
+);
+ATTACH 'ducklake:ducklake_secret' AS ${catalog};`,
+  's3-tables': `-- Configure the AWS credential chain and attach the S3 Tables catalog.
+INSTALL iceberg;
+INSTALL aws;
+INSTALL httpfs;
+LOAD iceberg;
+LOAD aws;
+LOAD httpfs;
+CREATE OR REPLACE SECRET s3_tables_secret (
+  TYPE s3,
+  PROVIDER credential_chain,
+  CHAIN config,
+  PROFILE 'cli-dev',
+  REGION 'us-west-2'
+);
+ATTACH '<table-bucket-arn>' AS ${catalog} (
+  TYPE iceberg,
+  ENDPOINT_TYPE s3_tables
+);`,
+};
+
+const schemaTarget = catalog ? `${catalog}.${schema}` : schema;
+const catalogArgument = catalog ? `'${catalog}'` : `''`;
+const useCatalog = catalog
+  ? `\n\n-- Match the daemon's default-catalog setting for unqualified queries.\nUSE ${catalog};`
+  : '';
+const buildStartupSql = (setupSql: string, parquetExportPath?: string) => {
+  const maintenanceLine = parquetExportPath
+    ? `maintenance_retention_ms := 900000,     -- retain seal metadata for 15 minutes\n  parquet_export_path := '${parquetExportPath}'`
+    : `maintenance_retention_ms := 900000      -- retain seal metadata for 15 minutes`;
+
+  return `-- The daemon embeds otlp statically; the shell loads the extension explicitly.
+INSTALL otlp FROM community;
+LOAD otlp;
+
+${setupSql}
+
+-- Create the target schema before starting ingestion.
+CREATE SCHEMA IF NOT EXISTS ${schemaTarget};${useCatalog}
+
+-- Start OTLP/HTTP with the same values emitted by the daemon.
+SELECT listen_url, catalog_name, schema_name
+FROM otlp_serve(
+  'otlp:0.0.0.0:4318',
+  catalog := ${catalogArgument},
+  schema := '${schema}',
+  token := '${token}',
+  allow_other_hostname := true,
+  max_body_bytes := 16777216,             -- 16 MiB per request
+  max_buffered_bytes := 536870912,        -- 512 MiB before backpressure
+  seal_target_bytes := 134217728,         -- seal at 128 MiB admitted
+  seal_max_age_ms := 5000,                -- or after 5 seconds
+  target_file_size := 268435456,          -- target 256 MiB files
+  ${maintenanceLine}
+);
+
+-- The guide's daemon configuration also enables Quack.
+INSTALL quack;
+LOAD quack;
+SELECT listen_uri
+FROM quack_serve(
+  'quack:0.0.0.0:9494',
+  token := 'dev-quack-token-123456',
+  allow_other_hostname := true
+);`;
+};
+
+const startupSql = buildStartupSql(
+  modeSetup[mode],
+  mode === 'parquet' ? 'data/otlp-parquet' : undefined,
+);
+const parquetS3Setup = `-- Configure the AWS credential chain used by the S3 variant.
+INSTALL aws;
+INSTALL httpfs;
+LOAD aws;
+LOAD httpfs;
+CREATE OR REPLACE SECRET plain_s3_secret (
+  TYPE s3,
+  PROVIDER credential_chain,
+  CHAIN config,
+  PROFILE 'cli-dev',
+  REGION 'us-west-2'
+);`;
+const parquetS3StartupSql = buildStartupSql(
+  parquetS3Setup,
+  's3://duckdb-otlp-telemetry/otlp',
+);
+
+const shutdownSql = `-- Stop Quack, then commit buffered telemetry and stop OTLP.
+CALL quack_stop('quack:0.0.0.0:9494');
+SELECT status, dropped_rows
+FROM otlp_stop('otlp:0.0.0.0:4318');`;
+---
+
+<h2 id="run-manually">Run manually</h2>
+
+<p>
+  To run this configuration in a DuckDB 1.5.4+ shell instead of the daemon,
+  execute the SQL below. Replace bracketed values with the corresponding values
+  from this guide. Keep the shell open while clients send telemetry.
+</p>
+
+{mode === 'local-ducklake' && (
+  <Code code={`mkdir -p data/ducklake/storage\nduckdb data/duckdb-otlp-control.duckdb`} lang="bash" />
+)}
+
+{mode !== 'local-ducklake' && (
+  <Code code="duckdb duckdb-otlp-control.duckdb" lang="bash" />
+)}
+
+{mode === 'parquet' ? (
+  <>
+    <h3>Local Parquet</h3>
+    <Code code={startupSql} lang="sql" />
+    <h3>S3 Parquet</h3>
+    <p>Use the profile, region, and export URI configured earlier in this guide.</p>
+    <Code code={parquetS3StartupSql} lang="sql" />
+  </>
+) : (
+  <Code code={startupSql} lang="sql" />
+)}
+
+<p>Before closing DuckDB, stop both listeners cleanly:</p>
+
+<Code code={shutdownSql} lang="sql" />
