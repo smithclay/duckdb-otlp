@@ -2,7 +2,9 @@
 title: "DuckDB OpenTelemetry Extension"
 ---
 
-Start here for `duckdb-otlp`: installation, file readers, live ingest, the browser demo, and schema details.
+The DuckDB OpenTelemetry Extension lets you ingest OpenTelemetry data from storage or multiple OpenTelemetry protocol standards (OTAP, OTLP) over gRPC/HTTP into DuckDB. 
+
+Do analysis on metrics, logs, or traces or export telemetry to anything DuckDB supports using a few lines of SQL statements: data lakes, databases, parquet, vortex, or object storage systems.
 
 ## Start using duckdb-otlp
 
