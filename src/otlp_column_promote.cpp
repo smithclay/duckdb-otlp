@@ -17,18 +17,6 @@ const char *const SIGNAL_TABLES[] = {"otlp_logs",
                                      "otlp_metrics_histogram",
                                      "otlp_metrics_exp_histogram"};
 
-string QualifyTable(const string &catalog, const string &schema, const string &table) {
-	string out;
-	if (!catalog.empty()) {
-		out += QuoteIdentifier(catalog) + ".";
-	}
-	if (!schema.empty()) {
-		out += QuoteIdentifier(schema) + ".";
-	}
-	out += QuoteIdentifier(table);
-	return out;
-}
-
 void Exec(Connection &con, const string &sql) {
 	auto result = con.Query(sql);
 	if (!result || result->HasError()) {
@@ -64,8 +52,7 @@ string JsonPathLiteral(const string &key) {
 
 OtlpColumnPromoter::OtlpColumnPromoter(OtlpPromoteConfig config_p, string catalog_name_p, string schema_name_p,
                                        std::function<void(const string &)> log_p)
-    : config(std::move(config_p)), catalog_name(std::move(catalog_name_p)), schema_name(std::move(schema_name_p)),
-      log(std::move(log_p)) {
+    : catalog_name(std::move(catalog_name_p)), schema_name(std::move(schema_name_p)), log(std::move(log_p)) {
 	auto add = [&](const string &source, const char *prefix, const string &key) {
 		if (key.empty()) {
 			return;
@@ -79,10 +66,10 @@ OtlpColumnPromoter::OtlpColumnPromoter(OtlpPromoteConfig config_p, string catalo
 		}
 		columns.push_back({source, key, target});
 	};
-	for (auto &key : config.resource_keys) {
+	for (auto &key : config_p.resource_keys) {
 		add("resource_attributes", "resource_attr_", key);
 	}
-	for (auto &key : config.scope_keys) {
+	for (auto &key : config_p.scope_keys) {
 		add("scope_attributes", "scope_attr_", key);
 	}
 	for (auto &c : columns) {
@@ -92,9 +79,9 @@ OtlpColumnPromoter::OtlpColumnPromoter(OtlpPromoteConfig config_p, string catalo
 }
 
 void OtlpColumnPromoter::Disable(const string &reason) {
+	// ProjectionSuffix()/PromotedColumnsTotal() are only consulted when Enabled(), so clearing
+	// `enabled` is enough — no need to also wipe suffix/columns.
 	enabled = false;
-	suffix.clear();
-	promoted_count = 0;
 	if (log) {
 		log("attribute promotion disabled: " + reason);
 	}
@@ -119,7 +106,7 @@ void OtlpColumnPromoter::Initialize(Connection &con) {
 	// ALTER failure indicates the catalog cannot add columns (e.g. an Iceberg REST catalog without
 	// write support), so disable rather than retry per column/table.
 	for (auto *table : SIGNAL_TABLES) {
-		auto qualified = QualifyTable(catalog_name, schema_name, table);
+		auto qualified = QualifiedTable(catalog_name, schema_name, table);
 		for (auto &c : columns) {
 			try {
 				Exec(con, "ALTER TABLE " + qualified + " ADD COLUMN IF NOT EXISTS " + QuoteIdentifier(c.target_column) +
@@ -132,7 +119,6 @@ void OtlpColumnPromoter::Initialize(Connection &con) {
 		}
 	}
 	enabled = true;
-	promoted_count = columns.size();
 	if (log) {
 		log(StringUtil::Format("attribute promotion enabled: %llu column(s) per signal",
 		                       static_cast<uint64_t>(columns.size())));

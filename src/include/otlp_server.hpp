@@ -432,6 +432,11 @@ private:
 
 	void CreateOrValidateTable(Connection &con, OtlpSignalType signal_type, const string &table_name);
 	void GetSignalColumns(OtlpSignalType signal_type, vector<LogicalType> &types, vector<string> &names);
+	//! Create a TEMP table matching `signal_type`'s schema on the writer connection and append
+	//! `collection` into it. Returns the appended batch count. Shared staging step for the seal
+	//! paths that stage to a temp table before COPY (parquet export) or INSERT...SELECT (promotion).
+	idx_t StageCollectionToTempTable(OtlpSignalType signal_type, ColumnDataCollection &collection,
+	                                 const string &temp_table);
 
 private:
 	weak_ptr<DatabaseInstance> db_ptr;

@@ -91,15 +91,6 @@ static bool TimingSafeEqual(const string &a, const string &b) {
 	return diff == 0;
 }
 
-static string QualifiedTable(const string &catalog_name, const string &schema_name, const string &table_name) {
-	string qualified;
-	if (!catalog_name.empty()) {
-		qualified += QuoteIdentifier(catalog_name) + ".";
-	}
-	qualified += QuoteIdentifier(schema_name) + "." + QuoteIdentifier(table_name);
-	return qualified;
-}
-
 static string ExportRootForTable(const string &root, const string &table_name) {
 	if (root.empty()) {
 		return "";
@@ -951,6 +942,21 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 	return SealCatalog(plan, seal_started_unix_ms, allow_maintenance, *db);
 }
 
+idx_t OtlpServer::StageCollectionToTempTable(OtlpSignalType signal_type, ColumnDataCollection &collection,
+                                             const string &temp_table) {
+	vector<LogicalType> staging_types;
+	vector<string> staging_names;
+	GetSignalColumns(signal_type, staging_types, staging_names);
+	string ddl = "CREATE TEMP TABLE " + QuoteIdentifier(temp_table) + " (";
+	for (idx_t c = 0; c < staging_names.size(); c++) {
+		ddl +=
+		    (c > 0 ? string(", ") : string()) + QuoteIdentifier(staging_names[c]) + " " + staging_types[c].ToString();
+	}
+	ddl += ")";
+	RunSQL(*writer_con, ddl);
+	return AppendCollectionToTable(*writer_con, collection, string(), string(), temp_table);
+}
+
 OtlpIngestResult OtlpServer::SealParquet(SealingPlan &plan, int64_t seal_started_unix_ms) {
 	int64_t append_duration_ms = 0;
 	int64_t commit_duration_ms = 0;
@@ -984,21 +990,9 @@ OtlpIngestResult OtlpServer::SealParquet(SealingPlan &plan, int64_t seal_started
 			    StringUtil::Format("__otlp_seal_%s_%llu_%llu_%llu", buf.table_name, static_cast<uint64_t>(seal_id),
 			                       static_cast<uint64_t>(seal_attempt_id), static_cast<uint64_t>(i));
 			try {
-				// Stage this seal's rows in a TEMP table whose schema is derived from the
-				// signal definition (not a persistent destination), then COPY only those
-				// rows to the partitioned dataset.
-				vector<LogicalType> staging_types;
-				vector<string> staging_names;
-				GetSignalColumns(buf.signal_type, staging_types, staging_names);
-				string ddl = "CREATE TEMP TABLE " + QuoteIdentifier(staging) + " (";
-				for (idx_t c = 0; c < staging_names.size(); c++) {
-					ddl += (c > 0 ? string(", ") : string()) + QuoteIdentifier(staging_names[c]) + " " +
-					       staging_types[c].ToString();
-				}
-				ddl += ")";
-				RunSQL(*writer_con, ddl);
-				result.batches +=
-				    AppendCollectionToTable(*writer_con, *sealing[i].collection, string(), string(), staging);
+				// Stage this seal's rows in a TEMP table (schema from the signal definition), then
+				// COPY only those rows to the partitioned dataset.
+				result.batches += StageCollectionToTempTable(buf.signal_type, *sealing[i].collection, staging);
 #ifdef DUCKDB_OTLP_ENABLE_TEST_SEAM
 				// Test-only fault injection: simulate a per-signal COPY failure so the harness can
 				// assert the at-least-once partial-export + proportional-admission re-buffer path.
@@ -1130,17 +1124,7 @@ OtlpIngestResult OtlpServer::SealCatalog(SealingPlan &plan, int64_t seal_started
 			auto temp = StringUtil::Format("__otlp_promote_%s_%llu_%llu", buf.table_name,
 			                               static_cast<uint64_t>(seal_id), static_cast<uint64_t>(i));
 			try {
-				vector<LogicalType> staging_types;
-				vector<string> staging_names;
-				GetSignalColumns(buf.signal_type, staging_types, staging_names);
-				string ddl = "CREATE TEMP TABLE " + QuoteIdentifier(temp) + " (";
-				for (idx_t c = 0; c < staging_names.size(); c++) {
-					ddl += (c > 0 ? string(", ") : string()) + QuoteIdentifier(staging_names[c]) + " " +
-					       staging_types[c].ToString();
-				}
-				ddl += ")";
-				RunSQL(*writer_con, ddl);
-				AppendCollectionToTable(*writer_con, *sealing[i].collection, string(), string(), temp);
+				StageCollectionToTempTable(buf.signal_type, *sealing[i].collection, temp);
 				temp_tables[i] = temp;
 			} catch (std::exception &ex) {
 				try {

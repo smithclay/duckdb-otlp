@@ -49,7 +49,7 @@ public:
 
 	//! Number of promoted attribute columns per table (resource + scope), 0 when disabled.
 	idx_t PromotedColumnsTotal() const {
-		return enabled ? promoted_count : 0;
+		return enabled ? columns.size() : 0;
 	}
 
 private:
@@ -60,13 +60,11 @@ private:
 	};
 	void Disable(const string &reason);
 
-	OtlpPromoteConfig config;
 	string catalog_name;
 	string schema_name;
 	std::function<void(const string &)> log;
 	vector<Col> columns;
 	string suffix;
-	idx_t promoted_count = 0;
 	bool enabled = false;
 };
 

@@ -20,4 +20,15 @@ inline string QuoteIdentifier(const string &identifier) {
 	return "\"" + StringUtil::Replace(identifier, "\"", "\"\"") + "\"";
 }
 
+//! Build a quoted `[catalog.]schema.table` reference. An empty catalog means the connection's
+//! default catalog; schema is assumed non-empty (the live-ingest catalog modes always set one).
+inline string QualifiedTable(const string &catalog_name, const string &schema_name, const string &table_name) {
+	string qualified;
+	if (!catalog_name.empty()) {
+		qualified += QuoteIdentifier(catalog_name) + ".";
+	}
+	qualified += QuoteIdentifier(schema_name) + "." + QuoteIdentifier(table_name);
+	return qualified;
+}
+
 } // namespace duckdb
