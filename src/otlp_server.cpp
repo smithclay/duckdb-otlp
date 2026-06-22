@@ -13,6 +13,7 @@
 #include "duckdb/main/query_result.hpp"
 
 #include "otlp_arrow.hpp"
+#include "otlp_column_promote.hpp"
 #include "otlp_log.hpp"
 #include "otlp_server_internal.hpp"
 #include "otlp_sql_util.hpp"
@@ -1112,6 +1113,59 @@ OtlpIngestResult OtlpServer::SealCatalog(SealingPlan &plan, int64_t seal_started
 	auto &sealing = plan.signals;
 	OtlpIngestResult result;
 
+	// Attribute promotion: when enabled, each signal's rows go through a TEMP table so the seal can
+	// INSERT...SELECT them with the promoted attribute columns extracted from the JSON blob. Promoted
+	// columns were ALTERed once at startup, so the schema is stable here — no per-seal DDL. The temp
+	// tables are staged OUTSIDE the data transaction; the transaction below only does the INSERTs.
+	// Best-effort: a staging failure drops that signal back to the fast Appender path.
+	const bool promote = promoter && promoter->Enabled();
+	std::vector<string> temp_tables(signal_buffers.size());
+	if (promote) {
+		auto seal_id = seals_total.load() + 1;
+		for (idx_t i = 0; i < signal_buffers.size(); i++) {
+			if (sealing[i].rows == 0) {
+				continue;
+			}
+			auto &buf = *signal_buffers[i];
+			auto temp = StringUtil::Format("__otlp_promote_%s_%llu_%llu", buf.table_name,
+			                               static_cast<uint64_t>(seal_id), static_cast<uint64_t>(i));
+			try {
+				vector<LogicalType> staging_types;
+				vector<string> staging_names;
+				GetSignalColumns(buf.signal_type, staging_types, staging_names);
+				string ddl = "CREATE TEMP TABLE " + QuoteIdentifier(temp) + " (";
+				for (idx_t c = 0; c < staging_names.size(); c++) {
+					ddl += (c > 0 ? string(", ") : string()) + QuoteIdentifier(staging_names[c]) + " " +
+					       staging_types[c].ToString();
+				}
+				ddl += ")";
+				RunSQL(*writer_con, ddl);
+				AppendCollectionToTable(*writer_con, *sealing[i].collection, string(), string(), temp);
+				temp_tables[i] = temp;
+			} catch (std::exception &ex) {
+				try {
+					DropTableIfExists(*writer_con, temp);
+				} catch (...) {
+				}
+				temp_tables[i].clear();
+				LogServerEvent(
+				    StringUtil::Format("attribute promotion: staging failed for %s: %s", buf.table_name, ex.what()),
+				    LogLevel::LOG_WARNING);
+			}
+		}
+	}
+	auto drop_temp_tables = [&]() {
+		for (auto &temp : temp_tables) {
+			if (temp.empty()) {
+				continue;
+			}
+			try {
+				DropTableIfExists(*writer_con, temp);
+			} catch (...) {
+			}
+		}
+	};
+
 	try {
 		RunSQL(*writer_con, "BEGIN TRANSACTION");
 		auto append_started = std::chrono::steady_clock::now();
@@ -1120,8 +1174,18 @@ OtlpIngestResult OtlpServer::SealCatalog(SealingPlan &plan, int64_t seal_started
 				continue;
 			}
 			auto &buf = *signal_buffers[i];
-			result.batches += AppendCollectionToTable(*writer_con, *sealing[i].collection, config.catalog_name,
-			                                          config.schema_name, buf.table_name);
+			if (!temp_tables[i].empty()) {
+				// Promoted path: copy staged rows plus the json_extract'd promoted columns. Positional
+				// INSERT is safe — the target's base columns match GetSignalColumns order, and promoted
+				// columns are appended by ALTER in the same order ProjectionSuffix emits them.
+				auto target = QualifiedTable(config.catalog_name, config.schema_name, buf.table_name);
+				RunSQL(*writer_con, "INSERT INTO " + target + " SELECT *" + promoter->ProjectionSuffix() + " FROM " +
+				                        QuoteIdentifier(temp_tables[i]));
+				result.batches += 1;
+			} else {
+				result.batches += AppendCollectionToTable(*writer_con, *sealing[i].collection, config.catalog_name,
+				                                          config.schema_name, buf.table_name);
+			}
 			result.rows += sealing[i].rows;
 		}
 		append_duration_ms =
@@ -1180,11 +1244,13 @@ OtlpIngestResult OtlpServer::SealCatalog(SealingPlan &plan, int64_t seal_started
 			std::vector<bool> restore(signal_buffers.size(), true);
 			RestoreUnsealed(plan, restore);
 		}
+		drop_temp_tables();
 		LogServerEvent(StringUtil::Format("seal failed: %s", msg), LogLevel::LOG_WARNING);
 		RecordSealOutcome(false, 0, 0, seal_started_unix_ms, append_duration_ms, commit_duration_ms, msg);
 		throw;
 	}
 
+	drop_temp_tables();
 	ReleaseAdmission(sealed_admission_bytes);
 	LogServerEvent(StringUtil::Format("seal: catalog=%s rows=%llu batches=%llu", config.catalog_name,
 	                                  static_cast<uint64_t>(result.rows), static_cast<uint64_t>(result.batches)));

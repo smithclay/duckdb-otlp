@@ -148,6 +148,31 @@ def test_otlp_limits_are_configurable(tmp_path):
     assert "maintenance_retention_ms := 600000" in result.stdout
 
 
+def test_promotion_params_emitted_when_set(tmp_path):
+    result = run(
+        {
+            "DUCKDB_MODE": "local-ducklake",
+            "DUCKDB_OTLP_TOKEN": "a-private-token-123456",
+            "DUCKDB_OTLP_PROMOTE_RESOURCE_ATTRIBUTES": "host.name,deployment.environment",
+            "DUCKDB_OTLP_PROMOTE_SCOPE_ATTRIBUTES": "scope.team",
+        },
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "promote_resource_attributes := 'host.name,deployment.environment'" in result.stdout
+    assert "promote_scope_attributes := 'scope.team'" in result.stdout
+
+
+def test_promotion_off_by_default(tmp_path):
+    result = run(
+        {"DUCKDB_MODE": "local-ducklake", "DUCKDB_OTLP_TOKEN": "a-private-token-123456"},
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "promote_resource_attributes" not in result.stdout
+    assert "promote_scope_attributes" not in result.stdout
+
+
 def test_default_token_warns(tmp_path):
     result = run({"DUCKDB_MODE": "local-ducklake"}, tmp_path)  # no token set
     assert result.returncode == 0, result.stderr

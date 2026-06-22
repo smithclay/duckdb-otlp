@@ -663,6 +663,8 @@ ServerConfig ServerConfig::FromEnv() {
 	    ParsePositiveUInt64Env("DUCKDB_OTLP_TARGET_FILE_SIZE", otlp_limits::DEFAULT_TARGET_FILE_SIZE);
 	config.maintenance_retention_ms =
 	    ParsePositiveInt64Env("DUCKDB_OTLP_MAINTENANCE_RETENTION_MS", otlp_limits::DEFAULT_MAINTENANCE_RETENTION_MS);
+	config.promote_resource_attributes = Env("DUCKDB_OTLP_PROMOTE_RESOURCE_ATTRIBUTES", "");
+	config.promote_scope_attributes = Env("DUCKDB_OTLP_PROMOTE_SCOPE_ATTRIBUTES", "");
 
 	auto quack_token_var = FirstEnv({"DUCKDB_QUACK_TOKEN", "QUACK_AUTH_TOKEN"});
 	if (config.quack_enabled && quack_token_var.empty()) {
@@ -704,6 +706,15 @@ string ServerConfig::StartOtlpSql() const {
 	auto export_sql = parquet_export_path.empty()
 	                      ? string("")
 	                      : StringUtil::Format(",\n    parquet_export_path := %s", SqlQuote(parquet_export_path));
+	// Attribute promotion params, emitted only when set so the common path is unchanged.
+	string promote_sql;
+	if (!promote_resource_attributes.empty()) {
+		promote_sql +=
+		    StringUtil::Format(",\n    promote_resource_attributes := %s", SqlQuote(promote_resource_attributes));
+	}
+	if (!promote_scope_attributes.empty()) {
+		promote_sql += StringUtil::Format(",\n    promote_scope_attributes := %s", SqlQuote(promote_scope_attributes));
+	}
 	auto schema_target =
 	    catalog.empty() ? QuoteIdentifier(schema) : QuoteIdentifier(catalog) + "." + QuoteIdentifier(schema);
 	// Pick the serve function by scheme so listen URIs are never mixed across them:
@@ -722,11 +733,11 @@ FROM %s(
     catalog := %s,
     schema := %s,
     token := getvariable('duckdb_otlp_effective_token'),
-    allow_other_hostname := true%s%s%s
+    allow_other_hostname := true%s%s%s%s
 );
 )SQL",
 	                          schema_target, serve_fn, SqlQuote(listen_uri), SqlQuote(catalog), SqlQuote(schema),
-	                          thread_sql, limits_sql, export_sql);
+	                          thread_sql, limits_sql, export_sql, promote_sql);
 }
 
 string ServerConfig::StartQuackSql() const {

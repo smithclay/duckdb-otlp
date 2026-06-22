@@ -2,6 +2,7 @@
 
 #include "duckdb.hpp"
 
+#include "otlp_column_promote.hpp"
 #include "otlp_ingest_limits.hpp"
 #include "otlp_log.hpp"
 #include "otlp_request.hpp"
@@ -84,6 +85,9 @@ struct OtlpServerConfig {
 	//! decoded buffer heap — decoded columnar size differs from the encoded/compressed
 	//! input size. It is an admission/throughput proxy, not a precise memory bound.
 	idx_t max_buffered_bytes = otlp_limits::DEFAULT_MAX_BUFFERED_BYTES;
+	//! Opt-in attribute promotion: extract these resource/scope attribute keys into first-class
+	//! columns at ingest. Off when both lists are empty. Catalog (non-Parquet-export) mode only.
+	OtlpPromoteConfig promote;
 };
 
 struct OtlpIngestResult {
@@ -223,6 +227,10 @@ public:
 	string MaintenanceLastError() const {
 		std::lock_guard<std::mutex> lock(seal_error_mutex);
 		return maintenance_last_error;
+	}
+	//! Promoted attribute columns per signal table (0 when promotion is disabled).
+	idx_t PromotedColumnsTotal() const {
+		return promoter ? promoter->PromotedColumnsTotal() : 0;
 	}
 	vector<OtlpSealEvent> SealHistory() const;
 
@@ -446,6 +454,9 @@ private:
 	// (sealer thread) against FlushNow (otlp_flush) and the final drain on shutdown.
 	unique_ptr<Connection> writer_con;
 	mutex writer_mutex;
+	//! Attribute promotion (null unless config.promote.Enabled()). Resolved at construction; the
+	//! seal thread only reads its immutable ProjectionSuffix().
+	unique_ptr<OtlpColumnPromoter> promoter;
 	std::thread sealer_thread;
 	std::mutex sealer_mutex;
 	std::condition_variable sealer_cv;

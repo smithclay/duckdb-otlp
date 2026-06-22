@@ -178,7 +178,7 @@ All gauge columns are included, plus the two sum-specific columns above.
 ## Type system notes
 
 - `trace_id` and `span_id` are VARCHAR hex strings. Use `unhex()` to convert to binary if needed.
-- Attribute columns store JSON strings. Parse with DuckDB's JSON functions: `json_extract(resource_attributes, '$.key')`.
+- Attribute columns store JSON strings. Parse with DuckDB's JSON functions: `json_extract(resource_attributes, '$.key')`. For attributes you filter on often, the live server can promote resource/scope keys into dedicated columns at ingest — see [Attribute promotion](../serve/#attribute-promotion).
 - Timestamps: file readers expose nanosecond timestamp columns such as `time_unix_nano` and `start_time_unix_nano` as `TIMESTAMP_NS`. Live ingest tables keep the same column names but store those values as DuckDB `TIMESTAMP` for catalog compatibility.
 - Events and links are stored as JSON arrays in `events_json` and `links_json`.
 

@@ -61,6 +61,8 @@ SELECT * FROM otlp_serve('otlp:localhost:4318', catalog := 'lake', token := 'my-
 | `seal_max_age_ms` | BIGINT | `5000` | Request an asynchronous seal when the oldest buffered row reaches this age. Must be greater than zero. |
 | `target_file_size` | UBIGINT | `268435456` (256 MiB) | DuckLake only. **Output** Parquet file size the post-seal `CHECKPOINT` merge bin-packs toward; bounds compaction write amplification (files already at target are left alone). Distinct from `seal_target_bytes`, which is admitted *input* bytes. Must be greater than zero. |
 | `maintenance_retention_ms` | BIGINT | `900000` (15 min) | DuckLake only. How old snapshots and unused data files must be before the post-seal `CHECKPOINT` expires and deletes them (`expire_older_than` / `delete_older_than`). Keep it longer than your longest read; time-travel below this window is unavailable. Must be greater than zero. |
+| `promote_resource_attributes` | VARCHAR | *(none)* | Comma-separated **resource** attribute keys to promote into first-class columns at ingest. See [Attribute promotion](#attribute-promotion). Catalog mode only. |
+| `promote_scope_attributes` | VARCHAR | *(none)* | Comma-separated **scope** attribute keys to promote into first-class columns at ingest. See [Attribute promotion](#attribute-promotion). Catalog mode only. |
 
 **Output columns** (one row):
 
@@ -181,6 +183,7 @@ FROM otlp_server_list();
 | `maintenance_failures_total` | UBIGINT | Failed maintenance passes since startup. |
 | `last_maintenance_age_ms` | BIGINT | Age (ms) since the last successful maintenance pass, or `NULL` if none has run. |
 | `maintenance_last_error` | VARCHAR | Last maintenance error, or `NULL` if none. |
+| `promoted_columns_total` | UBIGINT | Promoted attribute columns per signal table, or `0` when [attribute promotion](#attribute-promotion) is off/disabled. |
 
 Use `is_listening` / `last_error` to detect a dead listener. Use `seal_last_error` to inspect writer failures, such as catalog conflicts. Use `maintenance_runs_total` / `last_maintenance_age_ms` to confirm compaction is keeping up.
 
@@ -210,6 +213,34 @@ Each batch commit writes **one Parquet data file per signal** plus one DuckLake 
   DuckDB's Iceberg REST catalog docs have no useful `CHECKPOINT` maintenance path today. The internal maintenance probe uses generic `CHECKPOINT <catalog>` only. If the catalog reports checkpointing as unsupported, the server disables automatic maintenance for that server and ingest durability continues normally.
 
 - **Plain Parquet export** (`parquet_export_path := '/data/otlp-parquet'` or `parquet_export_path := 's3://bucket/prefix'`): each seal writes the sealed rows straight to `<path>/<table>/year=YYYY/month=MM/day=DD/*.parquet`. The Parquet dataset is the only durable store — no local table copy is kept (a read-only view per signal is created over the files for inspection), and it is mutually exclusive with a `catalog` target. Because a `COPY` is a file write and cannot be rolled back, export is **at-least-once**: a signal that already exported is never re-written, but a seal whose `COPY` fails part-way can re-export that signal's rows on retry, so deduplicate downstream if you need exactly-once. Use this when you want partitioned Parquet without a lakehouse catalog; see [Stream to Parquet](../../guides/stream-to-parquet/).
+
+## Attribute promotion
+
+Resource and scope attributes land as JSON objects in the `resource_attributes` and `scope_attributes` columns (see [Schemas](../schemas/)), so filtering one means a full-scan `json_extract_string(...)` with no row-group pruning. Attribute promotion lifts **operator-named** keys out of that JSON into their own top-level columns at ingest, so the scanner gets per-row-group min/max statistics and can skip files. It is the right tool for the low-cardinality, stable identity attributes you filter and group by most — `service.name` is already a column, but `deployment.environment`, `k8s.namespace.name`, `cloud.region`, and the like are not.
+
+```sql
+SELECT * FROM otlp_serve(
+    'otlp:0.0.0.0:4318',
+    catalog := 'lake',
+    promote_resource_attributes := 'deployment.environment, k8s.namespace.name',
+    promote_scope_attributes    := 'telemetry.sdk.name'
+);
+```
+
+- **Column naming.** Each key becomes `resource_attr_<key>` or `scope_attr_<key>` (non-alphanumeric characters become `_`), e.g. `deployment.environment` → `resource_attr_deployment_environment`, on **all six** signal tables. The columns are added once when the server starts.
+- **The JSON blob is kept.** A promoted column is an accelerator, not a replacement — the original key stays in `resource_attributes`/`scope_attributes`. Rows written *before* a key was promoted read back `NULL` for its column, so query across old and new data with:
+
+  ```sql
+  COALESCE(resource_attr_deployment_environment,
+           json_extract_string(resource_attributes, '$."deployment.environment"'))
+  ```
+
+- **No auto-discovery.** The promoted set is exactly what you list — there is no workload observation or automatic promotion.
+- **Catalog mode only.** Promotion adds real columns via `ALTER TABLE`, so it requires a catalog target (DuckLake). It is ignored under `parquet_export_path`. On an Iceberg REST catalog it works only if the catalog supports `ADD COLUMN`; otherwise the server logs a warning and disables promotion (ingest continues).
+- **Type.** Promoted columns are `VARCHAR` (the JSON-extracted text).
+- `otlp_server_list().promoted_columns_total` reports the promoted column count per signal.
+
+The daemon exposes the same option via `DUCKDB_OTLP_PROMOTE_RESOURCE_ATTRIBUTES` and `DUCKDB_OTLP_PROMOTE_SCOPE_ATTRIBUTES` (comma-separated). The daemon image must have the `json` extension available; if it cannot load it, promotion disables itself with a log.
 
 ## URI scheme
 

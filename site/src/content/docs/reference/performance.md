@@ -56,6 +56,17 @@ FROM read_otlp_traces('traces/*.jsonl')
 GROUP BY hour, service_name;
 ```
 
+## Promote Hot Attributes
+
+Filtering an attribute that lives inside the `resource_attributes` / `scope_attributes` JSON blob is a full scan — `json_extract_string(...)` has no row-group statistics. If you repeatedly filter or group by a resource/scope attribute (`deployment.environment`, `k8s.namespace.name`, `cloud.region`, ...), have the live server promote it into a real column at ingest so the scanner can prune by min/max:
+
+```sql
+SELECT * FROM otlp_serve('otlp:0.0.0.0:4318', catalog := 'lake',
+    promote_resource_attributes := 'deployment.environment, k8s.namespace.name');
+```
+
+This trades a little ingest work for much cheaper repeated reads. See [Attribute promotion](../serve/#attribute-promotion).
+
 ## Live Ingest
 
 Live ingest buffers accepted rows and commits them in batches. Current native builds commit when the oldest buffered row is about 5 seconds old, or when admitted request-body bytes reach about 64 MiB. Use `otlp_flush` when readers need fresh rows while the server keeps running.

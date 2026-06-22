@@ -181,6 +181,23 @@ static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableF
 			throw InvalidInputException("maintenance_retention_ms must be greater than zero");
 		}
 	}
+	// Attribute promotion: comma-separated lists of resource / scope attribute keys to promote into
+	// first-class columns at ingest.
+	auto parse_attr_keys = [&](const char *param, vector<string> &out) {
+		auto it = input.named_parameters.find(param);
+		if (it == input.named_parameters.end()) {
+			return;
+		}
+		for (auto &part : StringUtil::Split(it->second.GetValue<string>(), ',')) {
+			auto key = part;
+			StringUtil::Trim(key);
+			if (!key.empty()) {
+				out.push_back(key);
+			}
+		}
+	};
+	parse_attr_keys("promote_resource_attributes", bind_data->config.promote.resource_keys);
+	parse_attr_keys("promote_scope_attributes", bind_data->config.promote.scope_keys);
 
 	names.emplace_back("listen_uri");
 	return_types.emplace_back(OtlpVarcharType());
@@ -267,6 +284,9 @@ static TableFunctionSet BuildServeFunctionSet(const string &name, table_function
 	fun.named_parameters["seal_max_age_ms"] = OtlpBigIntType();
 	fun.named_parameters["target_file_size"] = OtlpUBigIntType();
 	fun.named_parameters["maintenance_retention_ms"] = OtlpBigIntType();
+	// Attribute promotion: comma-separated resource / scope attribute keys to promote.
+	fun.named_parameters["promote_resource_attributes"] = OtlpVarcharType();
+	fun.named_parameters["promote_scope_attributes"] = OtlpVarcharType();
 	set.AddFunction(fun);
 	fun.arguments.clear();
 	set.AddFunction(fun);
@@ -386,6 +406,8 @@ static unique_ptr<FunctionData> OtlpServerListBind(ClientContext &context, Table
 	// Appended (not inserted next to buffered_rows) so existing column positions are unchanged.
 	names.emplace_back("buffered_bytes");
 	return_types.emplace_back(OtlpUBigIntType());
+	names.emplace_back("promoted_columns_total");
+	return_types.emplace_back(OtlpUBigIntType());
 	return make_uniq<OtlpServerListFunctionData>();
 }
 
@@ -432,6 +454,7 @@ static void OtlpServerList(ClientContext &context, TableFunctionInput &data_p, D
 		output.SetValue(
 		    24, row, s.maintenance_last_error.empty() ? Value(LogicalType::VARCHAR) : Value(s.maintenance_last_error));
 		output.SetValue(25, row, Value::UBIGINT(s.buffered_bytes));
+		output.SetValue(26, row, Value::UBIGINT(s.promoted_columns_total));
 		row++;
 		bind_data.offset++;
 	}

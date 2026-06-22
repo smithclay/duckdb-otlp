@@ -60,6 +60,7 @@ public:
 		idx_t maintenance_failures_total;
 		int64_t last_maintenance_age_ms;
 		string maintenance_last_error;
+		idx_t promoted_columns_total;
 	};
 
 	vector<ServerSnapshot> ListServers();

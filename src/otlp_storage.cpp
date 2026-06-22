@@ -196,6 +196,7 @@ vector<OtlpStorageExtensionInfo::ServerSnapshot> OtlpStorageExtensionInfo::ListS
 		snap.maintenance_failures_total = server.MaintenanceFailuresTotal();
 		snap.last_maintenance_age_ms = server.LastMaintenanceAgeMs();
 		snap.maintenance_last_error = server.MaintenanceLastError();
+		snap.promoted_columns_total = server.PromotedColumnsTotal();
 		result.push_back(std::move(snap));
 	}
 	// servers is an unordered_map; sort for deterministic output order.
