@@ -2,6 +2,7 @@
 
 #include "duckdb.hpp"
 
+#include "otlp_column_promote.hpp"
 #include "otlp_ingest_limits.hpp"
 #include "otlp_log.hpp"
 #include "otlp_request.hpp"
@@ -84,6 +85,9 @@ struct OtlpServerConfig {
 	//! decoded buffer heap — decoded columnar size differs from the encoded/compressed
 	//! input size. It is an admission/throughput proxy, not a precise memory bound.
 	idx_t max_buffered_bytes = otlp_limits::DEFAULT_MAX_BUFFERED_BYTES;
+	//! Opt-in attribute promotion: extract these resource/scope attribute keys into first-class
+	//! columns at ingest. Off when both lists are empty. Catalog (non-Parquet-export) mode only.
+	OtlpPromoteConfig promote;
 };
 
 struct OtlpIngestResult {
@@ -223,6 +227,10 @@ public:
 	string MaintenanceLastError() const {
 		std::lock_guard<std::mutex> lock(seal_error_mutex);
 		return maintenance_last_error;
+	}
+	//! Promoted attribute columns per signal table (0 when promotion is disabled).
+	idx_t PromotedColumnsTotal() const {
+		return promoter ? promoter->PromotedColumnsTotal() : 0;
 	}
 	vector<OtlpSealEvent> SealHistory() const;
 
@@ -424,6 +432,11 @@ private:
 
 	void CreateOrValidateTable(Connection &con, OtlpSignalType signal_type, const string &table_name);
 	void GetSignalColumns(OtlpSignalType signal_type, vector<LogicalType> &types, vector<string> &names);
+	//! Create a TEMP table with columns `names`/`types` on the writer connection and append
+	//! `collection` into it. Returns the appended batch count. Shared staging step for the seal
+	//! paths that stage to a temp table before COPY (parquet export) or INSERT...SELECT (promotion).
+	idx_t StageCollectionToTempTable(const vector<string> &names, const vector<LogicalType> &types,
+	                                 ColumnDataCollection &collection, const string &temp_table);
 
 private:
 	weak_ptr<DatabaseInstance> db_ptr;
@@ -433,6 +446,11 @@ private:
 	// Per-signal in-memory buffers. The vector is immutable after InitBuffers();
 	// each OtlpSignalBuffer carries its own mutex and mutable counters.
 	std::vector<unique_ptr<OtlpSignalBuffer>> signal_buffers;
+	//! Per-signal flag (EnsureTargetTables order == signal_buffers order, catalog mode only):
+	//! true when the persisted table has more columns than the base schema (e.g. a restart against
+	//! a previously promoted catalog). Such a table is sealed via a column-targeted INSERT so the
+	//! extra columns are NULL-filled. Empty in Parquet-export mode.
+	std::vector<bool> table_has_extra_columns;
 	//! Payload-byte admission counter for in-flight and unsealed accepted requests.
 	//! The single real byte counter: enforces max_buffered_bytes under concurrency and
 	//! drives the seal size trigger (seal_target_bytes).
@@ -446,6 +464,9 @@ private:
 	// (sealer thread) against FlushNow (otlp_flush) and the final drain on shutdown.
 	unique_ptr<Connection> writer_con;
 	mutex writer_mutex;
+	//! Attribute promotion (null unless config.promote.Enabled()). Resolved at construction; the
+	//! seal thread only reads its immutable ProjectionSuffix().
+	unique_ptr<OtlpColumnPromoter> promoter;
 	std::thread sealer_thread;
 	std::mutex sealer_mutex;
 	std::condition_variable sealer_cv;

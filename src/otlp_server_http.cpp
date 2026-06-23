@@ -94,6 +94,13 @@ OtlpServer::OtlpServer(ClientContext &context, const OtlpUri &uri_p, const OtlpS
 	// size + snapshot/file retention) before the sealer can fire. Best-effort; no-op for the
 	// default/non-DuckLake catalogs.
 	ConfigureCatalogMaintenanceOptions();
+	// Attribute promotion (opt-in, catalog mode only): add the operator-specified resource/scope
+	// attribute columns once, before the sealer fires. Parquet-export mode has no table to ALTER.
+	if (config.promote.Enabled() && config.parquet_export_path.empty()) {
+		promoter = make_uniq<OtlpColumnPromoter>(config.promote, config.catalog_name, config.schema_name,
+		                                         [this](const string &msg) { LogServerEvent(msg); });
+		promoter->Initialize(*writer_con);
+	}
 	StartSealer();
 
 	if (config.transport == OtlpTransport::GRPC) {

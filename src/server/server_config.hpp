@@ -39,6 +39,10 @@ struct ServerConfig {
 	int64_t seal_max_age_ms = 5000;
 	uint64_t target_file_size = 256ULL * 1024ULL * 1024ULL;
 	int64_t maintenance_retention_ms = 15LL * 60LL * 1000LL;
+	//! Attribute promotion (opt-in): comma-separated resource / scope attribute keys to promote into
+	//! first-class columns at ingest. Emitted into the otlp_serve() call when non-empty.
+	duckdb::string promote_resource_attributes;
+	duckdb::string promote_scope_attributes;
 
 	duckdb::string mode_setup_sql;
 	std::vector<duckdb::string> mode_extensions;

@@ -24,6 +24,7 @@ set(EXTENSION_SOURCES
     src/function/read_otlp.cpp
     src/otlp_arrow.cpp
     src/otlp_uri.cpp
+    src/otlp_column_promote.cpp
     src/otlp_server.cpp
     src/otlp_server_http.cpp
     src/otlp_server_grpc.cpp
