@@ -47,6 +47,12 @@ public:
 		return suffix;
 	}
 
+	//! INSERT column-list additions parallel to ProjectionSuffix(), e.g. `, "resource_attr_k", ...`,
+	//! so the seal can name the promoted target columns explicitly. Empty when disabled.
+	const string &TargetColumnList() const {
+		return target_list;
+	}
+
 	//! Number of promoted attribute columns per table (resource + scope), 0 when disabled.
 	idx_t PromotedColumnsTotal() const {
 		return enabled ? columns.size() : 0;
@@ -65,6 +71,7 @@ private:
 	std::function<void(const string &)> log;
 	vector<Col> columns;
 	string suffix;
+	string target_list;
 	bool enabled = false;
 };
 

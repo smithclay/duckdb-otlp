@@ -75,6 +75,7 @@ OtlpColumnPromoter::OtlpColumnPromoter(OtlpPromoteConfig config_p, string catalo
 	for (auto &c : columns) {
 		suffix += ", json_extract_string(" + QuoteIdentifier(c.source_column) + ", " + JsonPathLiteral(c.attr_key) +
 		          ") AS " + QuoteIdentifier(c.target_column);
+		target_list += ", " + QuoteIdentifier(c.target_column);
 	}
 }
 

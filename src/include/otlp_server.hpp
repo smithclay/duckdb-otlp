@@ -432,11 +432,11 @@ private:
 
 	void CreateOrValidateTable(Connection &con, OtlpSignalType signal_type, const string &table_name);
 	void GetSignalColumns(OtlpSignalType signal_type, vector<LogicalType> &types, vector<string> &names);
-	//! Create a TEMP table matching `signal_type`'s schema on the writer connection and append
+	//! Create a TEMP table with columns `names`/`types` on the writer connection and append
 	//! `collection` into it. Returns the appended batch count. Shared staging step for the seal
 	//! paths that stage to a temp table before COPY (parquet export) or INSERT...SELECT (promotion).
-	idx_t StageCollectionToTempTable(OtlpSignalType signal_type, ColumnDataCollection &collection,
-	                                 const string &temp_table);
+	idx_t StageCollectionToTempTable(const vector<string> &names, const vector<LogicalType> &types,
+	                                 ColumnDataCollection &collection, const string &temp_table);
 
 private:
 	weak_ptr<DatabaseInstance> db_ptr;
@@ -446,6 +446,11 @@ private:
 	// Per-signal in-memory buffers. The vector is immutable after InitBuffers();
 	// each OtlpSignalBuffer carries its own mutex and mutable counters.
 	std::vector<unique_ptr<OtlpSignalBuffer>> signal_buffers;
+	//! Per-signal flag (EnsureTargetTables order == signal_buffers order, catalog mode only):
+	//! true when the persisted table has more columns than the base schema (e.g. a restart against
+	//! a previously promoted catalog). Such a table is sealed via a column-targeted INSERT so the
+	//! extra columns are NULL-filled. Empty in Parquet-export mode.
+	std::vector<bool> table_has_extra_columns;
 	//! Payload-byte admission counter for in-flight and unsealed accepted requests.
 	//! The single real byte counter: enforces max_buffered_bytes under concurrency and
 	//! drives the seal size trigger (seal_target_bytes).

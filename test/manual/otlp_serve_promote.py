@@ -23,7 +23,9 @@ Run:
 
 import json
 import os
+import shutil
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 
@@ -183,10 +185,91 @@ def run(failures):
     con.close()
 
 
+def connect_lake(lake):
+    con = duckdb.connect(config={"allow_unsigned_extensions": "true"})
+    con.execute(f"LOAD '{EXTENSION}'")
+    con.execute("LOAD ducklake")
+    meta = os.path.join(lake, "meta.ducklake")
+    data = os.path.join(lake, "data") + "/"
+    con.execute(f"ATTACH 'ducklake:{meta}' AS lake (DATA_PATH '{data}')")
+    return con
+
+
+def ingest_three(con, base_url, port):
+    for _ in range(3):
+        post(base_url + "/v1/logs", PAYLOAD)
+    return con.execute("SELECT status, error FROM otlp_flush(?)", [f"otlp:127.0.0.1:{port}"]).fetchone()
+
+
+def run_restart(failures):
+    # Regression test for restart against an already-promoted persisted catalog: the schema carries
+    # extra resource_attr_*/scope_attr_* columns, which startup validation must tolerate and the seal
+    # must populate (or NULL-fill when promotion is off). Uses a temp DuckLake so it runs every time.
+    lake = tempfile.mkdtemp(prefix="otlp_promote_restart_")
+    prefix = "lake.main."
+    promote = dict(promote_resource_attributes="host.name", promote_scope_attributes="scope.team")
+    try:
+        # Phase 1: serve with promotion, ingest 3, stop (persists 3 rows + promoted columns).
+        con = connect_lake(lake)
+        base = start_server(con, BASE_PORT + 10, catalog="lake", **promote)
+        ingest_three(con, base, BASE_PORT + 10)
+        con.execute("SELECT status FROM otlp_stop(?)", [f"otlp:127.0.0.1:{BASE_PORT + 10}"]).fetchone()
+        con.close()
+
+        # Phase 2: restart against the promoted catalog, same config — must start (the bug) and keep promoting.
+        con = connect_lake(lake)
+        started = True
+        try:
+            base = start_server(con, BASE_PORT + 11, catalog="lake", **promote)
+        except Exception as exc:  # noqa: BLE001
+            started = False
+            failures.append(f"restart with promotion failed to start: {exc!r}")
+        require(failures, started, "restart against promoted catalog starts")
+        if started:
+            ingest_three(con, base, BASE_PORT + 11)
+            total = con.execute(f"SELECT count(*) FROM {prefix}otlp_logs").fetchone()[0]
+            require(failures, total == 6, f"rows accumulate across restart ({total} == 6)")
+            populated = con.execute(
+                f"SELECT count(*) FROM {prefix}otlp_logs WHERE resource_attr_host_name = 'host-1'"
+            ).fetchone()[0]
+            require(failures, populated == 6, f"promotion continues after restart ({populated} == 6)")
+            con.execute("SELECT status FROM otlp_stop(?)", [f"otlp:127.0.0.1:{BASE_PORT + 11}"]).fetchone()
+        con.close()
+
+        # Phase 3: restart WITHOUT promotion config — ingest must still seal; the now-orphan promoted
+        # columns NULL-fill for the new rows (no Appender width mismatch on the wider table).
+        con = connect_lake(lake)
+        started3 = True
+        try:
+            base = start_server(con, BASE_PORT + 12, catalog="lake")
+        except Exception as exc:  # noqa: BLE001
+            started3 = False
+            failures.append(f"restart without promotion failed to start: {exc!r}")
+        require(failures, started3, "restart without promotion starts")
+        if started3:
+            flush = ingest_three(con, base, BASE_PORT + 12)
+            require(
+                failures,
+                flush[0] == "sealed" and not flush[1],
+                f"seal succeeds on wider table, promotion off ({flush})",
+            )
+            total = con.execute(f"SELECT count(*) FROM {prefix}otlp_logs").fetchone()[0]
+            require(failures, total == 9, f"rows ingested without promotion ({total} == 9)")
+            orphan_null = con.execute(
+                f"SELECT count(*) FROM {prefix}otlp_logs WHERE scope_attr_scope_team IS NULL"
+            ).fetchone()[0]
+            require(failures, orphan_null == 3, f"orphan promoted column NULL-filled for new rows ({orphan_null} == 3)")
+            con.execute("SELECT status FROM otlp_stop(?)", [f"otlp:127.0.0.1:{BASE_PORT + 12}"]).fetchone()
+        con.close()
+    finally:
+        shutil.rmtree(lake, ignore_errors=True)
+
+
 def main():
     failures = []
     try:
         run(failures)
+        run_restart(failures)
     except Exception as exc:  # noqa: BLE001
         failures.append(f"unhandled exception: {exc!r}")
     print()

@@ -501,8 +501,12 @@ void OtlpServer::CreateOrValidateTable(Connection &con, OtlpSignalType signal_ty
 		throw IOException("Target table %s is not available: %s", qualified,
 		                  result ? result->GetError() : "query failed");
 	}
-	if (result->names.size() != expected_names.size()) {
-		throw InvalidInputException("Target table %s has %llu columns, expected %llu", qualified,
+	// The signal's base columns must be present as a leading prefix (name + type, in order). Extra
+	// trailing columns are allowed: attribute promotion adds resource_attr_*/scope_attr_* columns
+	// via ALTER, and a restart against an already-promoted catalog must validate cleanly. The seal
+	// path targets columns by name so those extras are NULL-filled when not being populated.
+	if (result->names.size() < expected_names.size()) {
+		throw InvalidInputException("Target table %s has %llu columns, expected at least %llu", qualified,
 		                            static_cast<uint64_t>(result->names.size()),
 		                            static_cast<uint64_t>(expected_names.size()));
 	}
@@ -516,6 +520,9 @@ void OtlpServer::CreateOrValidateTable(Connection &con, OtlpSignalType signal_ty
 			                            expected_names[i], result->types[i].ToString(), expected_types[i].ToString());
 		}
 	}
+	// Recorded in EnsureTargetTables order (== signal_buffers order) so the seal can pick the
+	// column-targeting write path for a table that carries extra (promoted) columns.
+	table_has_extra_columns.push_back(result->names.size() > expected_names.size());
 }
 
 OtlpIngestResult OtlpServer::Ingest(OtlpRequestKind kind, const string &content_type, const string &content_encoding,
@@ -942,15 +949,11 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 	return SealCatalog(plan, seal_started_unix_ms, allow_maintenance, *db);
 }
 
-idx_t OtlpServer::StageCollectionToTempTable(OtlpSignalType signal_type, ColumnDataCollection &collection,
-                                             const string &temp_table) {
-	vector<LogicalType> staging_types;
-	vector<string> staging_names;
-	GetSignalColumns(signal_type, staging_types, staging_names);
+idx_t OtlpServer::StageCollectionToTempTable(const vector<string> &names, const vector<LogicalType> &types,
+                                             ColumnDataCollection &collection, const string &temp_table) {
 	string ddl = "CREATE TEMP TABLE " + QuoteIdentifier(temp_table) + " (";
-	for (idx_t c = 0; c < staging_names.size(); c++) {
-		ddl +=
-		    (c > 0 ? string(", ") : string()) + QuoteIdentifier(staging_names[c]) + " " + staging_types[c].ToString();
+	for (idx_t c = 0; c < names.size(); c++) {
+		ddl += (c > 0 ? string(", ") : string()) + QuoteIdentifier(names[c]) + " " + types[c].ToString();
 	}
 	ddl += ")";
 	RunSQL(*writer_con, ddl);
@@ -992,7 +995,11 @@ OtlpIngestResult OtlpServer::SealParquet(SealingPlan &plan, int64_t seal_started
 			try {
 				// Stage this seal's rows in a TEMP table (schema from the signal definition), then
 				// COPY only those rows to the partitioned dataset.
-				result.batches += StageCollectionToTempTable(buf.signal_type, *sealing[i].collection, staging);
+				vector<LogicalType> staging_types;
+				vector<string> staging_names;
+				GetSignalColumns(buf.signal_type, staging_types, staging_names);
+				result.batches +=
+				    StageCollectionToTempTable(staging_names, staging_types, *sealing[i].collection, staging);
 #ifdef DUCKDB_OTLP_ENABLE_TEST_SEAM
 				// Test-only fault injection: simulate a per-signal COPY failure so the harness can
 				// assert the at-least-once partial-export + proportional-admission re-buffer path.
@@ -1107,35 +1114,51 @@ OtlpIngestResult OtlpServer::SealCatalog(SealingPlan &plan, int64_t seal_started
 	auto &sealing = plan.signals;
 	OtlpIngestResult result;
 
-	// Attribute promotion: when enabled, each signal's rows go through a TEMP table so the seal can
-	// INSERT...SELECT them with the promoted attribute columns extracted from the JSON blob. Promoted
-	// columns were ALTERed once at startup, so the schema is stable here — no per-seal DDL. The temp
-	// tables are staged OUTSIDE the data transaction; the transaction below only does the INSERTs.
-	// Best-effort: a staging failure drops that signal back to the fast Appender path.
+	// Attribute promotion / schema evolution: a signal whose target table is wider than the base
+	// schema — because promotion is enabled, or because a prior run promoted columns into a persisted
+	// catalog — is sealed via a column-targeted INSERT...SELECT from a TEMP table, so the extra
+	// columns are populated (promotion) or NULL-filled (otherwise). Tables that are exactly the base
+	// schema keep the fast direct Appender path. Temp tables are staged OUTSIDE the data transaction;
+	// the transaction below only runs the INSERTs. Best-effort: a staging failure drops that signal
+	// back to the Appender path.
 	const bool promote = promoter && promoter->Enabled();
 	std::vector<string> temp_tables(signal_buffers.size());
-	if (promote) {
-		auto seal_id = seals_total.load() + 1;
-		for (idx_t i = 0; i < signal_buffers.size(); i++) {
-			if (sealing[i].rows == 0) {
-				continue;
+	std::vector<string> insert_columns(signal_buffers.size());
+	auto seal_id = seals_total.load() + 1;
+	for (idx_t i = 0; i < signal_buffers.size(); i++) {
+		if (sealing[i].rows == 0) {
+			continue;
+		}
+		bool has_extra = i < table_has_extra_columns.size() && table_has_extra_columns[i];
+		if (!promote && !has_extra) {
+			continue; // base-width table, no promotion: fast Appender path below
+		}
+		auto &buf = *signal_buffers[i];
+		auto temp = StringUtil::Format("__otlp_promote_%s_%llu_%llu", buf.table_name, static_cast<uint64_t>(seal_id),
+		                               static_cast<uint64_t>(i));
+		try {
+			vector<LogicalType> staging_types;
+			vector<string> staging_names;
+			GetSignalColumns(buf.signal_type, staging_types, staging_names);
+			StageCollectionToTempTable(staging_names, staging_types, *sealing[i].collection, temp);
+			string cols;
+			for (idx_t c = 0; c < staging_names.size(); c++) {
+				cols += (c > 0 ? string(", ") : string()) + QuoteIdentifier(staging_names[c]);
 			}
-			auto &buf = *signal_buffers[i];
-			auto temp = StringUtil::Format("__otlp_promote_%s_%llu_%llu", buf.table_name,
-			                               static_cast<uint64_t>(seal_id), static_cast<uint64_t>(i));
+			if (promote) {
+				cols += promoter->TargetColumnList();
+			}
+			temp_tables[i] = temp;
+			insert_columns[i] = cols;
+		} catch (std::exception &ex) {
 			try {
-				StageCollectionToTempTable(buf.signal_type, *sealing[i].collection, temp);
-				temp_tables[i] = temp;
-			} catch (std::exception &ex) {
-				try {
-					DropTableIfExists(*writer_con, temp);
-				} catch (...) {
-				}
-				temp_tables[i].clear();
-				LogServerEvent(
-				    StringUtil::Format("attribute promotion: staging failed for %s: %s", buf.table_name, ex.what()),
-				    LogLevel::LOG_WARNING);
+				DropTableIfExists(*writer_con, temp);
+			} catch (...) {
 			}
+			temp_tables[i].clear();
+			LogServerEvent(
+			    StringUtil::Format("attribute promotion: staging failed for %s: %s", buf.table_name, ex.what()),
+			    LogLevel::LOG_WARNING);
 		}
 	}
 	auto drop_temp_tables = [&]() {
@@ -1159,12 +1182,13 @@ OtlpIngestResult OtlpServer::SealCatalog(SealingPlan &plan, int64_t seal_started
 			}
 			auto &buf = *signal_buffers[i];
 			if (!temp_tables[i].empty()) {
-				// Promoted path: copy staged rows plus the json_extract'd promoted columns. Positional
-				// INSERT is safe — the target's base columns match GetSignalColumns order, and promoted
-				// columns are appended by ALTER in the same order ProjectionSuffix emits them.
+				// Column-targeted INSERT: name every base column (+ promoted columns when enabled) so
+				// values map by name, not position, and any other columns the table carries are
+				// NULL-filled.
 				auto target = QualifiedTable(config.catalog_name, config.schema_name, buf.table_name);
-				RunSQL(*writer_con, "INSERT INTO " + target + " SELECT *" + promoter->ProjectionSuffix() + " FROM " +
-				                        QuoteIdentifier(temp_tables[i]));
+				string select_list = string("*") + (promote ? promoter->ProjectionSuffix() : string());
+				RunSQL(*writer_con, "INSERT INTO " + target + " (" + insert_columns[i] + ") SELECT " + select_list +
+				                        " FROM " + QuoteIdentifier(temp_tables[i]));
 				result.batches += 1;
 			} else {
 				result.batches += AppendCollectionToTable(*writer_con, *sealing[i].collection, config.catalog_name,
