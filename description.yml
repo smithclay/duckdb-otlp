@@ -1,43 +1,29 @@
 extension:
   name: otlp
   description: Query OpenTelemetry traces, logs, and metrics with SQL — or stream live OTLP/HTTP into DuckDB, DuckLake, or Iceberg
-  version: 0.5.0
+  version: 0.6.0
   language: C++
   build: cmake
   license: MIT
-  excluded_platforms: "wasm_mvp;wasm_threads;linux_amd64_musl"
+  excluded_platforms: "wasm_mvp;wasm_threads;linux_amd64_musl;windows_amd64;windows_amd64_mingw"
   requires_toolchains: rust
   maintainers:
     - smithclay
 
 repo:
   github: smithclay/duckdb-otlp
-  ref: v0.5.0
+  ref: aa9a8da79772419c1bbeb450d0270ffca2d87cfb
 
 docs:
   hello_world: |
     -- Load the extension
     LOAD otlp;
 
-    -- Traces: find the slow spans
-    SELECT trace_id, span_name, service_name, duration
-    FROM read_otlp_traces('traces.jsonl')
-    WHERE duration > 1e9            -- longer than one second
-    ORDER BY duration DESC
-    LIMIT 10;
+    -- Install extension to support reading over HTTP(S)
+    INSTALL httpfs; LOAD httpfs;
 
-    -- Metrics: latest gauge readings (works native and in the browser)
-    SELECT timestamp, service_name, metric_name, value
-    FROM read_otlp_metrics_gauge('metrics.jsonl')
-    ORDER BY timestamp DESC;
-
-    -- Logs: just the errors, read straight from S3
-    SELECT timestamp, severity_text, body, service_name
-    FROM read_otlp_logs('s3://bucket/logs-*.jsonl')
-    WHERE severity_text = 'ERROR';
-
-    -- Protobuf works too, on native builds
-    SELECT * FROM read_otlp_traces('traces.pb') LIMIT 10;
+    -- Read logs exported from the OpenTelemetry Collector
+    SELECT time_unix_nano, service_name, severity_text, body FROM read_otlp_logs('https://github.com/smithclay/duckdb-otlp/raw/refs/heads/main/test/data/otlp_logs.pb');
 
     -- Or run a live OTLP/HTTP endpoint and query what arrives
     SELECT listen_url, auth_token FROM otlp_serve('otlp:localhost:4318');
@@ -47,7 +33,7 @@ docs:
     SELECT * FROM otlp_logs;
 
   extended_description: |
-    # OpenTelemetry, in SQL
+    # OpenTelemetry in DuckDB
 
     Point this extension at OTLP data and query it like any other table. Traces,
     logs, and metrics arrive as proper columns — `service_name`, `trace_id`,
@@ -83,15 +69,6 @@ docs:
     Leave `catalog` empty to land rows in the default catalog for quick local work.
     Set it to an attached [DuckLake](https://ducklake.select) lakehouse or writable
     Iceberg REST catalog for durable lakehouse ingest.
-
-    Ingest is buffered and group-committed. A POST returns `202 Accepted` once rows
-    are parsed and buffered; they turn durable at the next automatic background commit, currently
-    when the oldest buffered row is about 5 seconds old or admitted request-body
-    bytes reach about 64 MiB. `otlp_server_list()` reports the counters, and
-    `otlp_stop()` commits what is left before it shuts down. `otlp_flush()` is optional:
-    use it only when readers need the latest accepted rows durable immediately while
-    the server keeps running. Stop before you close the database — a plain close does
-    not commit buffered rows.
 
     ## Use it for
 
