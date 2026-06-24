@@ -14,7 +14,8 @@ As of v0.6, the extension has an embedded HTTP/gRPC server that lets you stream 
 Install and load the extension in `duckdb` v1.5.4 or higher:
 
 ```sql
--- Use "Install pre-release extension via GitHub" for nightly builds
+-- Run commands inside the duckdb shell, install via `curl https://install.duckdb.org | sh` or `brew install duckdb`
+-- See "Install pre-release extension via GitHub" to use a nightly builds
 INSTALL otlp FROM community;
 LOAD otlp;
 ```
