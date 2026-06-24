@@ -7,15 +7,14 @@
 
 DuckDB extension for querying and storing OpenTelemetry traces, logs, and metrics with SQL.
 
-As of v0.5, the extension has an embedded HTTP server that lets you stream live telemetry into [local or remote parquet files](https://smithclay.github.io/duckdb-otlp/guides/stream-to-parquet/), [DuckLake](https://smithclay.github.io/duckdb-otlp/guides/stream-to-ducklake/), or Iceberg catalogs like [Amazon S3 Tables](https://smithclay.github.io/duckdb-otlp/guides/stream-to-s3-tables/) and [Cloudflare R2 Data Catalog](https://smithclay.github.io/duckdb-otlp/guides/stream-to-r2-data-catalog/).
+As of v0.6, the extension has an embedded HTTP/gRPC server that lets you stream live telemetry using the OpenTelemetry Protocol (including the [new OTel-Arrow protocol](https://github.com/open-telemetry/otel-arrow#what-is-otap)) into [parquet files](https://smithclay.github.io/duckdb-otlp/guides/stream-to-parquet/), [DuckLake](https://smithclay.github.io/duckdb-otlp/guides/stream-to-ducklake/), or Iceberg catalogs like [Amazon S3 Tables](https://smithclay.github.io/duckdb-otlp/guides/stream-to-s3-tables/) and [Cloudflare R2 Data Catalog](https://smithclay.github.io/duckdb-otlp/guides/stream-to-r2-data-catalog/).
 
 ## Quickstart: Read OpenTelemetry data
 
 Install and load the extension in `duckdb` v1.5.4 or higher:
 
 ```sql
--- Note: v0.5.0 is still pending publication
--- Use "Install pre-release extension" steps below for latest
+-- Use "Install pre-release extension via GitHub" for nightly builds
 INSTALL otlp FROM community;
 LOAD otlp;
 ```
@@ -23,8 +22,7 @@ LOAD otlp;
 <details>
 <summary>Install pre-release extension via GitHub</summary>
 
-If you want to use a pre-release that's not on the duckdb
-community site, you can install it (unsigned) via GitHub:
+If you want to use a pre-release that's not published on the duckdb community site, you can install it (unsigned) via GitHub:
 
 ```sql
 -- Install unsigned extenstion from GitHub
@@ -48,11 +46,11 @@ SELECT time_unix_nano, service_name, severity_text, body FROM read_otlp_logs('ht
 SELECT trace_id, name, duration_time_unix_nano FROM read_otlp_traces('https://github.com/smithclay/duckdb-otlp/raw/refs/heads/main/test/data/otlp_traces.pb') ORDER BY duration_time_unix_nano DESC;
 ```
 
-Read the columnar OpenTelemetry Arrow Protocol (OTAP) with the `read_otap_*` readers. They emit the same schemas as `read_otlp_*`; pick the reader that matches your input encoding:
+Read the columnar [OpenTelemetry Arrow Protocol (OTAP)](https://github.com/open-telemetry/otel-arrow) with the `read_otap_*` readers. They emit the same schemas as `read_otlp_*`; pick the reader that matches your input encoding:
 
 ```sql
 -- Decode an OTAP (BatchArrowRecords) file into the same flattened log schema
-SELECT time_unix_nano, service_name, severity_text, body FROM read_otap_logs('logs.bar');
+SELECT time_unix_nano, service_name, severity_text, body FROM read_otap_logs('https://github.com/smithclay/duckdb-otlp/raw/refs/heads/main/test/data/otap/logs-initial.bar');
 ```
 
 ## Quickstart: Stream OpenTelemetry data
@@ -60,6 +58,21 @@ SELECT time_unix_nano, service_name, severity_text, body FROM read_otap_logs('lo
 You can start a server that accepts OpenTelemetry data from instrumented code, AI agents such as [Claude Code or Codex](https://smithclay.github.io/duckdb-otlp/guides/store-agent-traces-local-ducklake/), or OpenTelemetry Collectors. 
 
 You can either run a Docker image that runs the extension as a daemon, or type some short commands in DuckDB shell.
+
+<details>
+<summary>Start server in the DuckDB shell</summary>
+
+```sql
+-- See instructions above for loading otlp extension
+-- use otap_serve() for OpenTelemetry Arrow
+-- Listens for OTLP/HTTP on :4318 for metrics, logs, traces
+FROM otlp_serve(
+    'otlp:localhost:4318',
+    token := 'dev-token-123456'
+);
+```
+
+</details>
 
 <details>
 <summary>Run server as a daemon with Docker</summary>
@@ -80,21 +93,6 @@ docker run --rm --name duckdb-otlp \
 To query the running daemon using Quack protocol, [see docs here](https://smithclay.github.io/duckdb-otlp/guides/query-with-quack/).
 
 </details>
-
-<details>
-<summary>Start server in the DuckDB shell</summary>
-
-```sql
--- See instructions above for loading otlp extension
--- Inside DuckDB 1.5.4+
-FROM otlp_serve(
-    'otlp:localhost:4318',
-    token := 'dev-token-123456'
-);
-```
-
-</details>
-
 Send one hello-world log in OTLP/HTTP format with cURL:
 
 ```bash
@@ -113,7 +111,7 @@ For a full walkthrough, including lakehouse ingest, see the [docs](https://smith
 
 ## Schema
 
-The schemas align with a normalized ClickStack-inspired version of the [OpenTelemetry Arrow Data model](https://github.com/open-telemetry/otel-arrow/blob/main/docs/data_model.md) as of extension release `v0.5.0`. Release `v0.5.0` includes breaking schema changes from `v0.4.0`.
+The schemas align with a normalized version of the [OpenTelemetry Arrow Data model](https://github.com/open-telemetry/otel-arrow/blob/main/docs/data_model.md) as of extension release `v0.5.0`. Release `v0.5.0` includes breaking schema changes from `v0.4.0`.
 
 ## What You Can Do
 
