@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.9"
 # dependencies = [
-#   "duckdb==1.5.4",
+#   "duckdb==1.5.5",
 # ]
 # ///
 """End-to-end smoke: real otel-arrow OTAP producer -> our otap_serve gRPC ingest.

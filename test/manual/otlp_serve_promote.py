@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.9"
 # dependencies = [
-#   "duckdb==1.5.4",
+#   "duckdb==1.5.5",
 # ]
 # ///
 """Manual HTTP hot-path coverage for attribute promotion.

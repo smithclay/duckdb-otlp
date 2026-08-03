@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.9"
 # dependencies = [
-#   "duckdb==1.5.4",
+#   "duckdb==1.5.5",
 #   "grpcio>=1.60",
 #   "opentelemetry-proto>=1.20",
 # ]

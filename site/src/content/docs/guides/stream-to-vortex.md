@@ -8,7 +8,7 @@ This is the file-conversion counterpart to [How to stream to Parquet](../stream-
 
 ## Prerequisites
 
-- DuckDB 1.5.4 or later.
+- DuckDB 1.5.5 or later.
 - OTLP files in protobuf, JSON, or NDJSON. The `read_otlp_*` readers accept all three, plus globs and remote URLs.
 
 ## Install the extensions

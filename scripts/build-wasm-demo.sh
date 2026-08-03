@@ -19,11 +19,12 @@
 # imports, 0 invoke_*) and loads + runs read_otlp_logs in dev56 headless Chrome. We therefore
 # build against the plain v1.5.4 tag and do NOT vendor/apply the patches.
 #
-# This is a DEMO-ONLY build. The repo's native submodule pin now also tracks DuckDB v1.5.4, so
-# the DuckDB *version* matches — this build still diverges from a plain `make wasm_eh` only in
-# the emscripten pin and the immediate-abort Rust lib. The submodule + Makefile are restored on
-# exit. Re-run after changing the extension sources or bumping the demo's duckdb-wasm version
-# (and update the version in site/public/wasm-demo/app.js).
+# This is a DEMO-ONLY build. The repo's native submodule pin tracks DuckDB v1.5.5, while this
+# demo build stays on v1.5.4 to match the pinned duckdb-wasm@1.33.1-dev56.0 runtime — so this
+# build diverges from a plain `make wasm_eh` in the DuckDB version, the emscripten pin, and the
+# immediate-abort Rust lib. The submodule + Makefile are restored on exit. Re-run after changing
+# the extension sources or bumping the demo's duckdb-wasm version (and update the version in
+# site/public/wasm-demo/app.js).
 #
 # Prereqs: rustup nightly + rust-src (for -Zbuild-std), an emsdk with 3.1.71, vcpkg bootstrapped.
 set -euo pipefail
@@ -58,7 +59,7 @@ git -C duckdb checkout -q "$DUCKDB_TAG"
 
 # Stamp the metadata version + build the Rust lib with panic=immediate-abort (drops SjLj invoke_*)
 # Force the metadata stamp to the demo's target DuckDB version regardless of the Makefile
-# default (which tracks the native submodule pin — now also v1.5.4, but may diverge later).
+# default (which tracks the native submodule pin — now v1.5.5, diverging from this demo's v1.5.4).
 sed -i.bak -E "s/VERSION_FIELD=\"v[0-9.]+\"/VERSION_FIELD=\"$VERSION_FIELD\"/" Makefile
 sed -i.bak 's|cd external/otlp2records && cargo build --target wasm32-unknown-emscripten --release --features ffi|cd external/otlp2records \&\& RUSTFLAGS="-Zunstable-options -Cpanic=immediate-abort" cargo +nightly build --target wasm32-unknown-emscripten --release --features ffi -Z build-std=std,panic_abort|' Makefile
 rm -f Makefile.bak
