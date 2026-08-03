@@ -182,7 +182,7 @@ During shutdown, the image sends `otlp_stop('otlp:0.0.0.0:4318')` to DuckDB so t
 
 ## Run manually
 
-To run this configuration in a DuckDB 1.5.4+ shell instead of the daemon, create the local DuckLake directories and open a control database:
+To run this configuration in a DuckDB 1.5.5+ shell instead of the daemon, create the local DuckLake directories and open a control database:
 
 ```bash
 mkdir -p data/ducklake/storage
