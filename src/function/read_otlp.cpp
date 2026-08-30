@@ -46,7 +46,7 @@ struct ReadOTLPRustBindData : public TableFunctionData {
 	// Schema from Rust (cached at bind time)
 	ArrowSchema arrow_schema;
 	vector<LogicalType> return_types;
-	vector<string> names;
+	vector<Identifier> names;
 	bool schema_initialized = false;
 
 	~ReadOTLPRustBindData() override {
@@ -100,7 +100,7 @@ struct ReadOTLPRustLocalState : public LocalTableFunctionState {
 // ============================================================================
 
 static unique_ptr<FunctionData> ReadOTLPRustBind(ClientContext &context, TableFunctionBindInput &input,
-                                                 vector<LogicalType> &return_types, vector<string> &names,
+                                                 vector<LogicalType> &return_types, vector<Identifier> &names,
                                                  OtlpSignalType signal_type, bool is_otap = false) {
 	auto result = make_uniq<ReadOTLPRustBindData>();
 
@@ -138,29 +138,31 @@ static unique_ptr<FunctionData> ReadOTLPRustBind(ClientContext &context, TableFu
 
 // Signal-specific bind functions
 static unique_ptr<FunctionData> ReadOTLPLogsRustBind(ClientContext &context, TableFunctionBindInput &input,
-                                                     vector<LogicalType> &return_types, vector<string> &names) {
+                                                     vector<LogicalType> &return_types, vector<Identifier> &names) {
 	return ReadOTLPRustBind(context, input, return_types, names, OTLP_SIGNAL_LOGS);
 }
 
 static unique_ptr<FunctionData> ReadOTLPTracesRustBind(ClientContext &context, TableFunctionBindInput &input,
-                                                       vector<LogicalType> &return_types, vector<string> &names) {
+                                                       vector<LogicalType> &return_types, vector<Identifier> &names) {
 	return ReadOTLPRustBind(context, input, return_types, names, OTLP_SIGNAL_TRACES);
 }
 
 static unique_ptr<FunctionData> ReadOTLPMetricsGaugeRustBind(ClientContext &context, TableFunctionBindInput &input,
-                                                             vector<LogicalType> &return_types, vector<string> &names) {
+                                                             vector<LogicalType> &return_types,
+                                                             vector<Identifier> &names) {
 	return ReadOTLPRustBind(context, input, return_types, names, OTLP_SIGNAL_METRICS_GAUGE);
 }
 
 static unique_ptr<FunctionData> ReadOTLPMetricsSumRustBind(ClientContext &context, TableFunctionBindInput &input,
-                                                           vector<LogicalType> &return_types, vector<string> &names) {
+                                                           vector<LogicalType> &return_types,
+                                                           vector<Identifier> &names) {
 	return ReadOTLPRustBind(context, input, return_types, names, OTLP_SIGNAL_METRICS_SUM);
 }
 
 // Unsupported metric types - throw on bind with clear error message
 static unique_ptr<FunctionData> ReadOTLPMetricsUnsupportedBind(ClientContext &context, TableFunctionBindInput &input,
-                                                               vector<LogicalType> &return_types, vector<string> &names,
-                                                               const string &metric_type) {
+                                                               vector<LogicalType> &return_types,
+                                                               vector<Identifier> &names, const string &metric_type) {
 	throw NotImplementedException("%s metrics not yet supported. "
 	                              "Use read_otlp_metrics_gauge() or read_otlp_metrics_sum() instead.",
 	                              metric_type);
@@ -169,7 +171,7 @@ static unique_ptr<FunctionData> ReadOTLPMetricsUnsupportedBind(ClientContext &co
 static unique_ptr<FunctionData> ReadOTLPMetricsUnionUnsupportedBind(ClientContext &context,
                                                                     TableFunctionBindInput &input,
                                                                     vector<LogicalType> &return_types,
-                                                                    vector<string> &names) {
+                                                                    vector<Identifier> &names) {
 	throw NotImplementedException("read_otlp_metrics() is not supported yet because OTLP metrics have multiple "
 	                              "shape-specific schemas. Use read_otlp_metrics_gauge(), read_otlp_metrics_sum(), "
 	                              "read_otlp_metrics_histogram(), or read_otlp_metrics_exp_histogram().");
@@ -177,62 +179,64 @@ static unique_ptr<FunctionData> ReadOTLPMetricsUnionUnsupportedBind(ClientContex
 
 static unique_ptr<FunctionData> ReadOTLPMetricsHistogramRustBind(ClientContext &context, TableFunctionBindInput &input,
                                                                  vector<LogicalType> &return_types,
-                                                                 vector<string> &names) {
+                                                                 vector<Identifier> &names) {
 	return ReadOTLPRustBind(context, input, return_types, names, OTLP_SIGNAL_METRICS_HISTOGRAM);
 }
 
 static unique_ptr<FunctionData> ReadOTLPMetricsExpHistogramRustBind(ClientContext &context,
                                                                     TableFunctionBindInput &input,
                                                                     vector<LogicalType> &return_types,
-                                                                    vector<string> &names) {
+                                                                    vector<Identifier> &names) {
 	return ReadOTLPRustBind(context, input, return_types, names, OTLP_SIGNAL_METRICS_EXP_HISTOGRAM);
 }
 
 // OTAP bind functions: same schema as their read_otlp_* counterparts, but the
 // scan decodes canonical OTAP (BatchArrowRecords) via the stateful decoder FFI.
 static unique_ptr<FunctionData> ReadOTAPLogsRustBind(ClientContext &context, TableFunctionBindInput &input,
-                                                     vector<LogicalType> &return_types, vector<string> &names) {
+                                                     vector<LogicalType> &return_types, vector<Identifier> &names) {
 	return ReadOTLPRustBind(context, input, return_types, names, OTLP_SIGNAL_LOGS, /*is_otap=*/true);
 }
 
 static unique_ptr<FunctionData> ReadOTAPTracesRustBind(ClientContext &context, TableFunctionBindInput &input,
-                                                       vector<LogicalType> &return_types, vector<string> &names) {
+                                                       vector<LogicalType> &return_types, vector<Identifier> &names) {
 	return ReadOTLPRustBind(context, input, return_types, names, OTLP_SIGNAL_TRACES, /*is_otap=*/true);
 }
 
 static unique_ptr<FunctionData> ReadOTAPMetricsGaugeRustBind(ClientContext &context, TableFunctionBindInput &input,
-                                                             vector<LogicalType> &return_types, vector<string> &names) {
+                                                             vector<LogicalType> &return_types,
+                                                             vector<Identifier> &names) {
 	return ReadOTLPRustBind(context, input, return_types, names, OTLP_SIGNAL_METRICS_GAUGE, /*is_otap=*/true);
 }
 
 static unique_ptr<FunctionData> ReadOTAPMetricsSumRustBind(ClientContext &context, TableFunctionBindInput &input,
-                                                           vector<LogicalType> &return_types, vector<string> &names) {
+                                                           vector<LogicalType> &return_types,
+                                                           vector<Identifier> &names) {
 	return ReadOTLPRustBind(context, input, return_types, names, OTLP_SIGNAL_METRICS_SUM, /*is_otap=*/true);
 }
 
 static unique_ptr<FunctionData> ReadOTAPMetricsHistogramRustBind(ClientContext &context, TableFunctionBindInput &input,
                                                                  vector<LogicalType> &return_types,
-                                                                 vector<string> &names) {
+                                                                 vector<Identifier> &names) {
 	return ReadOTLPRustBind(context, input, return_types, names, OTLP_SIGNAL_METRICS_HISTOGRAM, /*is_otap=*/true);
 }
 
 static unique_ptr<FunctionData> ReadOTAPMetricsExpHistogramRustBind(ClientContext &context,
                                                                     TableFunctionBindInput &input,
                                                                     vector<LogicalType> &return_types,
-                                                                    vector<string> &names) {
+                                                                    vector<Identifier> &names) {
 	return ReadOTLPRustBind(context, input, return_types, names, OTLP_SIGNAL_METRICS_EXP_HISTOGRAM, /*is_otap=*/true);
 }
 
 static unique_ptr<FunctionData> ReadOTLPMetricsSummaryRustBind(ClientContext &context, TableFunctionBindInput &input,
                                                                vector<LogicalType> &return_types,
-                                                               vector<string> &names) {
+                                                               vector<Identifier> &names) {
 	return ReadOTLPMetricsUnsupportedBind(context, input, return_types, names, "Summary");
 }
 
 // Dummy scan - never called since bind throws
 static void ReadOTLPMetricsUnsupportedScan(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
 	// Never reached - bind throws
-	output.SetCardinality(0);
+	output.SetChildCardinality(0);
 }
 
 // ============================================================================
@@ -408,7 +412,7 @@ static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, D
 		idx_t file_idx = gstate.next_file.fetch_add(1);
 		if (file_idx >= bind_data.files.size()) {
 			// No more files
-			output.SetCardinality(0);
+			output.SetChildCardinality(0);
 			return;
 		}
 
