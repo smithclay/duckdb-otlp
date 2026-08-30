@@ -18,6 +18,7 @@
 
 #include "duckdb.hpp"
 #include "duckdb/common/types/vector.hpp"
+#include "duckdb/common/vector/list_vector.hpp"
 
 #include "otlp_arrow.hpp"
 #include "otlp2records.h"
@@ -144,6 +145,6 @@ TEST_CASE("arrow list path accepts a child array with zero offset", "[arrow_list
 	auto entries = FlatVector::GetData<list_entry_t>(output);
 	REQUIRE(entries[0].offset == 0);
 	REQUIRE(entries[0].length == 1);
-	auto &child = ListVector::GetEntry(output);
+	auto &child = ListVector::GetChild(output);
 	REQUIRE(FlatVector::GetData<int64_t>(child)[0] == 111);
 }

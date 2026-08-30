@@ -131,8 +131,10 @@ ScalarFunction OtlpUriParserFunction::GetFunction() {
 	struct_children.emplace_back("ipv6", boolean_type);
 	struct_children.emplace_back("url", varchar_type);
 
-	return ScalarFunction("otlp_uri_parser", {varchar_type}, LogicalType::STRUCT(std::move(struct_children)),
-	                      OtlpUriParser);
+	auto function = ScalarFunction("otlp_uri_parser", {varchar_type}, LogicalType::STRUCT(std::move(struct_children)),
+	                               OtlpUriParser);
+	function.SetFallible();
+	return function;
 }
 
 } // namespace duckdb
