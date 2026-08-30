@@ -100,23 +100,24 @@ duckdb <<'SQL'
 INSTALL quack;
 LOAD quack;
 
-FROM quack_query(
-  'quack:localhost:9494',
-  'SELECT * FROM otlp_flush(''otlp:0.0.0.0:4318'')',
-  token = 'dev-quack-token-123456'
+CREATE SECRET duckdb_otlp_quack (
+  TYPE quack,
+  SCOPE 'quack:localhost:9494',
+  TOKEN 'dev-quack-token-123456'
 );
 
-FROM quack_query(
-  'quack:localhost:9494',
-  $$
-  SELECT service_name, name, count(*) AS spans
-  FROM lake.main.otlp_traces
-  GROUP BY service_name, name
-  ORDER BY spans DESC
-  LIMIT 20
-  $$,
-  token = 'dev-quack-token-123456'
-);
+ATTACH 'quack:localhost:9494' AS otel (TYPE quack);
+CONNECT otel;
+
+SELECT * FROM otlp_flush('otlp:0.0.0.0:4318');
+
+SELECT service_name, name, count(*) AS spans
+FROM lake.main.otlp_traces
+GROUP BY service_name, name
+ORDER BY spans DESC
+LIMIT 20;
+
+DISCONNECT;
 SQL
 ```
 
@@ -127,16 +128,21 @@ duckdb <<'SQL'
 INSTALL quack;
 LOAD quack;
 
-FROM quack_query(
-  'quack:localhost:9494',
-  $$
-  SELECT time_unix_nano, service_name, severity_text, body
-  FROM lake.main.otlp_logs
-  ORDER BY time_unix_nano DESC
-  LIMIT 20
-  $$,
-  token = 'dev-quack-token-123456'
+CREATE SECRET duckdb_otlp_quack (
+  TYPE quack,
+  SCOPE 'quack:localhost:9494',
+  TOKEN 'dev-quack-token-123456'
 );
+
+ATTACH 'quack:localhost:9494' AS otel (TYPE quack);
+CONNECT otel;
+
+SELECT time_unix_nano, service_name, severity_text, body
+FROM lake.main.otlp_logs
+ORDER BY time_unix_nano DESC
+LIMIT 20;
+
+DISCONNECT;
 SQL
 ```
 
