@@ -10,7 +10,6 @@
 #include "duckdb.hpp"
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/common/string_util.hpp"
-#include "duckdb/main/database_manager.hpp"
 #include "duckdb/main/query_result.hpp"
 
 #include <algorithm>
@@ -486,34 +485,23 @@ int RunServe(const EnvSource &env) {
 		std::cout << "Setting up " << config.mode << " (installing extensions, attaching catalog)...\n";
 		Execute(con, config.mode_setup_sql, "mode setup");
 		// Operator SQL, after the mode's ATTACH so it can build on the telemetry catalog, and
-		// before SetDefaultDatabase so a catalog the script itself attaches can still be named
-		// by --catalog. Failures are fatal: a script that was meant to attach a second catalog
-		// or widen a memory limit has no safe "carry on without it" reading.
+		// before the default-catalog switch below so a catalog the script itself attaches can
+		// still be named by --catalog. Failures are fatal: a script that was meant to attach a
+		// second catalog or widen a memory limit has no safe "carry on without it" reading.
 		if (!config.init_sql.empty()) {
 			std::cout << "Running init SQL from " << config.init_sql_path << "...\n";
 			Execute(con, config.init_sql, "init SQL");
 		}
-		// Make the mode's telemetry catalog the instance-wide default database. The Quack
-		// server handles each external client on a *fresh* Connection spun up from the
-		// DatabaseInstance (quack_server.cpp: make_uniq<Connection>(*db)), not on this
-		// startup connection, and `USE`/`SET schema` only mutate the connection they run
-		// on. Setting the DatabaseManager default lets those client connections resolve the
-		// telemetry catalog by default, so callers can scan tables transparently
-		// (ATTACH 'quack:...' AS x; FROM x.otlp_logs) instead of wrapping every statement in
-		// x.query('...'). otlp_serve targets the catalog explicitly, so changing the default
-		// is safe. Parquet mode has no catalog (its inspection views already live in the
-		// default catalog) and is skipped.
+		// DuckDB 2.0 removed DatabaseManager::SetDefaultDatabase, which is what used to make the
+		// mode's telemetry catalog the *instance-wide* default so that the fresh Connections the
+		// Quack server spins up per client (quack_server.cpp: make_uniq<Connection>(*db)) resolved
+		// telemetry tables unqualified. `SET schema` only mutates the connection it runs on, so
+		// this keeps the startup connection pointed at the catalog; Quack clients must qualify
+		// (ATTACH 'quack:...' AS x; FROM x.otlp_logs) until 2.0 exposes a replacement hook.
+		// Parquet mode has no catalog (its inspection views already live in the default catalog)
+		// and is skipped.
 		if (!config.catalog.empty()) {
-			// SetDefaultDatabase resolves the catalog through the meta-transaction, so it must run
-			// inside an explicit transaction on this connection.
-			con.BeginTransaction();
-			try {
-				duckdb::DatabaseManager::Get(*con.context).SetDefaultDatabase(*con.context, config.catalog);
-				con.Commit();
-			} catch (...) {
-				con.Rollback();
-				throw;
-			}
+			Execute(con, "SET schema = " + duckdb::SqlQuote(config.catalog) + ";", "set default catalog");
 		}
 		// One otlp_serve call starts every listener against one server. If any listener fails to
 		// bind, that call closes the listeners it already started and registers nothing; the stop

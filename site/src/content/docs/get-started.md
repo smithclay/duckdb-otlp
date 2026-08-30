@@ -101,7 +101,7 @@ Quack grants full SQL read/write access to this DuckDB connection, so treat the 
 
 ## 6. Query with Quack from Another Host
 
-On another machine, install Quack, create a secret with the token, and attach the remote server. Replace `SERVER_HOST` with the hostname or IP of the machine running the ingest server:
+On another machine, install Quack, create a secret with the token, attach the remote server, and connect the session to it. Replace `SERVER_HOST` with the hostname or IP of the machine running the ingest server:
 
 ```sql
 INSTALL quack;
@@ -114,20 +114,21 @@ CREATE SECRET otlp_quack (
 );
 
 ATTACH 'quack:SERVER_HOST:9494' AS otel (TYPE quack);
+CONNECT otel;
 ```
 
-Point the session at the attached server, then query the signal tables directly:
+Query the signal tables directly:
 
 ```sql
-USE otel;
-
 SELECT time_unix_nano, service_name, severity_text, body
 FROM otlp_logs
 ORDER BY time_unix_nano DESC
 LIMIT 5;
+
+DISCONNECT;
 ```
 
-Quack runs each scan inside the remote DuckDB process and streams the result back. For heavy aggregations — or server-side functions such as `otlp_flush` — run SQL through the attached catalog's `query` macro instead. See [Query with Quack](../guides/query-with-quack/) for the full workflow, including the Docker daemon path.
+Quack runs each statement inside the remote DuckDB process and streams the result back. See [Query with Quack](../guides/query-with-quack/) for the full workflow, including the Docker daemon path and one-shot query fallback.
 
 ## Stop the Servers
 

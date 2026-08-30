@@ -131,9 +131,11 @@ CreateScalarFunctionInfo OtlpUriParserFunction::GetFunction() {
 	struct_children.emplace_back("ipv6", boolean_type);
 	struct_children.emplace_back("url", varchar_type);
 
+	auto function = ScalarFunction("otlp_uri_parser", {varchar_type}, LogicalType::STRUCT(std::move(struct_children)),
+	                               OtlpUriParser);
+	function.SetFallible();
 	return OtlpDocumented(
-	    ScalarFunction("otlp_uri_parser", {varchar_type}, LogicalType::STRUCT(std::move(struct_children)),
-	                   OtlpUriParser),
+	    std::move(function),
 	    {OtlpDoc({varchar_type}, {"listen_uri"},
 	             "Parse an OTLP/OTAP listen URI into a struct of host, port, ipv6 and the http:// URL a "
 	             "listener would bind. The otlp: or otap: scheme is required; the host defaults to localhost "
