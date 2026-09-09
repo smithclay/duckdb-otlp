@@ -39,7 +39,7 @@ struct OtlpStartStopFunctionData : public TableFunctionData {
 };
 
 static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableFunctionBindInput &input,
-                                                  vector<LogicalType> &return_types, vector<string> &names,
+                                                  vector<LogicalType> &return_types, vector<Identifier> &names,
                                                   const string &default_uri, const string &required_scheme) {
 #ifdef __EMSCRIPTEN__
 	throw NotImplementedException("live OTLP ingest is not implemented for the wasm platform");
@@ -226,12 +226,12 @@ static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableF
 }
 
 static unique_ptr<FunctionData> OtlpServeBind(ClientContext &context, TableFunctionBindInput &input,
-                                              vector<LogicalType> &return_types, vector<string> &names) {
+                                              vector<LogicalType> &return_types, vector<Identifier> &names) {
 	return OtlpServeBindImpl(context, input, return_types, names, "otlp:localhost:4318", "otlp");
 }
 
 static unique_ptr<FunctionData> OtapServeBind(ClientContext &context, TableFunctionBindInput &input,
-                                              vector<LogicalType> &return_types, vector<string> &names) {
+                                              vector<LogicalType> &return_types, vector<Identifier> &names) {
 	return OtlpServeBindImpl(context, input, return_types, names, "otap:localhost:4317", "otap");
 }
 
@@ -258,12 +258,12 @@ static void OtlpServe(ClientContext &context, TableFunctionInput &data_p, DataCh
 	output.SetValue(8, 0, "otlp_metrics_histogram");
 	output.SetValue(9, 0, "otlp_metrics_exp_histogram");
 	output.SetValue(10, 0, bind_data.config.catalog_name);
-	output.SetCardinality(1);
+	output.SetChildCardinality(1);
 }
 
 static TableFunctionSet BuildServeFunctionSet(const string &name, table_function_bind_t bind) {
-	TableFunctionSet set(name);
-	auto fun = TableFunction(name, {OtlpVarcharType()}, OtlpServe, bind);
+	TableFunctionSet set {Identifier(name)};
+	auto fun = TableFunction(Identifier(name), {OtlpVarcharType()}, OtlpServe, bind);
 	fun.named_parameters["token"] = OtlpVarcharType();
 	// Opt-in anonymous ingest (no bearer/x-api-key check). Off by default.
 	fun.named_parameters["disable_auth"] = OtlpBooleanType();
@@ -302,7 +302,7 @@ TableFunctionSet OtapServeFunction::GetFunction() {
 }
 
 static unique_ptr<FunctionData> OtlpStopBind(ClientContext &context, TableFunctionBindInput &input,
-                                             vector<LogicalType> &return_types, vector<string> &names) {
+                                             vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto bind_data = make_uniq<OtlpStartStopFunctionData>();
 	auto &uri_value = input.inputs[0];
 	if (uri_value.IsNull() || uri_value.GetValue<string>().empty()) {
@@ -337,7 +337,7 @@ static void OtlpStop(ClientContext &context, TableFunctionInput &data_p, DataChu
 		output.SetValue(0, 0, StringUtil::Format("No server found listening on %s", bind_data.listen_uri.Uri()));
 	}
 	output.SetValue(1, 0, Value::UBIGINT(stop.dropped_rows));
-	output.SetCardinality(1);
+	output.SetChildCardinality(1);
 	bind_data.finished = true;
 }
 
@@ -352,7 +352,7 @@ struct OtlpServerListFunctionData : public TableFunctionData {
 };
 
 static unique_ptr<FunctionData> OtlpServerListBind(ClientContext &context, TableFunctionBindInput &input,
-                                                   vector<LogicalType> &return_types, vector<string> &names) {
+                                                   vector<LogicalType> &return_types, vector<Identifier> &names) {
 	names.emplace_back("listen_uri");
 	return_types.emplace_back(OtlpVarcharType());
 	names.emplace_back("listen_url");
@@ -458,7 +458,7 @@ static void OtlpServerList(ClientContext &context, TableFunctionInput &data_p, D
 		row++;
 		bind_data.offset++;
 	}
-	output.SetCardinality(row);
+	output.SetChildCardinality(row);
 }
 
 TableFunction OtlpServerListFunction::GetFunction() {
@@ -472,14 +472,14 @@ struct OtlpSealListFunctionData : public TableFunctionData {
 };
 
 static unique_ptr<FunctionData> OtlpSealListBind(ClientContext &context, TableFunctionBindInput &input,
-                                                 vector<LogicalType> &return_types, vector<string> &names) {
-	names = {"listen_uri",           "seal_sequence",
-	         "started_unix_ms",      "completed_unix_ms",
-	         "duration_ms",          "append_duration_ms",
-	         "commit_duration_ms",   "rows_committed",
-	         "admitted_bytes",       "success",
-	         "seals_total",          "seal_failures_total",
-	         "committed_rows_total", "error"};
+                                                 vector<LogicalType> &return_types, vector<Identifier> &names) {
+	names = {Identifier("listen_uri"),           Identifier("seal_sequence"),
+	         Identifier("started_unix_ms"),      Identifier("completed_unix_ms"),
+	         Identifier("duration_ms"),          Identifier("append_duration_ms"),
+	         Identifier("commit_duration_ms"),   Identifier("rows_committed"),
+	         Identifier("admitted_bytes"),       Identifier("success"),
+	         Identifier("seals_total"),          Identifier("seal_failures_total"),
+	         Identifier("committed_rows_total"), Identifier("error")};
 	return_types = {OtlpVarcharType(), OtlpUBigIntType(), OtlpBigIntType(),  OtlpBigIntType(),  OtlpBigIntType(),
 	                OtlpBigIntType(),  OtlpBigIntType(),  OtlpUBigIntType(), OtlpUBigIntType(), OtlpBooleanType(),
 	                OtlpUBigIntType(), OtlpUBigIntType(), OtlpUBigIntType(), OtlpVarcharType()};
@@ -513,7 +513,7 @@ static void OtlpSealList(ClientContext &context, TableFunctionInput &data_p, Dat
 		row++;
 		bind_data.offset++;
 	}
-	output.SetCardinality(row);
+	output.SetChildCardinality(row);
 }
 
 TableFunction OtlpSealListFunction::GetFunction() {
@@ -528,7 +528,7 @@ struct OtlpFlushFunctionData : public TableFunctionData {
 };
 
 static unique_ptr<FunctionData> OtlpFlushBind(ClientContext &context, TableFunctionBindInput &input,
-                                              vector<LogicalType> &return_types, vector<string> &names) {
+                                              vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto bind_data = make_uniq<OtlpFlushFunctionData>();
 	auto &uri_value = input.inputs[0];
 	if (uri_value.IsNull() || uri_value.GetValue<string>().empty()) {
@@ -564,7 +564,7 @@ static void OtlpFlush(ClientContext &context, TableFunctionInput &data_p, DataCh
 		output.SetValue(2, 0, Value::UBIGINT(result.seals_total));
 		output.SetValue(3, 0, result.error.empty() ? Value(LogicalType::VARCHAR) : Value(result.error));
 	}
-	output.SetCardinality(1);
+	output.SetChildCardinality(1);
 	bind_data.finished = true;
 }
 
