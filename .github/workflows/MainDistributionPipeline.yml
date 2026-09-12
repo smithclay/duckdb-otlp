@@ -60,7 +60,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: recursive
@@ -69,7 +69,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Compile daemon (amd64) and export the binary
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/duckdb-otlp-server/Dockerfile
@@ -80,7 +80,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=daemon-amd64
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10.1.0
 
       - name: Run daemon config tests
         run: |
@@ -97,7 +97,7 @@ jobs:
           chmod +x docker-bin/amd64/duckdb-otlp-server
 
       - name: Build amd64 runtime image (load)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/duckdb-otlp-server/Dockerfile
@@ -137,7 +137,7 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: recursive
@@ -146,7 +146,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build daemon artifact
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/duckdb-otlp-server/Dockerfile
@@ -176,7 +176,7 @@ jobs:
       - daemon-linux
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Download amd64 daemon artifact
         uses: actions/download-artifact@v4
@@ -196,7 +196,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build amd64 runtime image (load)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/duckdb-otlp-server/Dockerfile
@@ -231,7 +231,7 @@ jobs:
       - docker-smoke
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Download daemon artifacts
         uses: actions/download-artifact@v4
@@ -255,7 +255,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -263,7 +263,7 @@ jobs:
 
       - name: Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
@@ -275,7 +275,7 @@ jobs:
             type=sha,prefix=sha-
 
       - name: Build and publish image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/duckdb-otlp-server/Dockerfile
