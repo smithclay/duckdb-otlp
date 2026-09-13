@@ -157,7 +157,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=daemon-${{ matrix.arch }}
 
       - name: Upload daemon artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: duckdb-otlp-server-${{ matrix.arch }}
           path: daemon-out/${{ matrix.arch }}/duckdb-otlp-server
@@ -179,7 +179,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Download amd64 daemon artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: duckdb-otlp-server-amd64
           path: daemon-artifacts
@@ -234,7 +234,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Download daemon artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: duckdb-otlp-server-*
           path: daemon-artifacts
