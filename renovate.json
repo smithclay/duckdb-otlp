@@ -2,5 +2,35 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended"
+  ],
+  "packageRules": [
+    {
+      "description": "Update the Astro documentation stack together, including major versions.",
+      "matchManagers": [
+        "npm"
+      ],
+      "matchFileNames": [
+        "site/package.json"
+      ],
+      "matchPackageNames": [
+        "astro",
+        "@astrojs/**"
+      ],
+      "groupName": "Astro documentation stack",
+      "separateMajorMinor": false
+    },
+    {
+      "description": "astro check 0.9.x supports TypeScript 5 and 6; revisit when its peer range includes 7.",
+      "matchManagers": [
+        "npm"
+      ],
+      "matchFileNames": [
+        "site/package.json"
+      ],
+      "matchPackageNames": [
+        "typescript"
+      ],
+      "allowedVersions": "<7"
+    }
   ]
 }

@@ -10,12 +10,14 @@
     "preview": "ASTRO_TELEMETRY_DISABLED=1 astro preview"
   },
   "dependencies": {
-    "@astrojs/starlight": "^0.39.2",
-    "@pasqal-io/starlight-client-mermaid": "^0.1.0",
-    "astro": "^6.3.3"
+    "@astrojs/starlight": "^0.42.1",
+    "astro": "^7.3.3"
   },
   "devDependencies": {
-    "@astrojs/check": "^0.9.9",
+    "@astrojs/check": "^0.9.10",
     "typescript": "^6.0.3"
+  },
+  "engines": {
+    "node": ">=22.12.0"
   }
 }

@@ -1,0 +1,47 @@
+name: Documentation checks
+
+on:
+  pull_request:
+    paths:
+      - 'site/**'
+      - 'scripts/pages_extension_repository.py'
+      - 'test/pages/**'
+      - '.github/workflows/pages.yml'
+      - '.github/workflows/site-check.yml'
+      - 'renovate.json'
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'scripts/pages_extension_repository.py'
+      - 'test/pages/**'
+      - '.github/workflows/pages.yml'
+      - '.github/workflows/site-check.yml'
+      - 'renovate.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  site:
+    name: Check and build documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - name: Test extension repository preservation
+        run: python3 -m unittest discover -s test/pages -v
+      - name: Install dependencies from lockfile
+        working-directory: site
+        run: npm ci
+      - name: Check types and build the site
+        working-directory: site
+        run: npm run check && npm run build
