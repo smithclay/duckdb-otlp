@@ -8,6 +8,7 @@ Use these guides when you know the task you want to complete.
 - [How to stream to local DuckLake](stream-to-local-ducklake/)
 - [Query with Quack](query-with-quack/)
 - [How to stream to remote DuckLake](stream-to-remote-ducklake/)
+- [How to stream to DuckLake on GCP](stream-to-gcp-ducklake/)
 - [How to store agent traces in local DuckLake](store-agent-traces-local-ducklake/)
 - [How to stream to Parquet](stream-to-parquet/)
 - [How to stream to Vortex](stream-to-vortex/)

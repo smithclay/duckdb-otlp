@@ -13,7 +13,7 @@
 #
 # The final image is gcr.io/distroless/cc-debian12 (nonroot): glibc + NSS (DNS) + libstdc++
 # + openssl + CA certs, ~48MB, no shell, no package manager, no bundled DuckDB CLI. The
-# daemon and all six runtime extensions link only glibc/libstdc++/libgcc/libz, so this is
+# daemon and the runtime extensions link only glibc/libstdc++/libgcc/libz, so this is
 # all they need. See AGENTS.md.
 
 FROM rust:1-bookworm AS builder
@@ -72,6 +72,7 @@ RUN set -eux; mkdir -p "${HOME}"; \
     for ext in ducklake iceberg httpfs aws postgres quack; do \
         /tmp/duckdb-cli/duckdb -unsigned -c "INSTALL ${ext};"; \
     done; \
+    /tmp/duckdb-cli/duckdb -c "INSTALL gcs FROM community; LOAD gcs;"; \
     chown -R "${RUN_UID}:${RUN_GID}" "${HOME}"
 
 # Stage libz from the apt-installed zlib1g (the only shared lib the daemon needs that

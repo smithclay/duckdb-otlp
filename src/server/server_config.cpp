@@ -557,6 +557,53 @@ ATTACH 'ducklake:ducklake_secret' AS %s;
 	    EnvSql(config, "NEON_PGSSLMODE", "require"), SqlQuote(data_path), QuoteIdentifier(config.catalog));
 }
 
+void ConfigureGcpDuckLake(ServerConfig &config) {
+	config.mode_extensions = {"ducklake", "postgres", "gcs", "otlp"};
+	config.catalog = CatalogDefault(Env("DUCKLAKE_NAME", "lake"));
+	config.schema = SchemaDefault("otlp");
+	auto data_path = RequireEnv("DUCKLAKE_DATA_PATH", config.mode);
+	// Force the native GCS filesystem even if httpfs is loaded by another extension.
+	if (!StringUtil::StartsWith(data_path, "gcss://") || data_path.size() <= 7 || data_path[7] == '/') {
+		throw InvalidInputException("DUCKDB_MODE=gcp-ducklake requires DUCKLAKE_DATA_PATH=gcss://bucket/prefix");
+	}
+	for (auto name : {"PGHOST", "PGDATABASE", "PGUSER", "PGPASSWORD"}) {
+		RequireEnv(name, config.mode);
+	}
+
+	config.mode_setup_sql = StringUtil::Format(R"SQL(
+INSTALL ducklake;
+INSTALL postgres;
+INSTALL gcs FROM community;
+LOAD ducklake;
+LOAD postgres;
+LOAD gcs;
+CREATE OR REPLACE SECRET gcp_storage (
+  TYPE gcp,
+  PROVIDER credential_chain
+);
+CREATE OR REPLACE SECRET postgres_secret (
+  TYPE postgres,
+  HOST %s,
+  PORT %s,
+  DATABASE %s,
+  USER %s,
+  PASSWORD %s,
+  SSLMODE %s
+);
+CREATE OR REPLACE SECRET ducklake_secret (
+  TYPE ducklake,
+  METADATA_PATH '',
+  DATA_PATH %s,
+  METADATA_PARAMETERS MAP {'TYPE': 'postgres', 'SECRET': 'postgres_secret'}
+);
+ATTACH 'ducklake:ducklake_secret' AS %s;
+)SQL",
+	                                           EnvSql(config, "PGHOST"), EnvSql(config, "PGPORT", "5432"),
+	                                           EnvSql(config, "PGDATABASE"), EnvSql(config, "PGUSER"),
+	                                           EnvSql(config, "PGPASSWORD"), EnvSql(config, "PGSSLMODE", "require"),
+	                                           SqlQuote(data_path), QuoteIdentifier(config.catalog));
+}
+
 void ConfigureS3Tables(ServerConfig &config) {
 	config.mode_extensions = {"iceberg", "aws", "httpfs", "otlp"};
 	config.catalog = CatalogDefault(Env("S3_TABLES_CATALOG_NAME", "s3tables"));
@@ -607,6 +654,8 @@ LOAD httpfs;
 void ConfigureMode(ServerConfig &config) {
 	if (config.mode == "local-ducklake") {
 		ConfigureLocalDuckLake(config);
+	} else if (config.mode == "gcp-ducklake") {
+		ConfigureGcpDuckLake(config);
 	} else if (config.mode == "aws-ducklake") {
 		ConfigureAwsDuckLake(config);
 	} else if (config.mode == "parquet") {
@@ -622,7 +671,7 @@ void ConfigureMode(ServerConfig &config) {
 	} else {
 		throw InvalidInputException(
 		    "Unsupported DUCKDB_MODE \"%s\". Supported modes: local-ducklake, aws-ducklake, parquet, "
-		    "r2-data-catalog, s3-tables, r2-neon-ducklake, r2-local-ducklake",
+		    "r2-data-catalog, s3-tables, r2-neon-ducklake, r2-local-ducklake, gcp-ducklake",
 		    config.mode);
 	}
 }
