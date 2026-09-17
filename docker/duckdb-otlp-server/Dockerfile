@@ -85,7 +85,15 @@ RUN set -eux; \
     cp -L "${libz}" /staging/lib/libz.so.1; \
     install -d -o "${RUN_UID}" -g "${RUN_GID}" /staging/data
 
+# The GCS extension's bundled libcurl looks for a Red Hat-style CA path during
+# ADC token refresh. Link it to the final Debian image's maintained trust store.
+# Copy the directory below to preserve the symlink rather than dereferencing it.
+RUN mkdir -p /staging/certs \
+    && ln -s /etc/ssl/certs/ca-certificates.crt /staging/certs/ca-bundle.crt
+
 FROM gcr.io/distroless/cc-debian12:nonroot AS runtime-base
+
+COPY --from=deps /staging/certs/ /etc/pki/tls/certs/
 
 # The one shared lib distroless/cc lacks. LD_LIBRARY_PATH makes it resolvable regardless of
 # the multiarch triplet layout.

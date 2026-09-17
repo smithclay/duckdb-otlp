@@ -29,6 +29,11 @@ scope; bucket IAM determines storage access. A proxy also needs the
 readable by uid `65532` and set `GOOGLE_APPLICATION_CREDENTIALS` to its container
 path. Credentials on the host are not automatically available inside Docker.
 
+The image includes the system CA bundle and the compatibility path needed by
+the GCS extension for TLS verification; no CA certificate mount is required.
+On Cloud Run, use an attached service account for ADC rather than mounting a
+credential file or setting `GOOGLE_APPLICATION_CREDENTIALS`.
+
 ## Configure
 
 Create `gcp-ducklake.env` with permissions restricted to its owner:
