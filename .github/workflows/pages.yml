@@ -62,7 +62,7 @@ jobs:
     needs: extension-build
     steps:
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           pattern: ${{ env.EXT_NAME }}-${{ env.DUCKDB_VERSION }}-extension-*
@@ -152,7 +152,7 @@ jobs:
         run: tar -czf extension-repository.tar.gz -C _extension_repository .
 
       - name: Upload extension repository artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: extension-repository
           path: extension-repository.tar.gz
@@ -195,7 +195,7 @@ jobs:
 
       - name: Download extension repository from this run
         if: needs.extension-package.result == 'success'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: extension-repository
           path: _extension_repository_artifact
