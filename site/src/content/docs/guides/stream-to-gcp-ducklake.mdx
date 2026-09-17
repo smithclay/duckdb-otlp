@@ -1,0 +1,126 @@
+---
+title: "How to Stream OTLP to DuckLake on GCP"
+---
+
+import PostLogRecord from '../../../components/docs/PostLogRecord.astro';
+import QueryCommittedRows from '../../../components/docs/QueryCommittedRows.astro';
+import StopCleanly from '../../../components/docs/StopCleanly.astro';
+
+Use `DUCKDB_MODE=gcp-ducklake` to store DuckLake metadata in PostgreSQL and
+Parquet data in Google Cloud Storage. Cloud SQL can host the catalog in a new
+database on an existing instance. The daemon uses the native `gcs` extension
+with Application Default Credentials (ADC), so no GCS HMAC keys are needed.
+
+## Prepare storage and access
+
+- Create a dedicated GCS bucket or prefix for the lake.
+- Give the receiver's service account `roles/storage.objectAdmin` on that bucket.
+  DuckLake maintenance needs list and delete access as well as read and write.
+- Create a PostgreSQL database and a dedicated catalog user. Grant `CONNECT` on
+  the database and `USAGE, CREATE` on its `public` schema; DuckLake creates and
+  manages its own metadata tables.
+- Make PostgreSQL reachable from the receiver. For Cloud SQL, use a Cloud SQL
+  Auth Proxy socket mounted into the container, or a reachable TCP endpoint with
+  the appropriate TLS configuration. The image does not start a proxy itself.
+
+On a GCP VM, attach the service account and enable the `cloud-platform` OAuth
+scope; bucket IAM determines storage access. A proxy also needs the
+`roles/cloudsql.client` role. In a local container, mount an ADC credential file
+readable by uid `65532` and set `GOOGLE_APPLICATION_CREDENTIALS` to its container
+path. Credentials on the host are not automatically available inside Docker.
+
+## Configure
+
+Create `gcp-ducklake.env` with permissions restricted to its owner:
+
+```ini
+DUCKDB_MODE=gcp-ducklake
+DUCKDB_OTLP_TOKEN=<private-token-at-least-16-characters>
+DUCKLAKE_NAME=lake
+DUCKDB_SCHEMA=otlp
+DUCKLAKE_DATA_PATH=gcss://your-trace-bucket/ducklake/
+
+PGHOST=/cloudsql/your-project:us-central1:your-instance
+PGPORT=5432
+PGDATABASE=tracelake
+PGUSER=tracelake_catalog
+PGPASSWORD=<catalog-user-password>
+PGSSLMODE=disable
+
+DUCKDB_QUACK_ENABLED=1
+DUCKDB_QUACK_ADDR=0.0.0.0:9494
+DUCKDB_QUACK_TOKEN=<separate-private-admin-token>
+```
+
+`PGHOST`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, and `DUCKLAKE_DATA_PATH` are required.
+`PGPORT` defaults to `5432`; `PGSSLMODE` defaults to `require`. The `disable` value
+above is only for the local Unix socket hop to a Cloud SQL Auth Proxy, which
+provides the encrypted connection to Cloud SQL. These are ordinary PostgreSQL
+connection settings; the mode is not tied to Cloud SQL. It does not acquire or
+refresh PostgreSQL IAM tokens.
+
+The data path must use `gcss://` to select the native GCS filesystem even if
+`httpfs` is loaded. The image includes the community `gcs` extension. GCS auth
+uses ADC independently of the PostgreSQL password.
+
+## Run and verify
+
+On a GCP VM with its service account attached and a running proxy writing sockets
+under `/cloudsql`:
+
+```bash
+docker run --rm --name duckdb-otlp \
+  --env-file gcp-ducklake.env \
+  --mount type=bind,src=/cloudsql,dst=/cloudsql \
+  -p 127.0.0.1:4318:4318 \
+  -p 127.0.0.1:9494:9494 \
+  ghcr.io/smithclay/duckdb-otlp:latest
+```
+
+Use a pinned image digest for deployed services. Both host ports bind to loopback
+in this example. Put the ingest endpoint behind HTTPS for remote producers and
+keep Quack private: it provides full SQL access. The proxy directory and sockets
+must be accessible to the image's nonroot uid `65532`. Bind-mounted `/data`, if
+used, must also be writable by that uid.
+
+The daemon creates the OTLP tables in `lake.otlp`. Send a record with the ingest
+token from your environment file:
+
+<PostLogRecord token="<private-token-at-least-16-characters>" guide="stream-to-gcp-ducklake" serviceName="gcp-demo" message="hello from GCP DuckLake" />
+
+<QueryCommittedRows token="<separate-private-admin-token>" table="lake.otlp.otlp_logs" serviceName="gcp-demo" />
+
+<StopCleanly />
+
+For traces, send OTLP/HTTP protobuf or JSON to `/v1/traces`, then query
+`lake.otlp.otlp_traces`. Configure exporters with the HTTPS endpoint and
+`Authorization: Bearer <ingest-token>`.
+
+## Operate the lake
+
+A successful ingest response means buffered in memory. A crash can lose rows
+accepted since the last commit; graceful shutdown flushes them. PostgreSQL-backed
+DuckLake supports concurrent appenders, including overlap during a deployment.
+Each receiver must use its own local control database; share the remote catalog
+and GCS data path, not a local DuckDB file. Bootstrap the catalog/tables once
+before scaling out, since concurrent schema creation can conflict. See
+[DuckLake conflict resolution](https://ducklake.select/docs/stable/duckdb/advanced_features/conflict_resolution).
+
+On Cloud Run, enable instance-based billing (`cpu_idle = false`) for background
+commits and keep a minimum of one instance for prompt ingestion. Configure the
+container port as `4318`. Cloud Run supplies HTTPS; make sure its ingress and
+invoker policy admit your producers before the daemon validates their bearer
+token. Configure Cloud SQL socket mounting and the receiver service account as
+above, and keep Quack unexposed. Monitor commit failures and test a rolling
+deployment before increasing the instance limit. See the
+[live ingest reference](../../reference/serve/) for buffer limits, commit health,
+and maintenance settings.
+
+DuckLake snapshot/file maintenance does not impose a trace retention period.
+Delete expired rows through DuckLake before expiring snapshots and cleaning
+unused files. Do not let bucket lifecycle rules delete files still referenced by
+the catalog.
+
+If startup fails, check PostgreSQL connectivity and grants, ADC availability in
+the container, and bucket IAM. If ingestion succeeds but rows do not appear,
+inspect commit errors with `otlp_server_list()` through private Quack access.

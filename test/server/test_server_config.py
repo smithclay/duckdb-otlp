@@ -249,6 +249,70 @@ def test_r2_neon_ducklake_secrets_use_getvariable(tmp_path):
     assert "getvariable('env_CLOUDFLARE_ACCESS_KEY_ID')" in out
 
 
+def gcp_env():
+    return {
+        "DUCKDB_MODE": "gcp-ducklake",
+        "DUCKDB_OTLP_TOKEN": "a-private-token-123456",
+        "DUCKLAKE_DATA_PATH": "gcss://trace-bucket/ducklake/",
+        "PGHOST": "/cloudsql/project:region:instance",
+        "PGDATABASE": "tracelake",
+        "PGUSER": "trace_writer",
+        "PGPASSWORD": SECRET,
+    }
+
+
+def test_gcp_ducklake_uses_adc_and_remote_postgres(tmp_path):
+    result = run(gcp_env(), tmp_path)
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert "INSTALL gcs FROM community;" in out
+    assert "LOAD gcs;" in out
+    assert "TYPE gcp" in out
+    assert "PROVIDER credential_chain" in out
+    assert "DATA_PATH 'gcss://trace-bucket/ducklake/'" in out
+    assert "ATTACH 'ducklake:ducklake_secret' AS" in out
+    assert "'TYPE': 'postgres'" in out
+    assert "PORT '5432'" in out
+    assert "SSLMODE 'require'" in out
+    for name in ("PGHOST", "PGDATABASE", "PGUSER", "PGPASSWORD"):
+        assert f"getvariable('env_{name}')" in out
+    assert SECRET not in result.stdout + result.stderr
+    assert "KEY_ID" not in out
+    assert "getenv(" not in out
+
+
+def test_gcp_ducklake_proxy_and_catalog_overrides(tmp_path):
+    env = gcp_env()
+    env.update({"PGPORT": "5433", "PGSSLMODE": "disable", "DUCKLAKE_NAME": "trace-lake", "DUCKDB_SCHEMA": "traces"})
+    result = run(env, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "PORT getvariable('env_PGPORT')" in result.stdout
+    assert "SSLMODE getvariable('env_PGSSLMODE')" in result.stdout
+    assert 'AS "trace-lake"' in result.stdout
+    assert "schema := 'traces'" in result.stdout
+
+
+@pytest.mark.parametrize("missing", ["DUCKLAKE_DATA_PATH", "PGHOST", "PGDATABASE", "PGUSER", "PGPASSWORD"])
+def test_gcp_ducklake_requires_catalog_and_storage_config(tmp_path, missing):
+    env = gcp_env()
+    del env[missing]
+    result = run(env, tmp_path)
+    assert result.returncode == 1
+    assert missing in result.stderr
+    assert SECRET not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "path", ["gs://bucket/lake", "gcs://bucket/lake", "s3://bucket/lake", "/data/lake", "gcss://", "gcss:///lake"]
+)
+def test_gcp_ducklake_requires_native_gcs_path(tmp_path, path):
+    env = gcp_env()
+    env["DUCKLAKE_DATA_PATH"] = path
+    result = run(env, tmp_path)
+    assert result.returncode == 1
+    assert "gcss://bucket/prefix" in result.stderr
+
+
 def test_missing_required_var_names_the_var(tmp_path):
     # r2-data-catalog without its bucket should fail naming the missing variable.
     result = run(

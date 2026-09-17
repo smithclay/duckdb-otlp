@@ -56,6 +56,10 @@ export default defineConfig({
               link: "/guides/stream-to-remote-ducklake/",
             },
             {
+              label: "Stream to DuckLake on GCP",
+              link: "/guides/stream-to-gcp-ducklake/",
+            },
+            {
               label: "Store Agent Traces in DuckLake",
               link: "/guides/store-agent-traces-local-ducklake/",
             },

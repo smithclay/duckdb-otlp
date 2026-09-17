@@ -2,6 +2,7 @@
 import { Code } from '@astrojs/starlight/components';
 
 interface Props {
+  token?: string;
   table: string;
   serviceName: string;
   includeTimestamp?: boolean;
@@ -9,6 +10,7 @@ interface Props {
 }
 
 const {
+  token = 'dev-quack-token-123456',
   table,
   serviceName,
   includeTimestamp = false,
@@ -30,7 +32,7 @@ LOAD quack;
 FROM quack_query(
   'quack:localhost:9494',
   'SELECT * FROM otlp_flush(''otlp:0.0.0.0:4318'')',
-  token = 'dev-quack-token-123456'
+  token = '${token}'
 );
 
 FROM quack_query(
@@ -42,7 +44,7 @@ FROM quack_query(
   ORDER BY time_unix_nano DESC
   LIMIT 5
   $$,
-  token = 'dev-quack-token-123456'
+  token = '${token}'
 );
 SQL`;
 ---
