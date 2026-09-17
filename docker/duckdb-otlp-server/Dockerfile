@@ -105,14 +105,14 @@ COPY --from=deps --chown=65532:65532 /staging/data /data
 ENV HOME=/duckdb-home
 
 LABEL org.opencontainers.image.title="duckdb-otlp server" \
-      org.opencontainers.image.description="DuckDB OTLP/HTTP ingest server with mode-based DuckDB catalog initialization" \
+      org.opencontainers.image.description="DuckDB OTLP HTTP/gRPC ingest server with mode-based DuckDB catalog initialization" \
       org.opencontainers.image.source="https://github.com/smithclay/duckdb-otlp"
 
-EXPOSE 4318 9494
+EXPOSE 4317 4318 9494
 VOLUME ["/data"]
 # The daemon health-checks itself (distroless has no shell/curl): the `healthcheck`
-# subcommand probes /readyz (and Quack when enabled) over loopback. /readyz only reports
-# that the listener is bound; the daemon logs a WARNING if seals stop committing.
+# subcommand probes every enabled listener: HTTP /readyz, gRPC TCP connect, and
+# Quack when enabled. The daemon also logs a WARNING if seals stop committing.
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=3 \
     CMD ["/usr/local/bin/duckdb-otlp-server", "healthcheck"]
 

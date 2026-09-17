@@ -3,6 +3,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "otlp_sql_util.hpp"
+#include "otlp_uri.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -682,6 +683,54 @@ bool EnvTruthy(const char *name) {
 	return Truthy(Env(name));
 }
 
+std::vector<IngestListener> ListenersFromEnv() {
+	auto override_uri = Env("DUCKDB_OTLP_LISTEN_URI");
+	// Preserve the existing Arrow listener selection. OTAP is a separate protocol,
+	// not another spelling for standard OTLP/gRPC.
+	if (!override_uri.empty() && duckdb::OtlpUri(override_uri).Scheme() == "otap") {
+		if (HasEnv("DUCKDB_OTLP_TRANSPORTS")) {
+			throw InvalidInputException("DUCKDB_OTLP_TRANSPORTS cannot be combined with an otap: listen URI");
+		}
+		return {{duckdb::OtlpUri(override_uri).Uri(), "grpc", true}};
+	}
+	auto transports = Env("DUCKDB_OTLP_TRANSPORTS", "http");
+	std::vector<IngestListener> listeners;
+	// Split explicitly so empty entries (including a trailing comma) are rejected.
+	duckdb::idx_t offset = 0;
+	while (true) {
+		auto comma = transports.find(',', offset);
+		auto transport = transports.substr(offset, comma == string::npos ? comma : comma - offset);
+		StringUtil::Trim(transport);
+		if (transport != "http" && transport != "grpc") {
+			throw InvalidInputException("DUCKDB_OTLP_TRANSPORTS must be http, grpc, or http,grpc");
+		}
+		for (const auto &listener : listeners) {
+			if (listener.transport == transport) {
+				throw InvalidInputException("DUCKDB_OTLP_TRANSPORTS must not repeat a transport");
+			}
+		}
+		auto addr = transport == "http" ? Env("OTEL_HTTP_ADDR", "0.0.0.0:4318") : Env("OTEL_GRPC_ADDR", "0.0.0.0:4317");
+		duckdb::OtlpUri uri(override_uri.empty() ? "otlp:" + addr : override_uri);
+		listeners.push_back({uri.Uri(), transport, false});
+		if (comma == string::npos) {
+			break;
+		}
+		offset = comma + 1;
+	}
+	if (listeners.size() > 1) {
+		if (!override_uri.empty()) {
+			throw InvalidInputException("DUCKDB_OTLP_LISTEN_URI requires a single transport; use OTEL_HTTP_ADDR and "
+			                            "OTEL_GRPC_ADDR for multiple listeners");
+		}
+		// Conservative: require distinct ports even when two host strings differ,
+		// since wildcard binds and aliases can still address the same socket.
+		if (duckdb::OtlpUri(listeners[0].uri).Port() == duckdb::OtlpUri(listeners[1].uri).Port()) {
+			throw InvalidInputException("OTEL_HTTP_ADDR and OTEL_GRPC_ADDR must use different ports");
+		}
+	}
+	return listeners;
+}
+
 ServerConfig ServerConfig::FromEnv() {
 	auto raw_mode = Env("DUCKDB_MODE");
 	if (raw_mode.empty()) {
@@ -692,8 +741,7 @@ ServerConfig ServerConfig::FromEnv() {
 	config.mode = NormalizeMode(raw_mode);
 	config.database = Env("DUCKDB_DATABASE", "/data/duckdb-otlp-control.duckdb");
 	config.data_dir = Env("DUCKDB_OTLP_DATA_DIR", "/data");
-	config.otel_http_addr = Env("OTEL_HTTP_ADDR", "0.0.0.0:4318");
-	config.listen_uri = Env("DUCKDB_OTLP_LISTEN_URI", "otlp:" + config.otel_http_addr);
+	config.listeners = ListenersFromEnv();
 	config.token = Env("OTEL_AUTH_TOKEN", Env("DUCKDB_OTLP_TOKEN", DEFAULT_TOKEN));
 	config.using_default_token = config.token == DEFAULT_TOKEN;
 	config.quack_enabled = Truthy(Env("DUCKDB_QUACK_ENABLED", Env("QUACK_ENABLED", "0")));
@@ -730,8 +778,8 @@ ServerConfig ServerConfig::FromEnv() {
 	return config;
 }
 
-string ServerConfig::StartOtlpSql() const {
-	auto thread_sql = http_threads == 0
+string ServerConfig::StartOtlpSql(const IngestListener &listener) const {
+	auto thread_sql = http_threads == 0 || listener.transport != "http"
 	                      ? string("")
 	                      : StringUtil::Format(",\n    http_threads := %llu", static_cast<uint64_t>(http_threads));
 	// These ingest limits are declared in three places that must stay in lockstep: the ServerConfig
@@ -766,10 +814,7 @@ string ServerConfig::StartOtlpSql() const {
 	}
 	auto schema_target =
 	    catalog.empty() ? QuoteIdentifier(schema) : QuoteIdentifier(catalog) + "." + QuoteIdentifier(schema);
-	// Pick the serve function by scheme so listen URIs are never mixed across them:
-	// otap: -> otap_serve (OTAP/Arrow streaming), otlp: -> otlp_serve (OTLP/HTTP). The
-	// daemon defaults to otlp: (HTTP); set DUCKDB_OTLP_LISTEN_URI=otap:host:4317 for OTAP.
-	const char *serve_fn = StringUtil::StartsWith(listen_uri, "otap:") ? "otap_serve" : "otlp_serve";
+	const char *serve_fn = listener.otap ? "otap_serve" : "otlp_serve";
 	// The token is read at execution time from a session variable (set via the C++ API in
 	// main.cpp) rather than interpolated as a literal, so it never appears in the generated
 	// SQL string (which DRY_RUN=1 prints to stdout and the engine can echo in error
@@ -779,14 +824,15 @@ CREATE SCHEMA IF NOT EXISTS %s;
 SELECT listen_url, catalog_name, schema_name
 FROM %s(
     %s,
+    transport := %s,
     catalog := %s,
     schema := %s,
     token := getvariable('duckdb_otlp_effective_token'),
     allow_other_hostname := true%s%s%s%s
 );
 )SQL",
-	                          schema_target, serve_fn, SqlQuote(listen_uri), SqlQuote(catalog), SqlQuote(schema),
-	                          thread_sql, limits_sql, export_sql, promote_sql);
+	                          schema_target, serve_fn, SqlQuote(listener.uri), SqlQuote(listener.transport),
+	                          SqlQuote(catalog), SqlQuote(schema), thread_sql, limits_sql, export_sql, promote_sql);
 }
 
 string ServerConfig::StartQuackSql() const {
@@ -805,10 +851,10 @@ FROM quack_serve(
 	                          SqlQuote(quack_listen_uri));
 }
 
-string ServerConfig::StopOtlpSql() const {
+string ServerConfig::StopOtlpSql(const IngestListener &listener) const {
 	// dropped_rows is non-zero only when the final shutdown drain failed and rows were dropped;
 	// main.cpp reads it to exit non-zero on a data-dropping shutdown (review finding M4).
-	return StringUtil::Format("SELECT status, dropped_rows FROM otlp_stop(%s);", SqlQuote(listen_uri));
+	return StringUtil::Format("SELECT status, dropped_rows FROM otlp_stop(%s);", SqlQuote(listener.uri));
 }
 
 string ServerConfig::StopQuackSql() const {
@@ -816,7 +862,11 @@ string ServerConfig::StopQuackSql() const {
 }
 
 string ServerConfig::BootSql() const {
-	return mode_setup_sql + "\n" + StartOtlpSql() + "\n" + StartQuackSql();
+	auto sql = mode_setup_sql;
+	for (const auto &listener : listeners) {
+		sql += "\n" + StartOtlpSql(listener);
+	}
+	return sql + "\n" + StartQuackSql();
 }
 
 } // namespace duckdb_otlp_server
