@@ -1,10 +1,11 @@
 import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
-import starlightClientMermaid from "@pasqal-io/starlight-client-mermaid";
 
 export default defineConfig({
   site: "https://smithclay.github.io",
   base: "/duckdb-otlp",
+  // Preserve whitespace between inline elements across the Astro 7 migration.
+  compressHTML: true,
   integrations: [
     starlight({
       title: "DuckDB OpenTelemetry Extension",
@@ -22,7 +23,6 @@ export default defineConfig({
           href: "https://github.com/smithclay/duckdb-otlp",
         },
       ],
-      plugins: [starlightClientMermaid()],
       sidebar: [
         {
           label: "Start Here",
