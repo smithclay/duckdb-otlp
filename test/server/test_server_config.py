@@ -364,3 +364,100 @@ def test_http_healthcheck_needs_real_http_not_just_tcp():
         assert _healthcheck({"DUCKDB_OTLP_LISTEN_URI": f"otlp:127.0.0.1:{port}"}) == 1
     finally:
         sock.close()
+
+
+@pytest.mark.parametrize('transports', ['http', 'grpc', 'http,grpc', ' grpc, http '])
+def test_transport_selection(tmp_path, transports):
+    result = run({'DUCKDB_MODE': 'parquet', 'DUCKDB_OTLP_TRANSPORTS': transports}, tmp_path)
+    assert result.returncode == 0, result.stderr
+    selected = [value.strip() for value in transports.split(',')]
+    assert result.stdout.count('FROM otlp_serve(') == len(selected)
+    for transport, port in [('http', 4318), ('grpc', 4317)]:
+        assert (f"transport := '{transport}'" in result.stdout) == (transport in selected)
+        assert (f"'otlp:0.0.0.0:{port}'" in result.stdout) == (transport in selected)
+    assert 'FROM otap_serve(' not in result.stdout
+
+
+@pytest.mark.parametrize('transports', ['http,', ',grpc', 'http,,grpc', 'http,http', 'grpc,grpc', 'otap', ' ', 'HTTP'])
+def test_invalid_transports_fail_before_startup(tmp_path, transports):
+    result = run({'DUCKDB_MODE': 'parquet', 'DUCKDB_OTLP_TRANSPORTS': transports}, tmp_path)
+    assert result.returncode == 1
+    assert 'DUCKDB_OTLP_TRANSPORTS' in result.stderr
+
+
+@pytest.mark.parametrize(
+    'env,complaint',
+    [
+        ({'DUCKDB_OTLP_TRANSPORTS': 'http,grpc', 'DUCKDB_OTLP_LISTEN_URI': 'otlp:localhost:9000'}, 'single transport'),
+        ({'DUCKDB_OTLP_TRANSPORTS': 'grpc', 'DUCKDB_OTLP_LISTEN_URI': 'otap:localhost:9000'}, 'otap:'),
+        (
+            {
+                'DUCKDB_OTLP_TRANSPORTS': 'http,grpc',
+                'OTEL_HTTP_ADDR': '0.0.0.0:9000',
+                'OTEL_GRPC_ADDR': 'localhost:9000',
+            },
+            'different ports',
+        ),
+        ({'DUCKDB_OTLP_TRANSPORTS': 'grpc', 'OTEL_GRPC_ADDR': '0.0.0.0:70000'}, 'port'),
+    ],
+)
+def test_conflicting_or_invalid_listener_addresses(tmp_path, env, complaint):
+    result = run({'DUCKDB_MODE': 'parquet', **env}, tmp_path)
+    assert result.returncode == 1
+    assert complaint in result.stderr
+
+
+def test_grpc_uri_override_is_canonical_and_ignores_http_threads(tmp_path):
+    result = run(
+        {
+            'DUCKDB_MODE': 'parquet',
+            'DUCKDB_OTLP_TRANSPORTS': 'grpc',
+            'DUCKDB_OTLP_LISTEN_URI': 'otlp://127.0.0.1:9000',
+            'DUCKDB_OTLP_HTTP_THREADS': '4',
+        },
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "'otlp:127.0.0.1:9000'" in result.stdout
+    assert "transport := 'grpc'" in result.stdout
+    assert 'http_threads :=' not in result.stdout
+
+
+def test_standard_grpc_healthcheck_uses_configured_grpc_port():
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        sock.listen(16)
+        env = {'DUCKDB_OTLP_TRANSPORTS': 'grpc', 'OTEL_GRPC_ADDR': f'127.0.0.1:{sock.getsockname()[1]}'}
+        assert _healthcheck(env) == 0
+    assert _healthcheck(env) == 1
+
+
+def test_healthcheck_requires_both_listeners():
+    import http.server
+    import threading
+
+    class Ready(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200 if self.path == '/readyz' else 404)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    with http.server.ThreadingHTTPServer(('127.0.0.1', 0), Ready) as httpd, socket.socket() as grpc_sock:
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        grpc_sock.bind(('127.0.0.1', 0))
+        grpc_sock.listen(16)
+        env = {
+            'DUCKDB_OTLP_TRANSPORTS': 'http,grpc',
+            'OTEL_HTTP_ADDR': f'127.0.0.1:{httpd.server_port}',
+            'OTEL_GRPC_ADDR': f'127.0.0.1:{grpc_sock.getsockname()[1]}',
+        }
+        try:
+            assert _healthcheck(env) == 0
+            grpc_sock.close()
+            assert _healthcheck(env) == 1
+        finally:
+            httpd.shutdown()
+            thread.join()

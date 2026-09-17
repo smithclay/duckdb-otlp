@@ -13,12 +13,20 @@ namespace duckdb_otlp_server {
 //! daemon's healthcheck subcommand so the accepted set has one definition.
 bool EnvTruthy(const char *name);
 
+struct IngestListener {
+	duckdb::string uri;
+	duckdb::string transport;
+	bool otap = false;
+};
+
+//! Shared by startup and healthcheck; resolving listeners needs no storage credentials or I/O.
+std::vector<IngestListener> ListenersFromEnv();
+
 struct ServerConfig {
 	duckdb::string mode;
 	duckdb::string database;
 	duckdb::string data_dir;
-	duckdb::string listen_uri;
-	duckdb::string otel_http_addr;
+	std::vector<IngestListener> listeners;
 	duckdb::string token;
 	duckdb::string catalog;
 	duckdb::string schema;
@@ -54,9 +62,9 @@ struct ServerConfig {
 
 	static ServerConfig FromEnv();
 
-	duckdb::string StartOtlpSql() const;
+	duckdb::string StartOtlpSql(const IngestListener &listener) const;
 	duckdb::string StartQuackSql() const;
-	duckdb::string StopOtlpSql() const;
+	duckdb::string StopOtlpSql(const IngestListener &listener) const;
 	duckdb::string StopQuackSql() const;
 	duckdb::string BootSql() const;
 };

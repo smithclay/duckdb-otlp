@@ -82,11 +82,11 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@v10.1.0
 
-      - name: Run daemon config tests
+      - name: Run daemon configuration and transport tests
         run: |
           chmod +x daemon-bin/duckdb-otlp-server
           DUCKDB_OTLP_SERVER_BIN="$PWD/daemon-bin/duckdb-otlp-server" \
-            uv run --with pytest pytest test/server -q
+            uv run --with pytest --with grpcio --with opentelemetry-proto --with duckdb==1.5.5 pytest test/server -q
 
       - name: Prepare Docker build context
         shell: bash

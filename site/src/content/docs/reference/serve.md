@@ -18,6 +18,52 @@ Native extension builds include the server; WASM builds omit it entirely (no HTT
 
 For a runnable walkthrough, see the [Live Ingest Quickstart](../../quickstart/serve/). For lakehouse examples, see [Stream to Local DuckLake](../../guides/stream-to-local-ducklake/), [Stream to Remote DuckLake](../../guides/stream-to-remote-ducklake/), [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/), and [Stream to Cloudflare R2 Data Catalog](../../guides/stream-to-r2-data-catalog/). For plain files or object storage, see [Stream to Parquet](../../guides/stream-to-parquet/). For the implementation model, see [Architecture](../../architecture/#otlp-http-ingest-server).
 
+## Docker daemon transports
+
+The `duckdb-otlp-server` image starts HTTP by default. Choose standard OTLP
+listeners with `DUCKDB_OTLP_TRANSPORTS`:
+
+| Setting | Listeners |
+| --- | --- |
+| `http` (default) | OTLP/HTTP on `OTEL_HTTP_ADDR` (default `0.0.0.0:4318`) |
+| `grpc` | Standard OTLP/gRPC on `OTEL_GRPC_ADDR` (default `0.0.0.0:4317`) |
+| `http,grpc` | Both, on separate ports |
+
+For example, accept both protocols into the same local DuckLake:
+
+```sh
+docker run --rm -p 4317:4317 -p 4318:4318 \
+  -e DUCKDB_MODE=local-ducklake \
+  -e DUCKDB_OTLP_TRANSPORTS=http,grpc \
+  -e DUCKDB_OTLP_TOKEN=replace-with-a-private-token \
+  -v otlp-data:/data ghcr.io/smithclay/duckdb-otlp:latest
+```
+
+Both listeners use the same catalog, schema, and bearer token. They have separate
+buffers and seal workers; buffer limits apply **per listener**. Startup must
+succeed for every listener, and graceful shutdown drains every listener. If a
+later listener cannot start, the daemon stops the earlier ones and exits with an
+error. Duplicate/unknown transports, empty list entries, and matching HTTP/gRPC
+ports are rejected. Whitespace around list entries is allowed.
+
+`DUCKDB_OTLP_LISTEN_URI` remains a single-listener override. With `grpc`, use an
+`otlp:` URI (for example `otlp:0.0.0.0:4317`); the transport setting selects gRPC.
+Do not combine this URI override with `http,grpc`; use the two bind-address
+variables instead. The existing `otap:` URI mode still starts OTAP/Arrow when
+`DUCKDB_OTLP_TRANSPORTS` is unset. OTAP/Arrow is distinct from standard OTLP/gRPC,
+and cannot be combined with the transport list.
+
+The image's `healthcheck` command checks every enabled listener, using HTTP
+`/readyz` for HTTP and TCP connect for gRPC. A TCP check confirms a bound socket,
+not successful ingestion or durable writes. `DUCKDB_OTLP_HTTP_THREADS` applies
+only to the HTTP listener. Quack remains a separate opt-in administrative endpoint.
+
+For Cloud Run, select `grpc`, expose its port as `h2c`, and use a compatible
+probe instead of HTTP `/readyz` on that port. Cloud Run terminates TLS and
+forwards cleartext HTTP/2 to the container. Its single ingress port does not
+expose both daemon ports; running `http,grpc` does not multiplex the protocols
+onto one port. See [Cloud Run HTTP/2 configuration](https://docs.cloud.google.com/run/docs/configuring/http2).
+
 ## Functions
 
 The extension registers six server functions (two to start a server, two lifecycle, two diagnostic):

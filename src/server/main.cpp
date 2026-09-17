@@ -1,6 +1,7 @@
 #include "server_config.hpp"
 #include "storage/otlp_extension.hpp"
 #include "otlp_sql_util.hpp"
+#include "otlp_uri.hpp"
 
 #include "duckdb.hpp"
 #include "duckdb/common/error_data.hpp"
@@ -122,11 +123,11 @@ struct OtlpHealth {
 	duckdb::string seal_last_error;
 };
 
-OtlpHealth QueryOtlpHealth(duckdb::Connection &con, const duckdb_otlp_server::ServerConfig &config) {
+OtlpHealth QueryOtlpHealth(duckdb::Connection &con, const duckdb_otlp_server::IngestListener &listener) {
 	auto result =
 	    con.Query("SELECT is_listening, coalesce(last_error, ''), seal_failures_total, coalesce(seal_last_error, '') "
 	              "FROM otlp_server_list() WHERE listen_uri = " +
-	              duckdb::SqlQuote(config.listen_uri) + " LIMIT 1");
+	              duckdb::SqlQuote(listener.uri) + " LIMIT 1");
 	CheckResult(*result, "otlp readiness");
 	auto chunk = result->Fetch();
 	if (!chunk || chunk->size() == 0) {
@@ -144,12 +145,17 @@ OtlpHealth QueryOtlpHealth(duckdb::Connection &con, const duckdb_otlp_server::Se
 bool WaitForReady(duckdb::Connection &con, const duckdb_otlp_server::ServerConfig &config) {
 	auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(config.startup_timeout_secs);
 	while (!shutdown_requested && std::chrono::steady_clock::now() < deadline) {
-		auto health = QueryOtlpHealth(con, config);
-		if (health.found && health.listening) {
-			return true;
+		bool ready = true;
+		for (const auto &listener : config.listeners) {
+			auto health = QueryOtlpHealth(con, listener);
+			ready = ready && health.found && health.listening;
+			if (!health.last_error.empty()) {
+				throw std::runtime_error("OTLP listener " + listener.uri +
+				                         " failed during startup: " + health.last_error);
+			}
 		}
-		if (!health.last_error.empty()) {
-			throw std::runtime_error(duckdb::string("OTLP listener failed during startup: ") + health.last_error);
+		if (ready) {
+			return true;
 		}
 		std::this_thread::sleep_for(std::chrono::milliseconds(250));
 	}
@@ -163,33 +169,29 @@ bool WaitForShutdownOrListenerFailure(duckdb::Connection &con, const duckdb_otlp
 	// should not crash the daemon. But the HTTP /readyz probe only reports that the
 	// listener is bound (it keeps returning 202 "buffered" while seals fail), so without
 	// this log a credential/backend problem would be invisible until the buffer fills.
-	uint64_t last_seal_failures = 0;
+	std::vector<uint64_t> last_seal_failures(config.listeners.size(), 0);
 	while (!shutdown_requested) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(250));
 		if (++ticks % 4 != 0) {
 			continue;
 		}
-		auto health = QueryOtlpHealth(con, config);
-		if (!health.found) {
-			std::cerr << "ERROR: OTLP listener disappeared from server registry" << '\n';
-			return false;
-		}
-		if (!health.listening) {
-			std::cerr << "ERROR: OTLP listener stopped";
-			if (!health.last_error.empty()) {
-				std::cerr << ": " << health.last_error;
+		for (duckdb::idx_t i = 0; i < config.listeners.size(); ++i) {
+			const auto &listener = config.listeners[i];
+			auto health = QueryOtlpHealth(con, listener);
+			if (!health.found || !health.listening) {
+				std::cerr << "ERROR: OTLP listener " << listener.uri << " stopped or disappeared: " << health.last_error
+				          << '\n';
+				return false;
 			}
-			std::cerr << '\n';
-			return false;
-		}
-		if (health.seal_failures > last_seal_failures) {
-			last_seal_failures = health.seal_failures;
-			std::cerr << "WARNING: buffered rows are not committing (seal_failures_total=" << health.seal_failures
-			          << ")";
-			if (!health.seal_last_error.empty()) {
-				std::cerr << ": " << health.seal_last_error;
+			if (health.seal_failures > last_seal_failures[i]) {
+				last_seal_failures[i] = health.seal_failures;
+				std::cerr << "WARNING: buffered rows are not committing (listener=" << listener.uri
+				          << ", seal_failures_total=" << health.seal_failures << ")";
+				if (!health.seal_last_error.empty()) {
+					std::cerr << ": " << health.seal_last_error;
+				}
+				std::cerr << '\n';
 			}
-			std::cerr << '\n';
 		}
 	}
 	return true;
@@ -255,29 +257,25 @@ bool HealthProbe(const duckdb::string &addr, const duckdb::string &path, int por
 // Container HEALTHCHECK entry point. Distroless images ship no shell/curl, so the daemon
 // probes itself. It probes the CONFIGURED bind host (loopback for a 0.0.0.0/:: wildcard bind,
 // the explicit interface otherwise — see HealthCheckHost), so a non-loopback bind is supported
-// without a forever-failing loopback probe (review finding M5). Mirrors the previous shell check:
-// OTLP /readyz, plus the Quack root when Quack is enabled. Returns a process exit code (0 healthy,
-// 1 unhealthy).
+// without a forever-failing loopback probe (review finding M5). HTTP listeners use /readyz,
+// gRPC listeners use TCP connect, and Quack is checked when enabled. Returns 0 only when
+// every configured listener is healthy.
 int RunHealthCheck() {
-	// Probe the daemon's actual transport, derived from the same listen URI server_config uses.
-	// otap: is a gRPC (HTTP/2) listener with no HTTP /readyz, so a TCP connect is the liveness
-	// signal there; otlp: keeps the HTTP /readyz probe. Parsing the URI (rather than only
-	// OTEL_HTTP_ADDR) also probes the actual port when DUCKDB_OTLP_LISTEN_URI overrides it.
-	auto listen_uri = EnvOr("DUCKDB_OTLP_LISTEN_URI", "otlp:" + EnvOr("OTEL_HTTP_ADDR", "0.0.0.0:4318"));
-	bool is_grpc = duckdb::StringUtil::StartsWith(listen_uri, "otap:");
-	auto addr = listen_uri;
-	for (const char *prefix : {"otap://", "otlp://", "otap:", "otlp:"}) {
-		duckdb::string p(prefix);
-		if (duckdb::StringUtil::StartsWith(addr, p)) {
-			addr = addr.substr(p.size());
-			break;
+	try {
+		for (const auto &listener : duckdb_otlp_server::ListenersFromEnv()) {
+			duckdb::OtlpUri uri(listener.uri);
+			auto host = uri.Host();
+			if (host == "0.0.0.0" || host == "::") {
+				host = "127.0.0.1";
+			}
+			bool healthy = listener.transport == "grpc" ? duckdb::OtlpTcpConnectOk(host, uri.Port())
+			                                            : duckdb::OtlpHttpStatusOk(host, uri.Port(), "/readyz");
+			if (!healthy) {
+				return 1;
+			}
 		}
-	}
-	if (is_grpc) {
-		if (!duckdb::OtlpTcpConnectOk(HealthCheckHost(addr), PortFromAddr(addr, 4317))) {
-			return 1;
-		}
-	} else if (!HealthProbe(addr, "/readyz", 4318)) {
+	} catch (std::exception &ex) {
+		std::cerr << "ERROR: " << duckdb::ErrorData(ex).RawMessage() << '\n';
 		return 1;
 	}
 	if (duckdb_otlp_server::EnvTruthy("DUCKDB_QUACK_ENABLED") || duckdb_otlp_server::EnvTruthy("QUACK_ENABLED")) {
@@ -301,7 +299,9 @@ Required:
 Useful common settings:
 
   DUCKDB_DATABASE=/data/duckdb-otlp-control.duckdb
+  DUCKDB_OTLP_TRANSPORTS=http|grpc|http,grpc
   OTEL_HTTP_ADDR=0.0.0.0:4318
+  OTEL_GRPC_ADDR=0.0.0.0:4317
   DUCKDB_OTLP_TOKEN=change-me-at-least-16-chars
   DUCKDB_QUACK_ENABLED=0
   DUCKDB_QUACK_ADDR=0.0.0.0:9494
@@ -343,11 +343,12 @@ int main(int argc, char **argv) {
 		std::cout << "Starting duckdb-otlp server\n\n";
 		std::cout << "Mode: " << config.mode << "\n";
 		std::cout << "Database: " << config.database << "\n\n";
-		std::cout << "OTLP HTTP: " << config.otel_http_addr << "\n";
+		for (const auto &listener : config.listeners) {
+			std::cout << (listener.otap ? "OTAP " : "OTLP ") << listener.transport << ": " << listener.uri << '\n';
+		}
 		if (config.using_default_token) {
-			std::cout << "\nWARNING: using the built-in development OTLP token. Anyone who can reach "
-			          << config.otel_http_addr
-			          << " can ingest with a token that is public in this repo. Set DUCKDB_OTLP_TOKEN "
+			std::cout << "\nWARNING: using the built-in development OTLP token. Anyone who can reach a listener "
+			             "can ingest with a token that is public in this repo. Set DUCKDB_OTLP_TOKEN "
 			             "(or OTEL_AUTH_TOKEN) to a private value before exposing this server.\n\n";
 		}
 		if (config.quack_enabled) {
@@ -407,17 +408,18 @@ int main(int argc, char **argv) {
 			}
 		});
 		// Always stop + join the watcher, even if startup throws. This is the SOLE owner of the
-		// join: the happy path below only flips startup_complete (so the watcher stops interrupting
-		// once serving begins) and leaves the join to this guard, so there is no second, redundant
-		// join to keep in sync (review finding L10).
+		// join: Stop() also runs before listener cleanup so shutdown SQL cannot race an interrupt.
 		struct WatcherGuard {
 			std::atomic<bool> &done;
 			std::thread &worker;
-			~WatcherGuard() {
+			void Stop() {
 				done.store(true);
 				if (worker.joinable()) {
 					worker.join();
 				}
+			}
+			~WatcherGuard() {
+				Stop();
 			}
 		} watcher_guard {startup_complete, interrupt_watcher};
 
@@ -444,27 +446,49 @@ int main(int argc, char **argv) {
 				throw;
 			}
 		}
-		Execute(con, config.StartOtlpSql(), "otlp startup", true);
-		Execute(con, config.StartQuackSql(), "quack startup", true);
-		if (!WaitForReady(con, config) && !shutdown_requested) {
-			throw std::runtime_error("Timed out waiting for OTLP listener readiness");
+		// Stop every attempted listener even if a later bind/startup fails. A failed
+		// listener can still have a registry entry, so record it before execution.
+		std::vector<duckdb_otlp_server::IngestListener> started;
+		auto stop_listeners = [&] {
+			bool clean = true;
+			for (const auto &listener : started) {
+				clean =
+				    TryExecuteOtlpShutdown(con, config.StopOtlpSql(listener), "otlp shutdown " + listener.uri) && clean;
+			}
+			return clean;
+		};
+		try {
+			for (const auto &listener : config.listeners) {
+				started.push_back(listener);
+				Execute(con, config.StartOtlpSql(listener), "otlp startup " + listener.uri, true);
+			}
+			Execute(con, config.StartQuackSql(), "quack startup", true);
+			if (!WaitForReady(con, config) && !shutdown_requested) {
+				throw std::runtime_error("Timed out waiting for OTLP listener readiness");
+			}
+			watcher_guard.Stop();
+
+			std::cout << "DuckDB initialization complete\n";
+			std::cout << "Starting server..." << '\n';
+			auto listener_ok = WaitForShutdownOrListenerFailure(con, config);
+
+			std::cout << "Stopping duckdb-otlp..." << '\n';
+			bool shutdown_ok = true;
+			if (config.quack_enabled) {
+				shutdown_ok = TryExecuteShutdown(con, config.StopQuackSql(), "quack shutdown");
+			}
+			shutdown_ok = stop_listeners() && shutdown_ok;
+			return listener_ok && shutdown_ok ? 0 : 1;
+		} catch (...) {
+			watcher_guard.Stop();
+			if (config.quack_enabled) {
+				TryExecuteShutdown(con, config.StopQuackSql(), "quack startup cleanup");
+			}
+			if (!stop_listeners()) {
+				return 1;
+			}
+			throw;
 		}
-		// Stop the watcher from interrupting now that startup is done; the WatcherGuard joins it on
-		// scope exit (see above), so no explicit join here (review finding L10).
-		startup_complete.store(true);
-
-		std::cout << "DuckDB initialization complete\n";
-		std::cout << "Starting server..." << '\n';
-
-		auto listener_ok = WaitForShutdownOrListenerFailure(con, config);
-
-		std::cout << "Stopping duckdb-otlp..." << '\n';
-		bool shutdown_ok = true;
-		if (config.quack_enabled) {
-			shutdown_ok = TryExecuteShutdown(con, config.StopQuackSql(), "quack shutdown") && shutdown_ok;
-		}
-		shutdown_ok = TryExecuteOtlpShutdown(con, config.StopOtlpSql(), "otlp shutdown") && shutdown_ok;
-		return listener_ok && shutdown_ok ? 0 : 1;
 	} catch (std::exception &ex) {
 		if (shutdown_requested) {
 			// A signal interrupted startup (e.g. mid-ATTACH); treat it as a clean stop.
