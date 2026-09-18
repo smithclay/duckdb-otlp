@@ -301,7 +301,7 @@ string DuckLakeInliningOption() {
 		if (pos != value.size() || value[0] == '-') {
 			throw InvalidInputException("%s must be a non-negative integer", name);
 		}
-		return StringUtil::Format("DATA_INLINING_ROW_LIMIT %llu", static_cast<unsigned long long>(parsed));
+		return StringUtil::Format("DATA_INLINING_ROW_LIMIT %llu", static_cast<uint64_t>(parsed));
 	} catch (InvalidInputException &) {
 		throw;
 	} catch (...) {
