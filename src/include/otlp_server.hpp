@@ -273,6 +273,11 @@ public:
 	idx_t MaintenanceFailuresTotal() const {
 		return maintenance_failures_total.load();
 	}
+	//! Maintenance passes that lost a race to another writer's CHECKPOINT on the same catalog
+	//! (e.g. a second receiver process). Not failures: the other writer already did the work.
+	idx_t MaintenanceContendedTotal() const {
+		return maintenance_contended_total.load();
+	}
 	//! Milliseconds since the last successful catalog maintenance, or -1 if none yet.
 	int64_t LastMaintenanceAgeMs() const;
 	string MaintenanceLastError() const {
@@ -330,6 +335,12 @@ public:
 	//! buffers everything exactly once. Default (unset) = no-op.
 	void SetMetricsStageFaultHookForTest(std::function<void()> hook) {
 		metrics_stage_fault_hook_for_test = std::move(hook);
+	}
+	//! Fault hook invoked inside the catalog-maintenance pass immediately before CHECKPOINT. If it
+	//! throws, the pass fails through the production classification path (contended / unsupported /
+	//! failed). Set it before the maintenance trigger can fire. Default (unset) = no-op.
+	void SetMaintenanceFaultHookForTest(std::function<void()> hook) {
+		maintenance_fault_hook_for_test = std::move(hook);
 	}
 #endif
 
@@ -477,6 +488,10 @@ private:
 	//! Caller holds writer_mutex.
 	void RunCatalogMaintenanceIfDue(std::chrono::steady_clock::time_point now);
 	bool CatalogMaintenanceEnabled() const;
+	//! After a successful CHECKPOINT, delete DuckLake data files the catalog does not track and
+	//! that are older than maintenance_retention_ms (the Parquet a losing concurrent checkpoint or
+	//! a crashed seal leaves behind). Best-effort; DuckLake catalogs only. Caller holds writer_mutex.
+	void SweepOrphanedFiles();
 	//! Set the DuckLake catalog options the post-seal CHECKPOINT consumes (target_file_size,
 	//! expire_older_than, delete_older_than). Best-effort and idempotent: called once at startup;
 	//! non-DuckLake / default catalogs throw and are ignored (maintenance DISABLEs on its own).
@@ -553,8 +568,11 @@ private:
 	// Catalog-maintenance telemetry (written by the sealer thread, read by ListServers).
 	std::atomic<idx_t> maintenance_runs_total {0};
 	std::atomic<idx_t> maintenance_failures_total {0};
+	std::atomic<idx_t> maintenance_contended_total {0};
 	std::atomic<int64_t> last_maintenance_unix_ms {0};
 	string maintenance_last_error; // guarded by seal_error_mutex
+	//! Orphan sweep eligibility, resolved on the first sweep: SUPPORTED only for DuckLake catalogs.
+	CatalogMaintenanceState orphan_sweep_state = CatalogMaintenanceState::PENDING;
 
 #ifdef DUCKDB_OTLP_ENABLE_TEST_SEAM
 	//! Test-only seal fault hook (see SetSealFaultHookForTest). Null in production; the seal
@@ -566,6 +584,8 @@ private:
 	//! Test-only metrics staging fault hook (see SetMetricsStageFaultHookForTest). Null in
 	//! production; BufferMetrics only invokes it when set.
 	std::function<void()> metrics_stage_fault_hook_for_test;
+	//! Test-only maintenance fault hook (see SetMaintenanceFaultHookForTest). Null in production.
+	std::function<void()> maintenance_fault_hook_for_test;
 #endif
 };
 

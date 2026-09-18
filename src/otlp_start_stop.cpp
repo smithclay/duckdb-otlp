@@ -475,6 +475,8 @@ static unique_ptr<FunctionData> OtlpServerListBind(ClientContext &context, Table
 	return_types.emplace_back(OtlpUBigIntType());
 	names.emplace_back("transport");
 	return_types.emplace_back(OtlpVarcharType());
+	names.emplace_back("maintenance_contended_total");
+	return_types.emplace_back(OtlpUBigIntType());
 	return make_uniq<OtlpServerListFunctionData>();
 }
 
@@ -523,6 +525,7 @@ static void OtlpServerList(ClientContext &context, TableFunctionInput &data_p, D
 		output.SetValue(25, row, Value::UBIGINT(s.buffered_bytes));
 		output.SetValue(26, row, Value::UBIGINT(s.promoted_columns_total));
 		output.SetValue(27, row, Value(s.transport));
+		output.SetValue(28, row, Value::UBIGINT(s.maintenance_contended_total));
 		row++;
 		bind_data.offset++;
 	}

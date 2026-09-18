@@ -356,3 +356,15 @@ statement error
 CALL otlp_serve([]::VARCHAR[], token := 'dev-token-123456');
 ----
 requires at least one listen URI
+
+# maintenance_contended_total is a trailing otlp_server_list column; a fresh server has none
+statement ok
+CALL otlp_serve('otlp:127.0.0.1:55480', token := 'dev-token-123456');
+
+query I
+SELECT maintenance_contended_total FROM otlp_server_list() WHERE listen_uri = 'otlp:127.0.0.1:55480';
+----
+0
+
+statement ok
+CALL otlp_stop('otlp:127.0.0.1:55480');

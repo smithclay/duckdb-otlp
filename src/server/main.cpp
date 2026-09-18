@@ -124,12 +124,14 @@ struct OtlpHealth {
 	uint64_t maintenance_runs = 0;
 	uint64_t maintenance_failures = 0;
 	duckdb::string maintenance_last_error;
+	uint64_t maintenance_contended = 0;
 };
 
 OtlpHealth QueryOtlpHealth(duckdb::Connection &con, const duckdb_otlp_server::IngestListener &listener) {
 	auto result =
 	    con.Query("SELECT is_listening, coalesce(last_error, ''), seal_failures_total, coalesce(seal_last_error, ''), "
-	              "maintenance_runs_total, maintenance_failures_total, coalesce(maintenance_last_error, '') "
+	              "maintenance_runs_total, maintenance_failures_total, coalesce(maintenance_last_error, ''), "
+	              "maintenance_contended_total "
 	              "FROM otlp_server_list() WHERE listen_uri = " +
 	              duckdb::SqlQuote(listener.uri) + " LIMIT 1");
 	CheckResult(*result, "otlp readiness");
@@ -146,6 +148,7 @@ OtlpHealth QueryOtlpHealth(duckdb::Connection &con, const duckdb_otlp_server::In
 	health.maintenance_runs = chunk->GetValue(4, 0).GetValue<uint64_t>();
 	health.maintenance_failures = chunk->GetValue(5, 0).GetValue<uint64_t>();
 	health.maintenance_last_error = chunk->GetValue(6, 0).GetValue<duckdb::string>();
+	health.maintenance_contended = chunk->GetValue(7, 0).GetValue<uint64_t>();
 	return health;
 }
 
@@ -186,6 +189,9 @@ bool WaitForShutdownOrListenerFailure(duckdb::Connection &con, const duckdb_otlp
 	// into the catalog while no Parquet appeared. Print every outcome so it is visible in logs.
 	uint64_t last_maintenance_runs = 0;
 	uint64_t last_maintenance_failures = 0;
+	// A contended pass means another process sharing the catalog (e.g. a second receiver during a
+	// deploy) checkpointed first. Informational: it is not a failure and must not trip alerts.
+	uint64_t last_maintenance_contended = 0;
 	while (!shutdown_requested) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(250));
 		if (++ticks % 4 != 0) {
@@ -221,6 +227,12 @@ bool WaitForShutdownOrListenerFailure(duckdb::Connection &con, const duckdb_otlp
 				std::cerr << ": " << server_health.maintenance_last_error;
 			}
 			std::cerr << '\n';
+		}
+		if (server_health.maintenance_contended > last_maintenance_contended) {
+			last_maintenance_contended = server_health.maintenance_contended;
+			std::cerr << "catalog maintenance CHECKPOINT skipped: another writer checkpointed first (catalog="
+			          << config.catalog << ", maintenance_contended_total=" << server_health.maintenance_contended
+			          << ")\n";
 		}
 		if (server_health.maintenance_runs > last_maintenance_runs) {
 			last_maintenance_runs = server_health.maintenance_runs;

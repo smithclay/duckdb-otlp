@@ -120,7 +120,7 @@ SELECT * FROM otlp_serve('otlp:localhost:4318', catalog := 'lake', token := 'my-
 | `seal_target_bytes` | UBIGINT | `134217728` (128 MiB) | Request an asynchronous seal when admitted, uncommitted request bytes reach this threshold. Larger values write fewer, larger files at the cost of a larger in-memory crash-loss window (still bounded by `seal_max_age_ms`). Must be greater than zero. |
 | `seal_max_age_ms` | BIGINT | `5000` | Request an asynchronous seal when the oldest buffered row reaches this age. Must be greater than zero. |
 | `target_file_size` | UBIGINT | `268435456` (256 MiB) | DuckLake only. **Output** Parquet file size the post-seal `CHECKPOINT` merge bin-packs toward; bounds compaction write amplification (files already at target are left alone). Distinct from `seal_target_bytes`, which is admitted *input* bytes. Must be greater than zero. |
-| `maintenance_retention_ms` | BIGINT | `900000` (15 min) | DuckLake only. How old snapshots and unused data files must be before the post-seal `CHECKPOINT` expires and deletes them (`expire_older_than` / `delete_older_than`). Keep it longer than your longest read; time-travel below this window is unavailable. Must be greater than zero. |
+| `maintenance_retention_ms` | BIGINT | `900000` (15 min) | DuckLake only. How old snapshots and unused data files must be before the post-seal `CHECKPOINT` expires and deletes them (`expire_older_than` / `delete_older_than`), and how old an untracked data file must be before the orphan sweep deletes it. Keep it longer than your longest read; time-travel below this window is unavailable. Must be greater than zero. |
 | `promote_resource_attributes` | VARCHAR | *(none)* | Comma-separated **resource** attribute keys to promote into first-class columns at ingest. See [Attribute promotion](#attribute-promotion). Catalog mode only. |
 | `promote_scope_attributes` | VARCHAR | *(none)* | Comma-separated **scope** attribute keys to promote into first-class columns at ingest. See [Attribute promotion](#attribute-promotion). Catalog mode only. |
 
@@ -241,11 +241,12 @@ FROM otlp_server_list();
 | `last_error` | VARCHAR | Last fatal listener error, or `NULL` if none. |
 | `seal_last_error` | VARCHAR | Last batch commit error, or `NULL` if none. |
 | `maintenance_runs_total` | UBIGINT | Successful post-seal catalog maintenance (`CHECKPOINT`) passes since startup. Stays `0` for the default catalog and for catalogs where maintenance is unsupported/disabled. |
-| `maintenance_failures_total` | UBIGINT | Failed maintenance passes since startup. |
+| `maintenance_failures_total` | UBIGINT | Failed maintenance passes since startup. Excludes contended passes. |
 | `last_maintenance_age_ms` | BIGINT | Age (ms) since the last successful maintenance pass, or `NULL` if none has run. |
 | `maintenance_last_error` | VARCHAR | Last maintenance error, or `NULL` if none. |
 | `promoted_columns_total` | UBIGINT | Promoted attribute columns per signal table, or `0` when [attribute promotion](#attribute-promotion) is off/disabled. |
 | `transport` | VARCHAR | The listener's transport: `http` or `grpc`. |
+| `maintenance_contended_total` | UBIGINT | Maintenance passes skipped because another writer checkpointed the same catalog first (for example a second receiver process). Not a failure. |
 
 Use `is_listening` / `last_error` to detect a dead listener. Use `seal_last_error` to inspect writer failures, such as catalog conflicts. Use `maintenance_runs_total` / `last_maintenance_age_ms` to confirm compaction is keeping up.
 
@@ -270,6 +271,8 @@ SELECT count(*) FROM lake.main.otlp_logs;
 ```
 
 Each batch commit writes **one Parquet data file per signal** plus one DuckLake snapshot. After a conservative number of successful automatic row-seals — or about 10 minutes after the last attempt whenever any row-seal is pending, even if ingest has gone idle — `duckdb-otlp` runs best-effort catalog-native maintenance with DuckDB's non-force `CHECKPOINT lake` when recent ingest rate and pending bytes leave ample admission headroom. On a DuckLake catalog, `CHECKPOINT` merges adjacent files and expires/cleans old snapshots and data files in one pass — turning the many small per-seal files into compacted, query-efficient files. At startup the server sets the DuckLake options `CHECKPOINT` reads so this is **bounded**: `target_file_size` caps the merge output (files already at target are left alone, so re-compaction is O(new), not O(total)), and `expire_older_than` / `delete_older_than` (from `maintenance_retention_ms`) gate how old snapshots/files must be before reclaim. See [Durability and background commits](#durability-and-background-commits).
+
+  Several processes can share one DuckLake catalog (for example two receiver instances during a deploy). Their `CHECKPOINT`s can race: the loser fails with a catalog error such as PostgreSQL's `could not serialize access due to concurrent delete`. The server counts that as **contention**, not failure: it increments `maintenance_contended_total`, leaves `maintenance_failures_total` and `maintenance_last_error` alone, and tries again at the next interval. The losing checkpoint can leave a Parquet file the catalog never tracked. After each successful `CHECKPOINT` on a DuckLake catalog, the server runs `ducklake_delete_orphaned_files` with `older_than` set to `maintenance_retention_ms`, so it removes those files but never a file a seal or checkpoint may still be writing.
 
   DuckLake **inlines** small inserts: rows below its data-inlining row limit are stored in the catalog database (for example PostgreSQL) instead of a Parquet file, and only `CHECKPOINT` flushes them to Parquet. At low volume, most seals are inlined, so no Parquet appears until the next maintenance pass. The time-based trigger bounds that delay. The daemon also prints each `CHECKPOINT` success and failure to stderr. To skip inlining entirely, attach with `DATA_INLINING_ROW_LIMIT 0`. The daemon does this when `DUCKLAKE_DATA_INLINING_ROW_LIMIT=0` is set, and every seal then writes Parquet directly, at the cost of one small file per signal per seal until compaction.
 
