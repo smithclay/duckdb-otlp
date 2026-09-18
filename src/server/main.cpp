@@ -121,11 +121,15 @@ struct OtlpHealth {
 	duckdb::string last_error;
 	uint64_t seal_failures = 0;
 	duckdb::string seal_last_error;
+	uint64_t maintenance_runs = 0;
+	uint64_t maintenance_failures = 0;
+	duckdb::string maintenance_last_error;
 };
 
 OtlpHealth QueryOtlpHealth(duckdb::Connection &con, const duckdb_otlp_server::IngestListener &listener) {
 	auto result =
-	    con.Query("SELECT is_listening, coalesce(last_error, ''), seal_failures_total, coalesce(seal_last_error, '') "
+	    con.Query("SELECT is_listening, coalesce(last_error, ''), seal_failures_total, coalesce(seal_last_error, ''), "
+	              "maintenance_runs_total, maintenance_failures_total, coalesce(maintenance_last_error, '') "
 	              "FROM otlp_server_list() WHERE listen_uri = " +
 	              duckdb::SqlQuote(listener.uri) + " LIMIT 1");
 	CheckResult(*result, "otlp readiness");
@@ -139,6 +143,9 @@ OtlpHealth QueryOtlpHealth(duckdb::Connection &con, const duckdb_otlp_server::In
 	health.last_error = chunk->GetValue(1, 0).GetValue<duckdb::string>();
 	health.seal_failures = chunk->GetValue(2, 0).GetValue<uint64_t>();
 	health.seal_last_error = chunk->GetValue(3, 0).GetValue<duckdb::string>();
+	health.maintenance_runs = chunk->GetValue(4, 0).GetValue<uint64_t>();
+	health.maintenance_failures = chunk->GetValue(5, 0).GetValue<uint64_t>();
+	health.maintenance_last_error = chunk->GetValue(6, 0).GetValue<duckdb::string>();
 	return health;
 }
 
@@ -170,6 +177,12 @@ bool WaitForShutdownOrListenerFailure(duckdb::Connection &con, const duckdb_otlp
 	// listener is bound (it keeps returning 202 "buffered" while seals fail), so without
 	// this log a credential/backend problem would be invisible until the buffer fills.
 	std::vector<uint64_t> last_seal_failures(config.listeners.size(), 0);
+	// Catalog maintenance (CHECKPOINT) is what flushes DuckLake-inlined rows out of the metadata
+	// catalog into Parquet and compacts small files. It runs on the sealer thread and only logs
+	// to duckdb_logs, so a failing (or auto-disabled) checkpoint was silent: rows kept committing
+	// into the catalog while no Parquet appeared. Print every outcome so it is visible in logs.
+	std::vector<uint64_t> last_maintenance_runs(config.listeners.size(), 0);
+	std::vector<uint64_t> last_maintenance_failures(config.listeners.size(), 0);
 	while (!shutdown_requested) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(250));
 		if (++ticks % 4 != 0) {
@@ -191,6 +204,23 @@ bool WaitForShutdownOrListenerFailure(duckdb::Connection &con, const duckdb_otlp
 					std::cerr << ": " << health.seal_last_error;
 				}
 				std::cerr << '\n';
+			}
+			if (health.maintenance_failures > last_maintenance_failures[i]) {
+				last_maintenance_failures[i] = health.maintenance_failures;
+				std::cerr << "WARNING: catalog maintenance CHECKPOINT failed; inlined rows are not being flushed "
+				             "to Parquet (listener="
+				          << listener.uri << ", catalog=" << config.catalog
+				          << ", maintenance_failures_total=" << health.maintenance_failures << ")";
+				if (!health.maintenance_last_error.empty()) {
+					std::cerr << ": " << health.maintenance_last_error;
+				}
+				std::cerr << '\n';
+			}
+			if (health.maintenance_runs > last_maintenance_runs[i]) {
+				last_maintenance_runs[i] = health.maintenance_runs;
+				std::cerr << "catalog maintenance CHECKPOINT succeeded (listener=" << listener.uri
+				          << ", catalog=" << config.catalog << ", maintenance_runs_total=" << health.maintenance_runs
+				          << ")\n";
 			}
 		}
 	}
@@ -313,6 +343,7 @@ Useful common settings:
   DUCKDB_OTLP_SEAL_MAX_AGE_MS=5000
   DUCKDB_OTLP_TARGET_FILE_SIZE=268435456
   DUCKDB_OTLP_MAINTENANCE_RETENTION_MS=900000
+  DUCKLAKE_DATA_INLINING_ROW_LIMIT=0   (DuckLake modes; 0 disables inlining, unset keeps the DuckLake default)
   DUCKDB_OTLP_STARTUP_TIMEOUT=60
   DRY_RUN=1
 )HELP";
