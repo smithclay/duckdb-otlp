@@ -398,10 +398,13 @@ def test_transport_selection(tmp_path, transports):
     result = run({'DUCKDB_MODE': 'parquet', 'DUCKDB_OTLP_TRANSPORTS': transports}, tmp_path)
     assert result.returncode == 0, result.stderr
     selected = [value.strip() for value in transports.split(',')]
-    assert result.stdout.count('FROM otlp_serve(') == len(selected)
-    for transport, port in [('http', 4318), ('grpc', 4317)]:
-        assert (f"transport := '{transport}'" in result.stdout) == (transport in selected)
-        assert (f"'otlp:0.0.0.0:{port}'" in result.stdout) == (transport in selected)
+    # Every transport is a listener on one server: exactly one otlp_serve call, with the URIs
+    # and transports as parallel lists in the order given.
+    assert result.stdout.count('FROM otlp_serve(') == 1
+    ports = {'http': 4318, 'grpc': 4317}
+    uris = ', '.join(f"'otlp:0.0.0.0:{ports[t]}'" for t in selected)
+    assert f"[{uris}]" in result.stdout
+    assert "transport := [" + ', '.join(f"'{t}'" for t in selected) + "]" in result.stdout
     assert 'FROM otap_serve(' not in result.stdout
 
 
@@ -445,8 +448,8 @@ def test_grpc_uri_override_is_canonical_and_ignores_http_threads(tmp_path):
         tmp_path,
     )
     assert result.returncode == 0, result.stderr
-    assert "'otlp:127.0.0.1:9000'" in result.stdout
-    assert "transport := 'grpc'" in result.stdout
+    assert "['otlp:127.0.0.1:9000']" in result.stdout
+    assert "transport := ['grpc']" in result.stdout
     assert 'http_threads :=' not in result.stdout
 
 

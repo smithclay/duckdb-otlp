@@ -110,8 +110,9 @@ idx_t TableCount(Connection &con, const std::string &table) {
 unique_ptr<OtlpServer> MakeServer(ClientContext &context, const OtlpServerConfig &config) {
 	for (int port = 41931; port < 41931 + 24; port++) {
 		try {
-			OtlpUri uri("otlp:127.0.0.1:" + std::to_string(port));
-			return make_uniq<OtlpServer>(context, uri, config);
+			OtlpListenerSpec spec;
+			spec.uri = OtlpUri("otlp:127.0.0.1:" + std::to_string(port));
+			return make_uniq<OtlpServer>(context, vector<OtlpListenerSpec> {spec}, config);
 		} catch (const std::exception &) {
 			// bind failed (port in use); try the next candidate.
 		}

@@ -25,12 +25,26 @@ class ColumnDataCollection;
 class DataChunk;
 struct OtlpSignalBuffer;
 
-//! Wire transport for live ingest. HTTP is the OTLP/HTTP server (cpp-httplib);
+//! Wire transport for one listener. HTTP is the OTLP/HTTP server (cpp-httplib);
 //! GRPC is the OTLP/gRPC + OTAP/Arrow server (an embedded tonic server reached
-//! through the otlp2records FFI). Selected by the listen URI scheme: otlp: =>
-//! HTTP, otap: => GRPC.
+//! through the otlp2records FFI). otap: URIs are always GRPC; otlp: URIs are HTTP
+//! unless otlp_serve(transport := 'grpc') selects GRPC.
 enum class OtlpTransport { HTTP, GRPC };
 
+const char *OtlpTransportName(OtlpTransport transport);
+
+//! One bound socket plus the transport that serves it. A server owns one or more.
+struct OtlpListenerSpec {
+	OtlpUri uri;
+	OtlpTransport transport = OtlpTransport::HTTP;
+	//! When transport == GRPC, OR of OTLP_GRPC_SERVICE_* bits selecting which gRPC service
+	//! families the listener registers: OTLP_GRPC_SERVICE_OTLP_UNARY for otlp_serve(grpc),
+	//! OTLP_GRPC_SERVICE_OTAP_ARROW for otap_serve. Unused for HTTP. 0 would register both.
+	uint32_t grpc_service_flags = 0;
+};
+
+//! Server-wide settings shared by every listener: one buffer set, one admission cap,
+//! one sealer, and one maintenance schedule per server.
 struct OtlpServerConfig {
 	string token;
 	//! Opt-in: accept every request without checking the bearer token / x-api-key. Defaults
@@ -38,12 +52,6 @@ struct OtlpServerConfig {
 	//! cannot attach a bearer token (e.g. the otel-arrow OTAP exporter has no auth-header
 	//! config). When true, no token is generated or validated at bind time.
 	bool disable_auth = false;
-	//! Wire transport. Defaults to HTTP; GRPC for otap_serve or otlp_serve(transport:='grpc').
-	OtlpTransport transport = OtlpTransport::HTTP;
-	//! When transport == GRPC, OR of OTLP_GRPC_SERVICE_* bits selecting which gRPC service
-	//! families the listener registers: OTLP_GRPC_SERVICE_OTLP_UNARY for otlp_serve(grpc),
-	//! OTLP_GRPC_SERVICE_OTAP_ARROW for otap_serve. Unused for HTTP. 0 would register both.
-	uint32_t grpc_service_flags = 0;
 	//! Target catalog (attached database). Empty = the connection's default catalog.
 	//! Set this to an attached writable catalog name for lakehouse ingest.
 	string catalog_name;
@@ -56,7 +64,7 @@ struct OtlpServerConfig {
 	string parquet_export_path;
 	bool create_tables = true;
 	idx_t max_body_bytes = otlp_limits::DEFAULT_MAX_BODY_BYTES;
-	//! HTTP worker threads. Zero means choose a conservative host-based default.
+	//! Worker threads for each HTTP listener. Zero means choose a conservative host-based default.
 	idx_t http_threads = 0;
 	//! Internal buffered group-commit ("seal") defaults. Ingest buffers rows in memory
 	//! and a single writer seals them on a size or age trigger, avoiding per-request
@@ -124,26 +132,34 @@ struct OtlpSealEvent {
 	string error;
 };
 
-class OtlpServer {
+class OtlpServer;
+
+//! One bound socket feeding a shared OtlpServer. Listeners own no buffers, sealer, or
+//! counters: every transport admits into the same server, so the admission cap, seal
+//! cadence, maintenance schedule, and readiness all describe the one write path.
+class OtlpListener {
 public:
-	OtlpServer(ClientContext &context, const OtlpUri &uri, const OtlpServerConfig &config);
-	~OtlpServer();
+	OtlpListener(OtlpServer &server_p, OtlpListenerSpec spec_p) : server(server_p), spec(std::move(spec_p)) {
+	}
+	virtual ~OtlpListener() = default;
 
-	//! Stop accepting new connections (close the listener socket) without joining
-	//! listener threads. Safe to call from a request-handler thread — does not wait
-	//! on httplib's task queue, which would deadlock when the caller is a worker.
-	void StopAccepting();
+	//! Bind synchronously (so address-in-use surfaces to otlp_serve) and start serving.
+	virtual void Start() = 0;
+	//! Stop accepting new connections without joining. Safe from a request-handler thread.
+	virtual void StopAccepting() = 0;
+	//! Stop accepting and join/drain the transport's threads. Must not run on a worker thread.
+	//! Idempotent. The server runs its final seal only after every listener has closed.
+	virtual void Close() = 0;
 
-	//! Synchronously stop accepting connections and join the listener threads. Must
-	//! NOT be called from a worker / request-handler thread; httplib's listen-loop
-	//! teardown joins all workers, which would deadlock.
-	void Close();
-
-	//! Whether the server is currently accepting connections. False once the
-	//! listener thread has exited (e.g. an error after a successful bind), so an
-	//! operator can tell a registered server has fallen over.
+	const OtlpUri &Uri() const {
+		return spec.uri;
+	}
+	OtlpTransport Transport() const {
+		return spec.transport;
+	}
+	//! False once the listener has stopped or its accept loop failed after bind.
 	bool IsListening() const {
-		return is_running.load() && !listener_failed.load();
+		return is_running.load() && !failed.load();
 	}
 	//! Last fatal listener error, or empty if none.
 	string LastError() const {
@@ -151,14 +167,49 @@ public:
 		return last_error;
 	}
 
+protected:
+	void RecordFailure(const string &error);
+
+	OtlpServer &server;
+	OtlpListenerSpec spec;
+	std::atomic<bool> is_running {false};
+	std::atomic<bool> failed {false};
+	mutable mutex error_mutex;
+	string last_error;
+};
+
+//! Transport constructors. Each returns an unstarted listener registered against `server`.
+unique_ptr<OtlpListener> MakeOtlpHttpListener(OtlpServer &server, const OtlpListenerSpec &spec);
+unique_ptr<OtlpListener> MakeOtlpGrpcListener(OtlpServer &server, const OtlpListenerSpec &spec);
+
+//! One ingest pipeline: buffers, admission, a single sealer/writer, and catalog maintenance,
+//! fed by N listeners (the collector receiver model: several protocols, one exporter).
+class OtlpServer {
+public:
+	//! Build the pipeline, then start every listener in order. If any listener fails to bind,
+	//! the already-started listeners are closed and the sealer stopped before this throws.
+	OtlpServer(ClientContext &context, const vector<OtlpListenerSpec> &listener_specs, const OtlpServerConfig &config);
+	~OtlpServer();
+
+	//! Synchronously stop every listener, then drain the buffers with one final seal. Must
+	//! NOT be called from a worker / request-handler thread; httplib's listen-loop teardown
+	//! joins all workers, which would deadlock.
+	void Close();
+
+	const vector<unique_ptr<OtlpListener>> &Listeners() const {
+		return listeners;
+	}
+	//! The first listener's URI; labels server-wide rows such as otlp_seal_list().
+	const OtlpUri &PrimaryUri() const;
+
 	//! Generate a fresh CSPRNG-backed 128-bit token, hex-encoded (32 chars).
 	static string GenerateRandomToken(DatabaseInstance &db);
 
 	//! Throw InvalidInputException if `token` doesn't meet requirements (length >= 16).
 	static void ValidateToken(const string &token);
 
-	const OtlpUri &ListenUri() const {
-		return uri;
+	const OtlpServerConfig &Config() const {
+		return config;
 	}
 	const string &Token() const {
 		return config.token;
@@ -301,14 +352,12 @@ public:
 	bool CheckGrpcAuth(const string &authorization) const;
 
 private:
+	// The transport listeners drive the private request path (Ingest, CheckAuth, request
+	// counters, LogServerEvent) and report readiness from SealStalled().
+	friend class OtlpHttpListener;
+	friend class OtlpListener;
+
 	bool CheckAuth(const string &authorization, const string &api_key) const;
-	//! Start the embedded gRPC server (otap: transport). Binds synchronously so an
-	//! address-in-use surfaces to otlp_serve/otap_serve; on failure seals/stops the
-	//! sealer and throws. No-op shell on wasm.
-	void StartGrpc();
-	//! Graceful gRPC shutdown: stop accepting, drain in-flight requests, join the
-	//! runtime, free the handle. Idempotent. Must run before ShutdownIngest().
-	void StopGrpc();
 	OtlpIngestResult Ingest(OtlpRequestKind kind, const string &content_type, const string &content_encoding,
 	                        const string &body);
 	void EnsureTargetTables();
@@ -323,10 +372,9 @@ private:
 	//! lifecycle events log at INFO (the default); pass LogLevel::LOG_WARNING for
 	//! failure paths so they stay visible at default log thresholds.
 	void LogServerEvent(const string &message, LogLevel level = OtlpLogType::LEVEL) const;
+	//! Close every started listener (reverse start order). Idempotent.
+	void CloseListeners();
 
-	static void ListenThread(OtlpServer *server);
-
-	std::thread listen_thread;
 	std::atomic<idx_t> active_requests {0};
 	std::atomic<idx_t> total_requests {0};
 	std::atomic<idx_t> total_rows {0};
@@ -446,8 +494,9 @@ private:
 
 private:
 	weak_ptr<DatabaseInstance> db_ptr;
-	OtlpUri uri;
 	OtlpServerConfig config;
+	//! Every listener feeding this server, in start order. Immutable after construction.
+	vector<unique_ptr<OtlpListener>> listeners;
 
 	// Per-signal in-memory buffers. The vector is immutable after InitBuffers();
 	// each OtlpSignalBuffer carries its own mutex and mutable counters.
@@ -518,17 +567,6 @@ private:
 	//! production; BufferMetrics only invokes it when set.
 	std::function<void()> metrics_stage_fault_hook_for_test;
 #endif
-
-	// --- HTTP transport (httplib). PIMPL so httplib.hpp stays out of this header. ---
-	class Impl;
-	unique_ptr<Impl> impl;
-	// --- gRPC transport. Opaque handle owned by the otlp2records crate (tonic
-	// server + tokio runtime); null unless config.transport == GRPC. ---
-	OtlpGrpcServer *grpc_handle = nullptr;
-	std::atomic<bool> is_running {false};
-	std::atomic<bool> listener_failed {false};
-	mutable mutex error_mutex;
-	string last_error;
 };
 
 //! Loopback HTTP probe backing the daemon's `healthcheck` subcommand. Distroless images

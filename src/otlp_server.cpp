@@ -382,6 +382,105 @@ void OtlpServer::LogServerEvent(const string &message, LogLevel level) const {
 	}
 }
 
+const char *OtlpTransportName(OtlpTransport transport) {
+	return transport == OtlpTransport::GRPC ? "grpc" : "http";
+}
+
+void OtlpListener::RecordFailure(const string &error) {
+	is_running.store(false);
+	failed.store(true);
+	{
+		std::lock_guard<std::mutex> lock(error_mutex);
+		last_error = error;
+	}
+	server.LogServerEvent(StringUtil::Format("OTLP listener for %s stopped: %s", spec.uri.Uri(), error),
+	                      LogLevel::LOG_WARNING);
+}
+
+OtlpServer::OtlpServer(ClientContext &context, const vector<OtlpListenerSpec> &listener_specs,
+                       const OtlpServerConfig &config_p)
+    : db_ptr(context.db), config(config_p) {
+#ifdef __EMSCRIPTEN__
+	throw NotImplementedException("otlp_serve is not implemented for the wasm platform");
+#else
+	if (listener_specs.empty()) {
+		throw InvalidInputException("OTLP server requires at least one listen URI");
+	}
+	// Anonymous mode (opt-in) runs with no token; only enforce the floor when auth is on.
+	if (!config.disable_auth) {
+		ValidateToken(config.token);
+	}
+	auto db = db_ptr.lock();
+	if (!db) {
+		throw InternalException("Database was closed");
+	}
+	EnsureTargetTables();
+	InitBuffers();
+	// One dedicated writer connection; the single sealer thread is the only thing
+	// that ever commits, so concurrent DuckLake writes never conflict.
+	writer_con = make_uniq<Connection>(*db);
+	writer_con->context->config.enable_progress_bar = false;
+	// Set the DuckLake catalog options the post-seal CHECKPOINT consumes (bounded target file
+	// size + snapshot/file retention) before the sealer can fire. Best-effort; no-op for the
+	// default/non-DuckLake catalogs.
+	ConfigureCatalogMaintenanceOptions();
+	// Attribute promotion (opt-in, catalog mode only): add the operator-specified resource/scope
+	// attribute columns once, before the sealer fires. Parquet-export mode has no table to ALTER.
+	if (config.promote.Enabled() && config.parquet_export_path.empty()) {
+		promoter = make_uniq<OtlpColumnPromoter>(config.promote, config.catalog_name, config.schema_name,
+		                                         [this](const string &msg) { LogServerEvent(msg); });
+		promoter->Initialize(*writer_con);
+	}
+	StartSealer();
+
+	// The sealer thread is now running. If any bind fails (e.g. EADDRINUSE) this object is not
+	// fully constructed, so ~OtlpServer() won't run: close the listeners that did start and stop
+	// the sealer here so no socket stays bound and no joinable std::thread is destroyed (which
+	// would std::terminate the process).
+	try {
+		for (auto &spec : listener_specs) {
+			listeners.push_back(spec.transport == OtlpTransport::GRPC ? MakeOtlpGrpcListener(*this, spec)
+			                                                          : MakeOtlpHttpListener(*this, spec));
+			listeners.back()->Start();
+		}
+	} catch (...) {
+		CloseListeners();
+		ShutdownIngest();
+		throw;
+	}
+#endif
+}
+
+const OtlpUri &OtlpServer::PrimaryUri() const {
+	return listeners.front()->Uri();
+}
+
+void OtlpServer::CloseListeners() {
+	// Stop accepting everywhere first so no transport admits new rows while another is still
+	// draining, then close (join/drain) in reverse start order.
+	for (auto &listener : listeners) {
+		listener->StopAccepting();
+	}
+	for (auto it = listeners.rbegin(); it != listeners.rend(); ++it) {
+		(*it)->Close();
+	}
+}
+
+void OtlpServer::Close() {
+	// Every listener is closed (workers joined, in-flight gRPC requests drained) before the one
+	// final seal, so rows buffered by any transport are included. Safe here (controlling thread,
+	// not a worker); idempotent with the ~OtlpServer() safety-net call.
+	CloseListeners();
+	ShutdownIngest();
+}
+
+OtlpServer::~OtlpServer() {
+	try {
+		Close();
+	} catch (std::exception &) {
+	}
+}
+
 void OtlpServer::ValidateToken(const string &token) {
 	// 16 is the deliberate floor for *user-supplied* tokens. Auto-generated tokens
 	// (GenerateRandomToken) carry a full 128 bits of entropy as 32 hex chars; the

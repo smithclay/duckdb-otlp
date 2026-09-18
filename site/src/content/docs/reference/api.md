@@ -72,11 +72,11 @@ In native builds, you can run a server that accepts live telemetry over **HTTP**
 
 Each serve function is bound to its own URI scheme (no mixing). `otlp_serve` runs the **OTLP** protocol on the `otlp:` scheme: **OTLP/HTTP** by default (port 4318), or standard **OTLP/gRPC** unary `Export` with `transport := 'grpc'`. `otap_serve` runs the canonical **OTAP/Arrow** bidirectional streaming services (`Arrow{Logs,Traces,Metrics}Service`, all six signals) over gRPC on the `otap:` scheme (port 4317). The two gRPC service sets are disjoint — `otlp_serve(transport := 'grpc')` serves only OTLP unary, `otap_serve` only OTAP/Arrow. The lifecycle functions below are transport-agnostic.
 
-- **`otlp_serve([uri], transport := 'http'|'grpc', catalog := '<attached_db>', ...)`** - Start an **OTLP** ingest server on the `otlp:` scheme, target a catalog, and create/validate the target tables. `transport` defaults to `'http'` (OTLP/HTTP); `'grpc'` serves OTLP/gRPC unary `Export`.
+- **`otlp_serve([uri], transport := 'http'|'grpc', catalog := '<attached_db>', ...)`** - Start an **OTLP** ingest server on the `otlp:` scheme, target a catalog, and create/validate the target tables. `transport` defaults to `'http'` (OTLP/HTTP); `'grpc'` serves OTLP/gRPC unary `Export`. Pass a URI list with a parallel `transport` list (for example `otlp_serve(['otlp:localhost:4318', 'otlp:localhost:4317'], transport := ['http', 'grpc'])`) to feed one server from several listeners.
 - **`otap_serve([uri], catalog := '<attached_db>', ...)`** - Start an **OTAP/Arrow** gRPC streaming server (`otap:` scheme; defaults to `otap:localhost:4317`, gRPC-only). Same parameters as `otlp_serve`. OTAP/Arrow streams keep one stateful decoder per stream (cross-message Arrow dictionary reuse).
 - **`otlp_flush(uri)`** - Force a synchronous commit when readers need the latest accepted rows now.
-- **`otlp_stop(uri)`** - Stop the server listening on `uri` (commits remaining rows first).
-- **`otlp_server_list()`** - List running servers with live counters, buffer state, and health.
+- **`otlp_stop(uri)`** - Stop the server that owns listener `uri`, including its other listeners (commits remaining rows first).
+- **`otlp_server_list()`** - List running listeners with their server's live counters, buffer state, and health.
 - **`otlp_seal_list()`** - List recent seal attempts with append/commit timing, row/byte counts, and any error.
 
 See the [Serve Reference](../serve/) for parameters, catalog targeting, endpoints, auth, and buffered commit behavior. For task-oriented walkthroughs, start with the [Live Ingest Quickstart](../../quickstart/serve/), [Stream to Local DuckLake](../../guides/stream-to-local-ducklake/), [Stream to Remote DuckLake](../../guides/stream-to-remote-ducklake/), [Stream to Parquet](../../guides/stream-to-parquet/), [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/), or [Stream to Cloudflare R2 Data Catalog](../../guides/stream-to-r2-data-catalog/).

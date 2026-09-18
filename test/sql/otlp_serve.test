@@ -269,3 +269,90 @@ statement error
 SELECT listen_uri FROM otap_serve('otap:127.0.0.1:55465', token := 'dev-token-123456', transport := 'http');
 ----
 otap_serve is gRPC-only
+
+# --- one server, N listeners ---
+# otlp_serve takes a list of listen URIs with a parallel transport list. Every listener
+# feeds one server: one buffer set, one admission cap, one sealer, one maintenance schedule.
+query TTT
+SELECT listen_uri, listen_url, transport
+FROM otlp_serve(['otlp:127.0.0.1:55470', 'otlp:127.0.0.1:55471'], transport := ['http', 'grpc'],
+                token := 'dev-token-123456', seal_target_bytes := 1048576)
+ORDER BY listen_uri;
+----
+otlp:127.0.0.1:55470	http://127.0.0.1:55470	http
+otlp:127.0.0.1:55471	http://127.0.0.1:55471	grpc
+
+# one row per listener, sharing the server-wide seal settings and counters
+query TTII
+SELECT listen_uri, transport, seal_target_bytes, seals_total
+FROM otlp_server_list()
+ORDER BY listen_uri;
+----
+otlp:127.0.0.1:55470	http	1048576	0
+otlp:127.0.0.1:55471	grpc	1048576	0
+
+# a flush through either listener reaches the one shared server
+query T
+SELECT status FROM otlp_flush('otlp:127.0.0.1:55471');
+----
+sealed
+
+# a second server for the same catalog + schema is rejected: a target has one writer
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55472', token := 'dev-token-123456');
+----
+pass every listen URI to one otlp_serve call
+
+# a listen URI already owned by the server is rejected
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55471', token := 'dev-token-123456', schema := 'other_schema');
+----
+OTLP server already exists for otlp:127.0.0.1:55471
+
+# stopping through any listener URI stops every listener and drains once
+query T
+SELECT status FROM otlp_stop('otlp:127.0.0.1:55471');
+----
+Stopped listening on otlp:127.0.0.1:55470, otlp:127.0.0.1:55471
+
+query I
+SELECT count(*) FROM otlp_server_list();
+----
+0
+
+# a scalar transport applies to every listed URI
+query TT
+SELECT listen_uri, transport
+FROM otlp_serve(['otlp:127.0.0.1:55473', 'otlp:127.0.0.1:55474'], transport := 'grpc',
+                token := 'dev-token-123456')
+ORDER BY listen_uri;
+----
+otlp:127.0.0.1:55473	grpc
+otlp:127.0.0.1:55474	grpc
+
+statement ok
+CALL otlp_stop('otlp:127.0.0.1:55473');
+
+# a transport list must match the URI list
+statement error
+CALL otlp_serve(['otlp:127.0.0.1:55475', 'otlp:127.0.0.1:55476'], transport := ['http', 'grpc', 'http'],
+                token := 'dev-token-123456');
+----
+one entry per listen URI
+
+# listen URIs must be distinct
+statement error
+CALL otlp_serve(['otlp:127.0.0.1:55477', 'otlp:127.0.0.1:55477'], token := 'dev-token-123456');
+----
+must be distinct
+
+# the scheme check applies to every URI in the list
+statement error
+CALL otlp_serve(['otlp:127.0.0.1:55478', 'otap:127.0.0.1:55479'], token := 'dev-token-123456');
+----
+otlp_serve requires an 'otlp:' URI
+
+statement error
+CALL otlp_serve([]::VARCHAR[], token := 'dev-token-123456');
+----
+requires at least one listen URI

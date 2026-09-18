@@ -171,57 +171,61 @@ bool WaitForReady(duckdb::Connection &con, const duckdb_otlp_server::ServerConfi
 
 bool WaitForShutdownOrListenerFailure(duckdb::Connection &con, const duckdb_otlp_server::ServerConfig &config) {
 	duckdb::idx_t ticks = 0;
+	// Every listener feeds one server, so the seal and maintenance counters are server-wide:
+	// each listener's otlp_server_list() row repeats them. Read them once (from the first
+	// listener) so each outcome is logged once, not once per transport.
+	//
 	// Seal failures are surfaced as WARNINGs rather than a process exit: a failed seal
 	// re-buffers its rows and retries on the next trigger, so a transient backend outage
-	// should not crash the daemon. But the HTTP /readyz probe only reports that the
-	// listener is bound (it keeps returning 202 "buffered" while seals fail), so without
+	// should not crash the daemon. /readyz degrades only once the stall persists, so without
 	// this log a credential/backend problem would be invisible until the buffer fills.
-	std::vector<uint64_t> last_seal_failures(config.listeners.size(), 0);
+	uint64_t last_seal_failures = 0;
 	// Catalog maintenance (CHECKPOINT) is what flushes DuckLake-inlined rows out of the metadata
 	// catalog into Parquet and compacts small files. It runs on the sealer thread and only logs
 	// to duckdb_logs, so a failing (or auto-disabled) checkpoint was silent: rows kept committing
 	// into the catalog while no Parquet appeared. Print every outcome so it is visible in logs.
-	std::vector<uint64_t> last_maintenance_runs(config.listeners.size(), 0);
-	std::vector<uint64_t> last_maintenance_failures(config.listeners.size(), 0);
+	uint64_t last_maintenance_runs = 0;
+	uint64_t last_maintenance_failures = 0;
 	while (!shutdown_requested) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(250));
 		if (++ticks % 4 != 0) {
 			continue;
 		}
-		for (duckdb::idx_t i = 0; i < config.listeners.size(); ++i) {
-			const auto &listener = config.listeners[i];
+		OtlpHealth server_health;
+		for (const auto &listener : config.listeners) {
 			auto health = QueryOtlpHealth(con, listener);
 			if (!health.found || !health.listening) {
 				std::cerr << "ERROR: OTLP listener " << listener.uri << " stopped or disappeared: " << health.last_error
 				          << '\n';
 				return false;
 			}
-			if (health.seal_failures > last_seal_failures[i]) {
-				last_seal_failures[i] = health.seal_failures;
-				std::cerr << "WARNING: buffered rows are not committing (listener=" << listener.uri
-				          << ", seal_failures_total=" << health.seal_failures << ")";
-				if (!health.seal_last_error.empty()) {
-					std::cerr << ": " << health.seal_last_error;
-				}
-				std::cerr << '\n';
+			if (&listener == &config.listeners.front()) {
+				server_health = health;
 			}
-			if (health.maintenance_failures > last_maintenance_failures[i]) {
-				last_maintenance_failures[i] = health.maintenance_failures;
-				std::cerr << "WARNING: catalog maintenance CHECKPOINT failed; inlined rows are not being flushed "
-				             "to Parquet (listener="
-				          << listener.uri << ", catalog=" << config.catalog
-				          << ", maintenance_failures_total=" << health.maintenance_failures << ")";
-				if (!health.maintenance_last_error.empty()) {
-					std::cerr << ": " << health.maintenance_last_error;
-				}
-				std::cerr << '\n';
+		}
+		if (server_health.seal_failures > last_seal_failures) {
+			last_seal_failures = server_health.seal_failures;
+			std::cerr << "WARNING: buffered rows are not committing (catalog=" << config.catalog
+			          << ", seal_failures_total=" << server_health.seal_failures << ")";
+			if (!server_health.seal_last_error.empty()) {
+				std::cerr << ": " << server_health.seal_last_error;
 			}
-			if (health.maintenance_runs > last_maintenance_runs[i]) {
-				last_maintenance_runs[i] = health.maintenance_runs;
-				std::cerr << "catalog maintenance CHECKPOINT succeeded (listener=" << listener.uri
-				          << ", catalog=" << config.catalog << ", maintenance_runs_total=" << health.maintenance_runs
-				          << ")\n";
+			std::cerr << '\n';
+		}
+		if (server_health.maintenance_failures > last_maintenance_failures) {
+			last_maintenance_failures = server_health.maintenance_failures;
+			std::cerr << "WARNING: catalog maintenance CHECKPOINT failed; inlined rows are not being flushed "
+			             "to Parquet (catalog="
+			          << config.catalog << ", maintenance_failures_total=" << server_health.maintenance_failures << ")";
+			if (!server_health.maintenance_last_error.empty()) {
+				std::cerr << ": " << server_health.maintenance_last_error;
 			}
+			std::cerr << '\n';
+		}
+		if (server_health.maintenance_runs > last_maintenance_runs) {
+			last_maintenance_runs = server_health.maintenance_runs;
+			std::cerr << "catalog maintenance CHECKPOINT succeeded (catalog=" << config.catalog
+			          << ", maintenance_runs_total=" << server_health.maintenance_runs << ")\n";
 		}
 	}
 	return true;
@@ -477,22 +481,14 @@ int main(int argc, char **argv) {
 				throw;
 			}
 		}
-		// Stop every attempted listener even if a later bind/startup fails. A failed
-		// listener can still have a registry entry, so record it before execution.
-		std::vector<duckdb_otlp_server::IngestListener> started;
+		// One otlp_serve call starts every listener against one server. If any listener fails to
+		// bind, that call closes the listeners it already started and registers nothing; the stop
+		// is still attempted on every exit so a server that did register is always drained.
 		auto stop_listeners = [&] {
-			bool clean = true;
-			for (const auto &listener : started) {
-				clean =
-				    TryExecuteOtlpShutdown(con, config.StopOtlpSql(listener), "otlp shutdown " + listener.uri) && clean;
-			}
-			return clean;
+			return TryExecuteOtlpShutdown(con, config.StopOtlpSql(), "otlp shutdown");
 		};
 		try {
-			for (const auto &listener : config.listeners) {
-				started.push_back(listener);
-				Execute(con, config.StartOtlpSql(listener), "otlp startup " + listener.uri, true);
-			}
+			Execute(con, config.StartOtlpSql(), "otlp startup", true);
 			Execute(con, config.StartQuackSql(), "quack startup", true);
 			if (!WaitForReady(con, config) && !shutdown_requested) {
 				throw std::runtime_error("Timed out waiting for OTLP listener readiness");

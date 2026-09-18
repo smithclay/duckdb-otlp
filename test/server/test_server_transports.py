@@ -130,7 +130,15 @@ def test_ingest_auth_and_sigterm_drain_for_selected_transports(tmp_path, transpo
             'SELECT name FROM read_parquet(?) ORDER BY name', [[str(p) for p in files]]
         ).fetchall()
     assert actual == [(name,) for name in sorted(expected)]
-    assert TOKEN not in log_path.read_text()
+    # Both transports feed one server: one buffer set and one final seal, so the SIGTERM drain
+    # writes a single traces file rather than one per listener.
+    assert len(files) == 1, files
+    log = log_path.read_text()
+    listeners = [f"otlp:{env['OTEL_HTTP_ADDR']}"] if 'http' in transports else []
+    listeners += [f"otlp:{env['OTEL_GRPC_ADDR']}"] if 'grpc' in transports else []
+    assert log.count('Stopped listening on') == 1, log
+    assert all(listener in log for listener in listeners), log
+    assert TOKEN not in log
 
 
 def test_second_listener_bind_failure_cleans_up_first_listener(tmp_path):
@@ -142,7 +150,9 @@ def test_second_listener_bind_failure_cleans_up_first_listener(tmp_path):
         with daemon(tmp_path, env) as (process, log_path):
             assert process.wait(timeout=15) == 1
         log = log_path.read_text()
-        assert f"Stopped listening on otlp:{env['OTEL_HTTP_ADDR']}" in log, log
-        assert 'ERROR' in log
+        # The failed otlp_serve call closes the HTTP listener it had already bound and registers
+        # nothing, so the shutdown stop finds no server.
+        assert 'Failed to start OTLP/gRPC server' in log, log
+        assert 'No server found listening on' in log, log
         with socket.socket() as probe:
             assert probe.connect_ex(('127.0.0.1', int(env['OTEL_HTTP_ADDR'].split(':')[1]))) != 0

@@ -62,9 +62,11 @@ struct ServerConfig {
 
 	static ServerConfig FromEnv();
 
-	duckdb::string StartOtlpSql(const IngestListener &listener) const;
+	//! One otlp_serve/otap_serve call starting every listener against one shared server.
+	duckdb::string StartOtlpSql() const;
 	duckdb::string StartQuackSql() const;
-	duckdb::string StopOtlpSql(const IngestListener &listener) const;
+	//! Stops the whole server (every listener) through its first listener URI.
+	duckdb::string StopOtlpSql() const;
 	duckdb::string StopQuackSql() const;
 	duckdb::string BootSql() const;
 };

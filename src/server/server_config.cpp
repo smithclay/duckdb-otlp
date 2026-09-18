@@ -817,8 +817,12 @@ ServerConfig ServerConfig::FromEnv() {
 	return config;
 }
 
-string ServerConfig::StartOtlpSql(const IngestListener &listener) const {
-	auto thread_sql = http_threads == 0 || listener.transport != "http"
+string ServerConfig::StartOtlpSql() const {
+	bool any_http = false;
+	for (const auto &listener : listeners) {
+		any_http = any_http || listener.transport == "http";
+	}
+	auto thread_sql = http_threads == 0 || !any_http
 	                      ? string("")
 	                      : StringUtil::Format(",\n    http_threads := %llu", static_cast<uint64_t>(http_threads));
 	// These ingest limits are declared in three places that must stay in lockstep: the ServerConfig
@@ -853,7 +857,15 @@ string ServerConfig::StartOtlpSql(const IngestListener &listener) const {
 	}
 	auto schema_target =
 	    catalog.empty() ? QuoteIdentifier(schema) : QuoteIdentifier(catalog) + "." + QuoteIdentifier(schema);
-	const char *serve_fn = listener.otap ? "otap_serve" : "otlp_serve";
+	// Every listener feeds one server (one buffer set, one sealer, one maintenance schedule),
+	// so the URIs and their transports are passed as parallel lists to a single call.
+	const char *serve_fn = listeners.front().otap ? "otap_serve" : "otlp_serve";
+	string uris_sql;
+	string transports_sql;
+	for (const auto &listener : listeners) {
+		uris_sql += (uris_sql.empty() ? "" : ", ") + SqlQuote(listener.uri);
+		transports_sql += (transports_sql.empty() ? "" : ", ") + SqlQuote(listener.transport);
+	}
 	// The token is read at execution time from a session variable (set via the C++ API in
 	// main.cpp) rather than interpolated as a literal, so it never appears in the generated
 	// SQL string (which DRY_RUN=1 prints to stdout and the engine can echo in error
@@ -862,16 +874,16 @@ string ServerConfig::StartOtlpSql(const IngestListener &listener) const {
 CREATE SCHEMA IF NOT EXISTS %s;
 SELECT listen_url, catalog_name, schema_name
 FROM %s(
-    %s,
-    transport := %s,
+    [%s],
+    transport := [%s],
     catalog := %s,
     schema := %s,
     token := getvariable('duckdb_otlp_effective_token'),
     allow_other_hostname := true%s%s%s%s
 );
 )SQL",
-	                          schema_target, serve_fn, SqlQuote(listener.uri), SqlQuote(listener.transport),
-	                          SqlQuote(catalog), SqlQuote(schema), thread_sql, limits_sql, export_sql, promote_sql);
+	                          schema_target, serve_fn, uris_sql, transports_sql, SqlQuote(catalog), SqlQuote(schema),
+	                          thread_sql, limits_sql, export_sql, promote_sql);
 }
 
 string ServerConfig::StartQuackSql() const {
@@ -890,10 +902,11 @@ FROM quack_serve(
 	                          SqlQuote(quack_listen_uri));
 }
 
-string ServerConfig::StopOtlpSql(const IngestListener &listener) const {
+string ServerConfig::StopOtlpSql() const {
 	// dropped_rows is non-zero only when the final shutdown drain failed and rows were dropped;
-	// main.cpp reads it to exit non-zero on a data-dropping shutdown (review finding M4).
-	return StringUtil::Format("SELECT status, dropped_rows FROM otlp_stop(%s);", SqlQuote(listener.uri));
+	// main.cpp reads it to exit non-zero on a data-dropping shutdown (review finding M4). Any
+	// listener URI names the whole server, so one stop closes every listener and drains once.
+	return StringUtil::Format("SELECT status, dropped_rows FROM otlp_stop(%s);", SqlQuote(listeners.front().uri));
 }
 
 string ServerConfig::StopQuackSql() const {
@@ -901,11 +914,7 @@ string ServerConfig::StopQuackSql() const {
 }
 
 string ServerConfig::BootSql() const {
-	auto sql = mode_setup_sql;
-	for (const auto &listener : listeners) {
-		sql += "\n" + StartOtlpSql(listener);
-	}
-	return sql + "\n" + StartQuackSql();
+	return mode_setup_sql + "\n" + StartOtlpSql() + "\n" + StartQuackSql();
 }
 
 } // namespace duckdb_otlp_server

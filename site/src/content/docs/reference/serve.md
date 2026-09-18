@@ -14,6 +14,16 @@ The server speaks three wire protocols across two scheme-bound functions:
 
 All three share one buffering/seal core, the same parameters, catalog targeting, token auth, and lifecycle functions — only the wire differs. The transport is **not** encoded in the scheme: `otlp_serve` picks HTTP vs gRPC via the `transport` parameter, and `otap_serve` is always gRPC. Each function rejects the other's scheme.
 
+A **server** is one ingest pipeline — one set of in-memory buffers, one admission cap, one writer, and one catalog-maintenance schedule — fed by one or more **listeners**. Pass a list of URIs to start several listeners on one server, for example OTLP/HTTP and OTLP/gRPC together:
+
+```sql
+SELECT listen_uri, transport
+FROM otlp_serve(['otlp:localhost:4318', 'otlp:localhost:4317'], transport := ['http', 'grpc'],
+                catalog := 'lake', token := 'my-dev-token-123456');
+```
+
+Each catalog target (catalog + schema, or Parquet export root) has at most one server, so it has a single writer. A second `otlp_serve`/`otap_serve` call for a target that already has a server fails; list every URI in one call instead.
+
 Native extension builds include the server; WASM builds omit it entirely (no HTTP and no gRPC). See [gRPC transport](#grpc-transport) for the OTLP/gRPC and OTAP/Arrow service contracts.
 
 For a runnable walkthrough, see the [Live Ingest Quickstart](../../quickstart/serve/). For lakehouse examples, see [Stream to Local DuckLake](../../guides/stream-to-local-ducklake/), [Stream to Remote DuckLake](../../guides/stream-to-remote-ducklake/), [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/), and [Stream to Cloudflare R2 Data Catalog](../../guides/stream-to-r2-data-catalog/). For plain files or object storage, see [Stream to Parquet](../../guides/stream-to-parquet/). For the implementation model, see [Architecture](../../architecture/#otlp-http-ingest-server).
@@ -39,11 +49,12 @@ docker run --rm -p 4317:4317 -p 4318:4318 \
   -v otlp-data:/data ghcr.io/smithclay/duckdb-otlp:latest
 ```
 
-Both listeners use the same catalog, schema, and bearer token. They have separate
-buffers and seal workers; buffer limits apply **per listener**. Startup must
-succeed for every listener, and graceful shutdown drains every listener. If a
-later listener cannot start, the daemon stops the earlier ones and exits with an
-error. Duplicate/unknown transports, empty list entries, and matching HTTP/gRPC
+Both listeners feed **one server**: the same catalog, schema, bearer token,
+buffers, writer, and maintenance schedule. `DUCKDB_OTLP_MAX_BUFFERED_BYTES` and
+`DUCKDB_OTLP_SEAL_TARGET_BYTES` apply to the whole process, not to each
+listener. Startup must succeed for every listener. On shutdown the daemon stops
+every listener, then drains the shared buffers once. If a later listener cannot
+start, the earlier ones are closed and the daemon exits with an error. Duplicate/unknown transports, empty list entries, and matching HTTP/gRPC
 ports are rejected. Whitespace around list entries is allowed.
 
 `DUCKDB_OTLP_LISTEN_URI` remains a single-listener override. With `grpc`, use an
@@ -55,7 +66,9 @@ and cannot be combined with the transport list.
 
 The image's `healthcheck` command checks every enabled listener, using HTTP
 `/readyz` for HTTP and TCP connect for gRPC. A TCP check confirms a bound socket,
-not successful ingestion or durable writes. `DUCKDB_OTLP_HTTP_THREADS` applies
+not successful ingestion or durable writes. Because the listeners share one
+server, the HTTP `/readyz` reports the commit health of rows from both
+transports. `DUCKDB_OTLP_HTTP_THREADS` applies
 only to the HTTP listener. Quack remains a separate opt-in administrative endpoint.
 
 For Cloud Run, select `grpc`, expose its port as `h2c`, and use a compatible
@@ -70,18 +83,18 @@ The extension registers six server functions (two to start a server, two lifecyc
 
 | Function | What it does |
 |----------|-------------|
-| `otlp_serve([uri], ...)` | Start an **OTLP** server (OTLP/HTTP, or OTLP/gRPC with `transport := 'grpc'`) and create/validate target tables. Returns one row describing the listener. |
-| `otap_serve([uri], ...)` | Start an **OTAP/Arrow** gRPC streaming server and create/validate target tables. Same parameters and output as `otlp_serve`. Returns one row describing the listener. |
+| `otlp_serve([uri], ...)` | Start an **OTLP** server (OTLP/HTTP, or OTLP/gRPC with `transport := 'grpc'`) on one or more listeners and create/validate target tables. Returns one row per listener. |
+| `otap_serve([uri], ...)` | Start an **OTAP/Arrow** gRPC streaming server and create/validate target tables. Same parameters and output as `otlp_serve`. Returns one row per listener. |
 | `otlp_flush(uri)` | Force a synchronous commit of buffered rows when readers need fresh data. Returns commit stats. It leaves catalog maintenance alone. |
-| `otlp_stop(uri)` | Stop the server listening on `uri` (commits remaining rows first). Returns a status string. |
-| `otlp_server_list()` | List all running servers with live counters, buffer state, and health. |
+| `otlp_stop(uri)` | Stop the server that owns listener `uri`, including its other listeners (commits remaining rows first). Returns a status string. |
+| `otlp_server_list()` | List every running listener with its server's live counters, buffer state, and health. |
 | `otlp_seal_list()` | List recent seal attempts with append, commit, row, byte, and error telemetry. |
 
-`otlp_flush`, `otlp_stop`, `otlp_server_list`, and `otlp_seal_list` are **transport-agnostic** — they dispatch by the scheme-aware canonical listen URI, so an `otap:` server and an `otlp:` server are distinct entries managed by the same lifecycle functions.
+`otlp_flush`, `otlp_stop`, `otlp_server_list`, and `otlp_seal_list` are **transport-agnostic** — they dispatch by the scheme-aware canonical listen URI, so an `otap:` server and an `otlp:` server are distinct entries managed by the same lifecycle functions. Any listener's URI names its whole server.
 
 ### `otlp_serve([uri], ...)`
 
-Starts an OTLP/HTTP ingest server bound to `uri`. The `uri` argument is optional; with no argument it defaults to `otlp:localhost:4318`.
+Starts an OTLP ingest server with a listener on `uri`. The `uri` argument is optional; with no argument it defaults to `otlp:localhost:4318`. Pass a `VARCHAR[]` list to start several listeners on the same server.
 
 ```sql
 -- Stream into an attached catalog
@@ -92,7 +105,8 @@ SELECT * FROM otlp_serve('otlp:localhost:4318', catalog := 'lake', token := 'my-
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `uri` (positional) | VARCHAR | `otlp:localhost:4318` | Listen URI. See [URI scheme](#uri-scheme). |
+| `uri` (positional) | VARCHAR or VARCHAR[] | `otlp:localhost:4318` | Listen URI, or a list of distinct listen URIs that feed one server. See [URI scheme](#uri-scheme). |
+| `transport` | VARCHAR or VARCHAR[] | `http` | `http` (OTLP/HTTP) or `grpc` (OTLP/gRPC unary). One value applies to every URI; a list must have one entry per URI. `otap_serve` accepts only `grpc`. |
 | `catalog` | VARCHAR | *(default catalog)* | Name of the target catalog. Empty means the connection's **default catalog** (in-memory or file). Set this to an attached writable catalog such as DuckLake or an Iceberg REST catalog to stream OTLP into a lakehouse. See [Catalog targeting](#catalog-targeting). |
 | `token` | VARCHAR | *(random, see below)* | Auth token clients must present. Must be at least 16 characters. If you omit it, `otlp_serve` generates a random 32-hex-character token and returns it in `auth_token`. Ignored when `disable_auth := true`. |
 | `disable_auth` | BOOLEAN | `false` | Accept every request **without** checking the token. No token is generated or validated, and `auth_token` comes back empty. Opt-in for trusted local networks and for producers that cannot attach a bearer token (e.g. the otel-arrow OTAP exporter). See [Authentication](#authentication). |
@@ -101,8 +115,8 @@ SELECT * FROM otlp_serve('otlp:localhost:4318', catalog := 'lake', token := 'my-
 | `create_tables` | BOOLEAN | `true` | Create the six target tables if they don't exist. When `false`, the tables must already exist with the expected columns or `otlp_serve` fails fast. |
 | `allow_other_hostname` | BOOLEAN | `false` | Allow binding to a non-localhost host. By default `otlp_serve` permits only `localhost`, `127.0.0.1`, and `::1`. |
 | `max_body_bytes` | UBIGINT | `16777216` (16 MiB) | Reject request bodies larger than this with `413`. Must be greater than zero. |
-| `http_threads` | UBIGINT | host-based bounded default | Worker threads for concurrent HTTP requests. Must be greater than zero when set. |
-| `max_buffered_bytes` | UBIGINT | `536870912` (512 MiB) | Backpressure cap. POSTs that would exceed this return `503`. |
+| `http_threads` | UBIGINT | host-based bounded default | Worker threads for concurrent HTTP requests, per HTTP listener. Must be greater than zero when set. |
+| `max_buffered_bytes` | UBIGINT | `536870912` (512 MiB) | Backpressure cap for the whole server, shared by every listener. Requests that would exceed it return `503` (gRPC: `RESOURCE_EXHAUSTED`). |
 | `seal_target_bytes` | UBIGINT | `134217728` (128 MiB) | Request an asynchronous seal when admitted, uncommitted request bytes reach this threshold. Larger values write fewer, larger files at the cost of a larger in-memory crash-loss window (still bounded by `seal_max_age_ms`). Must be greater than zero. |
 | `seal_max_age_ms` | BIGINT | `5000` | Request an asynchronous seal when the oldest buffered row reaches this age. Must be greater than zero. |
 | `target_file_size` | UBIGINT | `268435456` (256 MiB) | DuckLake only. **Output** Parquet file size the post-seal `CHECKPOINT` merge bin-packs toward; bounds compaction write amplification (files already at target are left alone). Distinct from `seal_target_bytes`, which is admitted *input* bytes. Must be greater than zero. |
@@ -110,11 +124,11 @@ SELECT * FROM otlp_serve('otlp:localhost:4318', catalog := 'lake', token := 'my-
 | `promote_resource_attributes` | VARCHAR | *(none)* | Comma-separated **resource** attribute keys to promote into first-class columns at ingest. See [Attribute promotion](#attribute-promotion). Catalog mode only. |
 | `promote_scope_attributes` | VARCHAR | *(none)* | Comma-separated **scope** attribute keys to promote into first-class columns at ingest. See [Attribute promotion](#attribute-promotion). Catalog mode only. |
 
-**Output columns** (one row):
+**Output columns** (one row per listener):
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `listen_uri` | VARCHAR | The `otlp:` URI the server is bound to. |
+| `listen_uri` | VARCHAR | The `otlp:` URI the listener is bound to. |
 | `listen_url` | VARCHAR | The equivalent `http://` base URL (POST endpoints hang off this). |
 | `auth_token` | VARCHAR | The token clients must present (the value you passed, or the generated one). |
 | `schema_name` | VARCHAR | Schema holding the target tables. |
@@ -125,8 +139,9 @@ SELECT * FROM otlp_serve('otlp:localhost:4318', catalog := 'lake', token := 'my-
 | `metrics_histogram_table` | VARCHAR | `otlp_metrics_histogram` |
 | `metrics_exp_histogram_table` | VARCHAR | `otlp_metrics_exp_histogram` |
 | `catalog_name` | VARCHAR | Target catalog. Empty for the connection's default catalog. |
+| `transport` | VARCHAR | `http` or `grpc`. |
 
-Starting a second server on the same URI fails (`OTLP server already exists`). The DuckDB `DatabaseInstance` owns the server lifetime: DuckDB stops all servers when the database closes, but it does **not** commit their buffers at that point (see Durability below). Call `otlp_stop` before closing the database to avoid losing buffered rows.
+Starting a second server on the same URI, or for the same catalog target, fails (`OTLP server already exists`). If any listener fails to bind, the listeners already started are closed and no server is registered. The DuckDB `DatabaseInstance` owns the server lifetime: DuckDB stops all servers when the database closes, but it does **not** commit their buffers at that point (see Durability below). Call `otlp_stop` before closing the database to avoid losing buffered rows.
 
 ### `otap_serve([uri], ...)`
 
@@ -172,7 +187,7 @@ SELECT * FROM otlp_flush('otlp:localhost:4318');
 
 ### `otlp_stop(uri)`
 
-Stops the server listening on `uri` and frees the port. Any buffered rows are **committed first**, so a graceful stop loses no data.
+Stops the server that owns listener `uri`: every listener of that server stops accepting and frees its port, then the shared buffers are **committed once**, so a graceful stop loses no data.
 
 ```sql
 SELECT status FROM otlp_stop('otlp:localhost:4318');
@@ -182,11 +197,11 @@ SELECT status FROM otlp_stop('otlp:localhost:4318');
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `status` | VARCHAR | `Stopped listening on <uri>` if a server was stopped, or `No server found listening on <uri>` if none matched. |
+| `status` | VARCHAR | `Stopped listening on <uri>[, <uri>...]` listing every listener that was stopped, or `No server found listening on <uri>` if none matched. |
 
 ### `otlp_server_list()`
 
-Lists running OTLP servers with live counters and buffer state. Takes no arguments.
+Lists running listeners with their server's live counters and buffer state. Takes no arguments. Listeners of the same server report identical buffer, seal, and maintenance values; `listen_uri`, `transport`, `is_listening`, and `last_error` are per listener.
 
 ```sql
 SELECT
@@ -199,7 +214,7 @@ SELECT
 FROM otlp_server_list();
 ```
 
-**Output columns** (one row per running server):
+**Output columns** (one row per listener):
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -230,6 +245,7 @@ FROM otlp_server_list();
 | `last_maintenance_age_ms` | BIGINT | Age (ms) since the last successful maintenance pass, or `NULL` if none has run. |
 | `maintenance_last_error` | VARCHAR | Last maintenance error, or `NULL` if none. |
 | `promoted_columns_total` | UBIGINT | Promoted attribute columns per signal table, or `0` when [attribute promotion](#attribute-promotion) is off/disabled. |
+| `transport` | VARCHAR | The listener's transport: `http` or `grpc`. |
 
 Use `is_listening` / `last_error` to detect a dead listener. Use `seal_last_error` to inspect writer failures, such as catalog conflicts. Use `maintenance_runs_total` / `last_maintenance_age_ms` to confirm compaction is keeping up.
 

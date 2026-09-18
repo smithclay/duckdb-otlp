@@ -16,11 +16,6 @@ namespace duckdb {
 
 #ifndef __EMSCRIPTEN__
 
-class OtlpServer::Impl {
-public:
-	unique_ptr<duckdb_httplib::Server> server;
-};
-
 static string JsonEscape(const string &input) {
 	string result;
 	result.reserve(input.size() + 8);
@@ -74,69 +69,56 @@ bool OtlpLoopbackHttpStatusOk(int port, const string &path) {
 	return res && res->status >= 200 && res->status < 400;
 }
 
-OtlpServer::OtlpServer(ClientContext &context, const OtlpUri &uri_p, const OtlpServerConfig &config_p)
-    : db_ptr(context.db), uri(uri_p), config(config_p), impl(make_uniq<Impl>()) {
-	// Anonymous mode (opt-in) runs with no token; only enforce the floor when auth is on.
-	if (!config.disable_auth) {
-		ValidateToken(config.token);
+class OtlpHttpListener final : public OtlpListener {
+public:
+	OtlpHttpListener(OtlpServer &server_p, const OtlpListenerSpec &spec_p) : OtlpListener(server_p, spec_p) {
 	}
-	auto db = db_ptr.lock();
-	if (!db) {
-		throw InternalException("Database was closed");
-	}
-	EnsureTargetTables();
-	InitBuffers();
-	// One dedicated writer connection; the single sealer thread is the only thing
-	// that ever commits, so concurrent DuckLake writes never conflict.
-	writer_con = make_uniq<Connection>(*db);
-	writer_con->context->config.enable_progress_bar = false;
-	// Set the DuckLake catalog options the post-seal CHECKPOINT consumes (bounded target file
-	// size + snapshot/file retention) before the sealer can fire. Best-effort; no-op for the
-	// default/non-DuckLake catalogs.
-	ConfigureCatalogMaintenanceOptions();
-	// Attribute promotion (opt-in, catalog mode only): add the operator-specified resource/scope
-	// attribute columns once, before the sealer fires. Parquet-export mode has no table to ALTER.
-	if (config.promote.Enabled() && config.parquet_export_path.empty()) {
-		promoter = make_uniq<OtlpColumnPromoter>(config.promote, config.catalog_name, config.schema_name,
-		                                         [this](const string &msg) { LogServerEvent(msg); });
-		promoter->Initialize(*writer_con);
-	}
-	StartSealer();
-
-	if (config.transport == OtlpTransport::GRPC) {
-		// gRPC transport: the embedded tonic server (in otlp2records) owns its own
-		// runtime and binds synchronously, so there is no httplib listener or
-		// listen_thread. StartGrpc() seals + rethrows on bind failure, matching the
-		// httplib path below.
-		StartGrpc();
-		return;
+	~OtlpHttpListener() override {
+		try {
+			Close();
+		} catch (std::exception &) {
+		}
 	}
 
-	impl->server = make_uniq<duckdb_httplib::Server>();
+	void Start() override;
+	void StopAccepting() override;
+	void Close() override;
+
+private:
+	void ListenLoop();
+
+	unique_ptr<duckdb_httplib::Server> http;
+	std::thread listen_thread;
+};
+
+void OtlpHttpListener::Start() {
+	auto &config = server.config;
+	http = make_uniq<duckdb_httplib::Server>();
 	auto http_threads = config.http_threads == 0 ? DefaultHttpThreads() : config.http_threads;
 	// The worker-pool size bounds how many connections we serve at once (each keep-alive
 	// connection holds a worker for its lifetime). Keep it bounded for small containers,
 	// but let the daemon raise it explicitly for high-concurrency exporters.
-	impl->server->new_task_queue = [http_threads] {
+	http->new_task_queue = [http_threads] {
 		return new duckdb_httplib::ThreadPool(static_cast<size_t>(http_threads));
 	};
 	// keep_alive_max_count is the number of requests served per keep-alive connection
 	// before it is closed (NOT a connection cap), so it is independent of the worker
 	// count. A small value would force exporters to reconnect mid-stream, so keep it high.
-	impl->server->set_keep_alive_max_count(128);
-	impl->server->set_keep_alive_timeout(10);
-	impl->server->set_tcp_nodelay(true);
-	impl->server->set_payload_max_length(static_cast<size_t>(config.max_body_bytes));
+	http->set_keep_alive_max_count(128);
+	http->set_keep_alive_timeout(10);
+	http->set_tcp_nodelay(true);
+	http->set_payload_max_length(static_cast<size_t>(config.max_body_bytes));
 
-	impl->server->Get("/healthz", [](const duckdb_httplib::Request &, duckdb_httplib::Response &res) {
+	http->Get("/healthz", [](const duckdb_httplib::Request &, duckdb_httplib::Response &res) {
 		SetJson(res, 200, "{\"status\":\"ok\"}");
 	});
-	impl->server->Get("/readyz", [this](const duckdb_httplib::Request &, duckdb_httplib::Response &res) {
+	http->Get("/readyz", [this](const duckdb_httplib::Request &, duckdb_httplib::Response &res) {
 		// Degrade readiness when buffered rows are not committing, so an orchestrator (and the
 		// daemon's own healthcheck, which probes /readyz) sees a wedged seal backend instead of a
-		// listener that keeps returning 202 while nothing becomes durable. /healthz stays
-		// liveness-only.
-		if (SealStalled()) {
+		// listener that keeps returning 202 while nothing becomes durable. The server is shared by
+		// every listener, so this reports the one write path regardless of which transport the
+		// traffic arrives on. /healthz stays liveness-only.
+		if (server.SealStalled()) {
 			SetJson(res, 503, "{\"status\":\"degraded\",\"reason\":\"buffered rows are not committing\"}");
 		} else {
 			SetJson(res, 200, "{\"status\":\"ready\"}");
@@ -155,14 +137,14 @@ OtlpServer::OtlpServer(ClientContext &context, const OtlpUri &uri_p, const OtlpS
 				~RequestGuard() {
 					counter--;
 				}
-			} request_guard {active_requests};
-			total_requests++;
+			} request_guard {server.active_requests};
+			server.total_requests++;
 			try {
-				if (!CheckAuth(req.get_header_value("Authorization"), req.get_header_value("x-api-key"))) {
+				if (!server.CheckAuth(req.get_header_value("Authorization"), req.get_header_value("x-api-key"))) {
 					SetError(res, 401, "unauthorized", "missing or invalid Authorization bearer token or x-api-key");
 				} else {
-					auto result = Ingest(kind, req.get_header_value("Content-Type"),
-					                     req.get_header_value("Content-Encoding"), req.body);
+					auto result = server.Ingest(kind, req.get_header_value("Content-Type"),
+					                            req.get_header_value("Content-Encoding"), req.body);
 					// 202 Accepted: rows are parsed + buffered in memory, not yet durable.
 					// They commit at the next seal (otlp_flush / otlp_stop force one).
 					auto response =
@@ -187,40 +169,33 @@ OtlpServer::OtlpServer(ClientContext &context, const OtlpUri &uri_p, const OtlpS
 			} catch (IOException &ex) {
 				// 500-class failures are otherwise only visible in the client's
 				// response body; log them so the operator has a server-side trace.
-				LogServerEvent(StringUtil::Format("ingest I/O error: %s", ex.what()), LogLevel::LOG_WARNING);
+				server.LogServerEvent(StringUtil::Format("ingest I/O error: %s", ex.what()), LogLevel::LOG_WARNING);
 				SetError(res, 500, "internal_error", ex.what());
 			} catch (std::exception &ex) {
-				LogServerEvent(StringUtil::Format("ingest internal error: %s", ex.what()), LogLevel::LOG_WARNING);
+				server.LogServerEvent(StringUtil::Format("ingest internal error: %s", ex.what()),
+				                      LogLevel::LOG_WARNING);
 				SetError(res, 500, "internal_error", ex.what());
 			}
 		};
 	};
 
-	impl->server->Post("/v1/logs", post_handler(OtlpRequestKind::LOGS));
-	impl->server->Post("/v1/traces", post_handler(OtlpRequestKind::TRACES));
-	impl->server->Post("/v1/metrics", post_handler(OtlpRequestKind::METRICS));
+	http->Post("/v1/logs", post_handler(OtlpRequestKind::LOGS));
+	http->Post("/v1/traces", post_handler(OtlpRequestKind::TRACES));
+	http->Post("/v1/metrics", post_handler(OtlpRequestKind::METRICS));
 
-	// The sealer thread is already running. If bind fails (e.g. EADDRINUSE) this object
-	// is not fully constructed, so ~OtlpServer() won't run — stop the sealer here so a
-	// joinable std::thread is never destroyed (which would std::terminate the process).
-	try {
-		if (!impl->server->is_valid()) {
-			throw IOException("Failed to instantiate OTLP HTTP server at %s / %s", uri.Uri(), uri.Http());
-		}
-		// Bind synchronously here so that bind() failures (e.g. EADDRINUSE) propagate
-		// to the caller of otlp_serve() rather than being lost on the listener thread.
-		if (!impl->server->bind_to_port(uri.Host(), uri.Port())) {
-			throw IOException(
-			    "Failed to bind OTLP HTTP server to %s (address in use, permission denied, or invalid host/"
-			    "port)",
-			    uri.Http());
-		}
-	} catch (...) {
-		ShutdownIngest();
-		throw;
+	auto &uri = spec.uri;
+	if (!http->is_valid()) {
+		throw IOException("Failed to instantiate OTLP HTTP server at %s / %s", uri.Uri(), uri.Http());
+	}
+	// Bind synchronously here so that bind() failures (e.g. EADDRINUSE) propagate
+	// to the caller of otlp_serve() rather than being lost on the listener thread.
+	if (!http->bind_to_port(uri.Host(), uri.Port())) {
+		throw IOException("Failed to bind OTLP HTTP server to %s (address in use, permission denied, or invalid host/"
+		                  "port)",
+		                  uri.Http());
 	}
 	is_running.store(true);
-	listen_thread = std::thread(ListenThread, this);
+	listen_thread = std::thread([this] { ListenLoop(); });
 	// Close the TOCTOU window between our is_running flag and httplib's own is_running_
 	// (which only flips true once the listener enters listen_internal()). Until then,
 	// Server::stop() short-circuits to a no-op, so a StopAccepting()/SIGTERM issued in
@@ -228,97 +203,48 @@ OtlpServer::OtlpServer(ClientContext &context, const OtlpUri &uri_p, const OtlpS
 	// join a thread that never exits. wait_until_ready() spins until the accept loop is
 	// live; the socket is already bound synchronously above, so it cannot block forever
 	// (it also returns immediately if the listener is decommissioned).
-	impl->server->wait_until_ready();
+	http->wait_until_ready();
 }
 
-void OtlpServer::StopAccepting() {
+void OtlpHttpListener::StopAccepting() {
 	// Closes the listening socket only. Idempotent. Safe to call from a
 	// request-handler thread — does not wait on httplib's task queue.
-	if (is_running.exchange(false)) {
-		if (config.transport == OtlpTransport::GRPC) {
-			// The gRPC graceful shutdown + runtime join happens in Close()/StopGrpc();
-			// it must not run here because a request-handler (tokio worker) thread
-			// would deadlock joining its own runtime.
-			return;
-		}
-		impl->server->stop();
+	if (is_running.exchange(false) && http) {
+		http->stop();
 	}
 }
 
-void OtlpServer::Close() {
-	// Stops accepting new connections AND joins the listener threads (NOT the
-	// httplib worker pool). Must not be called from a worker thread — the
-	// listener's exit path inside httplib joins all workers, so a worker
-	// joining the listener would deadlock through that chain.
+void OtlpHttpListener::Close() {
+	// Stops accepting new connections AND joins the listener thread (NOT the httplib worker
+	// pool directly; the listen loop's exit path joins it). Must not be called from a worker
+	// thread, which would deadlock through that chain.
 	StopAccepting();
-	if (config.transport == OtlpTransport::GRPC) {
-		// Graceful gRPC shutdown drains in-flight requests (so their buffered rows are
-		// included) and joins the runtime before the final seal.
-		StopGrpc();
-	} else if (listen_thread.joinable()) {
+	if (listen_thread.joinable()) {
 		listen_thread.join();
 	}
-	// Workers are now joined: stop the sealer and drain the remaining buffer before
-	// the writer connection / database go away. Safe here (controlling thread, not a
-	// worker); idempotent with the ~OtlpServer() safety-net call.
-	ShutdownIngest();
 }
 
-OtlpServer::~OtlpServer() {
+void OtlpHttpListener::ListenLoop() {
+	// The socket is already bound (synchronously, in Start); this only runs the accept loop.
+	// Catch everything so the listener thread never lets an exception escape — that would
+	// call std::terminate and abort the host process.
 	try {
-		Close();
-	} catch (std::exception &) {
-	}
-}
-
-void OtlpServer::ListenThread(OtlpServer *server) {
-	// The socket is already bound (synchronously, in the constructor); this only
-	// runs the accept loop. Catch everything so the listener thread never lets an
-	// exception escape — that would call std::terminate and abort the host process.
-	try {
-		server->impl->server->listen_after_bind();
+		http->listen_after_bind();
 	} catch (std::exception &ex) {
-		server->is_running.store(false);
-		server->listener_failed.store(true);
-		{
-			std::lock_guard<std::mutex> lock(server->error_mutex);
-			server->last_error = ex.what();
-		}
-		server->LogServerEvent(
-		    StringUtil::Format("OTLP listener for %s stopped: %s", server->ListenUri().Uri(), ex.what()),
-		    LogLevel::LOG_WARNING);
+		RecordFailure(ex.what());
 	} catch (...) {
-		server->is_running.store(false);
-		server->listener_failed.store(true);
-		{
-			std::lock_guard<std::mutex> lock(server->error_mutex);
-			server->last_error = "unknown error in listen loop";
-		}
-		server->LogServerEvent(
-		    StringUtil::Format("OTLP listener for %s stopped: unknown error", server->ListenUri().Uri()),
-		    LogLevel::LOG_WARNING);
+		RecordFailure("unknown error in listen loop");
 	}
+}
+
+unique_ptr<OtlpListener> MakeOtlpHttpListener(OtlpServer &server, const OtlpListenerSpec &spec) {
+	return make_uniq<OtlpHttpListener>(server, spec);
 }
 
 #else
 
-class OtlpServer::Impl {};
-
-OtlpServer::OtlpServer(ClientContext &context, const OtlpUri &uri_p, const OtlpServerConfig &config_p)
-    : db_ptr(context.db), uri(uri_p), config(config_p), impl(make_uniq<Impl>()) {
+unique_ptr<OtlpListener> MakeOtlpHttpListener(OtlpServer &server, const OtlpListenerSpec &spec) {
 	throw NotImplementedException("otlp_serve is not implemented for the wasm platform");
-}
-
-void OtlpServer::StopAccepting() {
-}
-
-void OtlpServer::Close() {
-}
-
-OtlpServer::~OtlpServer() {
-}
-
-void OtlpServer::ListenThread(OtlpServer *server) {
 }
 
 #endif

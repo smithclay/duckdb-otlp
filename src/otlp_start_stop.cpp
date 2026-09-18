@@ -35,8 +35,31 @@ struct OtlpStartStopFunctionData : public TableFunctionData {
 	// server creation/stop safe under rescan instead of repeating the side effect.
 	bool finished = false;
 	OtlpUri listen_uri;
+	vector<OtlpListenerSpec> listeners;
 	OtlpServerConfig config;
 };
+
+//! Bound on listeners per server; each needs one row of the otlp_serve result chunk.
+static constexpr idx_t MAX_LISTENERS_PER_SERVER = 64;
+
+//! A VARCHAR or VARCHAR[] argument as a list of strings (a scalar is a one-element list).
+static vector<string> StringOrStringList(const Value &value, const char *what) {
+	if (value.IsNull()) {
+		throw InvalidInputException("%s must not be NULL", what);
+	}
+	vector<string> result;
+	if (value.type().id() == LogicalTypeId::LIST) {
+		for (auto &child : ListValue::GetChildren(value)) {
+			if (child.IsNull()) {
+				throw InvalidInputException("%s must not contain NULL", what);
+			}
+			result.push_back(child.GetValue<string>());
+		}
+	} else {
+		result.push_back(value.GetValue<string>());
+	}
+	return result;
+}
 
 static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableFunctionBindInput &input,
                                                   vector<LogicalType> &return_types, vector<string> &names,
@@ -46,55 +69,85 @@ static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableF
 #endif
 
 	auto bind_data = make_uniq<OtlpStartStopFunctionData>();
-	string listen_uri = default_uri;
+	const char *function_name = required_scheme == "otap" ? "otap_serve" : "otlp_serve";
+	vector<string> listen_uris {default_uri};
 	if (!input.inputs.empty()) {
-		auto &uri_value = input.inputs[0];
-		if (uri_value.IsNull() || uri_value.GetValue<string>().empty()) {
+		listen_uris = StringOrStringList(input.inputs[0], "listen URI");
+	}
+	if (listen_uris.empty()) {
+		throw InvalidInputException("%s requires at least one listen URI", function_name);
+	}
+	if (listen_uris.size() > MAX_LISTENERS_PER_SERVER) {
+		throw InvalidInputException("%s accepts at most %llu listen URIs", function_name,
+		                            static_cast<uint64_t>(MAX_LISTENERS_PER_SERVER));
+	}
+
+	// transport is either one value applied to every URI or a list parallel to the URIs.
+	vector<string> transports;
+	if (input.named_parameters.find("transport") != input.named_parameters.end()) {
+		transports = StringOrStringList(input.named_parameters["transport"], "transport");
+		if (transports.size() != 1 && transports.size() != listen_uris.size()) {
+			throw InvalidInputException("transport must be a single value or a list with one entry per listen URI "
+			                            "(%llu URIs, %llu transports)",
+			                            static_cast<uint64_t>(listen_uris.size()),
+			                            static_cast<uint64_t>(transports.size()));
+		}
+	}
+
+	for (idx_t i = 0; i < listen_uris.size(); i++) {
+		if (listen_uris[i].empty()) {
 			throw InvalidInputException("Invalid OTLP listen URI specified");
 		}
-		listen_uri = uri_value.GetValue<string>();
-	}
-
-	bind_data->listen_uri = OtlpUri(listen_uri);
-	// Strict scheme/function binding: otlp_serve serves the OTLP protocol (otlp:),
-	// otap_serve serves OTAP/Arrow (otap:). A mismatched scheme is rejected so the
-	// two functions never overlap and URIs are never mixed across them.
-	if (bind_data->listen_uri.Scheme() != required_scheme) {
-		throw InvalidInputException("%s requires an '%s:' URI, but got an '%s:' URI",
-		                            required_scheme == "otap" ? "otap_serve" : "otlp_serve", required_scheme,
-		                            bind_data->listen_uri.Scheme());
-	}
-
-	// Transport + which gRPC services to register. otap: is always OTAP/Arrow over
-	// gRPC. otlp: is HTTP by default; transport := 'grpc' runs OTLP/gRPC unary
-	// Export on the same otlp: scheme (no otap: mixing). The two gRPC listeners are
-	// disjoint: otlp: registers only the unary services, otap: only the Arrow ones.
-	string transport_opt;
-	if (input.named_parameters.find("transport") != input.named_parameters.end()) {
-		transport_opt = StringUtil::Lower(input.named_parameters["transport"].GetValue<string>());
-	}
-	if (required_scheme == "otap") {
-		if (!transport_opt.empty() && transport_opt != "grpc") {
-			throw InvalidInputException("otap_serve is gRPC-only; transport must be 'grpc' or omitted (got '%s')",
-			                            transport_opt);
+		OtlpListenerSpec spec;
+		spec.uri = OtlpUri(listen_uris[i]);
+		// Strict scheme/function binding: otlp_serve serves the OTLP protocol (otlp:),
+		// otap_serve serves OTAP/Arrow (otap:). A mismatched scheme is rejected so the
+		// two functions never overlap and URIs are never mixed across them.
+		if (spec.uri.Scheme() != required_scheme) {
+			throw InvalidInputException("%s requires an '%s:' URI, but got an '%s:' URI", function_name,
+			                            required_scheme, spec.uri.Scheme());
 		}
-		bind_data->config.transport = OtlpTransport::GRPC;
-		bind_data->config.grpc_service_flags = OTLP_GRPC_SERVICE_OTAP_ARROW;
-	} else if (transport_opt.empty() || transport_opt == "http") {
-		bind_data->config.transport = OtlpTransport::HTTP;
-		bind_data->config.grpc_service_flags = 0;
-	} else if (transport_opt == "grpc") {
-		bind_data->config.transport = OtlpTransport::GRPC;
-		bind_data->config.grpc_service_flags = OTLP_GRPC_SERVICE_OTLP_UNARY;
-	} else {
-		throw InvalidInputException("transport must be 'http' or 'grpc' (got '%s')", transport_opt);
+		for (auto &existing : bind_data->listeners) {
+			if (existing.uri.CanonicalUri() == spec.uri.CanonicalUri()) {
+				throw InvalidInputException("%s listen URIs must be distinct (got %s twice)", function_name,
+				                            spec.uri.Uri());
+			}
+		}
+
+		// Transport + which gRPC services to register. otap: is always OTAP/Arrow over
+		// gRPC. otlp: is HTTP by default; transport := 'grpc' runs OTLP/gRPC unary
+		// Export on the same otlp: scheme (no otap: mixing). The two gRPC listener kinds are
+		// disjoint: otlp: registers only the unary services, otap: only the Arrow ones.
+		string transport_opt;
+		if (!transports.empty()) {
+			transport_opt = StringUtil::Lower(transports.size() == 1 ? transports[0] : transports[i]);
+		}
+		if (required_scheme == "otap") {
+			if (!transport_opt.empty() && transport_opt != "grpc") {
+				throw InvalidInputException("otap_serve is gRPC-only; transport must be 'grpc' or omitted (got '%s')",
+				                            transport_opt);
+			}
+			spec.transport = OtlpTransport::GRPC;
+			spec.grpc_service_flags = OTLP_GRPC_SERVICE_OTAP_ARROW;
+		} else if (transport_opt.empty() || transport_opt == "http") {
+			spec.transport = OtlpTransport::HTTP;
+			spec.grpc_service_flags = 0;
+		} else if (transport_opt == "grpc") {
+			spec.transport = OtlpTransport::GRPC;
+			spec.grpc_service_flags = OTLP_GRPC_SERVICE_OTLP_UNARY;
+		} else {
+			throw InvalidInputException("transport must be 'http' or 'grpc' (got '%s')", transport_opt);
+		}
+		bind_data->listeners.push_back(std::move(spec));
 	}
 
 	auto allow_other_hostname = input.named_parameters.find("allow_other_hostname") != input.named_parameters.end() &&
 	                            input.named_parameters["allow_other_hostname"].GetValue<bool>();
-	if (!allow_other_hostname && !bind_data->listen_uri.IsLocal()) {
-		throw InvalidInputException(
-		    "Only localhost is allowed as an OTLP hostname by default; set allow_other_hostname=true to override");
+	for (auto &spec : bind_data->listeners) {
+		if (!allow_other_hostname && !spec.uri.IsLocal()) {
+			throw InvalidInputException(
+			    "Only localhost is allowed as an OTLP hostname by default; set allow_other_hostname=true to override");
+		}
 	}
 
 	bind_data->config.disable_auth = input.named_parameters.find("disable_auth") != input.named_parameters.end() &&
@@ -221,6 +274,8 @@ static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableF
 	return_types.emplace_back(OtlpVarcharType());
 	names.emplace_back("catalog_name");
 	return_types.emplace_back(OtlpVarcharType());
+	names.emplace_back("transport");
+	return_types.emplace_back(OtlpVarcharType());
 
 	return std::move(bind_data);
 }
@@ -242,23 +297,29 @@ static void OtlpServe(ClientContext &context, TableFunctionInput &data_p, DataCh
 	}
 
 	auto &state = OtlpStorageExtensionInfo::GetState(*context.db);
-	state.CreateServer(context, bind_data.listen_uri, bind_data.config);
+	state.CreateServer(context, bind_data.listeners, bind_data.config);
 	// Mark finished as soon as the server exists: if any SetValue below throws, a
 	// re-scan must not try to create the (already running) server again.
 	bind_data.finished = true;
 
-	output.SetValue(0, 0, bind_data.listen_uri.Uri());
-	output.SetValue(1, 0, bind_data.listen_uri.Http());
-	output.SetValue(2, 0, bind_data.config.token);
-	output.SetValue(3, 0, bind_data.config.schema_name);
-	output.SetValue(4, 0, "otlp_logs");
-	output.SetValue(5, 0, "otlp_traces");
-	output.SetValue(6, 0, "otlp_metrics_gauge");
-	output.SetValue(7, 0, "otlp_metrics_sum");
-	output.SetValue(8, 0, "otlp_metrics_histogram");
-	output.SetValue(9, 0, "otlp_metrics_exp_histogram");
-	output.SetValue(10, 0, bind_data.config.catalog_name);
-	output.SetCardinality(1);
+	// One row per listener; every listener feeds the same server.
+	idx_t row = 0;
+	for (auto &spec : bind_data.listeners) {
+		output.SetValue(0, row, spec.uri.Uri());
+		output.SetValue(1, row, spec.uri.Http());
+		output.SetValue(2, row, bind_data.config.token);
+		output.SetValue(3, row, bind_data.config.schema_name);
+		output.SetValue(4, row, "otlp_logs");
+		output.SetValue(5, row, "otlp_traces");
+		output.SetValue(6, row, "otlp_metrics_gauge");
+		output.SetValue(7, row, "otlp_metrics_sum");
+		output.SetValue(8, row, "otlp_metrics_histogram");
+		output.SetValue(9, row, "otlp_metrics_exp_histogram");
+		output.SetValue(10, row, bind_data.config.catalog_name);
+		output.SetValue(11, row, OtlpTransportName(spec.transport));
+		row++;
+	}
+	output.SetCardinality(row);
 }
 
 static TableFunctionSet BuildServeFunctionSet(const string &name, table_function_bind_t bind) {
@@ -272,9 +333,9 @@ static TableFunctionSet BuildServeFunctionSet(const string &name, table_function
 	fun.named_parameters["parquet_export_path"] = OtlpVarcharType();
 	fun.named_parameters["create_tables"] = OtlpBooleanType();
 	fun.named_parameters["allow_other_hostname"] = OtlpBooleanType();
-	// otlp_serve: 'http' (default) or 'grpc' (OTLP/gRPC unary). otap_serve is gRPC-only
-	// (OTAP/Arrow) and accepts only 'grpc' or omission.
-	fun.named_parameters["transport"] = OtlpVarcharType();
+	// otlp_serve: 'http' (default) or 'grpc' (OTLP/gRPC unary), as one value or a list parallel
+	// to a list of listen URIs. otap_serve is gRPC-only (OTAP/Arrow): only 'grpc' or omission.
+	fun.named_parameters["transport"] = LogicalType::ANY;
 	fun.named_parameters["max_body_bytes"] = OtlpUBigIntType();
 	// http_threads sizes the HTTP worker pool; ignored by the gRPC transport (the
 	// tonic server sizes its own runtime), but accepted on both for a uniform surface.
@@ -287,6 +348,9 @@ static TableFunctionSet BuildServeFunctionSet(const string &name, table_function
 	// Attribute promotion: comma-separated resource / scope attribute keys to promote.
 	fun.named_parameters["promote_resource_attributes"] = OtlpVarcharType();
 	fun.named_parameters["promote_scope_attributes"] = OtlpVarcharType();
+	set.AddFunction(fun);
+	// Several listeners (e.g. HTTP + gRPC) feeding one server: one buffer set, one sealer.
+	fun.arguments = {LogicalType::LIST(OtlpVarcharType())};
 	set.AddFunction(fun);
 	fun.arguments.clear();
 	set.AddFunction(fun);
@@ -326,12 +390,13 @@ static void OtlpStop(ClientContext &context, TableFunctionInput &data_p, DataChu
 	auto &state = OtlpStorageExtensionInfo::GetState(*context.db);
 	auto stop = state.StopServer(context, bind_data.listen_uri);
 	if (stop.found) {
+		auto uris = StringUtil::Join(stop.listen_uris, ", ");
 		if (stop.dropped_rows > 0) {
 			output.SetValue(0, 0,
-			                StringUtil::Format("Stopped listening on %s; dropped %llu un-sealed buffered rows",
-			                                   bind_data.listen_uri.Uri(), static_cast<uint64_t>(stop.dropped_rows)));
+			                StringUtil::Format("Stopped listening on %s; dropped %llu un-sealed buffered rows", uris,
+			                                   static_cast<uint64_t>(stop.dropped_rows)));
 		} else {
-			output.SetValue(0, 0, StringUtil::Format("Stopped listening on %s", bind_data.listen_uri.Uri()));
+			output.SetValue(0, 0, StringUtil::Format("Stopped listening on %s", uris));
 		}
 	} else {
 		output.SetValue(0, 0, StringUtil::Format("No server found listening on %s", bind_data.listen_uri.Uri()));
@@ -408,6 +473,8 @@ static unique_ptr<FunctionData> OtlpServerListBind(ClientContext &context, Table
 	return_types.emplace_back(OtlpUBigIntType());
 	names.emplace_back("promoted_columns_total");
 	return_types.emplace_back(OtlpUBigIntType());
+	names.emplace_back("transport");
+	return_types.emplace_back(OtlpVarcharType());
 	return make_uniq<OtlpServerListFunctionData>();
 }
 
@@ -455,6 +522,7 @@ static void OtlpServerList(ClientContext &context, TableFunctionInput &data_p, D
 		    24, row, s.maintenance_last_error.empty() ? Value(LogicalType::VARCHAR) : Value(s.maintenance_last_error));
 		output.SetValue(25, row, Value::UBIGINT(s.buffered_bytes));
 		output.SetValue(26, row, Value::UBIGINT(s.promoted_columns_total));
+		output.SetValue(27, row, Value(s.transport));
 		row++;
 		bind_data.offset++;
 	}
