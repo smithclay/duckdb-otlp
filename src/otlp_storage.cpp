@@ -225,6 +225,7 @@ vector<OtlpStorageExtensionInfo::ServerSnapshot> OtlpStorageExtensionInfo::ListS
 		shared.seal_last_error = server.SealLastError();
 		shared.maintenance_runs_total = server.MaintenanceRunsTotal();
 		shared.maintenance_failures_total = server.MaintenanceFailuresTotal();
+		shared.maintenance_contended_total = server.MaintenanceContendedTotal();
 		shared.last_maintenance_age_ms = server.LastMaintenanceAgeMs();
 		shared.maintenance_last_error = server.MaintenanceLastError();
 		shared.promoted_columns_total = server.PromotedColumnsTotal();

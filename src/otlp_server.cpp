@@ -141,6 +141,17 @@ static bool IsUnsupportedCatalogMaintenanceError(const string &message) {
 	       lower.find("checkpoint is only supported") != string::npos;
 }
 
+//! True when a maintenance statement lost a race to another writer on the same catalog rather than
+//! failing. With a shared DuckLake catalog (e.g. several receiver processes), two CHECKPOINTs can
+//! flush the same inlined rows; Postgres rejects the loser with "could not serialize access due to
+//! concurrent delete/update". The winner already did the work, so this is not a failure.
+static bool IsContendedCatalogMaintenanceError(const string &message) {
+	auto lower = StringUtil::Lower(message);
+	return lower.find("could not serialize access") != string::npos ||
+	       lower.find("serialization failure") != string::npos || lower.find("concurrent delete") != string::npos ||
+	       lower.find("concurrent update") != string::npos;
+}
+
 static bool CatalogMaintenanceTestOverridesEnabled() {
 	auto value = std::getenv("DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE");
 	return value && string(value) == "1";
@@ -1433,9 +1444,16 @@ void OtlpServer::RunCatalogMaintenanceIfDue(std::chrono::steady_clock::time_poin
 		return;
 	}
 
+	// Reset the triggers before the attempt, so a contended or failed pass waits a full interval
+	// like a successful one instead of retrying on every sealer tick.
 	catalog_maintenance_row_seals_since_attempt = 0;
 	catalog_maintenance_last_attempt = now;
 	try {
+#ifdef DUCKDB_OTLP_ENABLE_TEST_SEAM
+		if (maintenance_fault_hook_for_test) {
+			maintenance_fault_hook_for_test();
+		}
+#endif
 		RunSQL(*writer_con, "CHECKPOINT " + QuoteIdentifier(config.catalog_name));
 		catalog_maintenance_state = CatalogMaintenanceState::SUPPORTED;
 		maintenance_runs_total.fetch_add(1);
@@ -1445,6 +1463,7 @@ void OtlpServer::RunCatalogMaintenanceIfDue(std::chrono::steady_clock::time_poin
 			maintenance_last_error.clear();
 		}
 		LogServerEvent(StringUtil::Format("catalog maintenance checkpoint succeeded: catalog=%s", config.catalog_name));
+		SweepOrphanedFiles();
 	} catch (...) {
 		string msg;
 		try {
@@ -1453,6 +1472,15 @@ void OtlpServer::RunCatalogMaintenanceIfDue(std::chrono::steady_clock::time_poin
 			msg = ex.what();
 		} catch (...) {
 			msg = "unknown (non-std) exception during catalog maintenance checkpoint";
+		}
+		if (IsContendedCatalogMaintenanceError(msg)) {
+			// Another writer checkpointed this catalog first. Leave the failure counter and
+			// maintenance_last_error alone; the next interval runs as usual.
+			maintenance_contended_total.fetch_add(1);
+			LogServerEvent(StringUtil::Format("catalog maintenance checkpoint skipped: another writer checkpointed "
+			                                  "catalog=%s first: %s",
+			                                  config.catalog_name, msg));
+			return;
 		}
 		maintenance_failures_total.fetch_add(1);
 		{
@@ -1470,6 +1498,59 @@ void OtlpServer::RunCatalogMaintenanceIfDue(std::chrono::steady_clock::time_poin
 			                                  config.catalog_name, msg),
 			               LogLevel::LOG_WARNING);
 		}
+	}
+}
+
+void OtlpServer::SweepOrphanedFiles() {
+	if (orphan_sweep_state == CatalogMaintenanceState::DISABLED) {
+		return;
+	}
+	// Called only after a successful CHECKPOINT (the catch in RunCatalogMaintenanceIfDue owns
+	// those errors), so a sweep problem never counts as a checkpoint failure: it is logged here.
+	try {
+		if (orphan_sweep_state == CatalogMaintenanceState::PENDING) {
+			// ducklake_delete_orphaned_files exists only for DuckLake catalogs; other catalogs that
+			// accept CHECKPOINT (e.g. a plain DuckDB file) never sweep.
+			auto result = writer_con->Query("SELECT type FROM duckdb_databases() WHERE database_name = " +
+			                                SqlQuote(config.catalog_name));
+			if (!result || result->HasError()) {
+				throw IOException("%s", result ? result->GetError() : string("catalog type lookup failed"));
+			}
+			auto chunk = result->Fetch();
+			bool is_ducklake =
+			    chunk && chunk->size() > 0 && StringUtil::Lower(chunk->GetValue(0, 0).ToString()) == "ducklake";
+			orphan_sweep_state = is_ducklake ? CatalogMaintenanceState::SUPPORTED : CatalogMaintenanceState::DISABLED;
+			if (!is_ducklake) {
+				return;
+			}
+		}
+		// Same window ConfigureCatalogMaintenanceOptions writes into expire_older_than and
+		// delete_older_than. A file younger than the retention window is never a candidate, so the
+		// Parquet of a seal or checkpoint that is still in flight (here or in another process) is safe.
+		auto retention_s = std::max<int64_t>(1, config.maintenance_retention_ms / 1000);
+		auto result = writer_con->Query(StringUtil::Format(
+		    "SELECT count(*) FROM ducklake_delete_orphaned_files(%s, older_than => now() - INTERVAL %lld SECOND)",
+		    SqlQuote(config.catalog_name), static_cast<int64_t>(retention_s)));
+		if (!result || result->HasError()) {
+			throw IOException("%s", result ? result->GetError() : string("DuckDB query failed"));
+		}
+		auto chunk = result->Fetch();
+		auto deleted = chunk && chunk->size() > 0 ? chunk->GetValue(0, 0).GetValue<int64_t>() : 0;
+		if (deleted > 0) {
+			LogServerEvent(StringUtil::Format("catalog maintenance deleted %lld orphaned data files: catalog=%s",
+			                                  static_cast<int64_t>(deleted), config.catalog_name));
+		}
+	} catch (std::exception &ex) {
+		auto msg = string(ex.what());
+		if (IsContendedCatalogMaintenanceError(msg)) {
+			LogServerEvent(StringUtil::Format(
+			    "catalog maintenance orphan sweep skipped: another writer is maintaining catalog=%s: %s",
+			    config.catalog_name, msg));
+			return;
+		}
+		LogServerEvent(StringUtil::Format("catalog maintenance orphan sweep failed: catalog=%s error=%s",
+		                                  config.catalog_name, msg),
+		               LogLevel::LOG_WARNING);
 	}
 }
 

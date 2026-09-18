@@ -506,3 +506,99 @@ TEST_CASE("seal harness: failed metrics staging buffers nothing, retry buffers e
 
 	server->Close();
 }
+
+namespace {
+
+// Enable the catalog-maintenance test overrides so the time-based trigger fires ~300ms after the
+// server starts (instead of 10 minutes). Set BEFORE the server starts so the sealer thread never
+// reads the environment while it is being written; unset by the destructor.
+struct MaintenanceOverrideEnv {
+	MaintenanceOverrideEnv() {
+		setenv("DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE", "1", 1);
+		setenv("DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE_MAX_INTERVAL_MS", "300", 1);
+	}
+	~MaintenanceOverrideEnv() {
+		unsetenv("DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE_MAX_INTERVAL_MS");
+		unsetenv("DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE");
+	}
+};
+
+// A server writing into an attached (non-DuckLake) catalog, so catalog maintenance is enabled.
+OtlpServerConfig MaintenanceHarnessConfig() {
+	auto config = HarnessConfig();
+	config.catalog_name = "lake";
+	return config;
+}
+
+// Wait for the sealer's idle maintenance pass to record an outcome (run, failure, or contention).
+void WaitForMaintenanceOutcome(OtlpServer &server) {
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while (std::chrono::steady_clock::now() < deadline) {
+		if (server.MaintenanceRunsTotal() + server.MaintenanceFailuresTotal() + server.MaintenanceContendedTotal() >
+		    0) {
+			return;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(50));
+	}
+	FAIL("catalog maintenance never ran");
+}
+
+} // namespace
+
+TEST_CASE("seal harness: contended maintenance checkpoint is not a failure", "[seal_harness]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_FALSE(con.Query("ATTACH ':memory:' AS lake")->HasError());
+	MaintenanceOverrideEnv env;
+	auto server = MakeServer(*con.context, MaintenanceHarnessConfig());
+	// The sealer polls about once a second, so the hook is in place before the first pass.
+	server->SetMaintenanceFaultHookForTest([]() {
+		throw IOException("Failed to flush inlined data: could not serialize access due to concurrent delete");
+	});
+
+	WaitForMaintenanceOutcome(*server);
+	REQUIRE(server->MaintenanceContendedTotal() == 1);
+	REQUIRE(server->MaintenanceFailuresTotal() == 0);
+	REQUIRE(server->MaintenanceRunsTotal() == 0);
+	REQUIRE(server->MaintenanceLastError().empty());
+
+	// The attempt reset the trigger like a real pass: no immediate retry on the next sealer tick.
+	std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+	REQUIRE(server->MaintenanceContendedTotal() == 1);
+
+	server->Close();
+}
+
+TEST_CASE("seal harness: other maintenance errors still count as failures", "[seal_harness]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_FALSE(con.Query("ATTACH ':memory:' AS lake")->HasError());
+	MaintenanceOverrideEnv env;
+	auto server = MakeServer(*con.context, MaintenanceHarnessConfig());
+	server->SetMaintenanceFaultHookForTest([]() { throw IOException("connection to metadata catalog lost"); });
+
+	WaitForMaintenanceOutcome(*server);
+	REQUIRE(server->MaintenanceFailuresTotal() == 1);
+	REQUIRE(server->MaintenanceContendedTotal() == 0);
+	REQUIRE(server->MaintenanceLastError().find("connection to metadata catalog lost") != string::npos);
+
+	server->Close();
+}
+
+TEST_CASE("seal harness: successful maintenance on a non-DuckLake catalog skips the orphan sweep", "[seal_harness]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_FALSE(con.Query("ATTACH ':memory:' AS lake")->HasError());
+	MaintenanceOverrideEnv env;
+	auto server = MakeServer(*con.context, MaintenanceHarnessConfig());
+
+	// CHECKPOINT succeeds on a plain DuckDB catalog; the sweep sees it is not DuckLake and stays
+	// off instead of failing on the missing ducklake_delete_orphaned_files function.
+	WaitForMaintenanceOutcome(*server);
+	REQUIRE(server->MaintenanceRunsTotal() == 1);
+	REQUIRE(server->MaintenanceFailuresTotal() == 0);
+	REQUIRE(server->MaintenanceContendedTotal() == 0);
+	REQUIRE(server->MaintenanceLastError().empty());
+
+	server->Close();
+}
