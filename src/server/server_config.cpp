@@ -285,6 +285,42 @@ int64_t ParsePositiveInt64Env(const char *name, int64_t fallback) {
 	}
 }
 
+// DuckLake data inlining: DuckLake writes small inserts into the metadata catalog instead of a
+// Parquet file, and only CHECKPOINT flushes them out. DUCKLAKE_DATA_INLINING_ROW_LIMIT sets the
+// per-insert row limit on ATTACH; 0 disables inlining so every seal writes Parquet directly.
+// Unset keeps DuckLake's own default.
+string DuckLakeInliningOption() {
+	auto name = "DUCKLAKE_DATA_INLINING_ROW_LIMIT";
+	auto value = Env(name);
+	if (value.empty()) {
+		return "";
+	}
+	try {
+		size_t pos = 0;
+		auto parsed = std::stoull(value, &pos);
+		if (pos != value.size() || value[0] == '-') {
+			throw InvalidInputException("%s must be a non-negative integer", name);
+		}
+		return StringUtil::Format("DATA_INLINING_ROW_LIMIT %llu", static_cast<unsigned long long>(parsed));
+	} catch (InvalidInputException &) {
+		throw;
+	} catch (...) {
+		throw InvalidInputException("%s must be a non-negative integer", name);
+	}
+}
+
+// Extra option lines for `ATTACH ... (DATA_PATH ...)`.
+string DuckLakePathAttachOptions() {
+	auto option = DuckLakeInliningOption();
+	return option.empty() ? string() : ",\n  " + option;
+}
+
+// Option clause for `ATTACH 'ducklake:<secret>' AS <name>`.
+string DuckLakeSecretAttachOptions() {
+	auto option = DuckLakeInliningOption();
+	return option.empty() ? string() : " (" + option + ")";
+}
+
 // Cloudflare R2 access/secret-key env-var resolution. The candidate lists are identical across
 // every R2 mode (r2-data-catalog, r2-local-ducklake, r2-neon-ducklake), so they live here once.
 struct R2Credentials {
@@ -361,15 +397,15 @@ void ConfigureLocalDuckLake(ServerConfig &config) {
 	CreateParentDirectory(catalog_path);
 	CreateDirectory(data_path);
 
-	config.mode_setup_sql =
-	    StringUtil::Format(R"SQL(
+	config.mode_setup_sql = StringUtil::Format(R"SQL(
 INSTALL ducklake;
 LOAD ducklake;
 ATTACH %s AS %s (
-  DATA_PATH %s
+  DATA_PATH %s%s
 );
 )SQL",
-	                       SqlQuote("ducklake:" + catalog_path), QuoteIdentifier(config.catalog), SqlQuote(data_path));
+	                                           SqlQuote("ducklake:" + catalog_path), QuoteIdentifier(config.catalog),
+	                                           SqlQuote(data_path), DuckLakePathAttachOptions());
 }
 
 void ConfigureAwsDuckLake(ServerConfig &config) {
@@ -387,7 +423,8 @@ void ConfigureAwsDuckLake(ServerConfig &config) {
 		                            config.mode);
 	}
 	CreateParentDirectory(catalog_path);
-	config.mode_setup_sql = StringUtil::Format(R"SQL(
+	config.mode_setup_sql =
+	    StringUtil::Format(R"SQL(
 INSTALL ducklake;
 INSTALL aws;
 INSTALL httpfs;
@@ -401,11 +438,11 @@ CREATE OR REPLACE SECRET aws_ducklake_storage (
   REGION %s
 );
 ATTACH %s AS %s (
-  DATA_PATH %s
+  DATA_PATH %s%s
 );
 )SQL",
-	                                           SqlQuote(region), SqlQuote("ducklake:" + catalog_path),
-	                                           QuoteIdentifier(config.catalog), SqlQuote(data_path));
+	                       SqlQuote(region), SqlQuote("ducklake:" + catalog_path), QuoteIdentifier(config.catalog),
+	                       SqlQuote(data_path), DuckLakePathAttachOptions());
 }
 
 void ConfigureR2DataCatalog(ServerConfig &config) {
@@ -503,16 +540,17 @@ void ConfigureR2LocalDuckLake(ServerConfig &config) {
 	auto endpoint = R2EndpointDefault(config.mode);
 	auto storage_secret = BuildR2StorageSecret(config, "r2_storage", creds, endpoint);
 
-	config.mode_setup_sql = StringUtil::Format(R"SQL(
+	config.mode_setup_sql =
+	    StringUtil::Format(R"SQL(
 INSTALL ducklake;
 INSTALL httpfs;
 LOAD ducklake;
 LOAD httpfs;%sATTACH %s AS %s (
-  DATA_PATH %s
+  DATA_PATH %s%s
 );
 )SQL",
-	                                           storage_secret, SqlQuote("ducklake:" + catalog_path),
-	                                           QuoteIdentifier(config.catalog), SqlQuote(data_path));
+	                       storage_secret, SqlQuote("ducklake:" + catalog_path), QuoteIdentifier(config.catalog),
+	                       SqlQuote(data_path), DuckLakePathAttachOptions());
 }
 
 void ConfigureR2NeonDuckLake(ServerConfig &config) {
@@ -551,11 +589,12 @@ CREATE OR REPLACE SECRET ducklake_secret (
   DATA_PATH %s,
   METADATA_PARAMETERS MAP {'TYPE': 'postgres', 'SECRET': 'postgres_secret'}
 );
-ATTACH 'ducklake:ducklake_secret' AS %s;
+ATTACH 'ducklake:ducklake_secret' AS %s%s;
 )SQL",
 	    storage_secret, EnvSql(config, "NEON_PGHOST"), EnvSql(config, "NEON_PGPORT", "5432"),
 	    EnvSql(config, "NEON_PGDATABASE"), EnvSql(config, "NEON_PGUSER"), EnvSql(config, "NEON_PGPASSWORD"),
-	    EnvSql(config, "NEON_PGSSLMODE", "require"), SqlQuote(data_path), QuoteIdentifier(config.catalog));
+	    EnvSql(config, "NEON_PGSSLMODE", "require"), SqlQuote(data_path), QuoteIdentifier(config.catalog),
+	    DuckLakeSecretAttachOptions());
 }
 
 void ConfigureGcpDuckLake(ServerConfig &config) {
@@ -571,7 +610,8 @@ void ConfigureGcpDuckLake(ServerConfig &config) {
 		RequireEnv(name, config.mode);
 	}
 
-	config.mode_setup_sql = StringUtil::Format(R"SQL(
+	config.mode_setup_sql = StringUtil::Format(
+	    R"SQL(
 INSTALL ducklake;
 INSTALL postgres;
 INSTALL gcs FROM community;
@@ -597,12 +637,11 @@ CREATE OR REPLACE SECRET ducklake_secret (
   DATA_PATH %s,
   METADATA_PARAMETERS MAP {'TYPE': 'postgres', 'SECRET': 'postgres_secret'}
 );
-ATTACH 'ducklake:ducklake_secret' AS %s;
+ATTACH 'ducklake:ducklake_secret' AS %s%s;
 )SQL",
-	                                           EnvSql(config, "PGHOST"), EnvSql(config, "PGPORT", "5432"),
-	                                           EnvSql(config, "PGDATABASE"), EnvSql(config, "PGUSER"),
-	                                           EnvSql(config, "PGPASSWORD"), EnvSql(config, "PGSSLMODE", "require"),
-	                                           SqlQuote(data_path), QuoteIdentifier(config.catalog));
+	    EnvSql(config, "PGHOST"), EnvSql(config, "PGPORT", "5432"), EnvSql(config, "PGDATABASE"),
+	    EnvSql(config, "PGUSER"), EnvSql(config, "PGPASSWORD"), EnvSql(config, "PGSSLMODE", "require"),
+	    SqlQuote(data_path), QuoteIdentifier(config.catalog), DuckLakeSecretAttachOptions());
 }
 
 void ConfigureS3Tables(ServerConfig &config) {

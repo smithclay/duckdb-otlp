@@ -292,6 +292,33 @@ def test_gcp_ducklake_proxy_and_catalog_overrides(tmp_path):
     assert "schema := 'traces'" in result.stdout
 
 
+def test_ducklake_inlining_default_leaves_attach_untouched(tmp_path):
+    result = run(gcp_env(), tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "DATA_INLINING_ROW_LIMIT" not in result.stdout
+
+
+def test_ducklake_inlining_can_be_disabled_on_secret_attach(tmp_path):
+    env = gcp_env()
+    env["DUCKLAKE_DATA_INLINING_ROW_LIMIT"] = "0"
+    result = run(env, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "ATTACH 'ducklake:ducklake_secret' AS \"lake\" (DATA_INLINING_ROW_LIMIT 0);" in result.stdout
+
+
+def test_ducklake_inlining_limit_on_path_attach(tmp_path):
+    result = run({"DUCKDB_MODE": "local-ducklake", "DUCKLAKE_DATA_INLINING_ROW_LIMIT": "50"}, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert ",\n  DATA_INLINING_ROW_LIMIT 50\n);" in result.stdout
+
+
+@pytest.mark.parametrize("value", ["-1", "abc", "1.5"])
+def test_ducklake_inlining_limit_rejects_invalid(tmp_path, value):
+    result = run({"DUCKDB_MODE": "local-ducklake", "DUCKLAKE_DATA_INLINING_ROW_LIMIT": value}, tmp_path)
+    assert result.returncode == 1
+    assert "DUCKLAKE_DATA_INLINING_ROW_LIMIT" in result.stderr
+
+
 @pytest.mark.parametrize("missing", ["DUCKLAKE_DATA_PATH", "PGHOST", "PGDATABASE", "PGUSER", "PGPASSWORD"])
 def test_gcp_ducklake_requires_catalog_and_storage_config(tmp_path, missing):
     env = gcp_env()

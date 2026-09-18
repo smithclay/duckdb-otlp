@@ -423,6 +423,12 @@ private:
 	void RequestSeal();
 	bool SealAgeDue() const;
 	void MaybeRunCatalogMaintenance(idx_t sealed_rows, idx_t sealed_admission_bytes);
+	//! Sealer-thread idle hook: lets the time-based maintenance trigger fire without new seals.
+	void MaybeRunIdleCatalogMaintenance();
+	//! Run CHECKPOINT when the row-seal-count or time-based trigger is due and headroom allows.
+	//! Caller holds writer_mutex.
+	void RunCatalogMaintenanceIfDue(std::chrono::steady_clock::time_point now);
+	bool CatalogMaintenanceEnabled() const;
 	//! Set the DuckLake catalog options the post-seal CHECKPOINT consumes (target_file_size,
 	//! expire_older_than, delete_older_than). Best-effort and idempotent: called once at startup;
 	//! non-DuckLake / default catalogs throw and are ignored (maintenance DISABLEs on its own).
@@ -488,7 +494,10 @@ private:
 
 	enum class CatalogMaintenanceState { PENDING, SUPPORTED, DISABLED };
 	CatalogMaintenanceState catalog_maintenance_state = CatalogMaintenanceState::PENDING;
-	idx_t catalog_maintenance_row_seals_since_attempt = 0;
+	// Starts at 1 (not 0) so the time-based trigger checkpoints once after startup even with no
+	// new ingest: a previous process may have left DuckLake-inlined rows un-checkpointed, since
+	// shutdown drains skip maintenance.
+	idx_t catalog_maintenance_row_seals_since_attempt = 1;
 	std::chrono::steady_clock::time_point catalog_maintenance_last_attempt = std::chrono::steady_clock::now();
 	std::chrono::steady_clock::time_point catalog_maintenance_last_row_seal = std::chrono::steady_clock::now();
 	double catalog_maintenance_ingress_rate_bytes_per_ms = 0;

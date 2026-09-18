@@ -126,6 +126,13 @@ Delete expired rows through DuckLake before expiring snapshots and cleaning
 unused files. Do not let bucket lifecycle rules delete files still referenced by
 the catalog.
 
+Small commits are inlined into the PostgreSQL catalog until a DuckLake
+`CHECKPOINT` flushes them to Parquet in GCS; the daemon runs one at least every
+~10 minutes while rows are pending and prints each outcome
+(`catalog maintenance CHECKPOINT succeeded` / `WARNING: catalog maintenance
+CHECKPOINT failed ...`) to stderr, so alert on the warning. Set
+`DUCKLAKE_DATA_INLINING_ROW_LIMIT=0` to write Parquet on every commit instead.
+
 If startup fails, check PostgreSQL connectivity and grants, ADC availability in
 the container, and bucket IAM. If ingestion succeeds but rows do not appear,
 inspect commit errors with `otlp_server_list()` through private Quack access.
