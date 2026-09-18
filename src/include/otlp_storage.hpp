@@ -23,18 +23,27 @@ public:
 
 	static OtlpStorageExtensionInfo &GetState(const DatabaseInstance &instance);
 
-	OtlpServer &CreateServer(ClientContext &context, const OtlpUri &listen_uri, const OtlpServerConfig &config);
+	//! Start one server fed by every listener in `listeners`. Rejects a listen URI that is
+	//! already registered, and a second server for an ingest target (catalog + schema, or
+	//! Parquet export root) that already has one: a target has exactly one writer.
+	OtlpServer &CreateServer(ClientContext &context, const vector<OtlpListenerSpec> &listeners,
+	                         const OtlpServerConfig &config);
 
 	struct StopResult {
 		bool found = false;
+		//! Every listener the stop closed (the whole server, whichever URI named it).
+		vector<string> listen_uris;
 		//! Rows still buffered after the final shutdown drain failed (dropped). 0 on a clean stop.
 		//! Lets otlp_stop / the daemon distinguish a clean shutdown from a data-dropping one (M4).
 		idx_t dropped_rows = 0;
 	};
 	StopResult StopServer(ClientContext &context, const OtlpUri &listen_uri);
 
+	//! One row per listener. Listeners of the same server share every buffer/seal/maintenance
+	//! counter; is_listening/last_error/transport are per listener.
 	struct ServerSnapshot {
 		string listen_uri;
+		string transport;
 		string listen_url;
 		string host;
 		uint16_t port;
@@ -65,6 +74,7 @@ public:
 
 	vector<ServerSnapshot> ListServers();
 
+	//! Seal events are server-wide; listen_uri is the server's first (primary) listener.
 	struct SealSnapshot {
 		string listen_uri;
 		OtlpSealEvent event;
@@ -78,12 +88,14 @@ public:
 		idx_t seals_total = 0;
 		string error;
 	};
-	//! Force a synchronous seal of a registered server's buffer. Takes a shared_ptr
+	//! Force a synchronous seal of the server that owns `listen_uri` (any of its listeners). Takes a shared_ptr
 	//! under servers_mutex, then releases the registry lock while the seal runs.
 	FlushResult FlushServer(const OtlpUri &listen_uri);
 
 private:
 	void StopAllServers();
+	//! Distinct servers in the registry (several URIs can map to one). Caller holds servers_mutex.
+	vector<shared_ptr<OtlpServer>> DistinctServers() const;
 	//! Throw a clean InvalidInputException if the registry has begun teardown. MUST be called
 	//! with servers_mutex held. Guards multi-connection library embedders that race a registry
 	//! operation against a concurrent DB close, so a post-teardown access fails cleanly instead
@@ -96,6 +108,7 @@ private:
 	//! destructor). Once set, registry operations refuse to run (EnsureNotShutDown). Guarded by
 	//! servers_mutex so it is observed consistently with the servers map (review finding L4).
 	bool shutting_down = false;
+	//! Canonical listen URI -> owning server; every listener of a server has an entry.
 	//! shared_ptr (not unique_ptr) so FlushServer can hold a ref across a slow seal
 	//! with servers_mutex released; the server can't be freed mid-flush, and a
 	//! concurrent otlp_stop/db-close isn't blocked by the seal.

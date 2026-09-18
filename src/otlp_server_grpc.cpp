@@ -92,53 +92,67 @@ static int OtlpGrpcAuthThunk(void *user_data, const char *metadata_token, size_t
 
 } // namespace
 
-void OtlpServer::StartGrpc() {
-	// Bind address: bracket IPv6 literals so "host:port" parses unambiguously.
-	string addr = uri.IPv6() ? "[" + uri.Host() + "]:" + std::to_string(uri.Port())
-	                         : uri.Host() + ":" + std::to_string(uri.Port());
+class OtlpGrpcListener final : public OtlpListener {
+public:
+	OtlpGrpcListener(OtlpServer &server_p, const OtlpListenerSpec &spec_p) : OtlpListener(server_p, spec_p) {
+	}
+	~OtlpGrpcListener() override {
+		Close();
+	}
 
-	char err_buf[256] = {0};
-	try {
-		// service_flags selects the gRPC service family for this listener (OTLP/gRPC
-		// unary for otlp_serve(grpc), OTAP/Arrow for otap_serve), keeping the two
-		// disjoint. Cap a single received gRPC message at the same per-request body
-		// limit as the HTTP path, so one OTLP Export / OTAP BatchArrowRecords shares
-		// one size bound across transports (else tonic's 4 MiB default would differ).
-		grpc_handle = otlp_grpc_server_start(addr.data(), addr.size(), &OtlpGrpcBatchThunk, &OtlpGrpcAuthThunk,
-		                                     static_cast<void *>(this), config.grpc_service_flags,
-		                                     static_cast<uint64_t>(config.max_body_bytes), err_buf, sizeof(err_buf));
-	} catch (...) {
-		// The sealer thread is already running; tear it down so a joinable thread is
-		// never destroyed (mirrors the httplib bind-failure path).
-		ShutdownIngest();
-		throw;
+	void Start() override {
+		auto &uri = spec.uri;
+		// Bind address: bracket IPv6 literals so "host:port" parses unambiguously.
+		string addr = uri.IPv6() ? "[" + uri.Host() + "]:" + std::to_string(uri.Port())
+		                         : uri.Host() + ":" + std::to_string(uri.Port());
+		char err_buf[256] = {0};
+		// service_flags selects the gRPC service family for this listener (OTLP/gRPC unary for
+		// otlp_serve(grpc), OTAP/Arrow for otap_serve), keeping the two disjoint. Cap a single
+		// received gRPC message at the same per-request body limit as the HTTP path, so one OTLP
+		// Export / OTAP BatchArrowRecords shares one size bound across transports (else tonic's
+		// 4 MiB default would differ). The callbacks reach the shared server, not this listener.
+		handle = otlp_grpc_server_start(addr.data(), addr.size(), &OtlpGrpcBatchThunk, &OtlpGrpcAuthThunk,
+		                                static_cast<void *>(&server), spec.grpc_service_flags,
+		                                static_cast<uint64_t>(server.Config().max_body_bytes), err_buf,
+		                                sizeof(err_buf));
+		if (!handle) {
+			throw IOException("Failed to start OTLP/gRPC server at %s: %s", uri.Uri(),
+			                  err_buf[0] != '\0' ? err_buf : "unknown error");
+		}
+		is_running.store(true);
 	}
-	if (!grpc_handle) {
-		ShutdownIngest();
-		throw IOException("Failed to start OTLP/gRPC server at %s: %s", uri.Uri(),
-		                  err_buf[0] != '\0' ? err_buf : "unknown error");
-	}
-	is_running.store(true);
-}
 
-void OtlpServer::StopGrpc() {
-	if (grpc_handle) {
-		// Graceful shutdown: stop accepting, drain in-flight requests (bounded), join
-		// the runtime threads, then free. Must run before ShutdownIngest()'s final seal
-		// so in-flight requests' buffered rows are included.
-		otlp_grpc_server_stop(grpc_handle, 5000);
-		otlp_grpc_server_free(grpc_handle);
-		grpc_handle = nullptr;
+	void StopAccepting() override {
+		// The gRPC graceful shutdown + runtime join happens in Close(); it must not run here
+		// because a request-handler (tokio worker) thread would deadlock joining its own runtime.
+		is_running.store(false);
 	}
+
+	void Close() override {
+		StopAccepting();
+		if (handle) {
+			// Graceful shutdown: stop accepting, drain in-flight requests (bounded), join the
+			// runtime threads, then free. Runs before the server's final seal so in-flight
+			// requests' buffered rows are included.
+			otlp_grpc_server_stop(handle, 5000);
+			otlp_grpc_server_free(handle);
+			handle = nullptr;
+		}
+	}
+
+private:
+	//! Opaque handle owned by the otlp2records crate (tonic server + tokio runtime).
+	OtlpGrpcServer *handle = nullptr;
+};
+
+unique_ptr<OtlpListener> MakeOtlpGrpcListener(OtlpServer &server, const OtlpListenerSpec &spec) {
+	return make_uniq<OtlpGrpcListener>(server, spec);
 }
 
 #else
 
-void OtlpServer::StartGrpc() {
+unique_ptr<OtlpListener> MakeOtlpGrpcListener(OtlpServer &server, const OtlpListenerSpec &spec) {
 	throw NotImplementedException("otap_serve is not implemented for the wasm platform");
-}
-
-void OtlpServer::StopGrpc() {
 }
 
 #endif

@@ -67,16 +67,18 @@ Alongside the file readers, the extension can run an embedded server that accept
 
 The server requires a native build (WASM omits it). Three wire protocols feed the same buffering/seal core: **OTLP/HTTP** (`otlp_serve`, the default), **OTLP/gRPC** unary (`otlp_serve(transport := 'grpc')`), and **OTAP/Arrow** bidirectional streaming (`otap_serve`). The HTTP transport uses httplib; both gRPC families run on an embedded tonic server bridged in via `src/otlp_server_grpc.cpp`.
 
+A server is one pipeline fed by N listeners, like an OpenTelemetry Collector receiver set: several protocols, one pipeline, one exporter. A listener is a bound socket plus a transport. It owns no buffers or counters; the server owns the buffers, admission cap, writer, and maintenance schedule. Each catalog target gets at most one server, so HTTP and gRPC traffic for the same catalog seal together, checkpoint on one schedule, and report one readiness state.
+
 The server **buffers ingest and commits rows in batches**. Worker threads validate, convert, and append rows into an in-memory buffer, then return `202`. A single background writer commits the buffer to the target in one transaction. That model keeps the DuckLake path practical: one Parquet data file per signal per batch commit, and one serialized writer that avoids DuckLake optimistic-concurrency retries.
 
 ### Components
 
 | Component | Location | Role |
 |-----------|----------|------|
-| `OtlpServer` | `src/otlp_server.cpp` / `src/include/otlp_server.hpp` | Base server: token validation/auth, content-type → format selection, Arrow → DuckDB conversion, the in-memory buffer, and the background writer that commits batches into the target catalog. |
-| `HttpOtlpServer` | `src/otlp_server.cpp` | `OtlpServer` subclass wrapping httplib. Owns the worker pool and the `/v1/logs`, `/v1/traces`, `/v1/metrics`, `/healthz`, and `/readyz` routes; binds the socket synchronously so callers see bind failures. |
-| gRPC transport bridge | `src/otlp_server_grpc.cpp` | Bridges the embedded tonic gRPC server (in `otlp2records`) into the same buffering/seal core via a per-batch C callback. A `service_flags` arg selects the disjoint service family per listener: OTLP/gRPC unary `Export` (for `otlp_serve(transport := 'grpc')`) or OTAP/Arrow streaming (for `otap_serve`). |
-| `OtlpStorageExtensionInfo` | `src/include/otlp_storage.hpp` | Database-scoped registry of running servers (keyed by scheme-aware listen URI). Backs `CreateServer` / `FlushServer` / `StopServer` / `ListServers`, and stops every server when the database closes. It cannot commit buffered rows at that point; see the durability note below. |
+| `OtlpServer` | `src/otlp_server.cpp` / `src/include/otlp_server.hpp` | The pipeline: token validation/auth, content-type → format selection, Arrow → DuckDB conversion, the in-memory buffer, the background writer that commits batches into the target catalog, and catalog maintenance. Owns its listeners; starts them after the writer and closes them all before the final drain. |
+| `OtlpHttpListener` | `src/otlp_server_http.cpp` | `OtlpListener` wrapping httplib. Owns the worker pool and the `/v1/logs`, `/v1/traces`, `/v1/metrics`, `/healthz`, and `/readyz` routes; binds the socket synchronously so callers see bind failures. `/readyz` reports the shared server's commit health. |
+| `OtlpGrpcListener` | `src/otlp_server_grpc.cpp` | `OtlpListener` wrapping the embedded tonic gRPC server (in `otlp2records`), bridged into the server via a per-batch C callback. A `service_flags` arg selects the disjoint service family per listener: OTLP/gRPC unary `Export` (for `otlp_serve(transport := 'grpc')`) or OTAP/Arrow streaming (for `otap_serve`). |
+| `OtlpStorageExtensionInfo` | `src/include/otlp_storage.hpp` | Database-scoped registry of running servers (every listener's scheme-aware listen URI maps to its server; one server per catalog target). Backs `CreateServer` / `FlushServer` / `StopServer` / `ListServers`, and stops every server when the database closes. It cannot commit buffered rows at that point; see the durability note below. |
 | Lifecycle functions | `src/otlp_start_stop.cpp` | The `otlp_serve`, `otap_serve`, `otlp_flush`, `otlp_stop`, `otlp_server_list`, and `otlp_seal_list` table functions that drive the registry. |
 
 ### Request flow
@@ -84,7 +86,7 @@ The server **buffers ingest and commits rows in batches**. Worker threads valida
 ```
 Exporter: POST http://localhost:4318/v1/logs  (Bearer token, OTLP body)
   ↓
-HttpOtlpServer route → CheckAuth (Bearer or x-api-key)
+OtlpHttpListener route → OtlpServer::CheckAuth (Bearer or x-api-key)
   ↓
 FormatFromContentType (json / ndjson / protobuf)
   ↓
