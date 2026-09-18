@@ -216,8 +216,7 @@ bool WaitForShutdownOrListenerFailure(duckdb::Connection &con, const duckdb_otlp
 			last_maintenance_failures = server_health.maintenance_failures;
 			std::cerr << "WARNING: catalog maintenance CHECKPOINT failed; inlined rows are not being flushed "
 			             "to Parquet (catalog="
-			          << config.catalog << ", maintenance_failures_total=" << server_health.maintenance_failures
-			          << ")";
+			          << config.catalog << ", maintenance_failures_total=" << server_health.maintenance_failures << ")";
 			if (!server_health.maintenance_last_error.empty()) {
 				std::cerr << ": " << server_health.maintenance_last_error;
 			}
@@ -485,7 +484,9 @@ int main(int argc, char **argv) {
 		// One otlp_serve call starts every listener against one server. If any listener fails to
 		// bind, that call closes the listeners it already started and registers nothing; the stop
 		// is still attempted on every exit so a server that did register is always drained.
-		auto stop_listeners = [&] { return TryExecuteOtlpShutdown(con, config.StopOtlpSql(), "otlp shutdown"); };
+		auto stop_listeners = [&] {
+			return TryExecuteOtlpShutdown(con, config.StopOtlpSql(), "otlp shutdown");
+		};
 		try {
 			Execute(con, config.StartOtlpSql(), "otlp startup", true);
 			Execute(con, config.StartQuackSql(), "quack startup", true);

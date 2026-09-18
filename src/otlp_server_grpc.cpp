@@ -111,10 +111,9 @@ public:
 		// received gRPC message at the same per-request body limit as the HTTP path, so one OTLP
 		// Export / OTAP BatchArrowRecords shares one size bound across transports (else tonic's
 		// 4 MiB default would differ). The callbacks reach the shared server, not this listener.
-		handle = otlp_grpc_server_start(addr.data(), addr.size(), &OtlpGrpcBatchThunk, &OtlpGrpcAuthThunk,
-		                                static_cast<void *>(&server), spec.grpc_service_flags,
-		                                static_cast<uint64_t>(server.Config().max_body_bytes), err_buf,
-		                                sizeof(err_buf));
+		handle = otlp_grpc_server_start(
+		    addr.data(), addr.size(), &OtlpGrpcBatchThunk, &OtlpGrpcAuthThunk, static_cast<void *>(&server),
+		    spec.grpc_service_flags, static_cast<uint64_t>(server.Config().max_body_bytes), err_buf, sizeof(err_buf));
 		if (!handle) {
 			throw IOException("Failed to start OTLP/gRPC server at %s: %s", uri.Uri(),
 			                  err_buf[0] != '\0' ? err_buf : "unknown error");
