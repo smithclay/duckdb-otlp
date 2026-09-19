@@ -1,7 +1,7 @@
 #include "otlp_column_promote.hpp"
 
 #include "duckdb/main/connection.hpp"
-#include "duckdb/main/materialized_query_result.hpp"
+#include "duckdb/main/query_result.hpp"
 
 #include "otlp_sql_util.hpp"
 
