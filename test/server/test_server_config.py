@@ -511,3 +511,46 @@ def test_healthcheck_requires_both_listeners():
         finally:
             httpd.shutdown()
             thread.join()
+
+
+def test_healthcheck_probes_the_configured_quack_port():
+    """The Quack probe has to resolve the same address startup binds.
+
+    It used to read only DUCKDB_QUACK_ADDR/QUACK_HTTP_ADDR and fall back to 9494, while
+    ServerConfig gives DUCKDB_QUACK_PORT (what `--quack PORT` sets) precedence — so
+    `--quack 9999` bound 9999 and the container HEALTHCHECK probed 9494 forever. Both now go
+    through QuackAddrFromEnv.
+    """
+    import http.server
+    import threading
+
+    class Ready(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200 if self.path in ("/readyz", "/") else 404)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    with (
+        http.server.ThreadingHTTPServer(("127.0.0.1", 0), Ready) as otlp,
+        http.server.ThreadingHTTPServer(("127.0.0.1", 0), Ready) as quack,
+    ):
+        threads = [threading.Thread(target=s.serve_forever, daemon=True) for s in (otlp, quack)]
+        for thread in threads:
+            thread.start()
+        env = {
+            "DUCKDB_OTLP_TRANSPORTS": "http",
+            "OTEL_HTTP_ADDR": f"127.0.0.1:{otlp.server_port}",
+            "DUCKDB_QUACK_ENABLED": "1",
+            "DUCKDB_QUACK_PORT": str(quack.server_port),
+        }
+        try:
+            assert _healthcheck(env) == 0
+            # A port nothing is listening on must fail, so the pass above is not vacuous.
+            assert _healthcheck({**env, "DUCKDB_QUACK_PORT": str(quack.server_port + 1)}) == 1
+        finally:
+            for server in (otlp, quack):
+                server.shutdown()
+            for thread in threads:
+                thread.join()

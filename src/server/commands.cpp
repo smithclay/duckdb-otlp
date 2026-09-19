@@ -37,6 +37,10 @@ using duckdb::StringUtil;
 //! the daemon and CLI are not built on Windows (see the NOT WIN32 guard in CMakeLists.txt).
 constexpr const char *STDOUT_PATH = "/dev/stdout";
 
+//! Temp view `query` writes its final SELECT through when the result is redirected to a file
+//! or a non-box format. Named distinctively because it shares the session's namespace.
+constexpr const char *RESULT_VIEW = "duckdb_otlp_query_result";
+
 bool StdoutIsTerminal() {
 #ifdef _WIN32
 	return false;
@@ -406,8 +410,6 @@ int RunQuery(const CliOptions &options, const EnvSource &env) {
 		Execute(*con, statements[i]->query, "query");
 	}
 	auto final_sql = statements.back()->query;
-	// The extracted text keeps its terminating ';', which cannot appear inside COPY (...).
-	StringUtil::RTrim(final_sql, "; \t\n\r\f\v");
 
 	if (!redirecting || !last_is_select) {
 		if (redirecting && !last_is_select) {
@@ -438,7 +440,16 @@ int RunQuery(const CliOptions &options, const EnvSource &env) {
 		}
 		CreateParentDirectory(path);
 	}
-	Execute(*con, StringUtil::Format("COPY (%s) TO %s %s;", final_sql, SqlQuote(path), CopyFormatOptions(format)),
+	// Route the result through a temp view rather than splicing the SQL into COPY (...).
+	// DuckDB gives the LAST statement of a script everything to the end of the input —
+	// Parser::ParseQuery sets its stmt_length to `query.size() - stmt_location` — so
+	// `SELECT 1;\n-- done` arrives with both the ';' and the comment attached. Inside
+	// COPY (...) the ';' is a syntax error and a trailing line comment swallows the closing
+	// paren. A view body is not nested in parentheses, so neither can hurt, and DuckDB's own
+	// parser decides where the statement ends instead of a hand-written scanner here (which
+	// would have to get dollar-quoted strings and nested block comments right).
+	Execute(*con, StringUtil::Format("CREATE OR REPLACE TEMP VIEW %s AS %s", RESULT_VIEW, final_sql), "query");
+	Execute(*con, StringUtil::Format("COPY %s TO %s %s;", RESULT_VIEW, SqlQuote(path), CopyFormatOptions(format)),
 	        "query");
 	if (path != STDOUT_PATH) {
 		std::cerr << "Wrote " << path << '\n';

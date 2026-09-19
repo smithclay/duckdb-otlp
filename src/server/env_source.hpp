@@ -36,6 +36,12 @@ public:
 	bool Has(const char *name) const;
 	//! True when `name` resolves to a recognized truthy spelling.
 	bool Truthy(const char *name) const;
+	//! True when `name`'s value came from the command line rather than the process
+	//! environment. Precedence between two settings that name the same thing depends on it:
+	//! a `--host` flag is the most specific thing the user said, while a DUCKDB_OTLP_HOST
+	//! inherited from a container image is a default that a per-transport OTEL_*_ADDR
+	//! should beat.
+	bool IsOverride(const char *name) const;
 
 private:
 	std::map<duckdb::string, duckdb::string> overlay;

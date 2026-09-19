@@ -275,8 +275,10 @@ int RunHealthCheck(const EnvSource &env) {
 		for (const auto &listener : duckdb_otlp_server::ListenersFromEnv(env)) {
 			duckdb::OtlpUri uri(listener.uri);
 			auto host = uri.Host();
-			if (host == "0.0.0.0" || host == "::") {
+			if (host == "0.0.0.0") {
 				host = "127.0.0.1";
+			} else if (host == "::") {
+				host = "::1";
 			}
 			bool healthy = listener.transport == "grpc" ? duckdb::OtlpTcpConnectOk(host, uri.Port())
 			                                            : duckdb::OtlpHttpStatusOk(host, uri.Port(), "/readyz");
@@ -288,9 +290,10 @@ int RunHealthCheck(const EnvSource &env) {
 		std::cerr << "ERROR: " << duckdb::ErrorData(ex).RawMessage() << '\n';
 		return 1;
 	}
-	if (env.Truthy("DUCKDB_QUACK_ENABLED") || env.Truthy("QUACK_ENABLED")) {
-		auto quack_addr = env.Get("DUCKDB_QUACK_ADDR", env.Get("QUACK_HTTP_ADDR", "0.0.0.0:9494"));
-		if (!HealthProbe(quack_addr, "/", 9494)) {
+	if (duckdb_otlp_server::QuackEnabledFromEnv(env)) {
+		// Resolved by the same function startup uses, so the probe cannot target a different
+		// port than the server bound.
+		if (!HealthProbe(duckdb_otlp_server::QuackAddrFromEnv(env), "/", 9494)) {
 			return 1;
 		}
 	}

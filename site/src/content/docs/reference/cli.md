@@ -69,7 +69,7 @@ duckdb-otlp serve [flags]
 | `--schema NAME` | `DUCKDB_SCHEMA` | mode-dependent |
 | `--token TOKEN` | `DUCKDB_OTLP_TOKEN` | *(none)* |
 | `--no-auth` | `DUCKDB_OTLP_DISABLE_AUTH` | `0` |
-| `--quack PORT` | `DUCKDB_QUACK_PORT` | off |
+| `--quack PORT` | `DUCKDB_QUACK_PORT` | off (`0` disables) |
 | `--quack-token TOKEN` | `DUCKDB_QUACK_TOKEN` | *(none)* |
 | `--startup-timeout SECS` | `DUCKDB_OTLP_STARTUP_TIMEOUT` | `60` |
 
@@ -84,6 +84,15 @@ duckdb-otlp --grpc 4317               # gRPC only
 duckdb-otlp --grpc 0                  # HTTP only (gRPC off, HTTP still on its default)
 duckdb-otlp --host 0.0.0.0 --token "$TOKEN"
 ```
+
+An IPv6 literal works either bracketed or bare, and appears bracketed in the listener URI:
+
+```sh
+duckdb-otlp --host ::1                      # OTLP http: otlp:[::1]:4318
+duckdb-otlp --host :: --token "$TOKEN"      # every interface, IPv6
+```
+
+`OTEL_HTTP_ADDR` and `OTEL_GRPC_ADDR` set one transport's address each. Between the two environment variables the more specific one wins, so a host spelled out there beats `DUCKDB_OTLP_HOST` — which matters in the container, where the image sets `DUCKDB_OTLP_HOST=0.0.0.0` and `OTEL_HTTP_ADDR=127.0.0.1:4318` has to actually narrow the bind. A `--host` flag is the most specific thing you can say, so it still moves every listener.
 
 OTAP/Arrow is a different protocol served by `otap_serve`, so it cannot be combined with standard OTLP listeners in one process:
 
@@ -197,7 +206,9 @@ duckdb-otlp query "SELECT service_name, count(*) FROM otlp_logs GROUP BY 1 ORDER
 duckdb-otlp query "FROM otlp_traces LIMIT 10" --format json
 ```
 
-A script may contain several statements. Only a trailing `SELECT` can be redirected to a file or non-`box` format; earlier statements run as setup.
+A script may contain several statements. Only a trailing `SELECT` can be redirected to a file or non-`box` format; earlier statements run as setup. Trailing semicolons and comments are fine.
+
+`--format` is not inferred from the output file's extension: `query` writes `box` on a terminal and `csv` when piped, so pass `--format parquet` when you want Parquet.
 
 `--readonly` is opt-in rather than the default because lakehouse modes need write access to attach their catalog.
 

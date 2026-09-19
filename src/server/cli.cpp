@@ -394,7 +394,9 @@ CliOptions ParseCli(int argc, char **argv) {
 		switch (flag->target) {
 		case FlagTarget::ENV:
 			options.env_overrides.emplace_back(flag->env_name, flag->is_switch ? "1" : value);
-			quack_port_set = quack_port_set || string(flag->env_name) == "DUCKDB_QUACK_PORT";
+			// A NON-ZERO --quack port implies enabling Quack. `--quack 0` means "off", the
+			// same as --http 0 / --grpc 0, so it must not switch Quack on instead.
+			quack_port_set = quack_port_set || (string(flag->env_name) == "DUCKDB_QUACK_PORT" && value != "0");
 			break;
 		case FlagTarget::SIGNAL:
 			options.signal = value;

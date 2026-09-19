@@ -718,3 +718,119 @@ def test_the_cli_never_mutates_the_process_environment():
         if "setenv(" in text or "_putenv_s(" in text:
             offenders.append(source.name)
     assert offenders == [], f"these write to the process environment: {offenders}"
+
+
+# --------------------------------------------------------------------------------------
+# Bind-address resolution
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("args", "env", "expected"),
+    [
+        (["--host", "::1"], {}, "otlp:[::1]:4318"),
+        (["--host", "[::1]"], {}, "otlp:[::1]:4318"),
+        # The IPv6 wildcard is not loopback, so it needs auth opted out like 0.0.0.0 does.
+        (["--no-auth"], {"DUCKDB_OTLP_TRANSPORTS": "http", "OTEL_HTTP_ADDR": "[::]:4318"}, "otlp:[::]:4318"),
+    ],
+)
+def test_ipv6_hosts_are_bracketed_in_the_listener_uri(args, env, expected, tmp_path):
+    """An IPv6 literal has to be re-bracketed when host and port are recombined.
+
+    Both sources hand the host over unbracketed — OtlpUri::Host() strips the brackets it
+    parsed, and --host/DUCKDB_OTLP_HOST take a bare literal — so "::1" + ":4318" otherwise
+    reads as one colon-separated string and the port parse fails.
+    """
+    result = run(["validate", *args], env=env, home=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert expected in result.stdout
+
+
+def test_an_explicit_otel_addr_host_beats_an_inherited_duckdb_otlp_host(tmp_path):
+    """The image sets DUCKDB_OTLP_HOST=0.0.0.0; narrowing the bind must not be widened back.
+
+    Between two environment variables the more specific one wins, so a host spelled out in
+    OTEL_HTTP_ADDR beats the global DUCKDB_OTLP_HOST.
+    """
+    result = run(
+        ["validate"],
+        env={
+            "DUCKDB_OTLP_HOST": "0.0.0.0",
+            "DUCKDB_OTLP_TRANSPORTS": "http",
+            "OTEL_HTTP_ADDR": "127.0.0.1:4318",
+        },
+        home=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "otlp:127.0.0.1:4318" in result.stdout
+
+
+def test_the_host_flag_still_moves_every_listener(tmp_path):
+    """--host is the most specific thing the user said, so it beats an OTEL_*_ADDR host too."""
+    result = run(
+        ["validate", "--host", "0.0.0.0", "--no-auth"],
+        env={"DUCKDB_OTLP_TRANSPORTS": "http", "OTEL_HTTP_ADDR": "127.0.0.1:4318"},
+        home=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "otlp:0.0.0.0:4318" in result.stdout
+
+
+def test_quack_zero_disables_quack(tmp_path):
+    """`--quack 0` means off, like --http 0 / --grpc 0 — not "enable on an ephemeral port"."""
+    result = run(["validate", "--quack", "0"], home=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "Quack: disabled" in result.stdout
+
+
+def test_quack_port_enables_quack(tmp_path):
+    result = run(["validate", "--quack", "9999", "--quack-token", "0123456789abcdef"], home=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "Quack: quack:127.0.0.1:9999" in result.stdout
+
+
+# --------------------------------------------------------------------------------------
+# `query`: trailing semicolons and comments
+#
+# DuckDB gives the last statement of a script everything to the end of the input, so its text
+# arrives with any trailing ';' and comment attached. Splicing that into COPY (...) was a
+# syntax error, and a trailing line comment swallowed the closing paren.
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("sql", "expected"),
+    [
+        ("SELECT 1 AS a -- trailing note", "1"),
+        ("SELECT 1 AS a; -- trailing note", "1"),
+        ("SELECT 1 AS a /* trailing block */", "1"),
+        ("SELECT 1 /* mid */ + 1 AS a", "2"),
+        ("SELECT '-- not a comment' AS a", "-- not a comment"),
+    ],
+)
+def test_query_tolerates_trailing_semicolons_and_comments(sql, expected, tmp_path):
+    result = run(["query", sql, "--format", "csv"], env=parquet_mode_env(tmp_path), home=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[1] == expected
+
+
+def test_query_script_ending_in_a_comment(tmp_path):
+    script = tmp_path / "script.sql"
+    script.write_text("CREATE OR REPLACE TEMP TABLE t AS SELECT 2 AS b; -- setup\nSELECT * FROM t -- a\n; -- b\n")
+    result = run(
+        ["query", "--file", str(script), "--format", "csv"],
+        env=parquet_mode_env(tmp_path),
+        home=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[1] == "2"
+
+
+def test_query_preserves_ordering_through_the_output_view(tmp_path):
+    result = run(
+        ["query", "SELECT * FROM (VALUES (3),(1),(2)) t(n) ORDER BY n", "--format", "csv"],
+        env=parquet_mode_env(tmp_path),
+        home=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[1:] == ["1", "2", "3"]

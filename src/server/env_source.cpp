@@ -34,4 +34,9 @@ bool EnvSource::Truthy(const char *name) const {
 	return IsTruthy(Get(name));
 }
 
+bool EnvSource::IsOverride(const char *name) const {
+	auto entry = overlay.find(name);
+	return entry != overlay.end() && !entry->second.empty();
+}
+
 } // namespace duckdb_otlp_server

@@ -20,6 +20,13 @@ struct IngestListener {
 //! setting selected the transports, so the startup banner can say why a listener is (not) on.
 std::vector<IngestListener> ListenersFromEnv(const EnvSource &env, duckdb::string *selection_reason = nullptr);
 
+//! Whether Quack is enabled, and the address it binds. Exported for the same reason as
+//! ListenersFromEnv: the healthcheck subcommand has to probe exactly what startup bound, and
+//! resolving it needs no storage credentials or I/O. A second copy in the healthcheck is how
+//! DUCKDB_QUACK_PORT (what --quack sets) came to be honored by one and not the other.
+bool QuackEnabledFromEnv(const EnvSource &env);
+duckdb::string QuackAddrFromEnv(const EnvSource &env);
+
 struct ServerConfig {
 	duckdb::string mode;
 	duckdb::string database;

@@ -796,8 +796,14 @@ int ParsePortEnv(const EnvSource &env, const char *name) {
 }
 
 //! Resolve one transport's bind address from, in order: its DUCKDB_OTLP_*_PORT variable, its
-//! legacy OTEL_*_ADDR variable, then the built-in default. DUCKDB_OTLP_HOST always wins over a
-//! host embedded in an OTEL_*_ADDR, so `--host` moves every listener at once.
+//! legacy OTEL_*_ADDR variable, then the built-in default.
+//!
+//! Host precedence needs care because two settings name it. `--host` moves every listener at
+//! once, so a flag beats everything. But DUCKDB_OTLP_HOST is also how the container image
+//! sets its 0.0.0.0 default, and a host spelled out in OTEL_HTTP_ADDR is the more specific of
+//! the two environment variables: an operator narrowing the container's bind with
+//! OTEL_HTTP_ADDR=127.0.0.1:4318 must get loopback, not be silently widened back to the
+//! wildcard the image asked for.
 //!
 //! The legacy "host:port" form is parsed by OtlpUri rather than by hand: it already validates
 //! the host and the port range and understands bracketed IPv6, and the result is handed back
@@ -806,6 +812,7 @@ int ParsePortEnv(const EnvSource &env, const char *name) {
 ResolvedListener ResolveListener(const EnvSource &env, const char *port_var, const char *addr_var, int default_port) {
 	ResolvedListener resolved;
 	auto explicit_host = env.Get("DUCKDB_OTLP_HOST");
+	auto host_from_flag = env.IsOverride("DUCKDB_OTLP_HOST");
 	auto addr = addr_var ? env.Get(addr_var) : string();
 
 	if (env.Has(port_var)) {
@@ -823,7 +830,7 @@ ResolvedListener ResolveListener(const EnvSource &env, const char *port_var, con
 	try {
 		duckdb::OtlpUri parsed("otlp:" + addr + (has_port ? "" : ":" + std::to_string(default_port)));
 		resolved.port = parsed.Port();
-		resolved.host = explicit_host.empty() ? parsed.Host() : explicit_host;
+		resolved.host = host_from_flag ? explicit_host : parsed.Host();
 	} catch (const std::exception &ex) {
 		throw InvalidInputException("%s is not a valid bind address (\"%s\"): %s", addr_var, addr,
 		                            duckdb::ErrorData(ex).RawMessage());
@@ -832,9 +839,18 @@ ResolvedListener ResolveListener(const EnvSource &env, const char *port_var, con
 }
 
 //! Build a listener URI from a resolved host/port. One spelling, so adding a transport or
-//! changing the URI form (IPv6 bracketing, say) is a single-site edit.
+//! changing the URI form is a single-site edit.
 IngestListener MakeListener(const char *scheme, const ResolvedListener &resolved, const char *transport, bool otap) {
-	auto uri = string(scheme) + ":" + resolved.host + ":" + std::to_string(resolved.port);
+	// An IPv6 literal has to be bracketed before the port is appended, or "::1" + ":4318"
+	// reads as one colon-separated string and the port parse fails. Both sources of a host
+	// hand one over unbracketed — OtlpUri::Host() strips the brackets it parsed, and
+	// DUCKDB_OTLP_HOST/--host take a bare literal — so this is the one place that knows how
+	// to spell a host inside a URI.
+	auto host = resolved.host;
+	if (host.find(':') != string::npos && host[0] != '[') {
+		host = "[" + host + "]";
+	}
+	auto uri = string(scheme) + ":" + host + ":" + std::to_string(resolved.port);
 	return {duckdb::OtlpUri(uri).Uri(), transport, otap};
 }
 
@@ -1017,6 +1033,21 @@ std::vector<IngestListener> ListenersFromEnv(const EnvSource &env, string *selec
 	return finish(std::move(listeners));
 }
 
+bool QuackEnabledFromEnv(const EnvSource &env) {
+	return IsTruthy(env.Get("DUCKDB_QUACK_ENABLED", env.Get("QUACK_ENABLED", "0")));
+}
+
+string QuackAddrFromEnv(const EnvSource &env) {
+	// --quack PORT sets DUCKDB_QUACK_PORT; the legacy DUCKDB_QUACK_ADDR / QUACK_HTTP_ADDR
+	// host:port form still wins when no port was given explicitly. Port 0 means "off", as it
+	// does for --http/--grpc, so it does not select a (zero, i.e. ephemeral) bind port.
+	auto port = env.Has("DUCKDB_QUACK_PORT") ? ParsePortEnv(env, "DUCKDB_QUACK_PORT") : 0;
+	if (port != 0) {
+		return env.Get("DUCKDB_OTLP_HOST", DEFAULT_HOST) + ":" + std::to_string(port);
+	}
+	return env.Get("DUCKDB_QUACK_ADDR", env.Get("QUACK_HTTP_ADDR", string(DEFAULT_HOST) + ":9494"));
+}
+
 ServerConfig ServerConfig::FromEnv(const EnvSource &env) {
 	ServerConfig config;
 	// DUCKDB_MODE is no longer required: a bare `duckdb-otlp` on a laptop should start a
@@ -1037,14 +1068,8 @@ ServerConfig ServerConfig::FromEnv(const EnvSource &env) {
 		config.token = BearerTokenFromOtelHeaders(env.Get("OTEL_EXPORTER_OTLP_HEADERS"));
 	}
 	config.disable_auth = IsTruthy(env.Get("DUCKDB_OTLP_DISABLE_AUTH", "0"));
-	config.quack_enabled = IsTruthy(env.Get("DUCKDB_QUACK_ENABLED", env.Get("QUACK_ENABLED", "0")));
-	// --quack PORT sets DUCKDB_QUACK_PORT; the legacy DUCKDB_QUACK_ADDR / QUACK_HTTP_ADDR
-	// host:port form still wins when no port was given explicitly.
-	auto quack_host = env.Get("DUCKDB_OTLP_HOST", DEFAULT_HOST);
-	config.quack_http_addr =
-	    env.Has("DUCKDB_QUACK_PORT")
-	        ? quack_host + ":" + std::to_string(ParsePortEnv(env, "DUCKDB_QUACK_PORT"))
-	        : env.Get("DUCKDB_QUACK_ADDR", env.Get("QUACK_HTTP_ADDR", string(DEFAULT_HOST) + ":9494"));
+	config.quack_enabled = QuackEnabledFromEnv(env);
+	config.quack_http_addr = QuackAddrFromEnv(env);
 	config.quack_listen_uri = env.Get("DUCKDB_QUACK_LISTEN_URI", "quack:" + config.quack_http_addr);
 	config.dry_run = IsTruthy(env.Get("DRY_RUN", "0"));
 	config.startup_timeout_secs = ParsePositiveIntEnv(env, "DUCKDB_OTLP_STARTUP_TIMEOUT", 60);
