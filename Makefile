@@ -9,6 +9,13 @@ DOCKER_PLATFORMS ?= linux/amd64,linux/arm64
 DOCKER_LOCAL_PLATFORM ?= linux/arm64
 DOCKER_OCI_OUTPUT ?= output/docker/duckdb-otlp-server-multiarch.oci.tar
 
+# The CLI advertises JSON/NDJSON output (`convert --format ndjson` is an example in the docs),
+# which needs DuckDB's json COPY function. The daemon is a standalone binary with extension
+# autoloading off, so json is linked in rather than installed at runtime: `convert` has to work
+# on a machine with nothing set up, and the distroless image has no network. Set before the
+# include below, which reads CORE_EXTENSIONS at parse time.
+CORE_EXTENSIONS=json
+
 # Include the Makefile from extension-ci-tools
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 

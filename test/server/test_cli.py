@@ -1020,3 +1020,115 @@ def test_a_typo_of_an_alias_suggests_the_canonical_command(typo, expected, tmp_p
     result = run([typo], home=tmp_path, timeout=30)
     assert result.returncode == 1
     assert f"duckdb-otlp {expected}" in result.stderr
+
+
+# --------------------------------------------------------------------------------------
+# Output files: the format follows the extension, and a directory is spelled like one
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("name", "magic"),
+    [("out.parquet", b"PAR1"), ("out.csv", b"start_time"), ("out.ndjson", b'{"')],
+)
+def test_convert_format_follows_the_output_extension(name, magic, tmp_path):
+    """`--to out.csv` used to write Parquet into it, which is a mislabelled artifact."""
+    out = tmp_path / name
+    result = run(
+        ["convert", str(DATA_DIR / "otlp_traces.pb"), "--signal", "traces", "--to", str(out)],
+        home=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert out.read_bytes()[:10].startswith(magic[:4])
+
+
+def test_an_explicit_format_still_beats_the_extension(tmp_path):
+    out = tmp_path / "lies.csv"
+    result = run(
+        ["convert", str(DATA_DIR / "otlp_traces.pb"), "--signal", "traces", "--to", str(out), "--format", "parquet"],
+        home=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert out.read_bytes()[:4] == b"PAR1"
+
+
+def test_query_format_follows_the_output_extension(tmp_path):
+    out = tmp_path / "q.parquet"
+    result = run(["query", "SELECT 1 AS a", "--to", str(out)], env=parquet_mode_env(tmp_path), home=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert out.read_bytes()[:4] == b"PAR1"
+
+
+def test_several_signals_to_a_file_path_is_an_error_not_a_surprise_directory(tmp_path):
+    """The output shape must follow the command, not the data: `--to out` was a file for a
+    traces input and a directory for a metrics one."""
+    out = tmp_path / "out"
+    result = run(
+        ["convert", str(DATA_DIR / "metrics_all_types.jsonl"), "--signal", "metrics", "--to", str(out)],
+        home=tmp_path,
+    )
+    assert result.returncode == 1
+    assert "names a file" in result.stderr
+    assert not out.exists()
+
+
+def test_a_trailing_slash_writes_a_directory_of_signals(tmp_path):
+    out = tmp_path / "out"
+    result = run(
+        ["convert", str(DATA_DIR / "metrics_all_types.jsonl"), "--signal", "metrics", "--to", str(out) + "/"],
+        home=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (out / "metrics_gauge.parquet").exists()
+
+
+@pytest.mark.parametrize("fmt", ["json", "ndjson"])
+def test_json_output_works(fmt, tmp_path):
+    """Documented since the CLI landed, but the json COPY function was not in the binary."""
+    result = run(
+        ["convert", str(DATA_DIR / "otlp_traces.pb"), "--signal", "traces", "--format", fmt],
+        home=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.lstrip().startswith(("[", "{"))
+
+
+def test_convert_all_skips_readers_the_input_does_not_match(tmp_path):
+    """One OTLP file holds one signal family, so `--signal all` used to write traces.parquet
+    and then die on the logs reader, leaving partial output and a non-zero exit."""
+    out = tmp_path / "all"
+    result = run(
+        ["convert", str(DATA_DIR / "otlp_traces.pb"), "--signal", "all", "--to", str(out) + "/"],
+        home=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (out / "traces.parquet").exists()
+    assert "Skipped" in result.stderr
+
+
+def test_validate_does_not_claim_to_start_a_server(tmp_path):
+    result = run(["validate"], env=parquet_mode_env(tmp_path), home=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "Starting duckdb-otlp server" not in result.stdout
+    assert "Checking duckdb-otlp configuration" in result.stdout
+
+
+def test_the_banner_names_where_data_lands_not_just_the_control_database(tmp_path):
+    """In local-ducklake the banner named only the control DB, which holds no telemetry."""
+    result = run(["validate"], env=parquet_mode_env(tmp_path), home=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "Data: " in result.stdout
+    assert "(control)" in result.stdout
+
+
+def test_dash_f_with_a_sql_file_suggests_the_file_flag(tmp_path):
+    result = run(["query", "-f", "script.sql"], env=parquet_mode_env(tmp_path), home=tmp_path)
+    assert result.returncode == 1
+    assert "--file script.sql" in result.stderr
+
+
+def test_help_lists_the_modes(tmp_path):
+    result = run(["help"], home=tmp_path)
+    assert result.returncode == 0
+    for mode in ("local-ducklake", "parquet", "aws-ducklake", "s3-tables"):
+        assert mode in result.stdout

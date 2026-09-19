@@ -69,6 +69,14 @@ ERROR: Unknown command "covert".
 Did you mean `duckdb-otlp convert`?
 ```
 
+## Output files
+
+Two rules apply to `--to` across `convert`, `export` and `query`.
+
+**The format follows the extension** when you do not pass `--format`. `--to out.parquet` writes Parquet, `--to out.csv` writes CSV, and `.json`/`.ndjson`/`.jsonl` do the obvious thing. An explicit `--format` always wins, and a path with no recognized extension falls back to the command's default (Parquet for `convert`/`export` when writing to a file, `box`/`csv` for `query`).
+
+**A directory is spelled like one.** `--to out/` (or a path that already exists as a directory) writes one file per signal into it; anything else names a single file. That is decided by how you spell the path, not by how many signals turn up, so the same command always produces the same shape — writing several signals to a path that names a file is an error telling you to add the slash.
+
 ## Configuration precedence
 
 Command-line flag, then environment variable, then built-in default. Every flag that maps onto a setting overrides the matching variable, so `--http 4318` wins over `DUCKDB_OTLP_HTTP_PORT=9999`. A flag is layered over the environment rather than written into it, so its value — a `--token` above all — stays inside the configuration and is never published to the rest of the process.
@@ -201,6 +209,8 @@ duckdb-otlp convert a.pb b.pb --signal traces --to out/traces.parquet
 
 With `--signal auto`, every reader is tried and the ones that produce rows are used; the selection is always printed. A metrics file legitimately yields several shapes and writes one file per shape. Pass `--signal` explicitly when you want to be sure.
 
+`--signal all` and `--signal metrics` fan out the same way: a reader that rejects the input is skipped and named, because one OTLP file normally holds one signal family. A single signal named on its own is an error if the file does not hold it.
+
 Parquet cannot be streamed to stdout — the format ends with a footer that needs a seekable file — so `--to` is required for it.
 
 ## `export`
@@ -263,7 +273,7 @@ duckdb-otlp query "SHOW TABLES"
 duckdb-otlp query "SUMMARIZE otlp_logs"
 ```
 
-`--format` is not inferred from the output file's extension: `query` writes `box` on a terminal and `csv` when piped, so pass `--format parquet` when you want Parquet.
+With no `--format`, the output file's extension decides: `--to out.parquet` writes Parquet, `--to out.csv` writes CSV. With no extension to go on, `query` writes `box` on a terminal and `csv` when piped.
 
 `--readonly` is opt-in rather than the default because lakehouse modes need write access to attach their catalog.
 

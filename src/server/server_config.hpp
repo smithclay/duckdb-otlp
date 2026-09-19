@@ -39,6 +39,11 @@ struct ServerConfig {
 	duckdb::string quack_http_addr;
 	duckdb::string quack_token;
 	duckdb::string parquet_export_path;
+	//! Human-readable location the mode actually writes telemetry to, for the startup banner.
+	//! Distinct from `database`, which is the small control DB: in the default local-ducklake
+	//! mode the banner used to print only the control DB, so anyone who opened the one path it
+	//! named found no telemetry in it.
+	duckdb::string data_location;
 	bool quack_enabled = false;
 	bool dry_run = false;
 	//! True when the server accepts unauthenticated requests. Set explicitly by

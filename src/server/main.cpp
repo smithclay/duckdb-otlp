@@ -321,9 +321,16 @@ int RunServe(const EnvSource &env) {
 	try {
 		auto config = duckdb_otlp_server::ServerConfig::FromEnv(env);
 
-		std::cout << "Starting duckdb-otlp server\n\n";
+		// `validate` runs this same path with DRY_RUN set, and announcing a server it will
+		// never start made its output read like a successful launch in CI logs.
+		std::cout << (config.dry_run ? "Checking duckdb-otlp configuration\n\n" : "Starting duckdb-otlp server\n\n");
 		std::cout << "Mode: " << config.mode << "\n";
-		std::cout << "Database: " << config.database << "\n\n";
+		if (!config.data_location.empty()) {
+			// Where telemetry actually lands. The control database below is a small
+			// bookkeeping file, so naming only that sent people looking in the wrong place.
+			std::cout << "Data: " << config.data_location << "\n";
+		}
+		std::cout << "Database: " << config.database << " (control)\n\n";
 		for (const auto &listener : config.listeners) {
 			std::cout << (listener.otap ? "OTAP " : "OTLP ") << listener.transport << ": " << listener.uri << '\n';
 		}
@@ -449,6 +456,18 @@ int RunServe(const EnvSource &env) {
 
 			std::cout << "DuckDB initialization complete\n";
 			std::cout << "Starting server..." << '\n';
+			// "It is running" is only half of what a first run needs to know; without this the
+			// next step (send something, then read it back) was not discoverable from here.
+			for (const auto &listener : config.listeners) {
+				if (listener.transport == "http" && !listener.otap) {
+					duckdb::OtlpUri uri(listener.uri);
+					auto host = uri.Host() == "0.0.0.0" ? duckdb::string("127.0.0.1") : uri.Host();
+					std::cout << "\nSend OTLP/HTTP to http://" << host << ":" << uri.Port()
+					          << "/v1/{logs,traces,metrics}\n";
+					break;
+				}
+			}
+			std::cout << "Read it back with: duckdb-otlp query \"SELECT * FROM otlp_logs LIMIT 10\"\n";
 			auto listener_ok = WaitForShutdownOrListenerFailure(con, config);
 
 			std::cout << "Stopping duckdb-otlp..." << '\n';

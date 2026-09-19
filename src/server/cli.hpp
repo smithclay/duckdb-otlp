@@ -115,6 +115,11 @@ duckdb::string SignalNameList();
 //! File extension for an output format ("parquet", "csv", "json", "ndjson").
 const char *FormatExtension(OutputFormat format);
 
+//! The format `path`'s extension names, or UNSET when it has none we recognize (including
+//! when `path` is empty or names a directory). DuckDB's own `COPY ... TO 'x.parquet'` picks
+//! the format this way, and without it `--to out.csv` cheerfully wrote Parquet into it.
+OutputFormat FormatFromExtension(const duckdb::string &path);
+
 //! The `(FORMAT ...)` option list for a DuckDB COPY statement in this format.
 duckdb::string CopyFormatOptions(OutputFormat format);
 

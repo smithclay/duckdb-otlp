@@ -447,6 +447,7 @@ void ConfigureLocalDuckLake(const EnvSource &env, ServerConfig &config) {
 	config.schema = SchemaDefault(env, "main");
 	auto catalog_path = env.Get("DUCKLAKE_CATALOG_PATH", config.data_dir + "/ducklake/catalog.duckdb");
 	auto data_path = env.Get("DUCKLAKE_DATA_PATH", config.data_dir + "/ducklake/storage");
+	config.data_location = data_path;
 	CreateParentDirectory(catalog_path);
 	CreateDirectory(data_path);
 
@@ -467,6 +468,7 @@ void ConfigureAwsDuckLake(const EnvSource &env, ServerConfig &config) {
 	config.schema = SchemaDefault(env, "otlp");
 	auto catalog_path = env.Get("DUCKLAKE_CATALOG_PATH", config.data_dir + "/ducklake/catalog.duckdb");
 	auto data_path = env.Get("DUCKLAKE_DATA_PATH");
+	config.data_location = data_path;
 	if (!IsS3Path(data_path)) {
 		throw InvalidInputException("DUCKDB_MODE=%s requires DUCKLAKE_DATA_PATH=s3://bucket/prefix", config.mode);
 	}
@@ -553,6 +555,7 @@ void ConfigureParquet(const EnvSource &env, ServerConfig &config) {
 		}
 	}
 
+	config.data_location = config.parquet_export_path;
 	if (!IsS3Path(config.parquet_export_path)) {
 		CreateDirectory(config.parquet_export_path);
 		config.mode_setup_sql = "";
@@ -589,6 +592,7 @@ void ConfigureR2LocalDuckLake(const EnvSource &env, ServerConfig &config) {
 	RequireAnyEnv(env, "R2 bucket", {"CLOUDFLARE_R2_BUCKET", "R2_BUCKET_NAME", "R2_BUCKET"});
 	auto catalog_path = env.Get("DUCKLAKE_CATALOG_PATH", config.data_dir + "/ducklake/catalog.duckdb");
 	auto data_path = env.Get("DUCKLAKE_DATA_PATH", R2DataPath(env));
+	config.data_location = data_path;
 	CreateParentDirectory(catalog_path);
 	auto endpoint = R2EndpointDefault(env, config.mode);
 	auto storage_secret = BuildR2StorageSecret(env, config, "r2_storage", creds, endpoint);
@@ -617,6 +621,7 @@ void ConfigureR2NeonDuckLake(const EnvSource &env, ServerConfig &config) {
 	RequireEnv(env, "NEON_PGUSER", config.mode);
 	RequireEnv(env, "NEON_PGPASSWORD", config.mode);
 	auto data_path = env.Get("DUCKLAKE_DATA_PATH", R2DataPath(env));
+	config.data_location = data_path;
 	auto endpoint = R2EndpointDefault(env, config.mode);
 	auto storage_secret = BuildR2StorageSecret(env, config, "r2_storage", creds, endpoint);
 
@@ -655,6 +660,7 @@ void ConfigureGcpDuckLake(const EnvSource &env, ServerConfig &config) {
 	config.catalog = CatalogDefault(env, env.Get("DUCKLAKE_NAME", "lake"));
 	config.schema = SchemaDefault(env, "otlp");
 	auto data_path = RequireEnv(env, "DUCKLAKE_DATA_PATH", config.mode);
+	config.data_location = data_path;
 	// Force the native GCS filesystem even if httpfs is loaded by another extension.
 	if (!StringUtil::StartsWith(data_path, "gcss://") || data_path.size() <= 7 || data_path[7] == '/') {
 		throw InvalidInputException("DUCKDB_MODE=gcp-ducklake requires DUCKLAKE_DATA_PATH=gcss://bucket/prefix");
@@ -1127,6 +1133,11 @@ ServerConfig ServerConfig::FromEnv(const EnvSource &env) {
 
 	CreateDirectory(config.data_dir);
 	ConfigureMode(env, config);
+	if (config.data_location.empty() && !config.catalog.empty()) {
+		// The catalog-managed modes (r2-data-catalog, s3-tables) have no local data path of
+		// their own; the catalog decides where files go, so name the catalog instead.
+		config.data_location = "catalog " + config.catalog;
+	}
 	ValidateCatalogDoesNotShadowDatabase(config);
 	return config;
 }

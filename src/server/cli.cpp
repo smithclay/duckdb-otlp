@@ -184,6 +184,13 @@ OutputFormat ParseFormat(const string &value) {
 	if (value == "box" || value == "table") {
 		return OutputFormat::BOX;
 	}
+	// `-f` is --format, but it is also the obvious shorthand for --file, so a value that
+	// looks like a SQL script says which flag was meant instead of only what was wrong.
+	if (StringUtil::EndsWith(StringUtil::Lower(value), ".sql")) {
+		throw InvalidInputException("Unknown --format \"%s\". Did you mean `--file %s`? (-f is --format; --file has "
+		                            "no short form.)",
+		                            value, value);
+	}
 	throw InvalidInputException("Unknown --format \"%s\". Use parquet, csv, json, ndjson, or box.", value);
 }
 
@@ -343,6 +350,31 @@ const char *FormatExtension(OutputFormat format) {
 	default:
 		return "txt";
 	}
+}
+
+OutputFormat FormatFromExtension(const string &path) {
+	if (path.empty() || path[path.size() - 1] == '/') {
+		return OutputFormat::UNSET;
+	}
+	auto dot = path.rfind('.');
+	auto slash = path.find_last_of('/');
+	if (dot == string::npos || (slash != string::npos && dot < slash)) {
+		return OutputFormat::UNSET;
+	}
+	auto extension = StringUtil::Lower(path.substr(dot + 1));
+	if (extension == "parquet" || extension == "pq") {
+		return OutputFormat::PARQUET;
+	}
+	if (extension == "csv") {
+		return OutputFormat::CSV;
+	}
+	if (extension == "json") {
+		return OutputFormat::JSON;
+	}
+	if (extension == "ndjson" || extension == "jsonl") {
+		return OutputFormat::NDJSON;
+	}
+	return OutputFormat::UNSET;
 }
 
 string CopyFormatOptions(OutputFormat format) {
@@ -583,7 +615,7 @@ same mode configuration and backend credentials as `serve`.
 
 Flags:
   -s, --signal SIGNAL   signal to export, or metrics / all (default: all)
-  -o, --to DIR          output directory (required)
+  -o, --to DIR          output directory. Omit to stream to stdout (csv/json/ndjson).
   -f, --format FORMAT   parquet (default) | csv | json | ndjson
       --since TS        only rows at or after this time. Accepts a timestamp
                         literal ('2026-01-01') or a negative interval ('-24h').
@@ -675,7 +707,10 @@ HEALTHCHECK and existing compose probes use.
 Each command accepts only the flags that apply to it; `help COMMAND` lists them.
 
 Serve flags (each overrides the matching environment variable):
-  -m, --mode MODE             DUCKDB_MODE (default: local-ducklake)
+  -m, --mode MODE             where to store data (default: local-ducklake). One of:
+                              local-ducklake, parquet, aws-ducklake, gcp-ducklake,
+                              r2-local-ducklake, r2-neon-ducklake, r2-data-catalog,
+                              s3-tables
       --host HOST             bind host (default: 127.0.0.1)
       --http PORT             OTLP/HTTP port, 0 to disable (default: 4318)
       --grpc PORT             OTLP/gRPC port, 0 to disable (default: 4317)

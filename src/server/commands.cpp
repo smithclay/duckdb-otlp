@@ -134,9 +134,12 @@ bool PathExists(const string &path) {
 	return std::filesystem::exists(path, ec);
 }
 
-//! True when `path` should be treated as a directory: it exists as one, ends in a separator,
-//! or the caller is writing several outputs and therefore needs a container for them.
-bool LooksLikeDirectory(const string &path, bool multiple_outputs) {
+//! True when `path` names a directory: it ends in a separator, or it already exists as one.
+//!
+//! Deliberately not "…or we happen to be writing several files": that made the shape of the
+//! output depend on the data rather than on the command, so `convert x --to out` left a
+//! Parquet file for a traces input and a directory for a metrics one.
+bool LooksLikeDirectory(const string &path) {
 	if (path.empty()) {
 		return false;
 	}
@@ -144,10 +147,7 @@ bool LooksLikeDirectory(const string &path, bool multiple_outputs) {
 		return true;
 	}
 	std::error_code ec;
-	if (std::filesystem::is_directory(path, ec)) {
-		return true;
-	}
-	return multiple_outputs;
+	return std::filesystem::is_directory(path, ec);
 }
 
 //! Resolve where one signal's output goes, creating parent directories as needed. An empty
@@ -166,11 +166,16 @@ string ResolveOutputPath(const CliOptions &options, const SignalDef &signal, Out
 		return STDOUT_PATH;
 	}
 	string path = options.output;
-	if (LooksLikeDirectory(path, multiple_outputs)) {
-		if (!path.empty() && path[path.size() - 1] != '/') {
+	if (LooksLikeDirectory(path)) {
+		if (path[path.size() - 1] != '/') {
 			path += "/";
 		}
 		path += string(signal.name) + "." + FormatExtension(format);
+	} else if (multiple_outputs) {
+		throw InvalidInputException(
+		    "Writing %s needs a directory, but --to \"%s\" names a file. Pass a directory (--to %s/) or select one "
+		    "signal with --signal.",
+		    "several signals", options.output, options.output);
 	}
 	if (PathExists(path) && !options.overwrite) {
 		throw InvalidInputException("Refusing to overwrite existing file \"%s\". Pass --overwrite to replace it.",
@@ -312,7 +317,13 @@ std::set<string> ExistingSignalTables(duckdb::Connection &con, const ServerConfi
 }
 
 OutputFormat ResolveFormat(const CliOptions &options, OutputFormat fallback) {
-	return options.format == OutputFormat::UNSET ? fallback : options.format;
+	if (options.format != OutputFormat::UNSET) {
+		return options.format;
+	}
+	// A named extension is a clearer statement of intent than any per-command default, and
+	// ignoring it wrote Parquet into `--to out.csv` and CSV into `query --to out.parquet`.
+	auto inferred = FormatFromExtension(options.output);
+	return inferred != OutputFormat::UNSET ? inferred : fallback;
 }
 
 //! Print a result set as a human-readable box table.
@@ -336,8 +347,35 @@ int RunConvert(const CliOptions &options) {
 	duckdb::Connection con(*db);
 
 	auto signals = options.signal == "auto" ? DetectSignals(con, options) : ResolveSignals(options.signal);
+	// `--signal all` and `--signal metrics` fan out over readers, and one OTLP file normally
+	// holds one signal family, so a reader that rejects the input is a miss rather than a
+	// failure — the same meaning those words have for `export`. Before this, `convert x.pb
+	// --signal all` wrote traces.parquet and then died on the logs reader, leaving partial
+	// output and a non-zero exit. A signal named on its own is still an error.
+	bool fanned_out = options.signal == "all" || options.signal == "metrics";
+	duckdb::vector<string> skipped;
 	for (const auto &signal : signals) {
-		WriteSignal(con, options, signal, BuildReadSelect(options, signal), format, signals.size() > 1, "convert");
+		if (!fanned_out) {
+			WriteSignal(con, options, signal, BuildReadSelect(options, signal), format, signals.size() > 1, "convert");
+			continue;
+		}
+		try {
+			WriteSignal(con, options, signal, BuildReadSelect(options, signal), format, signals.size() > 1, "convert");
+		} catch (const duckdb::InvalidInputException &) {
+			// Usage errors (stdout with several signals, an existing file) are the caller's
+			// mistake for every signal, not a property of this one, so they stay fatal.
+			throw;
+		} catch (const std::exception &) {
+			skipped.push_back(signal.name);
+		}
+	}
+	if (skipped.size() == signals.size()) {
+		throw InvalidInputException("No reader accepted the given file(s) for --signal %s. Pass --signal explicitly "
+		                            "(one of:%s), or --otap for OTAP files.",
+		                            options.signal, SignalNameList());
+	}
+	if (!skipped.empty()) {
+		std::cerr << "Skipped (not in this input): " << StringUtil::Join(skipped, ", ") << '\n';
 	}
 	return 0;
 }
@@ -509,15 +547,17 @@ int RunQuery(const CliOptions &options, const EnvSource &env) {
 		        StringUtil::Format("COPY (SELECT * FROM (\n%s\n)) TO %s %s;", trimmed, SqlQuote(path), copy_options),
 		        "query");
 	} catch (const std::exception &) {
+		auto first_failure = std::current_exception();
 		try {
 			Execute(*con, StringUtil::Format("CREATE OR REPLACE TEMP VIEW %s AS %s", RESULT_VIEW, final_sql), "query");
 			Execute(*con, StringUtil::Format("COPY %s TO %s %s;", RESULT_VIEW, SqlQuote(path), copy_options), "query");
 		} catch (const std::exception &) {
-			// Neither spelling parsed. Run the statement as the user wrote it so the error
-			// quotes their SQL rather than a wrapper they never typed.
-			Execute(*con, final_sql, "query");
-			std::cerr << "Statement executed; its output cannot be written in the requested format.\n";
-			return 0;
+			// The view spelling exists only to rescue a trailing ';'. When it fails too, the
+			// FIRST attempt's error is the informative one — the view attempt just says the
+			// body was not a valid view. Reporting neither, by running the bare statement and
+			// printing "cannot be written in the requested format", hid causes that had
+			// nothing to do with the format, such as a missing json COPY function.
+			std::rethrow_exception(first_failure);
 		}
 	}
 	if (path != STDOUT_PATH) {
