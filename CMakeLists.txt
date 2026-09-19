@@ -76,8 +76,9 @@ endif()
 # Windows therefore builds the extension (static + loadable) and nothing else.
 if(NOT EMSCRIPTEN AND NOT WIN32)
   add_executable(
-    duckdb_otlp_server src/server/main.cpp src/server/server_config.cpp
-                       src/server/cli.cpp src/server/commands.cpp)
+    duckdb_otlp_server
+    src/server/main.cpp src/server/server_config.cpp src/server/cli.cpp
+    src/server/commands.cpp src/server/server_util.cpp)
   # The target keeps its historical name (scripts and CI build --target
   # duckdb_otlp_server) but ships as `duckdb-otlp`: it is a general CLI now, not
   # only a daemon. The container installs a `duckdb-otlp-server` alias alongside

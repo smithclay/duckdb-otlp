@@ -165,6 +165,21 @@ def test_zero_port_disables_a_transport(tmp_path):
     assert "OTLP grpc:" in result.stdout
 
 
+@pytest.mark.parametrize(
+    "off,stays_on",
+    [("--grpc", "OTLP http:"), ("--http", "OTLP grpc:")],
+)
+def test_zero_port_disables_only_that_transport(off, stays_on, tmp_path):
+    """A port of 0 turns one transport off; it must not un-default the others.
+
+    Only a NON-ZERO port narrows the listener set to what was named, so `--grpc 0` means
+    "turn gRPC off, keep the rest" rather than "turn everything off".
+    """
+    result = run(["validate", off, "0"], home=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert stays_on in result.stdout
+
+
 def test_disabling_every_listener_is_an_error(tmp_path):
     result = run(["validate", "--http", "0", "--grpc", "0"], home=tmp_path)
     assert result.returncode == 1
@@ -280,6 +295,17 @@ def test_exporter_protocol_does_not_override_explicit_ports(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "OTLP http:" in result.stdout
     assert "OTLP grpc:" not in result.stdout
+
+
+def test_invalid_port_in_a_legacy_addr_is_rejected(tmp_path):
+    """A port that is present but out of range must fail, not silently fall back to the default."""
+    result = run(
+        ["validate"],
+        env={"OTEL_GRPC_ADDR": "0.0.0.0:70000", "DUCKDB_OTLP_TRANSPORTS": "grpc"},
+        home=tmp_path,
+    )
+    assert result.returncode == 1
+    assert "OTEL_GRPC_ADDR" in result.stderr
 
 
 def test_invalid_exporter_protocol_is_rejected(tmp_path):

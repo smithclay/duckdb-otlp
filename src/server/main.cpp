@@ -1,6 +1,7 @@
 #include "cli.hpp"
 #include "commands.hpp"
 #include "server_config.hpp"
+#include "server_util.hpp"
 #include "storage/otlp_extension.hpp"
 #include "otlp_sql_util.hpp"
 #include "otlp_uri.hpp"
@@ -28,6 +29,11 @@ bool OtlpTcpConnectOk(const string &host, int port);
 
 namespace {
 
+using duckdb_otlp_server::BindConfigEnvVariables;
+using duckdb_otlp_server::CheckResult;
+using duckdb_otlp_server::Execute;
+using duckdb_otlp_server::SetEnv;
+
 // Written from a signal handler, so it must be a mutable global volatile sig_atomic_t.
 volatile std::sig_atomic_t shutdown_requested = 0; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 
@@ -40,44 +46,11 @@ void InstallSignalHandlers() {
 	std::signal(SIGTERM, HandleSignal);
 }
 
-void SetEnv(const char *name, const duckdb::string &value) {
-#ifdef _WIN32
-	_putenv_s(name, value.c_str());
-#else
-	setenv(name, value.c_str(), 1);
-#endif
-}
-
 void SetDefaultEnv(const char *name, const duckdb::string &value) {
 	if (std::getenv(name)) {
 		return;
 	}
 	SetEnv(name, value);
-}
-
-void CheckResult(duckdb::QueryResult &result, const duckdb::string &label) {
-	if (result.HasError()) {
-		result.ThrowError(label + ": ");
-	}
-	auto next = result.next.get();
-	while (next) {
-		if (next->HasError()) {
-			next->ThrowError(label + ": ");
-		}
-		next = next->next.get();
-	}
-}
-
-void Execute(duckdb::Connection &con, const duckdb::string &sql, const duckdb::string &label,
-             bool print_result = false) {
-	if (sql.empty()) {
-		return;
-	}
-	auto result = con.Query(sql);
-	CheckResult(*result, label);
-	if (print_result) {
-		result->Print();
-	}
 }
 
 bool TryExecuteShutdown(duckdb::Connection &con, const duckdb::string &sql, const duckdb::string &label) {
@@ -398,10 +371,7 @@ int RunServe() {
 		// generated getvariable('env_<NAME>') resolves it at execution time. getenv() is a
 		// CLI-only function (absent in the embedded library), and this keeps secret values out
 		// of the generated SQL text.
-		for (auto &name : config.env_variables) {
-			auto value = std::getenv(name.c_str());
-			con.context->config.SetUserVariable("env_" + name, duckdb::Value(value ? value : ""));
-		}
+		BindConfigEnvVariables(con, config);
 
 		InstallSignalHandlers();
 
@@ -506,6 +476,18 @@ int RunServe() {
 	}
 }
 
+// convert/export/query differ only in which function runs; they share one error rendering,
+// so the dispatch names each command exactly once.
+int RunDataCommand(int (*run)(const duckdb_otlp_server::CliOptions &), const duckdb_otlp_server::CliOptions &options) {
+	try {
+		return run(options);
+	} catch (std::exception &ex) {
+		// DuckDB exceptions stringify as a JSON blob; RawMessage() is the plain text.
+		std::cerr << "ERROR: " << duckdb::ErrorData(ex).RawMessage() << '\n';
+		return 1;
+	}
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -535,22 +517,11 @@ int main(int argc, char **argv) {
 	case Command::HEALTHCHECK:
 		return RunHealthCheck();
 	case Command::CONVERT:
+		return RunDataCommand(duckdb_otlp_server::RunConvert, options);
 	case Command::EXPORT:
+		return RunDataCommand(duckdb_otlp_server::RunExport, options);
 	case Command::QUERY:
-		try {
-			switch (options.command) {
-			case Command::CONVERT:
-				return duckdb_otlp_server::RunConvert(options);
-			case Command::EXPORT:
-				return duckdb_otlp_server::RunExport(options);
-			default:
-				return duckdb_otlp_server::RunQuery(options);
-			}
-		} catch (std::exception &ex) {
-			// DuckDB exceptions stringify as a JSON blob; RawMessage() is the plain text.
-			std::cerr << "ERROR: " << duckdb::ErrorData(ex).RawMessage() << '\n';
-			return 1;
-		}
+		return RunDataCommand(duckdb_otlp_server::RunQuery, options);
 	case Command::VALIDATE:
 		// `validate` is `serve` stopped just before anything is opened or bound. Reusing the
 		// serve path (rather than a parallel implementation) is what makes it trustworthy:

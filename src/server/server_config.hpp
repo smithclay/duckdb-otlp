@@ -46,8 +46,6 @@ struct ServerConfig {
 	//! True when `disable_auth` was inferred from a loopback bind rather than requested.
 	//! The daemon prints a one-line notice for this case (see main.cpp banner).
 	bool auth_disabled_for_loopback = false;
-	//! OTEL_LOG_LEVEL / --log-level. Empty leaves DuckDB's default logging alone.
-	duckdb::string log_level;
 	//! Short note naming which setting selected the transports, printed in the startup banner
 	//! so a narrowed or unexpected listener set is never silent.
 	duckdb::string transport_selection;

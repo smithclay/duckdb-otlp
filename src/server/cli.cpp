@@ -40,7 +40,6 @@ const FlagMapping SERVE_FLAGS[] = {
     {"no-auth", '\0', "DUCKDB_OTLP_DISABLE_AUTH", true},
     {"quack", '\0', "DUCKDB_QUACK_PORT", false},
     {"quack-token", '\0', "DUCKDB_QUACK_TOKEN", false},
-    {"log-level", '\0', "OTEL_LOG_LEVEL", false},
     {"startup-timeout", '\0', "DUCKDB_OTLP_STARTUP_TIMEOUT", false},
 };
 
@@ -171,13 +170,17 @@ std::vector<SignalDef> ResolveSignals(const string &spec) {
 			return {signal};
 		}
 	}
+	throw InvalidInputException("Unknown --signal \"%s\". Use one of:%s, or the aliases metrics (the four metric "
+	                            "shapes) and all (every signal).",
+	                            spec, SignalNameList());
+}
+
+string SignalNameList() {
 	string names;
 	for (const auto &signal : AllSignals()) {
 		names += string(" ") + signal.name;
 	}
-	throw InvalidInputException("Unknown --signal \"%s\". Use one of:%s, or the aliases metrics (the four metric "
-	                            "shapes) and all (every signal).",
-	                            spec, names);
+	return names;
 }
 
 const char *FormatExtension(OutputFormat format) {
@@ -191,6 +194,7 @@ const char *FormatExtension(OutputFormat format) {
 	case OutputFormat::NDJSON:
 		return "ndjson";
 	case OutputFormat::BOX:
+	case OutputFormat::UNSET:
 	default:
 		return "txt";
 	}
@@ -209,6 +213,7 @@ string CopyFormatOptions(OutputFormat format) {
 	case OutputFormat::NDJSON:
 		return "(FORMAT json)";
 	case OutputFormat::BOX:
+	case OutputFormat::UNSET:
 	default:
 		throw InvalidInputException("The box format is only valid for `duckdb-otlp query`; it cannot be written to a "
 		                            "file. Use --format csv, json, ndjson, or parquet.");
@@ -290,7 +295,6 @@ CliOptions ParseCli(int argc, char **argv) {
 		}
 		if (name == "format" || name == "f" || name == "fmt") {
 			options.format = ParseFormat(TakeValue(arg, has_inline, inline_value, argc, argv, index));
-			options.format_set = true;
 			continue;
 		}
 		if (name == "file") {
@@ -470,7 +474,6 @@ Serve flags (each overrides the matching environment variable):
       --no-auth               accept unauthenticated requests
       --quack PORT            enable the Quack SQL endpoint on PORT
       --quack-token TOKEN     Quack bearer token (required with --quack)
-      --log-level LEVEL       OTEL_LOG_LEVEL
       --startup-timeout SECS  listener readiness timeout (default: 60)
       --dry-run               alias for `validate`
 

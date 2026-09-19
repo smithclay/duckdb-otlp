@@ -189,6 +189,7 @@ src/
 │   ├── main.cpp               # `duckdb-otlp` entry point + subcommand dispatch + serve loop
 │   ├── cli.cpp                # argv parsing, flag->env overrides, per-command help
 │   ├── commands.cpp           # `convert` / `export` / `query` subcommands
+│   ├── server_util.cpp        # Shared query/env/filesystem helpers for all subcommands
 │   └── server_config.cpp      # Environment/mode config and generated setup SQL
 ├── storage/
 │   └── otlp_extension.cpp     # Extension entry point + registration
@@ -251,7 +252,7 @@ Prefer one canonical page per topic and link to it instead of duplicating exampl
   - **`otlp_flush(uri)`** forces a synchronous seal. `otlp_server_list` exposes buffer/seal metrics (`buffered_rows`, `last_seal_age_ms`, `seals_total`, `seal_failures_total`, `seal_last_error`, `catalog_name`). Verify the ingest/seal path with `test/manual/otlp_serve_concurrency.py` (set `OTLP_DUCKLAKE_DIR` for the DuckLake path).
   - **CLI defaults vs container defaults**: the C++ defaults are laptop-shaped — loopback bind, `$XDG_DATA_HOME/duckdb-otlp` data dir, `DUCKDB_MODE=local-ducklake`, and both OTLP/HTTP (4318) and OTLP/gRPC (4317) enabled. The container's `/data`, `0.0.0.0`, http-only defaults live in `docker/duckdb-otlp-server/Dockerfile`'s `ENV` block, deliberately, so there is no "am I in a container" detection at runtime. Changing a default means deciding which of the two it belongs to.
   - **No built-in token**: there is no default token any more. With no token configured and every listener on loopback, auth is disabled automatically (with a printed notice); a non-loopback bind and no token is a hard startup error. `--no-auth` opts into unauthenticated traffic anywhere.
-  - **Standard OTLP env vars**: `OTEL_EXPORTER_OTLP_PROTOCOL` (only when no port is explicit), `OTEL_EXPORTER_OTLP_HEADERS` (`Authorization=Bearer`), and `OTEL_LOG_LEVEL` are honored. `OTEL_EXPORTER_OTLP_ENDPOINT` is deliberately **not read** (it usually points at the user's real collector, so reading it as a bind address is a footgun); the per-signal endpoint and TLS variables are **rejected at startup** rather than ignored, because silently dropping them would misrepresent the deployment.
+  - **Standard OTLP env vars**: `OTEL_EXPORTER_OTLP_PROTOCOL` (only when no port is explicit), and `OTEL_EXPORTER_OTLP_HEADERS` (`Authorization=Bearer`) are honored. `OTEL_EXPORTER_OTLP_ENDPOINT` is deliberately **not read** (it usually points at the user's real collector, so reading it as a bind address is a footgun); the per-signal endpoint and TLS variables are **rejected at startup** rather than ignored, because silently dropping them would misrepresent the deployment.
   - **Daemon SQL access**: the daemon does not expose an attached DuckDB shell. Enable Quack (`DUCKDB_QUACK_ENABLED=1` and `DUCKDB_QUACK_TOKEN=...`) when external SQL/admin access is required. Quack grants full SQL read/write access to the daemon's DuckDB connection, so treat it as an administrative endpoint.
   - Not available on the wasm build.
 - Summary metrics are not yet supported

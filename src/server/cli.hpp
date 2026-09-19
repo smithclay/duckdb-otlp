@@ -45,6 +45,10 @@ std::vector<SignalDef> ResolveSignals(const duckdb::string &spec);
 
 //! Output encodings shared by convert/export/query.
 enum class OutputFormat {
+	//! No --format given; each command substitutes its own default via ResolveFormat.
+	//! Encoding "unset" in the enum keeps it impossible to read a format the user never
+	//! chose, which a separate `format_set` bool alongside a real default did not.
+	UNSET,
 	PARQUET,
 	CSV,
 	JSON,
@@ -74,9 +78,8 @@ struct CliOptions {
 	duckdb::string signal = "auto";
 	//! --to / -o. Empty means stdout (rejected for parquet, which needs a seekable file).
 	duckdb::string output;
-	//! --format. Unset here; each command applies its own default via DefaultFormat().
-	bool format_set = false;
-	OutputFormat format = OutputFormat::PARQUET;
+	//! --format, or UNSET when the user gave none.
+	OutputFormat format = OutputFormat::UNSET;
 
 	//! export row filters. --since/--until accept a DuckDB timestamp literal or a
 	//! negative interval shorthand such as "-24h"; --where is the raw-predicate escape hatch.
@@ -105,6 +108,9 @@ Command CommandFromName(const duckdb::string &name);
 
 //! Apply `env_overrides` to the process environment. Called before ServerConfig::FromEnv().
 void ApplyEnvOverrides(const CliOptions &options);
+
+//! Space-prefixed list of every signal name, for "use one of:" error messages.
+duckdb::string SignalNameList();
 
 //! File extension for an output format ("parquet", "csv", "json", "ndjson").
 const char *FormatExtension(OutputFormat format);

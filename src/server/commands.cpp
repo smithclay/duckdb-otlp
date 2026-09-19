@@ -1,6 +1,7 @@
 #include "commands.hpp"
 
 #include "server_config.hpp"
+#include "server_util.hpp"
 #include "storage/otlp_extension.hpp"
 #include "otlp_sql_util.hpp"
 
@@ -10,6 +11,7 @@
 #include "duckdb/main/query_result.hpp"
 #include "duckdb/parser/sql_statement.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
@@ -43,27 +45,6 @@ bool StdoutIsTerminal() {
 #endif
 }
 
-void CheckResult(duckdb::QueryResult &result, const string &label) {
-	if (result.HasError()) {
-		result.ThrowError(label + ": ");
-	}
-	auto next = result.next.get();
-	while (next) {
-		if (next->HasError()) {
-			next->ThrowError(label + ": ");
-		}
-		next = next->next.get();
-	}
-}
-
-void Execute(duckdb::Connection &con, const string &sql, const string &label) {
-	if (sql.empty()) {
-		return;
-	}
-	auto result = con.Query(sql);
-	CheckResult(*result, label);
-}
-
 //! Open an in-memory database with the OTLP extension statically linked. Used by `convert`,
 //! which needs the read_otlp_*/read_otap_* table functions and nothing else.
 duckdb::unique_ptr<duckdb::DuckDB> OpenScratchDatabase() {
@@ -84,25 +65,10 @@ duckdb::unique_ptr<duckdb::DuckDB> OpenConfiguredDatabase(const ServerConfig &co
 	auto db = duckdb::make_uniq<duckdb::DuckDB>(config.database, &db_config);
 	db->LoadStaticExtension<duckdb::OtlpExtension>();
 	auto con = duckdb::make_uniq<duckdb::Connection>(*db);
-	for (auto &name : config.env_variables) {
-		auto value = std::getenv(name.c_str());
-		con->context->config.SetUserVariable("env_" + name, duckdb::Value(value ? value : ""));
-	}
+	BindConfigEnvVariables(*con, config);
 	Execute(*con, config.mode_setup_sql, "mode setup");
 	con_out = std::move(con);
 	return db;
-}
-
-//! Fully-qualified name of a signal's table in the configured catalog/schema.
-string QualifiedTable(const ServerConfig &config, const SignalDef &signal) {
-	auto qualified = QuoteIdentifier(signal.table);
-	if (!config.schema.empty()) {
-		qualified = QuoteIdentifier(config.schema) + "." + qualified;
-	}
-	if (!config.catalog.empty()) {
-		qualified = QuoteIdentifier(config.catalog) + "." + qualified;
-	}
-	return qualified;
 }
 
 //! Render a --since/--until value as a SQL expression.
@@ -111,49 +77,33 @@ string QualifiedTable(const ServerConfig &config, const SignalDef &signal) {
 //! `--since -24h` means "the last day". Anything else is passed through as a quoted literal
 //! and cast, which lets a caller write an absolute timestamp ('2026-01-01 00:00:00').
 string TimeBoundExpression(const string &value) {
-	if (value.size() >= 3 && (value[0] == '-' || value[0] == '+')) {
-		auto unit = value[value.size() - 1];
-		auto digits = value.substr(1, value.size() - 2);
-		bool all_digits = !digits.empty();
-		for (auto c : digits) {
-			all_digits = all_digits && std::isdigit(static_cast<unsigned char>(c)) != 0;
-		}
-		if (all_digits) {
-			const char *interval_unit = nullptr;
-			switch (unit) {
-			case 's':
-				interval_unit = "SECOND";
-				break;
-			case 'm':
-				interval_unit = "MINUTE";
-				break;
-			case 'h':
-				interval_unit = "HOUR";
-				break;
-			case 'd':
-				interval_unit = "DAY";
-				break;
-			case 'w':
-				interval_unit = "WEEK";
-				break;
-			default:
-				break;
-			}
-			if (interval_unit) {
-				// now() is TIMESTAMP WITH TIME ZONE while the signal time columns are plain
-				// TIMESTAMP (live ingest) or TIMESTAMP_NS (file readers), so cast before
-				// subtracting or the comparison has no matching operator.
-				return StringUtil::Format("CAST(now() AS TIMESTAMP) %s INTERVAL '%s %s'", value[0] == '-' ? "-" : "+",
-				                          digits, interval_unit);
-			}
-		}
+	static const std::pair<char, const char *> UNITS[] = {
+	    {'s', "SECOND"}, {'m', "MINUTE"}, {'h', "HOUR"}, {'d', "DAY"}, {'w', "WEEK"}};
+	auto as_literal = [&value] {
+		return StringUtil::Format("CAST(%s AS TIMESTAMP)", SqlQuote(value));
+	};
+	if (value.size() < 3 || (value[0] != '-' && value[0] != '+')) {
+		return as_literal();
 	}
-	return StringUtil::Format("CAST(%s AS TIMESTAMP)", SqlQuote(value));
+	auto digits = value.substr(1, value.size() - 2);
+	if (!std::all_of(digits.begin(), digits.end(), [](unsigned char c) { return std::isdigit(c) != 0; })) {
+		return as_literal();
+	}
+	for (const auto &unit : UNITS) {
+		if (unit.first != value[value.size() - 1]) {
+			continue;
+		}
+		// now() is TIMESTAMP WITH TIME ZONE while the signal time columns are plain TIMESTAMP
+		// (live ingest) or TIMESTAMP_NS (file readers), so cast before subtracting or the
+		// comparison has no matching operator.
+		return StringUtil::Format("CAST(now() AS TIMESTAMP) %c INTERVAL '%s %s'", value[0], digits, unit.second);
+	}
+	return as_literal();
 }
 
 //! Build the WHERE clause for an export from --since/--until/--where. Returns "" when empty.
 string BuildPredicate(const CliOptions &options, const SignalDef &signal) {
-	std::vector<string> predicates;
+	duckdb::vector<string> predicates;
 	if (!options.since.empty()) {
 		predicates.push_back(
 		    StringUtil::Format("%s >= %s", QuoteIdentifier(signal.time_column), TimeBoundExpression(options.since)));
@@ -168,12 +118,7 @@ string BuildPredicate(const CliOptions &options, const SignalDef &signal) {
 	if (predicates.empty()) {
 		return "";
 	}
-	string clause;
-	for (const auto &predicate : predicates) {
-		clause += clause.empty() ? "" : " AND ";
-		clause += predicate;
-	}
-	return " WHERE " + clause;
+	return " WHERE " + StringUtil::Join(predicates, " AND ");
 }
 
 bool PathExists(const string &path) {
@@ -197,18 +142,6 @@ bool LooksLikeDirectory(const string &path, bool multiple_outputs) {
 	return multiple_outputs;
 }
 
-void EnsureParentDirectory(const string &path) {
-	auto parent = std::filesystem::path(path).parent_path();
-	if (parent.empty()) {
-		return;
-	}
-	std::error_code ec;
-	std::filesystem::create_directories(parent, ec);
-	if (ec) {
-		throw InvalidInputException("Failed to create output directory \"%s\": %s", parent.string(), ec.message());
-	}
-}
-
 //! Resolve where one signal's output goes, creating parent directories as needed. An empty
 //! `options.output` means stdout, which parquet cannot use (it needs a seekable file).
 string ResolveOutputPath(const CliOptions &options, const SignalDef &signal, OutputFormat format,
@@ -219,9 +152,8 @@ string ResolveOutputPath(const CliOptions &options, const SignalDef &signal, Out
 			                            "streamed to stdout because the format writes a trailing footer.");
 		}
 		if (multiple_outputs) {
-			throw InvalidInputException("Writing %s signals to stdout would interleave them. Pass --to DIR, or select "
-			                            "a single signal with --signal.",
-			                            "several");
+			throw InvalidInputException("Writing several signals to stdout would interleave them. Pass --to DIR, or "
+			                            "select a single signal with --signal.");
 		}
 		return STDOUT_PATH;
 	}
@@ -236,7 +168,7 @@ string ResolveOutputPath(const CliOptions &options, const SignalDef &signal, Out
 		throw InvalidInputException("Refusing to overwrite existing file \"%s\". Pass --overwrite to replace it.",
 		                            path);
 	}
-	EnsureParentDirectory(path);
+	CreateParentDirectory(path);
 	return path;
 }
 
@@ -271,6 +203,18 @@ string BuildPartitionedCopy(const CliOptions &options, const SignalDef &signal, 
 	return StringUtil::Format("COPY (%s) TO %s %s;", select_sql, SqlQuote(directory), copy_options);
 }
 
+//! Write one signal's rows to its resolved destination and report where they went. Shared by
+//! convert and export so the stdout convention, the multi-output rule, and the "Wrote" line
+//! have one definition rather than drifting between the two commands.
+void WriteSignal(duckdb::Connection &con, const CliOptions &options, const SignalDef &signal, const string &select_sql,
+                 OutputFormat format, bool multiple_outputs, const char *label) {
+	auto path = ResolveOutputPath(options, signal, format, multiple_outputs);
+	Execute(con, BuildCopyStatement(options, select_sql, path, format), string(label) + " " + signal.name);
+	if (path != STDOUT_PATH) {
+		std::cerr << "Wrote " << path << '\n';
+	}
+}
+
 //! Count rows a reader produces for `path`, or -1 when the reader rejects the file.
 //! Used by `--signal auto` to work out which signal a file actually holds.
 int64_t ProbeReader(duckdb::Connection &con, const string &reader, const string &path) {
@@ -294,14 +238,11 @@ string ReaderName(const CliOptions &options, const SignalDef &signal) {
 //! (globs included) rather than a list, so several inputs become a UNION ALL.
 string BuildReadSelect(const CliOptions &options, const SignalDef &signal) {
 	auto reader = ReaderName(options, signal);
-	string select_sql;
+	duckdb::vector<string> selects;
 	for (const auto &input : options.inputs) {
-		if (!select_sql.empty()) {
-			select_sql += "\nUNION ALL\n";
-		}
-		select_sql += StringUtil::Format("SELECT * FROM %s(%s)", reader, SqlQuote(input));
+		selects.push_back(StringUtil::Format("SELECT * FROM %s(%s)", reader, SqlQuote(input)));
 	}
-	return select_sql;
+	return StringUtil::Join(selects, "\nUNION ALL\n");
 }
 
 //! Work out which signals the input files actually contain, for `--signal auto`.
@@ -313,27 +254,20 @@ string BuildReadSelect(const CliOptions &options, const SignalDef &signal) {
 std::vector<SignalDef> DetectSignals(duckdb::Connection &con, const CliOptions &options) {
 	std::vector<SignalDef> detected;
 	for (const auto &signal : AllSignals()) {
-		int64_t total = 0;
-		bool readable = false;
 		for (const auto &input : options.inputs) {
-			auto rows = ProbeReader(con, ReaderName(options, signal), input);
-			if (rows >= 0) {
-				readable = true;
-				total += rows;
+			// One input with rows already settles this signal, so stop probing the rest. Each
+			// probe is a whole-file read and decode (the readers have no cheap metadata path),
+			// so without this the cost is readers x files rather than readers.
+			if (ProbeReader(con, ReaderName(options, signal), input) > 0) {
+				detected.push_back(signal);
+				break;
 			}
-		}
-		if (readable && total > 0) {
-			detected.push_back(signal);
 		}
 	}
 	if (detected.empty()) {
-		string names;
-		for (const auto &signal : AllSignals()) {
-			names += string(" ") + signal.name;
-		}
 		throw InvalidInputException("Could not determine the signal for the given file(s): no reader produced rows. "
 		                            "Pass --signal explicitly (one of:%s), and --otap for OTAP files.",
-		                            names);
+		                            SignalNameList());
 	}
 	std::cerr << "Detected signal(s):";
 	for (const auto &signal : detected) {
@@ -344,7 +278,7 @@ std::vector<SignalDef> DetectSignals(duckdb::Connection &con, const CliOptions &
 }
 
 OutputFormat ResolveFormat(const CliOptions &options, OutputFormat fallback) {
-	return options.format_set ? options.format : fallback;
+	return options.format == OutputFormat::UNSET ? fallback : options.format;
 }
 
 //! Print a result set as a human-readable box table.
@@ -373,12 +307,7 @@ int RunConvert(const CliOptions &options) {
 
 	auto signals = options.signal == "auto" ? DetectSignals(con, options) : ResolveSignals(options.signal);
 	for (const auto &signal : signals) {
-		auto select_sql = BuildReadSelect(options, signal);
-		auto path = ResolveOutputPath(options, signal, format, signals.size() > 1);
-		Execute(con, BuildCopyStatement(options, select_sql, path, format), "convert " + string(signal.name));
-		if (path != STDOUT_PATH) {
-			std::cerr << "Wrote " << path << '\n';
-		}
+		WriteSignal(con, options, signal, BuildReadSelect(options, signal), format, signals.size() > 1, "convert");
 	}
 	return 0;
 }
@@ -410,7 +339,7 @@ int RunExport(const CliOptions &options) {
 	auto db = OpenConfiguredDatabase(config, options.read_only, con);
 
 	for (const auto &signal : signals) {
-		auto source = QualifiedTable(config, signal);
+		auto source = duckdb::QualifiedTable(config.catalog, config.schema, signal.table);
 		auto predicate = BuildPredicate(options, signal);
 		if (partitioned) {
 			Execute(*con, BuildPartitionedCopy(options, signal, source, predicate, options.output, format),
@@ -418,12 +347,8 @@ int RunExport(const CliOptions &options) {
 			std::cerr << "Wrote " << options.output << "/" << signal.table << "/\n";
 			continue;
 		}
-		auto select_sql = StringUtil::Format("SELECT * FROM %s%s", source, predicate);
-		auto path = ResolveOutputPath(options, signal, format, signals.size() > 1);
-		Execute(*con, BuildCopyStatement(options, select_sql, path, format), "export " + string(signal.name));
-		if (path != STDOUT_PATH) {
-			std::cerr << "Wrote " << path << '\n';
-		}
+		WriteSignal(*con, options, signal, StringUtil::Format("SELECT * FROM %s%s", source, predicate), format,
+		            signals.size() > 1, "export");
 	}
 	return 0;
 }
@@ -474,24 +399,18 @@ int RunQuery(const CliOptions &options) {
 		throw InvalidInputException("`query` needs SQL: pass it as an argument or use --file PATH.");
 	}
 	// Parser::ParseQuery rewrites each statement's `query` to hold only that statement's own
-	// text (and resets stmt_location to 0), so this is the statement verbatim — slicing the
-	// original script by stmt_location/stmt_length instead would silently truncate it.
-	auto statement_text = [](const duckdb::SQLStatement &statement) {
-		return statement.query;
-	};
+	// text (and resets stmt_location to 0), so `statement->query` is the statement verbatim —
+	// slicing the original script by stmt_location/stmt_length instead would truncate it.
 	bool last_is_select = statements.back()->type == duckdb::StatementType::SELECT_STATEMENT;
 	bool redirecting = format != OutputFormat::BOX || !options.output.empty();
 
 	// Everything before the final statement is setup: run it and discard its result.
 	for (duckdb::idx_t i = 0; i + 1 < statements.size(); i++) {
-		Execute(*con, statement_text(*statements[i]), "query");
+		Execute(*con, statements[i]->query, "query");
 	}
-	auto final_sql = statement_text(*statements.back());
+	auto final_sql = statements.back()->query;
 	// The extracted text keeps its terminating ';', which cannot appear inside COPY (...).
-	while (!final_sql.empty() && (final_sql[final_sql.size() - 1] == ';' ||
-	                              std::isspace(static_cast<unsigned char>(final_sql[final_sql.size() - 1])) != 0)) {
-		final_sql = final_sql.substr(0, final_sql.size() - 1);
-	}
+	StringUtil::RTrim(final_sql, "; \t\n\r\f\v");
 
 	if (!redirecting || !last_is_select) {
 		if (redirecting && !last_is_select) {
@@ -520,7 +439,7 @@ int RunQuery(const CliOptions &options) {
 			throw InvalidInputException("Refusing to overwrite existing file \"%s\". Pass --overwrite to replace it.",
 			                            path);
 		}
-		EnsureParentDirectory(path);
+		CreateParentDirectory(path);
 	}
 	Execute(*con, StringUtil::Format("COPY (%s) TO %s %s;", final_sql, SqlQuote(path), CopyFormatOptions(format)),
 	        "query");

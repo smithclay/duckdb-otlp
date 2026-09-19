@@ -62,17 +62,17 @@ duckdb-otlp serve [flags]
 | `--no-auth` | `DUCKDB_OTLP_DISABLE_AUTH` | `0` |
 | `--quack PORT` | `DUCKDB_QUACK_PORT` | off |
 | `--quack-token TOKEN` | `DUCKDB_QUACK_TOKEN` | *(none)* |
-| `--log-level LEVEL` | `OTEL_LOG_LEVEL` | *(unset)* |
 | `--startup-timeout SECS` | `DUCKDB_OTLP_STARTUP_TIMEOUT` | `60` |
 
 Passing a token as a flag makes it visible in the process list; prefer `DUCKDB_OTLP_TOKEN` outside of local use.
 
 ### Selecting listeners
 
-Transports are selected by which ports you set, and `0` switches one off:
+Transports are selected by which ports you set. A **non-zero** port narrows the set to what you named; `0` switches one transport off without un-defaulting the others:
 
 ```sh
-duckdb-otlp --grpc 4317 --http 0      # gRPC only
+duckdb-otlp --grpc 4317               # gRPC only
+duckdb-otlp --grpc 0                  # HTTP only (gRPC off, HTTP still on its default)
 duckdb-otlp --host 0.0.0.0 --token "$TOKEN"
 ```
 
@@ -101,7 +101,6 @@ OpenTelemetry specifies environment variables for **exporters**, not receivers. 
 |----------|-----------|
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | Selects the transport (`grpc`, `http/protobuf`, `http/json`) — but only when no port has been set explicitly. |
 | `OTEL_EXPORTER_OTLP_HEADERS` | An `Authorization=Bearer <token>` entry supplies the expected token. Other entries are ignored. |
-| `OTEL_LOG_LEVEL` | Daemon log verbosity. |
 | `OTEL_EXPORTER_OTLP_TIMEOUT`, `OTEL_EXPORTER_OTLP_COMPRESSION` | Accepted and ignored (client-side only; compressed bodies are always accepted). |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | **Not read at all.** |
 | `OTEL_EXPORTER_OTLP_{TRACES,LOGS,METRICS}_ENDPOINT` | **Rejected at startup.** |
