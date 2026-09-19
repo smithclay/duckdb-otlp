@@ -71,7 +71,7 @@ def wait_ready(process, env, log_path):
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         assert process.poll() is None, log_path.read_text()
-        ready = subprocess.run([str(SERVER_BIN), 'healthcheck'], env=env, capture_output=True, timeout=10)
+        ready = subprocess.run([str(SERVER_BIN), 'doctor'], env=env, capture_output=True, timeout=10)
         if ready.returncode == 0:
             return
         time.sleep(0.05)

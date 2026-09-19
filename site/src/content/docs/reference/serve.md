@@ -80,7 +80,7 @@ variables instead. The existing `otap:` URI mode still starts OTAP/Arrow when
 `DUCKDB_OTLP_TRANSPORTS` is unset. OTAP/Arrow is distinct from standard OTLP/gRPC,
 and cannot be combined with the transport list.
 
-The image's `healthcheck` command checks every enabled listener, using HTTP
+The image's `doctor` command (also accepted as `healthcheck`) checks every enabled listener, using HTTP
 `/readyz` for HTTP and TCP connect for gRPC. A TCP check confirms a bound socket,
 not successful ingestion or durable writes. Because the listeners share one
 server, the HTTP `/readyz` reports the commit health of rows from both

@@ -245,7 +245,7 @@ duckdb::string HostFromAddr(const duckdb::string &addr) {
 	return addr.substr(0, colon);
 }
 
-// The host the healthcheck should probe for a server bound to `addr`. A wildcard/unspecified bind
+// The host `doctor` should probe for a server bound to `addr`. A wildcard/unspecified bind
 // (0.0.0.0, ::, empty) is reachable on loopback, so probe loopback (the previous behavior). An
 // explicit interface (e.g. 192.168.1.5) is NOT reachable on loopback, so probe it directly —
 // otherwise the container HEALTHCHECK fails forever on a healthy server (review finding M5).
@@ -265,13 +265,24 @@ bool HealthProbe(const duckdb::string &addr, const duckdb::string &path, int por
 	return duckdb::OtlpHttpStatusOk(host, port, path);
 }
 
-// Container HEALTHCHECK entry point. Distroless images ship no shell/curl, so the daemon
-// probes itself. It probes the CONFIGURED bind host (loopback for a 0.0.0.0/:: wildcard bind,
-// the explicit interface otherwise — see HealthCheckHost), so a non-loopback bind is supported
-// without a forever-failing loopback probe (review finding M5). HTTP listeners use /readyz,
-// gRPC listeners use TCP connect, and Quack is checked when enabled. Returns 0 only when
-// every configured listener is healthy.
-int RunHealthCheck(const EnvSource &env) {
+// One line per check, so `doctor` answers "what is wrong" rather than only "something is".
+void ReportCheck(const duckdb::string &what, const duckdb::string &endpoint, bool ok) {
+	std::cout << (ok ? "ok    " : "FAIL  ") << what << "  " << endpoint << (ok ? "" : "  (no response)") << '\n';
+}
+
+// `doctor` (and its `healthcheck` spelling, which the container HEALTHCHECK and existing
+// compose probes call): check every configured listener and report each one. Distroless
+// images ship no shell/curl, so the daemon probes itself. It probes the CONFIGURED bind host
+// (loopback for a 0.0.0.0/:: wildcard bind, the explicit interface otherwise — see
+// HealthCheckHost), so a non-loopback bind is supported without a forever-failing loopback
+// probe. HTTP listeners use /readyz, gRPC listeners use TCP connect, and Quack is checked
+// when enabled.
+//
+// Every check runs even after one fails: a partial answer ("http is up, grpc is not") is the
+// whole point of the command, and Docker keeps this output in the container's health log.
+// Exits 0 only when every check passed.
+int RunDoctor(const EnvSource &env) {
+	bool healthy = true;
 	try {
 		for (const auto &listener : duckdb_otlp_server::ListenersFromEnv(env)) {
 			duckdb::OtlpUri uri(listener.uri);
@@ -281,18 +292,15 @@ int RunHealthCheck(const EnvSource &env) {
 			} else if (host == "::") {
 				host = "::1";
 			}
-			bool healthy = listener.transport == "grpc" ? duckdb::OtlpTcpConnectOk(host, uri.Port())
-			                                            : duckdb::OtlpHttpStatusOk(host, uri.Port(), "/readyz");
-			if (!healthy) {
-				// Only on failure, so the container HEALTHCHECK stays silent when all is well.
-				// Without this a human running `healthcheck` got a bare exit 1 and no idea which
-				// of several listeners was unreachable.
-				std::cerr << "unhealthy: no response from " << (listener.otap ? "OTAP " : "OTLP ") << listener.transport
-				          << " at " << host << ":" << uri.Port() << '\n';
-				return 1;
-			}
+			bool ok = listener.transport == "grpc" ? duckdb::OtlpTcpConnectOk(host, uri.Port())
+			                                       : duckdb::OtlpHttpStatusOk(host, uri.Port(), "/readyz");
+			ReportCheck(duckdb::string(listener.otap ? "OTAP " : "OTLP ") + listener.transport,
+			            host + ":" + std::to_string(uri.Port()), ok);
+			healthy = healthy && ok;
 		}
 	} catch (std::exception &ex) {
+		// Configuration that cannot even be resolved is not a failed check, it is a broken
+		// setup: report it as an error rather than as an unreachable listener.
 		std::cerr << "ERROR: " << CliErrorMessage(ex) << '\n';
 		return 1;
 	}
@@ -300,12 +308,11 @@ int RunHealthCheck(const EnvSource &env) {
 		// Resolved by the same function startup uses, so the probe cannot target a different
 		// port than the server bound.
 		auto quack_addr = duckdb_otlp_server::QuackAddrFromEnv(env);
-		if (!HealthProbe(quack_addr, "/", 9494)) {
-			std::cerr << "unhealthy: no response from Quack at " << quack_addr << '\n';
-			return 1;
-		}
+		bool ok = HealthProbe(quack_addr, "/", 9494);
+		ReportCheck("Quack", quack_addr, ok);
+		healthy = healthy && ok;
 	}
-	return 0;
+	return healthy ? 0 : 1;
 }
 
 // The `serve` subcommand (and the bare invocation, which means the same thing): resolve
@@ -525,8 +532,8 @@ int main(int argc, char **argv) {
 		std::cout << "duckdb-otlp " << duckdb::OtlpExtension().Version() << " (DuckDB "
 		          << duckdb::DuckDB::LibraryVersion() << ")\n";
 		return 0;
-	case Command::HEALTHCHECK:
-		return RunHealthCheck(env);
+	case Command::DOCTOR:
+		return RunDoctor(env);
 	case Command::CONVERT:
 		return RunDataCommand([&] { return duckdb_otlp_server::RunConvert(options); });
 	case Command::EXPORT:

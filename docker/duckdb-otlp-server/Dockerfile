@@ -128,11 +128,13 @@ LABEL org.opencontainers.image.title="duckdb-otlp server" \
 
 EXPOSE 4317 4318 9494
 VOLUME ["/data"]
-# The daemon health-checks itself (distroless has no shell/curl): the `healthcheck`
+# The daemon health-checks itself (distroless has no shell/curl): the `doctor`
 # subcommand probes every enabled listener: HTTP /readyz, gRPC TCP connect, and
-# Quack when enabled. The daemon also logs a WARNING if seals stop committing.
+# Quack when enabled, printing a line per check that Docker keeps in the container's
+# health log. `healthcheck` remains an accepted spelling for existing probes.
+# The daemon also logs a WARNING if seals stop committing.
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=3 \
-    CMD ["/usr/local/bin/duckdb-otlp", "healthcheck"]
+    CMD ["/usr/local/bin/duckdb-otlp", "doctor"]
 
 ENTRYPOINT ["/usr/local/bin/duckdb-otlp"]
 

@@ -45,7 +45,7 @@ docker run --rm -p 4318:4318 ghcr.io/smithclay/duckdb-otlp:latest
 | `duckdb-otlp export` | Export the configured catalog's signal tables. |
 | `duckdb-otlp query "SQL"` | Run one-shot SQL against the configured catalog. |
 | `duckdb-otlp validate` | Resolve the configuration, print the effective settings and generated SQL, exit. |
-| `duckdb-otlp healthcheck` | Probe every configured listener. Exit 0 means healthy. |
+| `duckdb-otlp doctor` | Check every configured listener and report each one. Exit 0 means healthy. |
 | `duckdb-otlp version` | Print the version. |
 | `duckdb-otlp help [COMMAND]` | Show help for the tool or one command. |
 
@@ -77,7 +77,7 @@ Each command accepts only the flags that apply to it. `convert` is stateless, so
 
 ```
 $ duckdb-otlp convert --quack 9494 traces.pb
-ERROR: `convert` does not accept "--quack"; it is a flag of: serve, validate, healthcheck.
+ERROR: `convert` does not accept "--quack"; it is a flag of: serve, validate, doctor.
 ```
 
 `duckdb-otlp help COMMAND` lists what a command takes.
@@ -159,6 +159,22 @@ OpenTelemetry specifies environment variables for **exporters**, not receivers. 
 `OTEL_EXPORTER_OTLP_ENDPOINT` is ignored deliberately. It is usually already set in a developer's shell, pointing at their real collector; treating it as a *bind* address would either fail confusingly or silently move the listener somewhere unintended. Use `--host` and `--http`/`--grpc`.
 
 The TLS and per-signal-endpoint variables are rejected rather than ignored for the same reason in reverse: this server does not terminate TLS and serves every signal on one listener, so accepting those settings silently would leave you believing something untrue about your deployment. Put a TLS-terminating proxy in front instead.
+
+## `doctor`
+
+```sh
+duckdb-otlp doctor [serve flags]
+```
+
+Checks that the configured listeners are up, one line per check, exiting 0 only when every one passed. It takes the same flags as `serve`, so it probes exactly what those settings would bind.
+
+```
+$ duckdb-otlp doctor
+ok    OTLP http  127.0.0.1:4318
+FAIL  OTLP grpc  127.0.0.1:4317  (no response)
+```
+
+Every check runs even after one fails, so a partial answer is visible rather than just the first problem. The container image's `HEALTHCHECK` is this command, and Docker keeps its output in the container's health log. `duckdb-otlp healthcheck` is still accepted as the same command, so existing probes keep working.
 
 ## `convert`
 

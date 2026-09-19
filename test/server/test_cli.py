@@ -873,7 +873,7 @@ def test_a_file_without_a_subcommand_suggests_convert(tmp_path):
     assert "duckdb-otlp convert" in result.stderr
 
 
-@pytest.mark.parametrize("command", ["serve", "validate", "healthcheck"])
+@pytest.mark.parametrize("command", ["serve", "validate", "doctor"])
 def test_commands_that_take_no_files_reject_them(command, tmp_path):
     result = run([command, "some-file.pb"], home=tmp_path, timeout=30)
     assert result.returncode == 1
@@ -971,7 +971,52 @@ def test_query_does_not_leak_its_own_helper_view(tmp_path):
     assert "duckdb_otlp_query_result" not in result.stdout
 
 
-def test_healthcheck_names_the_listener_it_could_not_reach(tmp_path):
-    result = run(["healthcheck"], env={"DUCKDB_OTLP_TRANSPORTS": "grpc"}, home=tmp_path, timeout=30)
+@pytest.mark.parametrize("command", ["doctor", "healthcheck"])
+def test_doctor_names_the_listener_it_could_not_reach(command, tmp_path):
+    """`healthcheck` stays accepted: the container HEALTHCHECK and compose probes call it."""
+    result = run([command], env={"DUCKDB_OTLP_TRANSPORTS": "grpc"}, home=tmp_path, timeout=30)
     assert result.returncode == 1
-    assert "unhealthy" in result.stderr and "4317" in result.stderr
+    assert "FAIL" in result.stdout and "4317" in result.stdout
+
+
+def test_doctor_runs_every_check_not_just_the_first(tmp_path):
+    """A partial answer — http up, grpc down — is the point of the command."""
+    result = run(["doctor"], home=tmp_path, timeout=30)
+    assert result.returncode == 1
+    assert "4318" in result.stdout and "4317" in result.stdout
+
+
+def test_doctor_reports_each_check_that_passed(tmp_path):
+    import http.server
+    import threading
+
+    class Ready(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200 if self.path == "/readyz" else 404)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Ready) as httpd:
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            result = run(
+                ["doctor"],
+                env={"DUCKDB_OTLP_TRANSPORTS": "http", "OTEL_HTTP_ADDR": f"127.0.0.1:{httpd.server_port}"},
+                home=tmp_path,
+                timeout=30,
+            )
+            assert result.returncode == 0, result.stderr
+            assert result.stdout.startswith("ok")
+        finally:
+            httpd.shutdown()
+            thread.join()
+
+
+@pytest.mark.parametrize(("typo", "expected"), [("healthchek", "doctor"), ("sqll", "query")])
+def test_a_typo_of_an_alias_suggests_the_canonical_command(typo, expected, tmp_path):
+    result = run([typo], home=tmp_path, timeout=30)
+    assert result.returncode == 1
+    assert f"duckdb-otlp {expected}" in result.stderr

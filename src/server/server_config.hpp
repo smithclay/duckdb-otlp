@@ -15,14 +15,14 @@ struct IngestListener {
 	bool otap = false;
 };
 
-//! Shared by startup and healthcheck; resolving listeners needs no storage credentials or I/O.
+//! Shared by startup and `doctor`; resolving listeners needs no storage credentials or I/O.
 //! When `selection_reason` is non-null it receives a short human-readable note about WHICH
 //! setting selected the transports, so the startup banner can say why a listener is (not) on.
 std::vector<IngestListener> ListenersFromEnv(const EnvSource &env, duckdb::string *selection_reason = nullptr);
 
 //! Whether Quack is enabled, and the address it binds. Exported for the same reason as
-//! ListenersFromEnv: the healthcheck subcommand has to probe exactly what startup bound, and
-//! resolving it needs no storage credentials or I/O. A second copy in the healthcheck is how
+//! ListenersFromEnv: the `doctor` subcommand has to probe exactly what startup bound, and
+//! resolving it needs no storage credentials or I/O. A second copy in the probe is how
 //! DUCKDB_QUACK_PORT (what --quack sets) came to be honored by one and not the other.
 bool QuackEnabledFromEnv(const EnvSource &env);
 duckdb::string QuackAddrFromEnv(const EnvSource &env);

@@ -16,7 +16,8 @@ enum class Command {
 	EXPORT,
 	QUERY,
 	VALIDATE,
-	HEALTHCHECK,
+	//! `doctor`, historically (and still) spelled `healthcheck`.
+	DOCTOR,
 	VERSION,
 	HELP,
 };

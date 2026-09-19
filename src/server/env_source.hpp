@@ -9,7 +9,7 @@
 namespace duckdb_otlp_server {
 
 //! True for the recognized truthy spellings (1/true/yes/on and their upper-case forms).
-//! One definition, shared by configuration resolution and the healthcheck subcommand.
+//! One definition, shared by configuration resolution and the `doctor` subcommand.
 bool IsTruthy(const duckdb::string &value);
 
 //! The configuration environment the daemon resolves against: the process environment, with

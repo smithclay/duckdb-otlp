@@ -40,7 +40,7 @@ constexpr unsigned Bit(Command command) {
 
 //! Commands that resolve listeners: serve, the dry run of serve, and the probe of what serve
 //! bound. They take the full bind/auth surface.
-constexpr unsigned LISTENER_CMDS = Bit(Command::SERVE) | Bit(Command::VALIDATE) | Bit(Command::HEALTHCHECK);
+constexpr unsigned LISTENER_CMDS = Bit(Command::SERVE) | Bit(Command::VALIDATE) | Bit(Command::DOCTOR);
 //! Commands that resolve the configured catalog: the listener commands write it, export and
 //! query read it back, so all five accept the same catalog-selection flags. `convert` is
 //! deliberately absent — it is stateless, and silently accepting --mode there would suggest
@@ -111,7 +111,7 @@ struct CommandName {
 
 const CommandName COMMAND_NAMES[] = {
     {Command::SERVE, "serve"},     {Command::CONVERT, "convert"},   {Command::EXPORT, "export"},
-    {Command::QUERY, "query"},     {Command::VALIDATE, "validate"}, {Command::HEALTHCHECK, "healthcheck"},
+    {Command::QUERY, "query"},     {Command::VALIDATE, "validate"}, {Command::DOCTOR, "doctor"},
     {Command::VERSION, "version"}, {Command::HELP, "help"},
 };
 
@@ -136,6 +136,19 @@ Positionals PositionalsFor(Command command) {
 		return Positionals::NONE;
 	}
 }
+
+//! Accepted spellings that are not a command's canonical name. They stay out of
+//! COMMAND_NAMES so error messages name one spelling each, but a near-miss of an alias should
+//! still be recognized, so suggestions score them and answer with the canonical name.
+struct CommandAlias {
+	const char *alias;
+	const char *canonical;
+};
+
+const CommandAlias COMMAND_ALIASES[] = {
+    {"healthcheck", "doctor"},
+    {"sql", "query"},
+};
 
 const char *NameOfCommand(Command command) {
 	for (const auto &entry : COMMAND_NAMES) {
@@ -191,8 +204,8 @@ Command ParseCommand(const string &arg, bool &recognized) {
 	if (arg == "validate") {
 		return Command::VALIDATE;
 	}
-	if (arg == "healthcheck") {
-		return Command::HEALTHCHECK;
+	if (arg == "doctor" || arg == "healthcheck") {
+		return Command::DOCTOR;
 	}
 	if (arg == "version" || arg == "--version" || arg == "-V") {
 		return Command::VERSION;
@@ -386,6 +399,9 @@ CliOptions ParseCli(int argc, char **argv) {
 				// does not apply to the best match (TopNStrings always keeps scores[0]), so
 				// it answered "zzzzzzzz" with "did you mean help". Two edits is a typo; more
 				// than that is a different word, and a wrong guess is worse than none.
+				for (const auto &entry : COMMAND_ALIASES) {
+					known.emplace_back(entry.alias);
+				}
 				string best;
 				duckdb::idx_t best_distance = 3;
 				for (const auto &candidate : known) {
@@ -393,6 +409,11 @@ CliOptions ParseCli(int argc, char **argv) {
 					if (distance < best_distance) {
 						best_distance = distance;
 						best = candidate;
+					}
+				}
+				for (const auto &entry : COMMAND_ALIASES) {
+					if (best == entry.alias) {
+						best = entry.canonical;
 					}
 				}
 				if (!best.empty()) {
@@ -622,6 +643,21 @@ Opens no database and starts no listener. Exits 0 when the configuration is vali
 1 with an actionable message when it is not. Accepts every `serve` flag.
 )HELP";
 		return;
+	case Command::DOCTOR:
+		out << R"HELP(Check that the configured listeners are up, and report each one.
+
+  duckdb-otlp doctor [serve flags]
+
+Prints a line per check and exits 0 only when every one passed. Accepts the same
+flags as `serve`, so it probes exactly what those settings would bind. Also
+accepted as `duckdb-otlp healthcheck`, which is the spelling the container image's
+HEALTHCHECK and existing compose probes use.
+
+  $ duckdb-otlp doctor
+  ok    OTLP http  127.0.0.1:4318
+  FAIL  OTLP grpc  127.0.0.1:4317  (no response)
+)HELP";
+		return;
 	case Command::SERVE:
 	case Command::HELP:
 	default:
@@ -632,7 +668,7 @@ Opens no database and starts no listener. Exits 0 when the configuration is vali
   duckdb-otlp export              export catalog tables to Parquet/CSV/JSON
   duckdb-otlp query "SQL"         run one-shot SQL against the catalog
   duckdb-otlp validate            check configuration and print the generated SQL
-  duckdb-otlp healthcheck         probe every configured listener (exit 0 = healthy)
+  duckdb-otlp doctor              check every configured listener (exit 0 = healthy)
   duckdb-otlp version             print the version
   duckdb-otlp help [COMMAND]      show this help, or a command's help
 

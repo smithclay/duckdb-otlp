@@ -114,7 +114,7 @@ void OtlpHttpListener::Start() {
 	});
 	http->Get("/readyz", [this](const duckdb_httplib::Request &, duckdb_httplib::Response &res) {
 		// Degrade readiness when buffered rows are not committing, so an orchestrator (and the
-		// daemon's own healthcheck, which probes /readyz) sees a wedged seal backend instead of a
+		// daemon's own `doctor`, which probes /readyz) sees a wedged seal backend instead of a
 		// listener that keeps returning 202 while nothing becomes durable. The server is shared by
 		// every listener, so this reports the one write path regardless of which transport the
 		// traffic arrives on. /healthz stays liveness-only.

@@ -370,11 +370,11 @@ def test_missing_required_var_names_the_var(tmp_path):
 
 
 def _healthcheck(env: dict) -> int:
-    """Run the daemon's `healthcheck` subcommand with a clean env; return its exit code."""
+    """Run the daemon's `doctor` subcommand with a clean env; return its exit code."""
     full_env = {"PATH": os.environ.get("PATH", "")}
     full_env.update(env)
     return subprocess.run(
-        [str(SERVER_BIN), "healthcheck"],
+        [str(SERVER_BIN), "doctor"],
         env=full_env,
         capture_output=True,
         text=True,
