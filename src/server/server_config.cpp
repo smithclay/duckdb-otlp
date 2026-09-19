@@ -22,7 +22,12 @@ using duckdb::SqlQuote;
 using duckdb::string;
 using duckdb::StringUtil;
 
-constexpr const char *DEFAULT_TOKEN = "dev-otlp-token-123456";
+//! Default bind host. Loopback, not a wildcard: the CLI is used on laptops, where binding
+//! every interface by default would expose an unauthenticated ingest port to the local
+//! network. The container image opts back into 0.0.0.0 via DUCKDB_OTLP_HOST in its Dockerfile.
+constexpr const char *DEFAULT_HOST = "127.0.0.1";
+constexpr int DEFAULT_HTTP_PORT = 4318;
+constexpr int DEFAULT_GRPC_PORT = 4317;
 
 string Env(const char *name, const string &fallback = "") {
 	auto value = std::getenv(name);
@@ -37,6 +42,104 @@ bool HasEnv(const char *name) {
 bool Truthy(const string &value) {
 	return value == "1" || value == "true" || value == "TRUE" || value == "yes" || value == "YES" || value == "on" ||
 	       value == "ON";
+}
+
+//! Default data directory. The container pins this to /data via its Dockerfile; everywhere
+//! else it follows the XDG base-directory spec, which macOS tolerates and Linux expects.
+string DefaultDataDir() {
+	auto xdg = Env("XDG_DATA_HOME");
+	if (!xdg.empty()) {
+		return xdg + "/duckdb-otlp";
+	}
+	auto home = Env("HOME");
+	if (!home.empty()) {
+		return home + "/.local/share/duckdb-otlp";
+	}
+	// No HOME (some init/container contexts): fall back to the working directory rather than
+	// writing to an unpredictable absolute path.
+	return "./duckdb-otlp-data";
+}
+
+//! True for hosts that are only reachable from this machine. Used to decide whether an
+//! unauthenticated server is acceptable. A wildcard bind (0.0.0.0 / ::) is NOT loopback:
+//! it accepts traffic from the whole network and therefore always needs a token.
+bool IsLoopbackHost(const string &host) {
+	if (host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]") {
+		return true;
+	}
+	// The whole 127.0.0.0/8 block is loopback.
+	return StringUtil::StartsWith(host, "127.");
+}
+
+//! Parse one `key=value` pair out of an OTEL_EXPORTER_OTLP_HEADERS value and return the
+//! bearer token when the key is `authorization` and the value is a Bearer credential.
+//! The W3C Baggage encoding used by the OTel spec is comma-separated `key=value`.
+string BearerTokenFromOtelHeaders(const string &headers) {
+	duckdb::idx_t offset = 0;
+	while (offset <= headers.size()) {
+		auto comma = headers.find(',', offset);
+		auto entry = headers.substr(offset, comma == string::npos ? string::npos : comma - offset);
+		StringUtil::Trim(entry);
+		auto eq = entry.find('=');
+		if (eq != string::npos) {
+			auto key = entry.substr(0, eq);
+			auto value = entry.substr(eq + 1);
+			StringUtil::Trim(key);
+			StringUtil::Trim(value);
+			if (StringUtil::Lower(key) == "authorization") {
+				// Accept "Bearer <token>" (the spec's form) and a bare token.
+				auto space = value.find(' ');
+				if (space != string::npos && StringUtil::Lower(value.substr(0, space)) == "bearer") {
+					value = value.substr(space + 1);
+					StringUtil::Trim(value);
+				}
+				return value;
+			}
+		}
+		if (comma == string::npos) {
+			break;
+		}
+		offset = comma + 1;
+	}
+	return "";
+}
+
+//! Reject the standard OTLP exporter variables whose semantics we cannot honor.
+//!
+//! Silently ignoring these is the dangerous option: a user who sets a TLS certificate
+//! reasonably believes the listener is encrypted, and one who sets a per-signal endpoint
+//! believes traces and logs land on different ports. We serve one process with one set of
+//! listeners and no TLS, so both beliefs would be wrong. Fail loudly instead.
+//!
+//! OTEL_EXPORTER_OTLP_ENDPOINT is deliberately NOT read at all (neither honored nor
+//! rejected): it is routinely set in a developer's shell to point at their real collector,
+//! so treating it as a bind address would either fail confusingly or silently move the
+//! listener. Use DUCKDB_OTLP_HOST / --http / --grpc instead.
+void RejectUnsupportedOtelEnv() {
+	struct UnsupportedVar {
+		const char *name;
+		const char *reason;
+	};
+	const UnsupportedVar unsupported[] = {
+	    {"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "per-signal endpoints are not supported: one server accepts every "
+	                                           "signal on the same listener. Use --http/--grpc"},
+	    {"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "per-signal endpoints are not supported: one server accepts every "
+	                                         "signal on the same listener. Use --http/--grpc"},
+	    {"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "per-signal endpoints are not supported: one server accepts every "
+	                                            "signal on the same listener. Use --http/--grpc"},
+	    {"OTEL_EXPORTER_OTLP_CERTIFICATE", "this server does not terminate TLS. Put it behind a TLS-terminating "
+	                                       "proxy instead"},
+	    {"OTEL_EXPORTER_OTLP_CLIENT_KEY", "this server does not terminate TLS. Put it behind a TLS-terminating "
+	                                      "proxy instead"},
+	    {"OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE", "this server does not terminate TLS. Put it behind a "
+	                                              "TLS-terminating proxy instead"},
+	};
+	for (const auto &entry : unsupported) {
+		if (HasEnv(entry.name)) {
+			throw InvalidInputException("%s is set but cannot be honored: %s. Unset it to continue.", entry.name,
+			                            entry.reason);
+		}
+	}
 }
 
 string NormalizeMode(const string &mode) {
@@ -722,16 +825,123 @@ bool EnvTruthy(const char *name) {
 	return Truthy(Env(name));
 }
 
-std::vector<IngestListener> ListenersFromEnv() {
-	auto override_uri = Env("DUCKDB_OTLP_LISTEN_URI");
-	// Preserve the existing Arrow listener selection. OTAP is a separate protocol,
-	// not another spelling for standard OTLP/gRPC.
-	if (!override_uri.empty() && duckdb::OtlpUri(override_uri).Scheme() == "otap") {
-		if (HasEnv("DUCKDB_OTLP_TRANSPORTS")) {
-			throw InvalidInputException("DUCKDB_OTLP_TRANSPORTS cannot be combined with an otap: listen URI");
+namespace {
+
+//! One transport's resolved bind address, or `enabled == false` when it is switched off.
+struct ResolvedListener {
+	bool enabled = false;
+	string host;
+	int port = 0;
+};
+
+//! Parse a port env var. Unlike the other numeric parsers, 0 is legal and means
+//! "disable this listener", which is how --http 0 / --grpc 0 switch a transport off.
+int ParsePortEnv(const char *name) {
+	auto value = Env(name);
+	try {
+		size_t pos = 0;
+		auto parsed = std::stoll(value, &pos);
+		if (pos != value.size() || parsed < 0 || parsed > 65535) {
+			throw InvalidInputException("%s must be a port between 0 and 65535 (0 disables the listener)", name);
 		}
-		return {{duckdb::OtlpUri(override_uri).Uri(), "grpc", true}};
+		return static_cast<int>(parsed);
+	} catch (InvalidInputException &) {
+		throw;
+	} catch (...) {
+		throw InvalidInputException("%s must be a port between 0 and 65535 (0 disables the listener)", name);
 	}
+}
+
+//! Host portion of a bare "host:port" / "[ipv6]:port" bind address. Empty input -> "".
+string SplitAddrHost(const string &addr) {
+	if (addr.empty()) {
+		return "";
+	}
+	if (addr[0] == '[') {
+		auto close = addr.find(']');
+		return close == string::npos ? addr : addr.substr(1, close - 1);
+	}
+	auto colon = addr.rfind(':');
+	return colon == string::npos ? addr : addr.substr(0, colon);
+}
+
+//! Port portion of a bare "host:port" bind address. A missing port falls back to
+//! `default_port`; a port that is PRESENT but unparseable or out of range is an error, never
+//! a silent fallback — quietly binding 4317 because someone typed 70000 hides the typo until
+//! traffic goes missing.
+int SplitAddrPort(const string &addr, int default_port, const char *addr_var) {
+	auto colon = addr.rfind(':');
+	if (colon == string::npos) {
+		return default_port;
+	}
+	auto port_text = addr.substr(colon + 1);
+	try {
+		size_t pos = 0;
+		auto parsed = std::stoll(port_text, &pos);
+		if (pos == port_text.size() && parsed > 0 && parsed <= 65535) {
+			return static_cast<int>(parsed);
+		}
+	} catch (...) {
+	}
+	throw InvalidInputException("%s has an invalid port \"%s\": expected a port between 1 and 65535",
+	                            addr_var ? addr_var : "the bind address", port_text);
+}
+
+//! Resolve one transport's listener from, in order: its DUCKDB_OTLP_*_PORT variable, its
+//! legacy OTEL_*_ADDR variable, then the built-in default. DUCKDB_OTLP_HOST always wins
+//! over a host embedded in an OTEL_*_ADDR, so `--host` can move every listener at once.
+ResolvedListener ResolveListener(const char *port_var, const char *addr_var, int default_port, bool enabled_default) {
+	ResolvedListener resolved;
+	auto explicit_host = Env("DUCKDB_OTLP_HOST");
+	auto addr = addr_var ? Env(addr_var) : string();
+
+	if (HasEnv(port_var)) {
+		auto port = ParsePortEnv(port_var);
+		resolved.enabled = port != 0;
+		resolved.port = port;
+	} else if (!addr.empty()) {
+		resolved.enabled = enabled_default;
+		resolved.port = SplitAddrPort(addr, default_port, addr_var);
+	} else {
+		resolved.enabled = enabled_default;
+		resolved.port = default_port;
+	}
+
+	if (!explicit_host.empty()) {
+		resolved.host = explicit_host;
+	} else if (!addr.empty() && !SplitAddrHost(addr).empty()) {
+		resolved.host = SplitAddrHost(addr);
+	} else {
+		resolved.host = DEFAULT_HOST;
+	}
+	return resolved;
+}
+
+//! Transport selection from OTEL_EXPORTER_OTLP_PROTOCOL, consulted ONLY when nothing more
+//! specific selected the transports. The variable is exporter-side in the OTel spec, and a
+//! developer's shell often already carries it for their application's exporter, so letting
+//! it silently narrow an explicitly-configured server would be surprising.
+void ApplyOtelProtocol(bool &http_enabled, bool &grpc_enabled, string &reason) {
+	auto protocol = Env("OTEL_EXPORTER_OTLP_PROTOCOL");
+	if (protocol.empty()) {
+		return;
+	}
+	if (protocol == "grpc") {
+		http_enabled = false;
+		grpc_enabled = true;
+	} else if (protocol == "http/protobuf" || protocol == "http/json") {
+		http_enabled = true;
+		grpc_enabled = false;
+	} else {
+		throw InvalidInputException(
+		    "OTEL_EXPORTER_OTLP_PROTOCOL must be grpc, http/protobuf, or http/json (got \"%s\")", protocol);
+	}
+	reason = "OTEL_EXPORTER_OTLP_PROTOCOL=" + protocol;
+}
+
+//! The legacy DUCKDB_OTLP_TRANSPORTS list form, kept for the container image and for
+//! existing deployments. Ports come from OTEL_HTTP_ADDR / OTEL_GRPC_ADDR as before.
+std::vector<IngestListener> ListenersFromTransportList(const string &override_uri) {
 	auto transports = Env("DUCKDB_OTLP_TRANSPORTS", "http");
 	std::vector<IngestListener> listeners;
 	// Split explicitly so empty entries (including a trailing comma) are rejected.
@@ -748,43 +958,154 @@ std::vector<IngestListener> ListenersFromEnv() {
 				throw InvalidInputException("DUCKDB_OTLP_TRANSPORTS must not repeat a transport");
 			}
 		}
-		auto addr = transport == "http" ? Env("OTEL_HTTP_ADDR", "0.0.0.0:4318") : Env("OTEL_GRPC_ADDR", "0.0.0.0:4317");
-		duckdb::OtlpUri uri(override_uri.empty() ? "otlp:" + addr : override_uri);
+		auto resolved = transport == "http"
+		                    ? ResolveListener("DUCKDB_OTLP_HTTP_PORT", "OTEL_HTTP_ADDR", DEFAULT_HTTP_PORT, true)
+		                    : ResolveListener("DUCKDB_OTLP_GRPC_PORT", "OTEL_GRPC_ADDR", DEFAULT_GRPC_PORT, true);
+		duckdb::OtlpUri uri(override_uri.empty() ? "otlp:" + resolved.host + ":" + std::to_string(resolved.port)
+		                                         : override_uri);
 		listeners.push_back({uri.Uri(), transport, false});
 		if (comma == string::npos) {
 			break;
 		}
 		offset = comma + 1;
 	}
-	if (listeners.size() > 1) {
-		if (!override_uri.empty()) {
-			throw InvalidInputException("DUCKDB_OTLP_LISTEN_URI requires a single transport; use OTEL_HTTP_ADDR and "
-			                            "OTEL_GRPC_ADDR for multiple listeners");
-		}
-		// Conservative: require distinct ports even when two host strings differ,
-		// since wildcard binds and aliases can still address the same socket.
-		if (duckdb::OtlpUri(listeners[0].uri).Port() == duckdb::OtlpUri(listeners[1].uri).Port()) {
-			throw InvalidInputException("OTEL_HTTP_ADDR and OTEL_GRPC_ADDR must use different ports");
-		}
+	if (listeners.size() > 1 && !override_uri.empty()) {
+		throw InvalidInputException("DUCKDB_OTLP_LISTEN_URI requires a single transport; use --http and --grpc "
+		                            "(or OTEL_HTTP_ADDR and OTEL_GRPC_ADDR) for multiple listeners");
 	}
 	return listeners;
 }
 
-ServerConfig ServerConfig::FromEnv() {
-	auto raw_mode = Env("DUCKDB_MODE");
-	if (raw_mode.empty()) {
-		throw InvalidInputException("Missing required environment variable DUCKDB_MODE");
+//! Reject two listeners sharing a port. Conservative: distinct host strings can still name
+//! the same socket (a wildcard bind, an alias), so ports must differ regardless of host.
+void ValidateDistinctPorts(const std::vector<IngestListener> &listeners) {
+	for (duckdb::idx_t i = 0; i < listeners.size(); i++) {
+		for (duckdb::idx_t j = i + 1; j < listeners.size(); j++) {
+			if (duckdb::OtlpUri(listeners[i].uri).Port() == duckdb::OtlpUri(listeners[j].uri).Port()) {
+				throw InvalidInputException("Listeners %s and %s must use different ports", listeners[i].transport,
+				                            listeners[j].transport);
+			}
+		}
+	}
+}
+
+} // namespace
+
+std::vector<IngestListener> ListenersFromEnv(string *selection_reason) {
+	RejectUnsupportedOtelEnv();
+	string reason;
+	auto override_uri = Env("DUCKDB_OTLP_LISTEN_URI");
+	bool ports_set =
+	    HasEnv("DUCKDB_OTLP_HTTP_PORT") || HasEnv("DUCKDB_OTLP_GRPC_PORT") || HasEnv("DUCKDB_OTLP_OTAP_PORT");
+
+	auto finish = [&](std::vector<IngestListener> listeners) {
+		ValidateDistinctPorts(listeners);
+		if (selection_reason) {
+			*selection_reason = reason;
+		}
+		return listeners;
+	};
+
+	// (1) Single-listener URI override. Most specific, so it wins over everything.
+	if (!override_uri.empty()) {
+		if (ports_set) {
+			throw InvalidInputException("DUCKDB_OTLP_LISTEN_URI cannot be combined with --http/--grpc/--otap "
+			                            "(DUCKDB_OTLP_*_PORT); use one or the other");
+		}
+		reason = "DUCKDB_OTLP_LISTEN_URI";
+		// OTAP is a separate protocol, not another spelling for standard OTLP/gRPC.
+		if (duckdb::OtlpUri(override_uri).Scheme() == "otap") {
+			if (HasEnv("DUCKDB_OTLP_TRANSPORTS")) {
+				throw InvalidInputException("DUCKDB_OTLP_TRANSPORTS cannot be combined with an otap: listen URI");
+			}
+			return finish({{duckdb::OtlpUri(override_uri).Uri(), "grpc", true}});
+		}
+		return finish(ListenersFromTransportList(override_uri));
 	}
 
+	// (2) Legacy transport list, unless explicit ports supersede it. The container image sets
+	// DUCKDB_OTLP_TRANSPORTS in its Dockerfile, so a container user passing --http/--grpc
+	// still lands on the port path below.
+	if (HasEnv("DUCKDB_OTLP_TRANSPORTS") && !ports_set) {
+		reason = "DUCKDB_OTLP_TRANSPORTS=" + Env("DUCKDB_OTLP_TRANSPORTS");
+		return finish(ListenersFromTransportList(""));
+	}
+
+	// (3) Port-based selection: the CLI path. Any explicit port switches to explicit mode,
+	// where a transport is on only if its port is set and non-zero.
+	bool http_enabled = !ports_set;
+	bool grpc_enabled = !ports_set;
+	bool otap_enabled = false;
+	if (ports_set) {
+		reason = "explicit ports";
+		http_enabled = HasEnv("DUCKDB_OTLP_HTTP_PORT") && ParsePortEnv("DUCKDB_OTLP_HTTP_PORT") != 0;
+		grpc_enabled = HasEnv("DUCKDB_OTLP_GRPC_PORT") && ParsePortEnv("DUCKDB_OTLP_GRPC_PORT") != 0;
+		otap_enabled = HasEnv("DUCKDB_OTLP_OTAP_PORT") && ParsePortEnv("DUCKDB_OTLP_OTAP_PORT") != 0;
+	} else {
+		reason = "default (OTLP/HTTP and OTLP/gRPC)";
+		// (4) Nothing explicit: let the standard exporter protocol variable narrow the default.
+		ApplyOtelProtocol(http_enabled, grpc_enabled, reason);
+	}
+
+	if (otap_enabled && (http_enabled || grpc_enabled)) {
+		// OTAP/Arrow is served by otap_serve and standard OTLP by otlp_serve; a single
+		// process starts one or the other, never both, so catch it here with a clear message
+		// rather than at the SQL layer.
+		throw InvalidInputException("OTAP/Arrow cannot be combined with standard OTLP listeners. Start OTAP alone "
+		                            "(--otap PORT --http 0 --grpc 0), or run a second process for it.");
+	}
+	if (!http_enabled && !grpc_enabled && !otap_enabled) {
+		throw InvalidInputException("Every listener is disabled. Enable at least one of --http, --grpc, or --otap.");
+	}
+
+	std::vector<IngestListener> listeners;
+	if (otap_enabled) {
+		auto resolved = ResolveListener("DUCKDB_OTLP_OTAP_PORT", nullptr, DEFAULT_GRPC_PORT, true);
+		listeners.push_back(
+		    {duckdb::OtlpUri("otap:" + resolved.host + ":" + std::to_string(resolved.port)).Uri(), "grpc", true});
+		return finish(std::move(listeners));
+	}
+	if (http_enabled) {
+		auto resolved = ResolveListener("DUCKDB_OTLP_HTTP_PORT", "OTEL_HTTP_ADDR", DEFAULT_HTTP_PORT, true);
+		listeners.push_back(
+		    {duckdb::OtlpUri("otlp:" + resolved.host + ":" + std::to_string(resolved.port)).Uri(), "http", false});
+	}
+	if (grpc_enabled) {
+		auto resolved = ResolveListener("DUCKDB_OTLP_GRPC_PORT", "OTEL_GRPC_ADDR", DEFAULT_GRPC_PORT, true);
+		listeners.push_back(
+		    {duckdb::OtlpUri("otlp:" + resolved.host + ":" + std::to_string(resolved.port)).Uri(), "grpc", false});
+	}
+	return finish(std::move(listeners));
+}
+
+ServerConfig ServerConfig::FromEnv() {
 	ServerConfig config;
-	config.mode = NormalizeMode(raw_mode);
-	config.database = Env("DUCKDB_DATABASE", "/data/duckdb-otlp-control.duckdb");
-	config.data_dir = Env("DUCKDB_OTLP_DATA_DIR", "/data");
-	config.listeners = ListenersFromEnv();
-	config.token = Env("OTEL_AUTH_TOKEN", Env("DUCKDB_OTLP_TOKEN", DEFAULT_TOKEN));
-	config.using_default_token = config.token == DEFAULT_TOKEN;
+	// DUCKDB_MODE is no longer required: a bare `duckdb-otlp` on a laptop should start a
+	// working local lakehouse with no configuration at all. Every other mode still has to be
+	// named explicitly, so this default cannot silently redirect an intended remote target.
+	config.mode = NormalizeMode(Env("DUCKDB_MODE", "local-ducklake"));
+	config.data_dir = Env("DUCKDB_OTLP_DATA_DIR", DefaultDataDir());
+	// Derived from data_dir rather than hard-coded to /data, so overriding the data directory
+	// moves the control database with it. The container sets DUCKDB_OTLP_DATA_DIR=/data, which
+	// reproduces the previous default path exactly.
+	config.database = Env("DUCKDB_DATABASE", config.data_dir + "/duckdb-otlp-control.duckdb");
+	config.listeners = ListenersFromEnv(&config.transport_selection);
+	config.log_level = Env("OTEL_LOG_LEVEL");
+	// Token resolution, most specific first. OTEL_EXPORTER_OTLP_HEADERS is the standard
+	// exporter-side spelling ("Authorization=Bearer <token>"); accepting it lets one variable
+	// configure both an exporter and this receiver.
+	config.token = Env("OTEL_AUTH_TOKEN", Env("DUCKDB_OTLP_TOKEN"));
+	if (config.token.empty() && HasEnv("OTEL_EXPORTER_OTLP_HEADERS")) {
+		config.token = BearerTokenFromOtelHeaders(Env("OTEL_EXPORTER_OTLP_HEADERS"));
+	}
+	config.disable_auth = Truthy(Env("DUCKDB_OTLP_DISABLE_AUTH", "0"));
 	config.quack_enabled = Truthy(Env("DUCKDB_QUACK_ENABLED", Env("QUACK_ENABLED", "0")));
-	config.quack_http_addr = Env("DUCKDB_QUACK_ADDR", Env("QUACK_HTTP_ADDR", "0.0.0.0:9494"));
+	// --quack PORT sets DUCKDB_QUACK_PORT; the legacy DUCKDB_QUACK_ADDR / QUACK_HTTP_ADDR
+	// host:port form still wins when no port was given explicitly.
+	auto quack_host = Env("DUCKDB_OTLP_HOST", DEFAULT_HOST);
+	config.quack_http_addr = HasEnv("DUCKDB_QUACK_PORT")
+	                             ? quack_host + ":" + std::to_string(ParsePortEnv("DUCKDB_QUACK_PORT"))
+	                             : Env("DUCKDB_QUACK_ADDR", Env("QUACK_HTTP_ADDR", string(DEFAULT_HOST) + ":9494"));
 	config.quack_listen_uri = Env("DUCKDB_QUACK_LISTEN_URI", "quack:" + config.quack_http_addr);
 	config.dry_run = Truthy(Env("DRY_RUN", "0"));
 	config.startup_timeout_secs = ParsePositiveIntEnv("DUCKDB_OTLP_STARTUP_TIMEOUT", 60);
@@ -809,6 +1130,30 @@ ServerConfig ServerConfig::FromEnv() {
 	}
 	if (!quack_token_var.empty()) {
 		config.quack_token = Env(quack_token_var.c_str());
+	}
+
+	// Authentication. There is deliberately no built-in default token: a token published in
+	// this repository authenticates nothing, and silently falling back to one gave servers the
+	// appearance of being protected. Instead, an unauthenticated server is allowed only where
+	// it cannot be reached from off the machine.
+	bool all_loopback = true;
+	for (const auto &listener : config.listeners) {
+		all_loopback = all_loopback && IsLoopbackHost(duckdb::OtlpUri(listener.uri).Host());
+	}
+	if (!config.disable_auth && config.token.empty()) {
+		if (!all_loopback) {
+			throw InvalidInputException(
+			    "A bearer token is required when binding a non-loopback address. Set DUCKDB_OTLP_TOKEN (at least 16 "
+			    "characters), or pass --no-auth to accept unauthenticated traffic on purpose. Binding loopback "
+			    "(--host 127.0.0.1) disables authentication automatically.");
+		}
+		config.disable_auth = true;
+		config.auth_disabled_for_loopback = true;
+	}
+	if (!config.disable_auth && config.token.size() < otlp_limits::MIN_TOKEN_LENGTH) {
+		throw InvalidInputException("The OTLP token must be at least %llu characters (got %llu)",
+		                            static_cast<uint64_t>(otlp_limits::MIN_TOKEN_LENGTH),
+		                            static_cast<uint64_t>(config.token.size()));
 	}
 
 	CreateDirectory(config.data_dir);
@@ -869,7 +1214,10 @@ string ServerConfig::StartOtlpSql() const {
 	// The token is read at execution time from a session variable (set via the C++ API in
 	// main.cpp) rather than interpolated as a literal, so it never appears in the generated
 	// SQL string (which DRY_RUN=1 prints to stdout and the engine can echo in error
-	// messages).
+	// messages). With authentication disabled there is no token at all, and passing one
+	// alongside disable_auth would be misleading, so the parameters are mutually exclusive.
+	auto auth_sql = disable_auth ? string("    disable_auth := true")
+	                             : string("    token := getvariable('duckdb_otlp_effective_token')");
 	return StringUtil::Format(R"SQL(
 CREATE SCHEMA IF NOT EXISTS %s;
 SELECT listen_url, catalog_name, schema_name
@@ -878,12 +1226,12 @@ FROM %s(
     transport := [%s],
     catalog := %s,
     schema := %s,
-    token := getvariable('duckdb_otlp_effective_token'),
+%s,
     allow_other_hostname := true%s%s%s%s
 );
 )SQL",
 	                          schema_target, serve_fn, uris_sql, transports_sql, SqlQuote(catalog), SqlQuote(schema),
-	                          thread_sql, limits_sql, export_sql, promote_sql);
+	                          auth_sql, thread_sql, limits_sql, export_sql, promote_sql);
 }
 
 string ServerConfig::StartQuackSql() const {

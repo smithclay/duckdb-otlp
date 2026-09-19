@@ -1,3 +1,5 @@
+#include "cli.hpp"
+#include "commands.hpp"
 #include "server_config.hpp"
 #include "storage/otlp_extension.hpp"
 #include "otlp_sql_util.hpp"
@@ -333,55 +335,9 @@ int RunHealthCheck() {
 	return 0;
 }
 
-void PrintUsage() {
-	std::cout << R"HELP(Usage:
-
-  duckdb-otlp-server
-
-Required:
-
-  DUCKDB_MODE=local-ducklake|aws-ducklake|gcp-ducklake|parquet|r2-data-catalog|s3-tables|r2-neon-ducklake|r2-local-ducklake
-
-Useful common settings:
-
-  DUCKDB_DATABASE=/data/duckdb-otlp-control.duckdb
-  DUCKDB_OTLP_TRANSPORTS=http|grpc|http,grpc
-  OTEL_HTTP_ADDR=0.0.0.0:4318
-  OTEL_GRPC_ADDR=0.0.0.0:4317
-  DUCKDB_OTLP_TOKEN=change-me-at-least-16-chars
-  DUCKDB_QUACK_ENABLED=0
-  DUCKDB_QUACK_ADDR=0.0.0.0:9494
-  DUCKDB_QUACK_TOKEN=required-when-quack-enabled
-  DUCKDB_OTLP_HTTP_THREADS=auto
-  DUCKDB_OTLP_MAX_BODY_BYTES=16777216
-  DUCKDB_OTLP_MAX_BUFFERED_BYTES=536870912
-  DUCKDB_OTLP_SEAL_TARGET_BYTES=134217728
-  DUCKDB_OTLP_SEAL_MAX_AGE_MS=5000
-  DUCKDB_OTLP_TARGET_FILE_SIZE=268435456
-  DUCKDB_OTLP_MAINTENANCE_RETENTION_MS=900000
-  DUCKLAKE_DATA_INLINING_ROW_LIMIT=0   (DuckLake modes; 0 disables inlining, unset keeps the DuckLake default)
-  DUCKDB_OTLP_STARTUP_TIMEOUT=60
-  DRY_RUN=1
-)HELP";
-}
-
-} // namespace
-
-int main(int argc, char **argv) {
-	if (argc > 1) {
-		auto arg = duckdb::string(argv[1]);
-		if (arg == "help" || arg == "--help" || arg == "-h") {
-			PrintUsage();
-			return 0;
-		}
-		if (arg == "healthcheck") {
-			return RunHealthCheck();
-		}
-		std::cerr << "ERROR: unsupported argument: " << arg << '\n';
-		PrintUsage();
-		return 1;
-	}
-
+// The `serve` subcommand (and the bare invocation, which means the same thing): resolve
+// configuration, run mode setup, start every listener, then block until a signal arrives.
+int RunServe() {
 	try {
 		auto config = duckdb_otlp_server::ServerConfig::FromEnv();
 		SetDefaultEnv("NEON_PGPORT", "5432");
@@ -393,10 +349,19 @@ int main(int argc, char **argv) {
 		for (const auto &listener : config.listeners) {
 			std::cout << (listener.otap ? "OTAP " : "OTLP ") << listener.transport << ": " << listener.uri << '\n';
 		}
-		if (config.using_default_token) {
-			std::cout << "\nWARNING: using the built-in development OTLP token. Anyone who can reach a listener "
-			             "can ingest with a token that is public in this repo. Set DUCKDB_OTLP_TOKEN "
-			             "(or OTEL_AUTH_TOKEN) to a private value before exposing this server.\n\n";
+		// Say WHICH setting chose the listener set. Without this a narrowed set (for example a
+		// stray OTEL_EXPORTER_OTLP_PROTOCOL in the shell turning off the gRPC listener) looks
+		// like the server simply ignored a flag.
+		if (!config.transport_selection.empty()) {
+			std::cout << "Listeners selected by: " << config.transport_selection << '\n';
+		}
+		if (config.auth_disabled_for_loopback) {
+			std::cout << "\nAuthentication is DISABLED: no token was configured and every listener is bound to "
+			             "loopback, so only this machine can reach them. Set DUCKDB_OTLP_TOKEN (or --token) to "
+			             "require a bearer token.\n";
+		} else if (config.disable_auth) {
+			std::cout << "\nWARNING: authentication is DISABLED by request (--no-auth). Anyone who can reach a "
+			             "listener can write to this catalog.\n";
 		}
 		if (config.quack_enabled) {
 			std::cout << "Quack: " << config.quack_listen_uri << "\n\n";
@@ -538,5 +503,62 @@ int main(int argc, char **argv) {
 		// Docker user actually wants to read.
 		std::cerr << "ERROR: " << duckdb::ErrorData(ex).RawMessage() << '\n';
 		return 1;
+	}
+}
+
+} // namespace
+
+int main(int argc, char **argv) {
+	duckdb_otlp_server::CliOptions options;
+	try {
+		options = duckdb_otlp_server::ParseCli(argc, argv);
+	} catch (std::exception &ex) {
+		std::cerr << "ERROR: " << duckdb::ErrorData(ex).RawMessage() << '\n';
+		std::cerr << "\nRun `duckdb-otlp help` for usage.\n";
+		return 1;
+	}
+	// Flags are applied as environment overrides before any configuration is resolved, so
+	// every command sees one consistent `flag > env > default` view.
+	duckdb_otlp_server::ApplyEnvOverrides(options);
+
+	using duckdb_otlp_server::Command;
+	switch (options.command) {
+	case Command::HELP:
+		// `help <command>` prints that command's page; a bare `help` prints the overview.
+		duckdb_otlp_server::PrintUsage(
+		    std::cout, options.inputs.empty() ? Command::HELP : duckdb_otlp_server::CommandFromName(options.inputs[0]));
+		return 0;
+	case Command::VERSION:
+		std::cout << "duckdb-otlp " << duckdb::OtlpExtension().Version() << " (DuckDB "
+		          << duckdb::DuckDB::LibraryVersion() << ")\n";
+		return 0;
+	case Command::HEALTHCHECK:
+		return RunHealthCheck();
+	case Command::CONVERT:
+	case Command::EXPORT:
+	case Command::QUERY:
+		try {
+			switch (options.command) {
+			case Command::CONVERT:
+				return duckdb_otlp_server::RunConvert(options);
+			case Command::EXPORT:
+				return duckdb_otlp_server::RunExport(options);
+			default:
+				return duckdb_otlp_server::RunQuery(options);
+			}
+		} catch (std::exception &ex) {
+			// DuckDB exceptions stringify as a JSON blob; RawMessage() is the plain text.
+			std::cerr << "ERROR: " << duckdb::ErrorData(ex).RawMessage() << '\n';
+			return 1;
+		}
+	case Command::VALIDATE:
+		// `validate` is `serve` stopped just before anything is opened or bound. Reusing the
+		// serve path (rather than a parallel implementation) is what makes it trustworthy:
+		// what it prints is exactly what serve would run.
+		SetEnv("DRY_RUN", "1");
+		return RunServe();
+	case Command::SERVE:
+	default:
+		return RunServe();
 	}
 }

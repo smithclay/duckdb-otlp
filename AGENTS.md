@@ -41,7 +41,7 @@ GEN=ninja make debug
 cmake --build build/release --target duckdb_otlp_server
 
 # Build output:
-# - ./build/release/extension/otlp/duckdb_otlp_server
+# - ./build/release/extension/otlp/duckdb-otlp  (CMake target: duckdb_otlp_server)
 ```
 
 The daemon is a static DuckDB executable that embeds the OTLP extension and opens/serves DuckDB directly. After the normal release build directory exists, incremental changes to `src/server/*` should relink quickly. A fresh daemon build still has to compile the static DuckDB/extension dependency graph.
@@ -144,7 +144,7 @@ A parallel set of `read_otap_*` functions (same six signals, identical output sc
 - **gRPC listener (`src/otlp_server_grpc.cpp`)**: `OtlpGrpcListener` bridges the embedded tonic gRPC server (in `otlp2records`) into the same server as the HTTP path via a per-batch C callback. Two disjoint gRPC service families, selected via the `service_flags` FFI arg: OTLP/gRPC unary `Export` for `otlp_serve(transport := 'grpc')`, OTAP/Arrow streaming for `otap_serve`
 - **Buffered storage (`src/otlp_storage.cpp`)**: Per-signal buffering and serialized background seal/group-commit path
 - **Start/stop SQL functions (`src/otlp_start_stop.cpp`)**: `otlp_serve` (HTTP), `otap_serve` (gRPC), `otlp_stop`, `otlp_flush`, and `otlp_server_list`
-- **Native daemon (`src/server/`)**: `duckdb-otlp-server` binary that embeds DuckDB, loads the static OTLP extension, executes mode setup, starts one `otlp_serve` call covering every configured transport and optional `quack_serve`, handles SIGTERM/SIGINT, then calls `quack_stop`/`otlp_stop`
+- **Native CLI / daemon (`src/server/`)**: the `duckdb-otlp` binary. `cli.cpp` parses argv and dispatches subcommands; `commands.cpp` implements `convert`/`export`/`query`; `main.cpp`'s `RunServe` embeds DuckDB, loads the static OTLP extension, executes mode setup, starts one `otlp_serve` call covering every configured transport and optional `quack_serve`, handles SIGTERM/SIGINT, then calls `quack_stop`/`otlp_stop`. Flags are applied as environment overrides before `ServerConfig::FromEnv()`, which is what makes `flag > env > default` hold for every command with one config-resolution path
 - **Format Detection**: Automatic detection of JSON/NDJSON vs protobuf formats (handled by the Rust backend)
 
 ### Data Flow
@@ -186,7 +186,9 @@ Python dependencies (via `uv`):
 ```
 src/
 ├── server/
-│   ├── main.cpp               # Native `duckdb-otlp-server` process entry point
+│   ├── main.cpp               # `duckdb-otlp` entry point + subcommand dispatch + serve loop
+│   ├── cli.cpp                # argv parsing, flag->env overrides, per-command help
+│   ├── commands.cpp           # `convert` / `export` / `query` subcommands
 │   └── server_config.cpp      # Environment/mode config and generated setup SQL
 ├── storage/
 │   └── otlp_extension.cpp     # Extension entry point + registration
@@ -247,6 +249,9 @@ Prefer one canonical page per topic and link to it instead of duplicating exampl
   - **Durability**: ingest is buffered in memory and durability is the seal. A POST returns **`202 Accepted`** (`{"status":"buffered",...}`) once rows are parsed and buffered in memory, but not yet durable; they commit at the next seal. **`otlp_stop` and `otlp_flush` seal remaining rows before returning; a plain database/connection close does NOT** — buffered-but-un-sealed rows can be lost, so callers must `otlp_stop`/`otlp_flush` before closing the database. Backpressure: `max_buffered_bytes` (default 512 MiB) bounds cumulative *admitted request-body bytes*, not decoded buffer heap — each request reserves `max(body_size, 1024)` input bytes against this budget (the decoded columnar size differs from the encoded/compressed input size). A request whose admission would exceed the budget is rejected with **`503`**.
   - **Catalog maintenance contention**: several processes can share one DuckLake catalog, so their `CHECKPOINT`s can race. `IsContendedCatalogMaintenanceError` (`src/otlp_server.cpp`) classifies the loser (`could not serialize access`, `concurrent delete/update`) as contention: it bumps `maintenance_contended_total` and leaves `maintenance_failures_total`/`maintenance_last_error` alone. After each successful DuckLake `CHECKPOINT`, `SweepOrphanedFiles` calls `ducklake_delete_orphaned_files(older_than => now() - maintenance_retention_ms)` to remove untracked files left by a losing checkpoint; sweep errors are logged, never counted as checkpoint failures.
   - **`otlp_flush(uri)`** forces a synchronous seal. `otlp_server_list` exposes buffer/seal metrics (`buffered_rows`, `last_seal_age_ms`, `seals_total`, `seal_failures_total`, `seal_last_error`, `catalog_name`). Verify the ingest/seal path with `test/manual/otlp_serve_concurrency.py` (set `OTLP_DUCKLAKE_DIR` for the DuckLake path).
+  - **CLI defaults vs container defaults**: the C++ defaults are laptop-shaped — loopback bind, `$XDG_DATA_HOME/duckdb-otlp` data dir, `DUCKDB_MODE=local-ducklake`, and both OTLP/HTTP (4318) and OTLP/gRPC (4317) enabled. The container's `/data`, `0.0.0.0`, http-only defaults live in `docker/duckdb-otlp-server/Dockerfile`'s `ENV` block, deliberately, so there is no "am I in a container" detection at runtime. Changing a default means deciding which of the two it belongs to.
+  - **No built-in token**: there is no default token any more. With no token configured and every listener on loopback, auth is disabled automatically (with a printed notice); a non-loopback bind and no token is a hard startup error. `--no-auth` opts into unauthenticated traffic anywhere.
+  - **Standard OTLP env vars**: `OTEL_EXPORTER_OTLP_PROTOCOL` (only when no port is explicit), `OTEL_EXPORTER_OTLP_HEADERS` (`Authorization=Bearer`), and `OTEL_LOG_LEVEL` are honored. `OTEL_EXPORTER_OTLP_ENDPOINT` is deliberately **not read** (it usually points at the user's real collector, so reading it as a bind address is a footgun); the per-signal endpoint and TLS variables are **rejected at startup** rather than ignored, because silently dropping them would misrepresent the deployment.
   - **Daemon SQL access**: the daemon does not expose an attached DuckDB shell. Enable Quack (`DUCKDB_QUACK_ENABLED=1` and `DUCKDB_QUACK_TOKEN=...`) when external SQL/admin access is required. Quack grants full SQL read/write access to the daemon's DuckDB connection, so treat it as an administrative endpoint.
   - Not available on the wasm build.
 - Summary metrics are not yet supported

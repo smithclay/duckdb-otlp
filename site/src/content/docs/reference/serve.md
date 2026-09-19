@@ -28,10 +28,25 @@ Native extension builds include the server; WASM builds omit it entirely (no HTT
 
 For a runnable walkthrough, see the [Live Ingest Quickstart](../../quickstart/serve/). For lakehouse examples, see [Stream to Local DuckLake](../../guides/stream-to-local-ducklake/), [Stream to Remote DuckLake](../../guides/stream-to-remote-ducklake/), [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/), and [Stream to Cloudflare R2 Data Catalog](../../guides/stream-to-r2-data-catalog/). For plain files or object storage, see [Stream to Parquet](../../guides/stream-to-parquet/). For the implementation model, see [Architecture](../../architecture/#otlp-http-ingest-server).
 
+## Command-line interface
+
+The daemon ships as `duckdb-otlp`, a CLI for macOS and Linux that also converts
+OTLP/OTAP files, exports the catalog, and runs one-shot SQL. A bare invocation
+starts a local receiver with no configuration at all. See the
+[CLI Reference](../cli/) for the full command, flag, and environment-variable
+surface; this page documents the SQL functions underneath it.
+
+```sh
+duckdb-otlp                                  # OTLP/HTTP 4318 + OTLP/gRPC 4317 on loopback
+duckdb-otlp --host 0.0.0.0 --token "$TOKEN"  # a non-loopback bind requires a token
+```
+
 ## Docker daemon transports
 
-The `duckdb-otlp-server` image starts HTTP by default. Choose standard OTLP
-listeners with `DUCKDB_OTLP_TRANSPORTS`:
+The image starts HTTP by default. Choose standard OTLP
+listeners with `DUCKDB_OTLP_TRANSPORTS`, or with the `--http`/`--grpc` flags
+(and the matching `DUCKDB_OTLP_HTTP_PORT` / `DUCKDB_OTLP_GRPC_PORT` variables),
+which take precedence over the transport list:
 
 | Setting | Listeners |
 | --- | --- |
@@ -57,7 +72,8 @@ every listener, then drains the shared buffers once. If a later listener cannot
 start, the earlier ones are closed and the daemon exits with an error. Duplicate/unknown transports, empty list entries, and matching HTTP/gRPC
 ports are rejected. Whitespace around list entries is allowed.
 
-`DUCKDB_OTLP_LISTEN_URI` remains a single-listener override. With `grpc`, use an
+`DUCKDB_OTLP_LISTEN_URI` remains a single-listener override, and cannot be
+combined with `--http`/`--grpc`/`--otap`. With `grpc`, use an
 `otlp:` URI (for example `otlp:0.0.0.0:4317`); the transport setting selects gRPC.
 Do not combine this URI override with `http,grpc`; use the two bind-address
 variables instead. The existing `otap:` URI mode still starts OTAP/Arrow when

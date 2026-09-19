@@ -20,7 +20,9 @@ struct IngestListener {
 };
 
 //! Shared by startup and healthcheck; resolving listeners needs no storage credentials or I/O.
-std::vector<IngestListener> ListenersFromEnv();
+//! When `selection_reason` is non-null it receives a short human-readable note about WHICH
+//! setting selected the transports, so the startup banner can say why a listener is (not) on.
+std::vector<IngestListener> ListenersFromEnv(duckdb::string *selection_reason = nullptr);
 
 struct ServerConfig {
 	duckdb::string mode;
@@ -36,9 +38,19 @@ struct ServerConfig {
 	duckdb::string parquet_export_path;
 	bool quack_enabled = false;
 	bool dry_run = false;
-	//! True when the OTLP token fell back to the built-in development default. The daemon
-	//! warns about this at startup; it is never a hard failure (see main.cpp banner).
-	bool using_default_token = false;
+	//! True when the server accepts unauthenticated requests. Set explicitly by
+	//! --no-auth / DUCKDB_OTLP_DISABLE_AUTH, or implicitly when no token is configured and
+	//! every listener binds loopback. A non-loopback bind with no token is a hard error
+	//! instead: there is no built-in default token.
+	bool disable_auth = false;
+	//! True when `disable_auth` was inferred from a loopback bind rather than requested.
+	//! The daemon prints a one-line notice for this case (see main.cpp banner).
+	bool auth_disabled_for_loopback = false;
+	//! OTEL_LOG_LEVEL / --log-level. Empty leaves DuckDB's default logging alone.
+	duckdb::string log_level;
+	//! Short note naming which setting selected the transports, printed in the startup banner
+	//! so a narrowed or unexpected listener set is never silent.
+	duckdb::string transport_selection;
 	int startup_timeout_secs = 60;
 	uint64_t http_threads = 0;
 	uint64_t max_body_bytes = 16ULL * 1024ULL * 1024ULL;

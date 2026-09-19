@@ -75,8 +75,14 @@ endif()
 # container image (docker/duckdb-otlp-server), never as a Windows binary.
 # Windows therefore builds the extension (static + loadable) and nothing else.
 if(NOT EMSCRIPTEN AND NOT WIN32)
-  add_executable(duckdb_otlp_server src/server/main.cpp
-                                    src/server/server_config.cpp)
+  add_executable(
+    duckdb_otlp_server src/server/main.cpp src/server/server_config.cpp
+                       src/server/cli.cpp src/server/commands.cpp)
+  # The target keeps its historical name (scripts and CI build --target
+  # duckdb_otlp_server) but ships as `duckdb-otlp`: it is a general CLI now, not
+  # only a daemon. The container installs a `duckdb-otlp-server` alias alongside
+  # it.
+  set_target_properties(duckdb_otlp_server PROPERTIES OUTPUT_NAME duckdb-otlp)
   target_include_directories(
     duckdb_otlp_server
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/server
