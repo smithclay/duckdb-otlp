@@ -39,7 +39,16 @@ duckdb-otlp export --signal logs --since -24h --to out/
 
 ## Configuration precedence
 
-Command-line flag, then environment variable, then built-in default. Every flag that maps onto a setting overrides the matching variable, so `--http 4318` wins over `DUCKDB_OTLP_HTTP_PORT=9999`.
+Command-line flag, then environment variable, then built-in default. Every flag that maps onto a setting overrides the matching variable, so `--http 4318` wins over `DUCKDB_OTLP_HTTP_PORT=9999`. A flag is layered over the environment rather than written into it, so its value — a `--token` above all — stays inside the configuration and is never published to the rest of the process.
+
+Each command accepts only the flags that apply to it. `convert` is stateless, so it takes no catalog flags at all; `--since` belongs to `export`; `--token` and the port flags belong to the commands that bind or probe a listener. Naming a flag outside its command is an error that says where the flag does belong:
+
+```
+$ duckdb-otlp convert --quack 9494 traces.pb
+ERROR: `convert` does not accept "--quack"; it is a flag of: serve, validate, healthcheck.
+```
+
+`duckdb-otlp help COMMAND` lists what a command takes.
 
 ## `serve`
 
@@ -124,6 +133,8 @@ duckdb-otlp convert FILE... [flags]
 | `-f`, `--format FORMAT` | `parquet` (default with `--to`), `csv`, `json`, `ndjson` |
 | `--overwrite` | Replace existing output files |
 
+`convert` accepts no configuration flags — no `--mode`, no `--catalog`, no credentials — because it opens no catalog. Passing one is an error rather than a silent no-op.
+
 Several inputs are read as one dataset. Globs work, and are passed to the reader:
 
 ```sh
@@ -152,6 +163,8 @@ duckdb-otlp export [flags]
 | `--partition-by day` | Write `<table>/year=/month=/day=`, matching the layout the serve-side Parquet export writes |
 | `--overwrite` | Replace existing output files |
 
+`export` also takes the catalog-selection flags `serve` uses, since it has to open the same catalog: `-m`/`--mode`, `--data-dir`, `--database`, `--catalog`, and `--schema`.
+
 `--since` and `--until` accept an absolute timestamp (`'2026-01-01'`) or a relative shorthand: a sign, a number, and a unit of `s`, `m`, `h`, `d`, or `w`.
 
 ```sh
@@ -174,6 +187,8 @@ duckdb-otlp query --file script.sql [flags]
 | `-o`, `--to PATH` | Write results to a file |
 | `--readonly` | Open the database read-only |
 | `--overwrite` | Replace an existing output file |
+
+Like `export`, `query` takes the catalog-selection flags: `-m`/`--mode`, `--data-dir`, `--database`, `--catalog`, and `--schema`.
 
 Unqualified table names resolve against the mode's catalog and schema, so `FROM otlp_logs` works directly:
 

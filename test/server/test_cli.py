@@ -602,3 +602,119 @@ def test_export_rejects_an_unknown_partition_scheme(tmp_path):
     )
     assert result.returncode == 1
     assert "--partition-by" in result.stderr
+
+
+# --------------------------------------------------------------------------------------
+# Per-command flag tables
+#
+# One global flag table used to mean every command silently accepted every flag, so
+# `convert --quack 9494` parsed and then did nothing. Each command now declares the flags it
+# accepts, and a misdirected flag is an error that says where the flag does belong.
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("args", "belongs_to"),
+    [
+        (["convert", "--quack", "9494", "x.pb"], "serve"),
+        (["convert", "--mode", "parquet", "x.pb"], "serve"),
+        (["convert", "--partition-by", "day", "x.pb"], "export"),
+        (["query", "--token", TOKEN, "SELECT 1"], "serve"),
+        (["query", "--signal", "logs", "SELECT 1"], "convert"),
+        (["export", "--http", "4318"], "serve"),
+        (["export", "--file", "script.sql"], "query"),
+        (["--since", "-24h"], "export"),
+        (["--readonly"], "query"),
+    ],
+)
+def test_a_flag_of_another_command_is_rejected_by_name(args, belongs_to, tmp_path):
+    result = run(args, home=tmp_path)
+    assert result.returncode == 1
+    assert "does not accept" in result.stderr
+    assert belongs_to in result.stderr
+
+
+def test_an_unknown_flag_names_the_command_whose_help_to_read(tmp_path):
+    result = run(["convert", "--nonsense", "x.pb"], home=tmp_path)
+    assert result.returncode == 1
+    assert "Unknown flag" in result.stderr
+    assert "help convert" in result.stderr
+
+
+@pytest.mark.parametrize("command", ["export", "query"])
+def test_export_and_query_accept_the_catalog_selection_flags(command, tmp_path):
+    """export and query read back what `serve` wrote, so they take the flags that choose it.
+
+    Naming a catalog on the command line has to reach the same resolution `serve` uses; the
+    CATALOG_CMDS group in the flag table is what extends those five flags to these commands.
+    """
+    seed = run(
+        [
+            "query",
+            "CREATE SCHEMA IF NOT EXISTS otlp; "
+            f"CREATE OR REPLACE TABLE otlp.otlp_logs AS SELECT * FROM read_otlp_logs('{DATA_DIR / 'logs_simple.jsonl'}');",
+        ],
+        env=parquet_mode_env(tmp_path),
+        home=tmp_path,
+    )
+    assert seed.returncode == 0, seed.stderr
+
+    # The same catalog as parquet_mode_env, but selected entirely by flag.
+    args = [
+        "--mode",
+        "parquet",
+        "--data-dir",
+        str(tmp_path / "data"),
+        "--database",
+        str(tmp_path / "data" / "control.duckdb"),
+        "--schema",
+        "otlp",
+    ]
+    env = {"PARQUET_EXPORT_PATH": str(tmp_path / "data" / "parquet")}
+    if command == "export":
+        args = ["export", "--signal", "logs", "--to", str(tmp_path / "out") + "/", "--format", "csv", *args]
+    else:
+        args = ["query", "SELECT count(*) AS n FROM otlp_logs", "--format", "csv", *args]
+    result = run(args, env=env, home=tmp_path)
+    assert result.returncode == 0, result.stderr
+    if command == "export":
+        assert len((tmp_path / "out" / "logs.csv").read_text().strip().splitlines()) > 1
+    else:
+        assert int(result.stdout.strip().splitlines()[1]) > 0
+
+
+def test_otap_is_a_switch_for_convert_and_a_port_for_serve(tmp_path):
+    # The one flag whose meaning depends on the command: convert reads OTAP files, serve opens
+    # an OTAP/Arrow listener. The flag table settles it, so neither spelling needs a special case.
+    converted = run(
+        ["convert", "--otap", "--signal", "logs", str(DATA_DIR / "logs_simple.jsonl"), "--format", "csv"],
+        home=tmp_path,
+    )
+    assert converted.returncode == 1  # an OTLP fixture read as OTAP, not a usage error
+    assert "does not accept" not in converted.stderr
+
+    served = run(["validate", "--otap", "4317", "--http", "0", "--grpc", "0"], home=tmp_path)
+    assert served.returncode == 0, served.stderr
+    assert "otap:127.0.0.1:4317" in served.stdout
+
+
+# --------------------------------------------------------------------------------------
+# Flags are layered over the environment, not written into it
+# --------------------------------------------------------------------------------------
+
+
+def test_the_cli_never_mutates_the_process_environment():
+    """Flag values reach ServerConfig through an EnvSource, never through setenv().
+
+    This is a source guard rather than a behavioural test on purpose: the difference is not
+    observable from outside the process (setenv() does not rewrite the exec-time block that
+    /proc/<pid>/environ exposes). What it buys is that a flag value — a --token above all —
+    never becomes visible to getenv() elsewhere in the process, and that there is one
+    explicit configuration source instead of a global mutated in the right order by hand.
+    """
+    offenders = []
+    for source in sorted((REPO_ROOT / "src" / "server").glob("*.cpp")):
+        text = source.read_text()
+        if "setenv(" in text or "_putenv_s(" in text:
+            offenders.append(source.name)
+    assert offenders == [], f"these write to the process environment: {offenders}"

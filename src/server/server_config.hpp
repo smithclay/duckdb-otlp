@@ -1,17 +1,13 @@
 #pragma once
 
 #include "duckdb/common/string.hpp"
+#include "env_source.hpp"
 #include "otlp_ingest_limits.hpp"
 
 #include <cstdint>
 #include <vector>
 
 namespace duckdb_otlp_server {
-
-//! True when environment variable `name` is set to a recognized truthy value
-//! (1/true/yes/on and their upper-case spellings). Shared by FromEnv() and the
-//! daemon's healthcheck subcommand so the accepted set has one definition.
-bool EnvTruthy(const char *name);
 
 struct IngestListener {
 	duckdb::string uri;
@@ -22,7 +18,7 @@ struct IngestListener {
 //! Shared by startup and healthcheck; resolving listeners needs no storage credentials or I/O.
 //! When `selection_reason` is non-null it receives a short human-readable note about WHICH
 //! setting selected the transports, so the startup banner can say why a listener is (not) on.
-std::vector<IngestListener> ListenersFromEnv(duckdb::string *selection_reason = nullptr);
+std::vector<IngestListener> ListenersFromEnv(const EnvSource &env, duckdb::string *selection_reason = nullptr);
 
 struct ServerConfig {
 	duckdb::string mode;
@@ -70,7 +66,11 @@ struct ServerConfig {
 	//! (getenv() is a CLI-only DuckDB function, absent in the embedded library.)
 	std::vector<duckdb::string> env_variables;
 
-	static ServerConfig FromEnv();
+	//! Resolve the whole configuration from `env` — the process environment plus whatever the
+	//! command line layered on top. Taking the source as a parameter is what lets every
+	//! subcommand share one resolution path without any of them mutating the process
+	//! environment first.
+	static ServerConfig FromEnv(const EnvSource &env);
 
 	//! One otlp_serve/otap_serve call starting every listener against one shared server.
 	duckdb::string StartOtlpSql() const;

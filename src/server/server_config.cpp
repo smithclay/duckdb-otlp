@@ -3,6 +3,7 @@
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "env_source.hpp"
 #include "otlp_sql_util.hpp"
 #include "otlp_uri.hpp"
 #include "server_util.hpp"
@@ -30,29 +31,14 @@ constexpr const char *DEFAULT_HOST = "127.0.0.1";
 constexpr int DEFAULT_HTTP_PORT = 4318;
 constexpr int DEFAULT_GRPC_PORT = 4317;
 
-string Env(const char *name, const string &fallback = "") {
-	auto value = std::getenv(name);
-	return value && value[0] ? string(value) : fallback;
-}
-
-bool HasEnv(const char *name) {
-	auto value = std::getenv(name);
-	return value && value[0];
-}
-
-bool Truthy(const string &value) {
-	return value == "1" || value == "true" || value == "TRUE" || value == "yes" || value == "YES" || value == "on" ||
-	       value == "ON";
-}
-
 //! Default data directory. The container pins this to /data via its Dockerfile; everywhere
 //! else it follows the XDG base-directory spec, which macOS tolerates and Linux expects.
-string DefaultDataDir() {
-	auto xdg = Env("XDG_DATA_HOME");
+string DefaultDataDir(const EnvSource &env) {
+	auto xdg = env.Get("XDG_DATA_HOME");
 	if (!xdg.empty()) {
 		return xdg + "/duckdb-otlp";
 	}
-	auto home = Env("HOME");
+	auto home = env.Get("HOME");
 	if (!home.empty()) {
 		return home + "/.local/share/duckdb-otlp";
 	}
@@ -105,7 +91,7 @@ string BearerTokenFromOtelHeaders(const string &headers) {
 //! rejected): it is routinely set in a developer's shell to point at their real collector,
 //! so treating it as a bind address would either fail confusingly or silently move the
 //! listener. Use DUCKDB_OTLP_HOST / --http / --grpc instead.
-void RejectUnsupportedOtelEnv() {
+void RejectUnsupportedOtelEnv(const EnvSource &env) {
 	struct UnsupportedVar {
 		const char *name;
 		const char *reason;
@@ -125,7 +111,7 @@ void RejectUnsupportedOtelEnv() {
 	                                              "TLS-terminating proxy instead"},
 	};
 	for (const auto &entry : unsupported) {
-		if (HasEnv(entry.name)) {
+		if (env.Has(entry.name)) {
 			throw InvalidInputException("%s is set but cannot be honored: %s. Unset it to continue.", entry.name,
 			                            entry.reason);
 		}
@@ -151,25 +137,25 @@ string NormalizeMode(const string &mode) {
 	return mode;
 }
 
-string FirstEnv(std::initializer_list<const char *> names) {
+string FirstEnv(const EnvSource &env, std::initializer_list<const char *> names) {
 	for (auto name : names) {
-		if (HasEnv(name)) {
+		if (env.Has(name)) {
 			return name;
 		}
 	}
 	return "";
 }
 
-string RequireEnv(const char *name, const string &mode) {
-	auto value = Env(name);
+string RequireEnv(const EnvSource &env, const char *name, const string &mode) {
+	auto value = env.Get(name);
 	if (value.empty()) {
 		throw InvalidInputException("Missing required environment variable %s for DUCKDB_MODE=%s", name, mode);
 	}
 	return value;
 }
 
-string RequireAnyEnv(const string &label, std::initializer_list<const char *> names) {
-	auto name = FirstEnv(names);
+string RequireAnyEnv(const EnvSource &env, const string &label, std::initializer_list<const char *> names) {
+	auto name = FirstEnv(env, names);
 	if (!name.empty()) {
 		return name;
 	}
@@ -194,45 +180,45 @@ string EndpointHost(string value) {
 	return value;
 }
 
-string R2EndpointDefault(const string &mode) {
-	if (HasEnv("CLOUDFLARE_R2_ENDPOINT")) {
-		return EndpointHost(Env("CLOUDFLARE_R2_ENDPOINT"));
+string R2EndpointDefault(const EnvSource &env, const string &mode) {
+	if (env.Has("CLOUDFLARE_R2_ENDPOINT")) {
+		return EndpointHost(env.Get("CLOUDFLARE_R2_ENDPOINT"));
 	}
-	if (HasEnv("CLOUDFLARE_S3_API_HOST")) {
-		return EndpointHost(Env("CLOUDFLARE_S3_API_HOST"));
+	if (env.Has("CLOUDFLARE_S3_API_HOST")) {
+		return EndpointHost(env.Get("CLOUDFLARE_S3_API_HOST"));
 	}
-	if (HasEnv("R2_ENDPOINT")) {
-		return EndpointHost(Env("R2_ENDPOINT"));
+	if (env.Has("R2_ENDPOINT")) {
+		return EndpointHost(env.Get("R2_ENDPOINT"));
 	}
-	return RequireEnv("CLOUDFLARE_ACCOUNT_ID", mode) + ".r2.cloudflarestorage.com";
+	return RequireEnv(env, "CLOUDFLARE_ACCOUNT_ID", mode) + ".r2.cloudflarestorage.com";
 }
 
-string R2BucketValue() {
-	auto var = RequireAnyEnv("Cloudflare R2 bucket", {"CLOUDFLARE_R2_BUCKET", "R2_BUCKET_NAME", "R2_BUCKET"});
-	return Env(var.c_str());
+string R2BucketValue(const EnvSource &env) {
+	auto var = RequireAnyEnv(env, "Cloudflare R2 bucket", {"CLOUDFLARE_R2_BUCKET", "R2_BUCKET_NAME", "R2_BUCKET"});
+	return env.Get(var.c_str());
 }
 
-string R2PrefixValue() {
-	auto prefix = Env("CLOUDFLARE_R2_PREFIX", Env("R2_PREFIX", "duckdb-otlp/"));
+string R2PrefixValue(const EnvSource &env) {
+	auto prefix = env.Get("CLOUDFLARE_R2_PREFIX", env.Get("R2_PREFIX", "duckdb-otlp/"));
 	while (!prefix.empty() && prefix[0] == '/') {
 		prefix = prefix.substr(1);
 	}
 	return prefix;
 }
 
-string R2DataPath() {
-	auto bucket = R2BucketValue();
-	auto prefix = R2PrefixValue();
+string R2DataPath(const EnvSource &env) {
+	auto bucket = R2BucketValue(env);
+	auto prefix = R2PrefixValue(env);
 	return prefix.empty() ? "s3://" + bucket + "/" : "s3://" + bucket + "/" + prefix;
 }
 
-string S3BucketValue() {
-	auto var = RequireAnyEnv("S3 bucket", {"S3_BUCKET", "AWS_S3_BUCKET", "DUCKDB_OTLP_S3_BUCKET"});
-	return Env(var.c_str());
+string S3BucketValue(const EnvSource &env) {
+	auto var = RequireAnyEnv(env, "S3 bucket", {"S3_BUCKET", "AWS_S3_BUCKET", "DUCKDB_OTLP_S3_BUCKET"});
+	return env.Get(var.c_str());
 }
 
-string S3PrefixValue() {
-	auto prefix = Env("S3_PREFIX", Env("AWS_S3_PREFIX", Env("DUCKDB_OTLP_S3_PREFIX", "duckdb-otlp/")));
+string S3PrefixValue(const EnvSource &env) {
+	auto prefix = env.Get("S3_PREFIX", env.Get("AWS_S3_PREFIX", env.Get("DUCKDB_OTLP_S3_PREFIX", "duckdb-otlp/")));
 	while (!prefix.empty() && prefix[0] == '/') {
 		prefix = prefix.substr(1);
 	}
@@ -242,9 +228,9 @@ string S3PrefixValue() {
 	return prefix;
 }
 
-string S3DataPath() {
-	auto bucket = S3BucketValue();
-	auto prefix = S3PrefixValue();
+string S3DataPath(const EnvSource &env) {
+	auto bucket = S3BucketValue(env);
+	auto prefix = S3PrefixValue(env);
 	return prefix.empty() ? "s3://" + bucket : "s3://" + bucket + "/" + prefix;
 }
 
@@ -252,12 +238,12 @@ bool IsS3Path(const string &path) {
 	return StringUtil::StartsWith(StringUtil::Lower(path), "s3://");
 }
 
-string CatalogDefault(const string &fallback) {
-	return Env("DUCKDB_CATALOG", fallback);
+string CatalogDefault(const EnvSource &env, const string &fallback) {
+	return env.Get("DUCKDB_CATALOG", fallback);
 }
 
-string SchemaDefault(const string &fallback) {
-	return Env("DUCKDB_SCHEMA", fallback);
+string SchemaDefault(const EnvSource &env, const string &fallback) {
+	return env.Get("DUCKDB_SCHEMA", fallback);
 }
 
 string DatabaseCatalogName(const string &database) {
@@ -283,8 +269,8 @@ void ValidateCatalogDoesNotShadowDatabase(const ServerConfig &config) {
 	}
 }
 
-string EnvSql(ServerConfig &config, const string &name, const string &fallback = "") {
-	if (!HasEnv(name.c_str())) {
+string EnvSql(const EnvSource &env, ServerConfig &config, const string &name, const string &fallback = "") {
+	if (!env.Has(name.c_str())) {
 		return SqlQuote(fallback);
 	}
 	// Read the value through a session variable the daemon binds from the environment, not
@@ -295,8 +281,8 @@ string EnvSql(ServerConfig &config, const string &name, const string &fallback =
 	return "getvariable(" + SqlQuote("env_" + name) + ")";
 }
 
-int ParsePositiveIntEnv(const char *name, int fallback) {
-	auto value = Env(name);
+int ParsePositiveIntEnv(const EnvSource &env, const char *name, int fallback) {
+	auto value = env.Get(name);
 	if (value.empty()) {
 		return fallback;
 	}
@@ -314,8 +300,8 @@ int ParsePositiveIntEnv(const char *name, int fallback) {
 	}
 }
 
-uint64_t ParsePositiveUInt64Env(const char *name, uint64_t fallback) {
-	auto value = Env(name);
+uint64_t ParsePositiveUInt64Env(const EnvSource &env, const char *name, uint64_t fallback) {
+	auto value = env.Get(name);
 	if (value.empty()) {
 		return fallback;
 	}
@@ -333,8 +319,8 @@ uint64_t ParsePositiveUInt64Env(const char *name, uint64_t fallback) {
 	}
 }
 
-int64_t ParsePositiveInt64Env(const char *name, int64_t fallback) {
-	auto value = Env(name);
+int64_t ParsePositiveInt64Env(const EnvSource &env, const char *name, int64_t fallback) {
+	auto value = env.Get(name);
 	if (value.empty()) {
 		return fallback;
 	}
@@ -356,9 +342,9 @@ int64_t ParsePositiveInt64Env(const char *name, int64_t fallback) {
 // Parquet file, and only CHECKPOINT flushes them out. DUCKLAKE_DATA_INLINING_ROW_LIMIT sets the
 // per-insert row limit on ATTACH; 0 disables inlining so every seal writes Parquet directly.
 // Unset keeps DuckLake's own default.
-string DuckLakeInliningOption() {
+string DuckLakeInliningOption(const EnvSource &env) {
 	auto name = "DUCKLAKE_DATA_INLINING_ROW_LIMIT";
-	auto value = Env(name);
+	auto value = env.Get(name);
 	if (value.empty()) {
 		return "";
 	}
@@ -377,14 +363,14 @@ string DuckLakeInliningOption() {
 }
 
 // Extra option lines for `ATTACH ... (DATA_PATH ...)`.
-string DuckLakePathAttachOptions() {
-	auto option = DuckLakeInliningOption();
+string DuckLakePathAttachOptions(const EnvSource &env) {
+	auto option = DuckLakeInliningOption(env);
 	return option.empty() ? string() : ",\n  " + option;
 }
 
 // Option clause for `ATTACH 'ducklake:<secret>' AS <name>`.
-string DuckLakeSecretAttachOptions() {
-	auto option = DuckLakeInliningOption();
+string DuckLakeSecretAttachOptions(const EnvSource &env) {
+	auto option = DuckLakeInliningOption(env);
 	return option.empty() ? string() : " (" + option + ")";
 }
 
@@ -395,13 +381,13 @@ struct R2Credentials {
 	string secret_key_var;
 };
 
-R2Credentials ResolveR2Credentials(const string &label) {
+R2Credentials ResolveR2Credentials(const EnvSource &env, const string &label) {
 	R2Credentials creds;
-	creds.access_key_var = RequireAnyEnv(label + " access key",
+	creds.access_key_var = RequireAnyEnv(env, label + " access key",
 	                                     {"CLOUDFLARE_ACCESS_KEY_ID", "R2_ACCESS_KEY_ID", "CLOUDFLARE_S3_ACCESS_KEY_ID",
 	                                      "CLOUDFLARE_R2_ACCESS_KEY_ID", "CLOUDFLARE_S3_KEY_ID"});
 	creds.secret_key_var =
-	    RequireAnyEnv(label + " secret key",
+	    RequireAnyEnv(env, label + " secret key",
 	                  {"CLOUDFLARE_SECRET_ACCESS_KEY", "R2_SECRET_ACCESS_KEY", "CLOUDFLARE_S3_SECRET_ACCESS_KEY",
 	                   "CLOUDFLARE_R2_SECRET_ACCESS_KEY", "CLOUDFLARE_S3_SECRET_KEY"});
 	return creds;
@@ -411,8 +397,8 @@ R2Credentials ResolveR2Credentials(const string &label) {
 // are referenced through getvariable() (via EnvSql) so the values never appear in the generated SQL.
 // Returns the secret statement with a leading newline and a trailing ");\n" so it can be injected via
 // %s exactly where the modes previously inlined it.
-string BuildR2StorageSecret(ServerConfig &config, const string &secret_name, const R2Credentials &creds,
-                            const string &endpoint) {
+string BuildR2StorageSecret(const EnvSource &env, ServerConfig &config, const string &secret_name,
+                            const R2Credentials &creds, const string &endpoint) {
 	return StringUtil::Format(R"SQL(
 CREATE OR REPLACE SECRET %s (
   TYPE s3,
@@ -423,8 +409,8 @@ CREATE OR REPLACE SECRET %s (
   URL_STYLE 'path'
 );
 )SQL",
-	                          secret_name, EnvSql(config, creds.access_key_var), EnvSql(config, creds.secret_key_var),
-	                          SqlQuote(endpoint));
+	                          secret_name, EnvSql(env, config, creds.access_key_var),
+	                          EnvSql(env, config, creds.secret_key_var), SqlQuote(endpoint));
 }
 
 // The PROVIDER credential_chain S3 secret block shared by the parquet and s3-tables modes. Both pick
@@ -455,12 +441,12 @@ CREATE OR REPLACE SECRET %s (
 	return secret_sql;
 }
 
-void ConfigureLocalDuckLake(ServerConfig &config) {
+void ConfigureLocalDuckLake(const EnvSource &env, ServerConfig &config) {
 	config.mode_extensions = {"ducklake", "otlp"};
-	config.catalog = CatalogDefault(Env("DUCKLAKE_NAME", "otel"));
-	config.schema = SchemaDefault("main");
-	auto catalog_path = Env("DUCKLAKE_CATALOG_PATH", config.data_dir + "/ducklake/catalog.duckdb");
-	auto data_path = Env("DUCKLAKE_DATA_PATH", config.data_dir + "/ducklake/storage");
+	config.catalog = CatalogDefault(env, env.Get("DUCKLAKE_NAME", "otel"));
+	config.schema = SchemaDefault(env, "main");
+	auto catalog_path = env.Get("DUCKLAKE_CATALOG_PATH", config.data_dir + "/ducklake/catalog.duckdb");
+	auto data_path = env.Get("DUCKLAKE_DATA_PATH", config.data_dir + "/ducklake/storage");
 	CreateParentDirectory(catalog_path);
 	CreateDirectory(data_path);
 
@@ -472,19 +458,19 @@ ATTACH %s AS %s (
 );
 )SQL",
 	                                           SqlQuote("ducklake:" + catalog_path), QuoteIdentifier(config.catalog),
-	                                           SqlQuote(data_path), DuckLakePathAttachOptions());
+	                                           SqlQuote(data_path), DuckLakePathAttachOptions(env));
 }
 
-void ConfigureAwsDuckLake(ServerConfig &config) {
+void ConfigureAwsDuckLake(const EnvSource &env, ServerConfig &config) {
 	config.mode_extensions = {"ducklake", "aws", "httpfs", "otlp"};
-	config.catalog = CatalogDefault(Env("DUCKLAKE_NAME", "lake"));
-	config.schema = SchemaDefault("otlp");
-	auto catalog_path = Env("DUCKLAKE_CATALOG_PATH", config.data_dir + "/ducklake/catalog.duckdb");
-	auto data_path = Env("DUCKLAKE_DATA_PATH");
+	config.catalog = CatalogDefault(env, env.Get("DUCKLAKE_NAME", "lake"));
+	config.schema = SchemaDefault(env, "otlp");
+	auto catalog_path = env.Get("DUCKLAKE_CATALOG_PATH", config.data_dir + "/ducklake/catalog.duckdb");
+	auto data_path = env.Get("DUCKLAKE_DATA_PATH");
 	if (!IsS3Path(data_path)) {
 		throw InvalidInputException("DUCKDB_MODE=%s requires DUCKLAKE_DATA_PATH=s3://bucket/prefix", config.mode);
 	}
-	auto region = Env("AWS_REGION", Env("AWS_DEFAULT_REGION"));
+	auto region = env.Get("AWS_REGION", env.Get("AWS_DEFAULT_REGION"));
 	if (region.empty()) {
 		throw InvalidInputException("Missing AWS region for DUCKDB_MODE=%s. Set AWS_REGION or AWS_DEFAULT_REGION",
 		                            config.mode);
@@ -509,29 +495,29 @@ ATTACH %s AS %s (
 );
 )SQL",
 	                       SqlQuote(region), SqlQuote("ducklake:" + catalog_path), QuoteIdentifier(config.catalog),
-	                       SqlQuote(data_path), DuckLakePathAttachOptions());
+	                       SqlQuote(data_path), DuckLakePathAttachOptions(env));
 }
 
-void ConfigureR2DataCatalog(ServerConfig &config) {
+void ConfigureR2DataCatalog(const EnvSource &env, ServerConfig &config) {
 	config.mode_extensions = {"iceberg", "httpfs", "otlp"};
-	config.catalog = CatalogDefault(Env("CLOUDFLARE_CATALOG_NAME", "r2catalog"));
-	config.schema = SchemaDefault("otlp");
+	config.catalog = CatalogDefault(env, env.Get("CLOUDFLARE_CATALOG_NAME", "r2catalog"));
+	config.schema = SchemaDefault(env, "otlp");
 	auto catalog_token_var =
-	    RequireAnyEnv("Cloudflare catalog token", {"CLOUDFLARE_CATALOG_TOKEN", "CLOUDFLARE_API_TOKEN"});
-	auto creds = ResolveR2Credentials("Cloudflare R2");
-	RequireAnyEnv("Cloudflare R2 bucket", {"CLOUDFLARE_R2_BUCKET", "R2_BUCKET_NAME", "R2_BUCKET"});
-	RequireEnv("CLOUDFLARE_ACCOUNT_ID", config.mode);
-	auto catalog_uri = RequireEnv("CLOUDFLARE_CATALOG_URI", config.mode);
-	auto warehouse = Env("CLOUDFLARE_WAREHOUSE", Env("R2_WAREHOUSE"));
-	if (warehouse.empty() && HasEnv("CLOUDFLARE_ACCOUNT_ID")) {
-		warehouse = Env("CLOUDFLARE_ACCOUNT_ID") + "_" + R2BucketValue();
+	    RequireAnyEnv(env, "Cloudflare catalog token", {"CLOUDFLARE_CATALOG_TOKEN", "CLOUDFLARE_API_TOKEN"});
+	auto creds = ResolveR2Credentials(env, "Cloudflare R2");
+	RequireAnyEnv(env, "Cloudflare R2 bucket", {"CLOUDFLARE_R2_BUCKET", "R2_BUCKET_NAME", "R2_BUCKET"});
+	RequireEnv(env, "CLOUDFLARE_ACCOUNT_ID", config.mode);
+	auto catalog_uri = RequireEnv(env, "CLOUDFLARE_CATALOG_URI", config.mode);
+	auto warehouse = env.Get("CLOUDFLARE_WAREHOUSE", env.Get("R2_WAREHOUSE"));
+	if (warehouse.empty() && env.Has("CLOUDFLARE_ACCOUNT_ID")) {
+		warehouse = env.Get("CLOUDFLARE_ACCOUNT_ID") + "_" + R2BucketValue(env);
 	}
 	if (warehouse.empty()) {
 		throw InvalidInputException("Missing Cloudflare warehouse. Set CLOUDFLARE_WAREHOUSE or provide "
 		                            "CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_R2_BUCKET");
 	}
-	auto endpoint = R2EndpointDefault(config.mode);
-	auto storage_secret = BuildR2StorageSecret(config, "cloudflare_r2_secret", creds, endpoint);
+	auto endpoint = R2EndpointDefault(env, config.mode);
+	auto storage_secret = BuildR2StorageSecret(env, config, "cloudflare_r2_secret", creds, endpoint);
 
 	config.mode_setup_sql = StringUtil::Format(
 	    R"SQL(
@@ -548,20 +534,20 @@ ATTACH %s AS %s (
   SECRET cloudflare_catalog_secret
 );
 )SQL",
-	    storage_secret, EnvSql(config, catalog_token_var), SqlQuote(warehouse), QuoteIdentifier(config.catalog),
+	    storage_secret, EnvSql(env, config, catalog_token_var), SqlQuote(warehouse), QuoteIdentifier(config.catalog),
 	    SqlQuote(catalog_uri));
 }
 
-void ConfigureParquet(ServerConfig &config) {
+void ConfigureParquet(const EnvSource &env, ServerConfig &config) {
 	config.mode_extensions = {"otlp"};
 	config.catalog = "";
-	config.schema = SchemaDefault("otlp");
+	config.schema = SchemaDefault(env, "otlp");
 	config.parquet_export_path =
-	    Env("PARQUET_EXPORT_PATH",
-	        Env("DUCKDB_OTLP_PARQUET_EXPORT_PATH", Env("S3_EXPORT_PATH", Env("DUCKDB_OTLP_S3_EXPORT_PATH"))));
+	    env.Get("PARQUET_EXPORT_PATH", env.Get("DUCKDB_OTLP_PARQUET_EXPORT_PATH",
+	                                           env.Get("S3_EXPORT_PATH", env.Get("DUCKDB_OTLP_S3_EXPORT_PATH"))));
 	if (config.parquet_export_path.empty()) {
-		if (HasEnv("S3_BUCKET") || HasEnv("AWS_S3_BUCKET") || HasEnv("DUCKDB_OTLP_S3_BUCKET")) {
-			config.parquet_export_path = S3DataPath();
+		if (env.Has("S3_BUCKET") || env.Has("AWS_S3_BUCKET") || env.Has("DUCKDB_OTLP_S3_BUCKET")) {
+			config.parquet_export_path = S3DataPath(env);
 		} else {
 			config.parquet_export_path = config.data_dir + "/parquet";
 		}
@@ -574,15 +560,15 @@ void ConfigureParquet(ServerConfig &config) {
 	}
 
 	config.mode_extensions = {"aws", "httpfs", "otlp"};
-	auto region = Env("AWS_REGION", Env("AWS_DEFAULT_REGION"));
+	auto region = env.Get("AWS_REGION", env.Get("AWS_DEFAULT_REGION"));
 	if (region.empty()) {
 		throw InvalidInputException("Missing AWS region for DUCKDB_MODE=%s with an s3:// export path. Set AWS_REGION "
 		                            "or AWS_DEFAULT_REGION",
 		                            config.mode);
 	}
-	auto profile = Env("AWS_PROFILE", Env("AWS_DEFAULT_PROFILE"));
-	auto endpoint = Env("S3_ENDPOINT", Env("AWS_S3_ENDPOINT"));
-	auto url_style = Env("S3_URL_STYLE", Env("AWS_S3_URL_STYLE"));
+	auto profile = env.Get("AWS_PROFILE", env.Get("AWS_DEFAULT_PROFILE"));
+	auto endpoint = env.Get("S3_ENDPOINT", env.Get("AWS_S3_ENDPOINT"));
+	auto url_style = env.Get("S3_URL_STYLE", env.Get("AWS_S3_URL_STYLE"));
 
 	auto secret_sql = BuildCredentialChainSecret("plain_s3_secret", region, profile, endpoint, url_style);
 
@@ -595,17 +581,17 @@ LOAD httpfs;
 	                                           secret_sql);
 }
 
-void ConfigureR2LocalDuckLake(ServerConfig &config) {
+void ConfigureR2LocalDuckLake(const EnvSource &env, ServerConfig &config) {
 	config.mode_extensions = {"ducklake", "httpfs", "otlp"};
-	config.catalog = CatalogDefault(Env("DUCKLAKE_NAME", "lake"));
-	config.schema = SchemaDefault("otlp");
-	auto creds = ResolveR2Credentials("R2");
-	RequireAnyEnv("R2 bucket", {"CLOUDFLARE_R2_BUCKET", "R2_BUCKET_NAME", "R2_BUCKET"});
-	auto catalog_path = Env("DUCKLAKE_CATALOG_PATH", config.data_dir + "/ducklake/catalog.duckdb");
-	auto data_path = Env("DUCKLAKE_DATA_PATH", R2DataPath());
+	config.catalog = CatalogDefault(env, env.Get("DUCKLAKE_NAME", "lake"));
+	config.schema = SchemaDefault(env, "otlp");
+	auto creds = ResolveR2Credentials(env, "R2");
+	RequireAnyEnv(env, "R2 bucket", {"CLOUDFLARE_R2_BUCKET", "R2_BUCKET_NAME", "R2_BUCKET"});
+	auto catalog_path = env.Get("DUCKLAKE_CATALOG_PATH", config.data_dir + "/ducklake/catalog.duckdb");
+	auto data_path = env.Get("DUCKLAKE_DATA_PATH", R2DataPath(env));
 	CreateParentDirectory(catalog_path);
-	auto endpoint = R2EndpointDefault(config.mode);
-	auto storage_secret = BuildR2StorageSecret(config, "r2_storage", creds, endpoint);
+	auto endpoint = R2EndpointDefault(env, config.mode);
+	auto storage_secret = BuildR2StorageSecret(env, config, "r2_storage", creds, endpoint);
 
 	config.mode_setup_sql =
 	    StringUtil::Format(R"SQL(
@@ -617,22 +603,22 @@ LOAD httpfs;%sATTACH %s AS %s (
 );
 )SQL",
 	                       storage_secret, SqlQuote("ducklake:" + catalog_path), QuoteIdentifier(config.catalog),
-	                       SqlQuote(data_path), DuckLakePathAttachOptions());
+	                       SqlQuote(data_path), DuckLakePathAttachOptions(env));
 }
 
-void ConfigureR2NeonDuckLake(ServerConfig &config) {
+void ConfigureR2NeonDuckLake(const EnvSource &env, ServerConfig &config) {
 	config.mode_extensions = {"ducklake", "postgres", "httpfs", "otlp"};
-	config.catalog = CatalogDefault(Env("DUCKLAKE_NAME", "lake"));
-	config.schema = SchemaDefault("otlp");
-	auto creds = ResolveR2Credentials("R2");
-	RequireAnyEnv("R2 bucket", {"CLOUDFLARE_R2_BUCKET", "R2_BUCKET_NAME", "R2_BUCKET"});
-	RequireEnv("NEON_PGHOST", config.mode);
-	RequireEnv("NEON_PGDATABASE", config.mode);
-	RequireEnv("NEON_PGUSER", config.mode);
-	RequireEnv("NEON_PGPASSWORD", config.mode);
-	auto data_path = Env("DUCKLAKE_DATA_PATH", R2DataPath());
-	auto endpoint = R2EndpointDefault(config.mode);
-	auto storage_secret = BuildR2StorageSecret(config, "r2_storage", creds, endpoint);
+	config.catalog = CatalogDefault(env, env.Get("DUCKLAKE_NAME", "lake"));
+	config.schema = SchemaDefault(env, "otlp");
+	auto creds = ResolveR2Credentials(env, "R2");
+	RequireAnyEnv(env, "R2 bucket", {"CLOUDFLARE_R2_BUCKET", "R2_BUCKET_NAME", "R2_BUCKET"});
+	RequireEnv(env, "NEON_PGHOST", config.mode);
+	RequireEnv(env, "NEON_PGDATABASE", config.mode);
+	RequireEnv(env, "NEON_PGUSER", config.mode);
+	RequireEnv(env, "NEON_PGPASSWORD", config.mode);
+	auto data_path = env.Get("DUCKLAKE_DATA_PATH", R2DataPath(env));
+	auto endpoint = R2EndpointDefault(env, config.mode);
+	auto storage_secret = BuildR2StorageSecret(env, config, "r2_storage", creds, endpoint);
 
 	config.mode_setup_sql = StringUtil::Format(
 	    R"SQL(
@@ -658,23 +644,23 @@ CREATE OR REPLACE SECRET ducklake_secret (
 );
 ATTACH 'ducklake:ducklake_secret' AS %s%s;
 )SQL",
-	    storage_secret, EnvSql(config, "NEON_PGHOST"), EnvSql(config, "NEON_PGPORT", "5432"),
-	    EnvSql(config, "NEON_PGDATABASE"), EnvSql(config, "NEON_PGUSER"), EnvSql(config, "NEON_PGPASSWORD"),
-	    EnvSql(config, "NEON_PGSSLMODE", "require"), SqlQuote(data_path), QuoteIdentifier(config.catalog),
-	    DuckLakeSecretAttachOptions());
+	    storage_secret, EnvSql(env, config, "NEON_PGHOST"), EnvSql(env, config, "NEON_PGPORT", "5432"),
+	    EnvSql(env, config, "NEON_PGDATABASE"), EnvSql(env, config, "NEON_PGUSER"),
+	    EnvSql(env, config, "NEON_PGPASSWORD"), EnvSql(env, config, "NEON_PGSSLMODE", "require"), SqlQuote(data_path),
+	    QuoteIdentifier(config.catalog), DuckLakeSecretAttachOptions(env));
 }
 
-void ConfigureGcpDuckLake(ServerConfig &config) {
+void ConfigureGcpDuckLake(const EnvSource &env, ServerConfig &config) {
 	config.mode_extensions = {"ducklake", "postgres", "gcs", "otlp"};
-	config.catalog = CatalogDefault(Env("DUCKLAKE_NAME", "lake"));
-	config.schema = SchemaDefault("otlp");
-	auto data_path = RequireEnv("DUCKLAKE_DATA_PATH", config.mode);
+	config.catalog = CatalogDefault(env, env.Get("DUCKLAKE_NAME", "lake"));
+	config.schema = SchemaDefault(env, "otlp");
+	auto data_path = RequireEnv(env, "DUCKLAKE_DATA_PATH", config.mode);
 	// Force the native GCS filesystem even if httpfs is loaded by another extension.
 	if (!StringUtil::StartsWith(data_path, "gcss://") || data_path.size() <= 7 || data_path[7] == '/') {
 		throw InvalidInputException("DUCKDB_MODE=gcp-ducklake requires DUCKLAKE_DATA_PATH=gcss://bucket/prefix");
 	}
 	for (auto name : {"PGHOST", "PGDATABASE", "PGUSER", "PGPASSWORD"}) {
-		RequireEnv(name, config.mode);
+		RequireEnv(env, name, config.mode);
 	}
 
 	config.mode_setup_sql = StringUtil::Format(
@@ -706,21 +692,22 @@ CREATE OR REPLACE SECRET ducklake_secret (
 );
 ATTACH 'ducklake:ducklake_secret' AS %s%s;
 )SQL",
-	    EnvSql(config, "PGHOST"), EnvSql(config, "PGPORT", "5432"), EnvSql(config, "PGDATABASE"),
-	    EnvSql(config, "PGUSER"), EnvSql(config, "PGPASSWORD"), EnvSql(config, "PGSSLMODE", "require"),
-	    SqlQuote(data_path), QuoteIdentifier(config.catalog), DuckLakeSecretAttachOptions());
+	    EnvSql(env, config, "PGHOST"), EnvSql(env, config, "PGPORT", "5432"), EnvSql(env, config, "PGDATABASE"),
+	    EnvSql(env, config, "PGUSER"), EnvSql(env, config, "PGPASSWORD"), EnvSql(env, config, "PGSSLMODE", "require"),
+	    SqlQuote(data_path), QuoteIdentifier(config.catalog), DuckLakeSecretAttachOptions(env));
 }
 
-void ConfigureS3Tables(ServerConfig &config) {
+void ConfigureS3Tables(const EnvSource &env, ServerConfig &config) {
 	config.mode_extensions = {"iceberg", "aws", "httpfs", "otlp"};
-	config.catalog = CatalogDefault(Env("S3_TABLES_CATALOG_NAME", "s3tables"));
-	config.schema = SchemaDefault("otlp");
-	auto bucket_arn = Env("S3_TABLES_BUCKET_ARN", Env("S3_TABLES_TABLE_BUCKET_ARN", Env("TABLE_BUCKET_ARN")));
+	config.catalog = CatalogDefault(env, env.Get("S3_TABLES_CATALOG_NAME", "s3tables"));
+	config.schema = SchemaDefault(env, "otlp");
+	auto bucket_arn =
+	    env.Get("S3_TABLES_BUCKET_ARN", env.Get("S3_TABLES_TABLE_BUCKET_ARN", env.Get("TABLE_BUCKET_ARN")));
 	if (bucket_arn.empty()) {
 		throw InvalidInputException(
 		    "Missing S3 Tables bucket ARN. Set S3_TABLES_BUCKET_ARN, S3_TABLES_TABLE_BUCKET_ARN, or TABLE_BUCKET_ARN");
 	}
-	auto region = Env("AWS_REGION", Env("AWS_DEFAULT_REGION"));
+	auto region = env.Get("AWS_REGION", env.Get("AWS_DEFAULT_REGION"));
 	if (region.empty()) {
 		auto marker = string(":s3tables:");
 		auto start = bucket_arn.find(marker);
@@ -737,7 +724,7 @@ void ConfigureS3Tables(ServerConfig &config) {
 		                            "an S3 Tables ARN that includes a region",
 		                            config.mode);
 	}
-	auto profile = Env("AWS_PROFILE", Env("AWS_DEFAULT_PROFILE"));
+	auto profile = env.Get("AWS_PROFILE", env.Get("AWS_DEFAULT_PROFILE"));
 	// s3-tables uses the same credential_chain secret as the parquet mode, minus the optional
 	// endpoint/url_style (both empty here).
 	auto secret_sql = BuildCredentialChainSecret("s3_tables_secret", region, profile, /*endpoint=*/"",
@@ -758,23 +745,23 @@ LOAD httpfs;
 	                                           secret_sql, SqlQuote(bucket_arn), QuoteIdentifier(config.catalog));
 }
 
-void ConfigureMode(ServerConfig &config) {
+void ConfigureMode(const EnvSource &env, ServerConfig &config) {
 	if (config.mode == "local-ducklake") {
-		ConfigureLocalDuckLake(config);
+		ConfigureLocalDuckLake(env, config);
 	} else if (config.mode == "gcp-ducklake") {
-		ConfigureGcpDuckLake(config);
+		ConfigureGcpDuckLake(env, config);
 	} else if (config.mode == "aws-ducklake") {
-		ConfigureAwsDuckLake(config);
+		ConfigureAwsDuckLake(env, config);
 	} else if (config.mode == "parquet") {
-		ConfigureParquet(config);
+		ConfigureParquet(env, config);
 	} else if (config.mode == "r2-data-catalog") {
-		ConfigureR2DataCatalog(config);
+		ConfigureR2DataCatalog(env, config);
 	} else if (config.mode == "s3-tables") {
-		ConfigureS3Tables(config);
+		ConfigureS3Tables(env, config);
 	} else if (config.mode == "r2-neon-ducklake") {
-		ConfigureR2NeonDuckLake(config);
+		ConfigureR2NeonDuckLake(env, config);
 	} else if (config.mode == "r2-local-ducklake") {
-		ConfigureR2LocalDuckLake(config);
+		ConfigureR2LocalDuckLake(env, config);
 	} else {
 		throw InvalidInputException(
 		    "Unsupported DUCKDB_MODE \"%s\". Supported modes: local-ducklake, aws-ducklake, parquet, "
@@ -782,14 +769,6 @@ void ConfigureMode(ServerConfig &config) {
 		    config.mode);
 	}
 }
-
-} // namespace
-
-bool EnvTruthy(const char *name) {
-	return Truthy(Env(name));
-}
-
-namespace {
 
 //! One transport's resolved bind address. Whether that transport is switched ON is decided
 //! by the caller (ListenersFromEnv), not here, so this struct holds no enablement flag.
@@ -800,8 +779,8 @@ struct ResolvedListener {
 
 //! Parse a port env var. Unlike the other numeric parsers, 0 is legal and means
 //! "disable this listener", which is how --http 0 / --grpc 0 switch a transport off.
-int ParsePortEnv(const char *name) {
-	auto value = Env(name);
+int ParsePortEnv(const EnvSource &env, const char *name) {
+	auto value = env.Get(name);
 	try {
 		size_t pos = 0;
 		auto parsed = std::stoll(value, &pos);
@@ -824,13 +803,13 @@ int ParsePortEnv(const char *name) {
 //! the host and the port range and understands bracketed IPv6, and the result is handed back
 //! to OtlpUri to build the listener URI anyway. Splitting it here as well meant two parsers
 //! disagreeing about the same string, with only one of them validating.
-ResolvedListener ResolveListener(const char *port_var, const char *addr_var, int default_port) {
+ResolvedListener ResolveListener(const EnvSource &env, const char *port_var, const char *addr_var, int default_port) {
 	ResolvedListener resolved;
-	auto explicit_host = Env("DUCKDB_OTLP_HOST");
-	auto addr = addr_var ? Env(addr_var) : string();
+	auto explicit_host = env.Get("DUCKDB_OTLP_HOST");
+	auto addr = addr_var ? env.Get(addr_var) : string();
 
-	if (HasEnv(port_var)) {
-		resolved.port = ParsePortEnv(port_var);
+	if (env.Has(port_var)) {
+		resolved.port = ParsePortEnv(env, port_var);
 		resolved.host = explicit_host.empty() ? DEFAULT_HOST : explicit_host;
 		return resolved;
 	}
@@ -863,8 +842,8 @@ IngestListener MakeListener(const char *scheme, const ResolvedListener &resolved
 //! specific selected the transports. The variable is exporter-side in the OTel spec, and a
 //! developer's shell often already carries it for their application's exporter, so letting
 //! it silently narrow an explicitly-configured server would be surprising.
-void ApplyOtelProtocol(bool &http_enabled, bool &grpc_enabled, string &reason) {
-	auto protocol = Env("OTEL_EXPORTER_OTLP_PROTOCOL");
+void ApplyOtelProtocol(const EnvSource &env, bool &http_enabled, bool &grpc_enabled, string &reason) {
+	auto protocol = env.Get("OTEL_EXPORTER_OTLP_PROTOCOL");
 	if (protocol.empty()) {
 		return;
 	}
@@ -883,8 +862,8 @@ void ApplyOtelProtocol(bool &http_enabled, bool &grpc_enabled, string &reason) {
 
 //! The legacy DUCKDB_OTLP_TRANSPORTS list form, kept for the container image and for
 //! existing deployments. Ports come from OTEL_HTTP_ADDR / OTEL_GRPC_ADDR as before.
-std::vector<IngestListener> ListenersFromTransportList(const string &override_uri) {
-	auto transports = Env("DUCKDB_OTLP_TRANSPORTS", "http");
+std::vector<IngestListener> ListenersFromTransportList(const EnvSource &env, const string &override_uri) {
+	auto transports = env.Get("DUCKDB_OTLP_TRANSPORTS", "http");
 	std::vector<IngestListener> listeners;
 	// Split explicitly so empty entries (including a trailing comma) are rejected.
 	duckdb::idx_t offset = 0;
@@ -901,8 +880,8 @@ std::vector<IngestListener> ListenersFromTransportList(const string &override_ur
 			}
 		}
 		auto resolved = transport == "http"
-		                    ? ResolveListener("DUCKDB_OTLP_HTTP_PORT", "OTEL_HTTP_ADDR", DEFAULT_HTTP_PORT)
-		                    : ResolveListener("DUCKDB_OTLP_GRPC_PORT", "OTEL_GRPC_ADDR", DEFAULT_GRPC_PORT);
+		                    ? ResolveListener(env, "DUCKDB_OTLP_HTTP_PORT", "OTEL_HTTP_ADDR", DEFAULT_HTTP_PORT)
+		                    : ResolveListener(env, "DUCKDB_OTLP_GRPC_PORT", "OTEL_GRPC_ADDR", DEFAULT_GRPC_PORT);
 		listeners.push_back(override_uri.empty()
 		                        ? MakeListener("otlp", resolved, transport.c_str(), false)
 		                        : IngestListener {duckdb::OtlpUri(override_uri).Uri(), transport, false});
@@ -933,12 +912,12 @@ void ValidateDistinctPorts(const std::vector<IngestListener> &listeners) {
 
 } // namespace
 
-std::vector<IngestListener> ListenersFromEnv(string *selection_reason) {
-	RejectUnsupportedOtelEnv();
+std::vector<IngestListener> ListenersFromEnv(const EnvSource &env, string *selection_reason) {
+	RejectUnsupportedOtelEnv(env);
 	string reason;
-	auto override_uri = Env("DUCKDB_OTLP_LISTEN_URI");
+	auto override_uri = env.Get("DUCKDB_OTLP_LISTEN_URI");
 	bool ports_set =
-	    HasEnv("DUCKDB_OTLP_HTTP_PORT") || HasEnv("DUCKDB_OTLP_GRPC_PORT") || HasEnv("DUCKDB_OTLP_OTAP_PORT");
+	    env.Has("DUCKDB_OTLP_HTTP_PORT") || env.Has("DUCKDB_OTLP_GRPC_PORT") || env.Has("DUCKDB_OTLP_OTAP_PORT");
 
 	auto finish = [&](std::vector<IngestListener> listeners) {
 		ValidateDistinctPorts(listeners);
@@ -957,20 +936,20 @@ std::vector<IngestListener> ListenersFromEnv(string *selection_reason) {
 		reason = "DUCKDB_OTLP_LISTEN_URI";
 		// OTAP is a separate protocol, not another spelling for standard OTLP/gRPC.
 		if (duckdb::OtlpUri(override_uri).Scheme() == "otap") {
-			if (HasEnv("DUCKDB_OTLP_TRANSPORTS")) {
+			if (env.Has("DUCKDB_OTLP_TRANSPORTS")) {
 				throw InvalidInputException("DUCKDB_OTLP_TRANSPORTS cannot be combined with an otap: listen URI");
 			}
 			return finish({{duckdb::OtlpUri(override_uri).Uri(), "grpc", true}});
 		}
-		return finish(ListenersFromTransportList(override_uri));
+		return finish(ListenersFromTransportList(env, override_uri));
 	}
 
 	// (2) Legacy transport list, unless explicit ports supersede it. The container image sets
 	// DUCKDB_OTLP_TRANSPORTS in its Dockerfile, so a container user passing --http/--grpc
 	// still lands on the port path below.
-	if (HasEnv("DUCKDB_OTLP_TRANSPORTS") && !ports_set) {
-		reason = "DUCKDB_OTLP_TRANSPORTS=" + Env("DUCKDB_OTLP_TRANSPORTS");
-		return finish(ListenersFromTransportList(""));
+	if (env.Has("DUCKDB_OTLP_TRANSPORTS") && !ports_set) {
+		reason = "DUCKDB_OTLP_TRANSPORTS=" + env.Get("DUCKDB_OTLP_TRANSPORTS");
+		return finish(ListenersFromTransportList(env, ""));
 	}
 
 	// (3) Port-based selection: the CLI path. Each port variable is parsed exactly once here,
@@ -996,14 +975,14 @@ std::vector<IngestListener> ListenersFromEnv(string *selection_reason) {
 	};
 	bool any_selected = false;
 	for (auto &spec : specs) {
-		spec.resolved = ResolveListener(spec.port_var, spec.addr_var, spec.default_port);
-		any_selected = any_selected || (HasEnv(spec.port_var) && spec.resolved.port != 0);
+		spec.resolved = ResolveListener(env, spec.port_var, spec.addr_var, spec.default_port);
+		any_selected = any_selected || (env.Has(spec.port_var) && spec.resolved.port != 0);
 	}
 	for (auto &spec : specs) {
-		bool explicitly_off = HasEnv(spec.port_var) && spec.resolved.port == 0;
+		bool explicitly_off = env.Has(spec.port_var) && spec.resolved.port == 0;
 		// OTAP is never on by default; it has to be asked for.
 		bool on_by_default = !spec.otap && !any_selected;
-		spec.enabled = !explicitly_off && (on_by_default || (HasEnv(spec.port_var) && spec.resolved.port != 0));
+		spec.enabled = !explicitly_off && (on_by_default || (env.Has(spec.port_var) && spec.resolved.port != 0));
 	}
 	if (any_selected) {
 		reason = "explicit ports";
@@ -1013,7 +992,7 @@ std::vector<IngestListener> ListenersFromEnv(string *selection_reason) {
 		// the default pair. Transports switched off with an explicit 0 stay off.
 		bool http_enabled = specs[0].enabled;
 		bool grpc_enabled = specs[1].enabled;
-		ApplyOtelProtocol(http_enabled, grpc_enabled, reason);
+		ApplyOtelProtocol(env, http_enabled, grpc_enabled, reason);
 		specs[0].enabled = specs[0].enabled && http_enabled;
 		specs[1].enabled = specs[1].enabled && grpc_enabled;
 	}
@@ -1038,57 +1017,60 @@ std::vector<IngestListener> ListenersFromEnv(string *selection_reason) {
 	return finish(std::move(listeners));
 }
 
-ServerConfig ServerConfig::FromEnv() {
+ServerConfig ServerConfig::FromEnv(const EnvSource &env) {
 	ServerConfig config;
 	// DUCKDB_MODE is no longer required: a bare `duckdb-otlp` on a laptop should start a
 	// working local lakehouse with no configuration at all. Every other mode still has to be
 	// named explicitly, so this default cannot silently redirect an intended remote target.
-	config.mode = NormalizeMode(Env("DUCKDB_MODE", "local-ducklake"));
-	config.data_dir = Env("DUCKDB_OTLP_DATA_DIR", DefaultDataDir());
+	config.mode = NormalizeMode(env.Get("DUCKDB_MODE", "local-ducklake"));
+	config.data_dir = env.Get("DUCKDB_OTLP_DATA_DIR", DefaultDataDir(env));
 	// Derived from data_dir rather than hard-coded to /data, so overriding the data directory
 	// moves the control database with it. The container sets DUCKDB_OTLP_DATA_DIR=/data, which
 	// reproduces the previous default path exactly.
-	config.database = Env("DUCKDB_DATABASE", config.data_dir + "/duckdb-otlp-control.duckdb");
-	config.listeners = ListenersFromEnv(&config.transport_selection);
+	config.database = env.Get("DUCKDB_DATABASE", config.data_dir + "/duckdb-otlp-control.duckdb");
+	config.listeners = ListenersFromEnv(env, &config.transport_selection);
 	// Token resolution, most specific first. OTEL_EXPORTER_OTLP_HEADERS is the standard
 	// exporter-side spelling ("Authorization=Bearer <token>"); accepting it lets one variable
 	// configure both an exporter and this receiver.
-	config.token = Env("OTEL_AUTH_TOKEN", Env("DUCKDB_OTLP_TOKEN"));
-	if (config.token.empty() && HasEnv("OTEL_EXPORTER_OTLP_HEADERS")) {
-		config.token = BearerTokenFromOtelHeaders(Env("OTEL_EXPORTER_OTLP_HEADERS"));
+	config.token = env.Get("OTEL_AUTH_TOKEN", env.Get("DUCKDB_OTLP_TOKEN"));
+	if (config.token.empty() && env.Has("OTEL_EXPORTER_OTLP_HEADERS")) {
+		config.token = BearerTokenFromOtelHeaders(env.Get("OTEL_EXPORTER_OTLP_HEADERS"));
 	}
-	config.disable_auth = Truthy(Env("DUCKDB_OTLP_DISABLE_AUTH", "0"));
-	config.quack_enabled = Truthy(Env("DUCKDB_QUACK_ENABLED", Env("QUACK_ENABLED", "0")));
+	config.disable_auth = IsTruthy(env.Get("DUCKDB_OTLP_DISABLE_AUTH", "0"));
+	config.quack_enabled = IsTruthy(env.Get("DUCKDB_QUACK_ENABLED", env.Get("QUACK_ENABLED", "0")));
 	// --quack PORT sets DUCKDB_QUACK_PORT; the legacy DUCKDB_QUACK_ADDR / QUACK_HTTP_ADDR
 	// host:port form still wins when no port was given explicitly.
-	auto quack_host = Env("DUCKDB_OTLP_HOST", DEFAULT_HOST);
-	config.quack_http_addr = HasEnv("DUCKDB_QUACK_PORT")
-	                             ? quack_host + ":" + std::to_string(ParsePortEnv("DUCKDB_QUACK_PORT"))
-	                             : Env("DUCKDB_QUACK_ADDR", Env("QUACK_HTTP_ADDR", string(DEFAULT_HOST) + ":9494"));
-	config.quack_listen_uri = Env("DUCKDB_QUACK_LISTEN_URI", "quack:" + config.quack_http_addr);
-	config.dry_run = Truthy(Env("DRY_RUN", "0"));
-	config.startup_timeout_secs = ParsePositiveIntEnv("DUCKDB_OTLP_STARTUP_TIMEOUT", 60);
-	config.http_threads = ParsePositiveUInt64Env("DUCKDB_OTLP_HTTP_THREADS", 0);
-	config.max_body_bytes = ParsePositiveUInt64Env("DUCKDB_OTLP_MAX_BODY_BYTES", otlp_limits::DEFAULT_MAX_BODY_BYTES);
+	auto quack_host = env.Get("DUCKDB_OTLP_HOST", DEFAULT_HOST);
+	config.quack_http_addr =
+	    env.Has("DUCKDB_QUACK_PORT")
+	        ? quack_host + ":" + std::to_string(ParsePortEnv(env, "DUCKDB_QUACK_PORT"))
+	        : env.Get("DUCKDB_QUACK_ADDR", env.Get("QUACK_HTTP_ADDR", string(DEFAULT_HOST) + ":9494"));
+	config.quack_listen_uri = env.Get("DUCKDB_QUACK_LISTEN_URI", "quack:" + config.quack_http_addr);
+	config.dry_run = IsTruthy(env.Get("DRY_RUN", "0"));
+	config.startup_timeout_secs = ParsePositiveIntEnv(env, "DUCKDB_OTLP_STARTUP_TIMEOUT", 60);
+	config.http_threads = ParsePositiveUInt64Env(env, "DUCKDB_OTLP_HTTP_THREADS", 0);
+	config.max_body_bytes =
+	    ParsePositiveUInt64Env(env, "DUCKDB_OTLP_MAX_BODY_BYTES", otlp_limits::DEFAULT_MAX_BODY_BYTES);
 	config.max_buffered_bytes =
-	    ParsePositiveUInt64Env("DUCKDB_OTLP_MAX_BUFFERED_BYTES", otlp_limits::DEFAULT_MAX_BUFFERED_BYTES);
+	    ParsePositiveUInt64Env(env, "DUCKDB_OTLP_MAX_BUFFERED_BYTES", otlp_limits::DEFAULT_MAX_BUFFERED_BYTES);
 	config.seal_target_bytes =
-	    ParsePositiveUInt64Env("DUCKDB_OTLP_SEAL_TARGET_BYTES", otlp_limits::DEFAULT_SEAL_TARGET_BYTES);
-	config.seal_max_age_ms = ParsePositiveInt64Env("DUCKDB_OTLP_SEAL_MAX_AGE_MS", otlp_limits::DEFAULT_SEAL_MAX_AGE_MS);
+	    ParsePositiveUInt64Env(env, "DUCKDB_OTLP_SEAL_TARGET_BYTES", otlp_limits::DEFAULT_SEAL_TARGET_BYTES);
+	config.seal_max_age_ms =
+	    ParsePositiveInt64Env(env, "DUCKDB_OTLP_SEAL_MAX_AGE_MS", otlp_limits::DEFAULT_SEAL_MAX_AGE_MS);
 	config.target_file_size =
-	    ParsePositiveUInt64Env("DUCKDB_OTLP_TARGET_FILE_SIZE", otlp_limits::DEFAULT_TARGET_FILE_SIZE);
-	config.maintenance_retention_ms =
-	    ParsePositiveInt64Env("DUCKDB_OTLP_MAINTENANCE_RETENTION_MS", otlp_limits::DEFAULT_MAINTENANCE_RETENTION_MS);
-	config.promote_resource_attributes = Env("DUCKDB_OTLP_PROMOTE_RESOURCE_ATTRIBUTES", "");
-	config.promote_scope_attributes = Env("DUCKDB_OTLP_PROMOTE_SCOPE_ATTRIBUTES", "");
+	    ParsePositiveUInt64Env(env, "DUCKDB_OTLP_TARGET_FILE_SIZE", otlp_limits::DEFAULT_TARGET_FILE_SIZE);
+	config.maintenance_retention_ms = ParsePositiveInt64Env(env, "DUCKDB_OTLP_MAINTENANCE_RETENTION_MS",
+	                                                        otlp_limits::DEFAULT_MAINTENANCE_RETENTION_MS);
+	config.promote_resource_attributes = env.Get("DUCKDB_OTLP_PROMOTE_RESOURCE_ATTRIBUTES", "");
+	config.promote_scope_attributes = env.Get("DUCKDB_OTLP_PROMOTE_SCOPE_ATTRIBUTES", "");
 
-	auto quack_token_var = FirstEnv({"DUCKDB_QUACK_TOKEN", "QUACK_AUTH_TOKEN"});
+	auto quack_token_var = FirstEnv(env, {"DUCKDB_QUACK_TOKEN", "QUACK_AUTH_TOKEN"});
 	if (config.quack_enabled && quack_token_var.empty()) {
 		throw InvalidInputException(
 		    "DUCKDB_QUACK_ENABLED=1 requires a dedicated Quack token. Set DUCKDB_QUACK_TOKEN or QUACK_AUTH_TOKEN.");
 	}
 	if (!quack_token_var.empty()) {
-		config.quack_token = Env(quack_token_var.c_str());
+		config.quack_token = env.Get(quack_token_var.c_str());
 	}
 
 	// Authentication. There is deliberately no built-in default token: a token published in
@@ -1119,7 +1101,7 @@ ServerConfig ServerConfig::FromEnv() {
 	}
 
 	CreateDirectory(config.data_dir);
-	ConfigureMode(config);
+	ConfigureMode(env, config);
 	ValidateCatalogDoesNotShadowDatabase(config);
 	return config;
 }

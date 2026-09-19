@@ -4,7 +4,6 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/main/query_result.hpp"
 
-#include <cstdlib>
 #include <filesystem>
 #include <system_error>
 
@@ -37,22 +36,13 @@ void Execute(duckdb::Connection &con, const string &sql, const string &label, bo
 	}
 }
 
-void SetEnv(const char *name, const string &value) {
-#ifdef _WIN32
-	_putenv_s(name, value.c_str());
-#else
-	setenv(name, value.c_str(), 1);
-#endif
-}
-
-void BindConfigEnvVariables(duckdb::Connection &con, const ServerConfig &config) {
+void BindConfigEnvVariables(duckdb::Connection &con, const ServerConfig &config, const EnvSource &env) {
 	// getenv() is a CLI-only DuckDB function and is not registered in the embedded library the
 	// daemon links, so the generated SQL reads these through getvariable() instead. Recording
 	// only the variable NAME in the config keeps secret values out of the generated SQL text
 	// (which `validate` prints and the engine can echo back in error messages).
 	for (const auto &name : config.env_variables) {
-		auto value = std::getenv(name.c_str());
-		con.context->config.SetUserVariable("env_" + name, duckdb::Value(value ? value : ""));
+		con.context->config.SetUserVariable("env_" + name, duckdb::Value(env.Get(name.c_str())));
 	}
 }
 

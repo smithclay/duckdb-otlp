@@ -61,9 +61,11 @@ struct CliOptions {
 	Command command = Command::SERVE;
 
 	//! Flags that map onto configuration are recorded as (name, value) environment
-	//! overrides rather than as typed fields. Applying them with setenv() before
-	//! ServerConfig::FromEnv() gives `flag > env > default` precedence for free and
-	//! keeps ONE config-resolution path, so `validate` prints exactly what `serve` runs.
+	//! overrides rather than as typed fields. main() layers them over the process
+	//! environment in an EnvSource, which gives `flag > env > default` precedence for free
+	//! and keeps ONE config-resolution path, so `validate` prints exactly what `serve`
+	//! runs. Layering rather than setenv() also keeps a --token value out of getenv(),
+	//! so it stays readable only by the configuration code that needs it.
 	std::vector<std::pair<duckdb::string, duckdb::string>> env_overrides;
 
 	//! convert: input files/globs. Each is read as its own read_otlp_*() call and
@@ -105,9 +107,6 @@ CliOptions ParseCli(int argc, char **argv);
 //! Map a subcommand name to its Command. Unknown names yield Command::HELP, so
 //! `duckdb-otlp help nonsense` prints the overview instead of failing.
 Command CommandFromName(const duckdb::string &name);
-
-//! Apply `env_overrides` to the process environment. Called before ServerConfig::FromEnv().
-void ApplyEnvOverrides(const CliOptions &options);
 
 //! Space-prefixed list of every signal name, for "use one of:" error messages.
 duckdb::string SignalNameList();

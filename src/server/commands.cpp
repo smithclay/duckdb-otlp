@@ -56,7 +56,8 @@ duckdb::unique_ptr<duckdb::DuckDB> OpenScratchDatabase() {
 //! Open the database described by `config` and run its mode setup, mirroring what `serve`
 //! does before it starts listening. Secrets are bound as session variables rather than
 //! interpolated, exactly as in main.cpp, so they never reach the generated SQL text.
-duckdb::unique_ptr<duckdb::DuckDB> OpenConfiguredDatabase(const ServerConfig &config, bool read_only,
+duckdb::unique_ptr<duckdb::DuckDB> OpenConfiguredDatabase(const ServerConfig &config, const EnvSource &env,
+                                                          bool read_only,
                                                           duckdb::unique_ptr<duckdb::Connection> &con_out) {
 	duckdb::DBConfig db_config;
 	if (read_only) {
@@ -65,7 +66,7 @@ duckdb::unique_ptr<duckdb::DuckDB> OpenConfiguredDatabase(const ServerConfig &co
 	auto db = duckdb::make_uniq<duckdb::DuckDB>(config.database, &db_config);
 	db->LoadStaticExtension<duckdb::OtlpExtension>();
 	auto con = duckdb::make_uniq<duckdb::Connection>(*db);
-	BindConfigEnvVariables(*con, config);
+	BindConfigEnvVariables(*con, config, env);
 	Execute(*con, config.mode_setup_sql, "mode setup");
 	con_out = std::move(con);
 	return db;
@@ -292,10 +293,6 @@ int RunConvert(const CliOptions &options) {
 	if (options.inputs.empty()) {
 		throw InvalidInputException("`convert` needs at least one input file. Run `duckdb-otlp help convert`.");
 	}
-	if (!options.partition_by.empty() && options.partition_by != "none") {
-		throw InvalidInputException("--partition-by applies to `export`, not `convert`: converted files have no "
-		                            "catalog time partitioning to mirror.");
-	}
 	// Parquet when writing to a path, CSV when streaming to a terminal or a pipe.
 	auto format = ResolveFormat(options, options.output.empty() ? OutputFormat::CSV : OutputFormat::PARQUET);
 	if (format == OutputFormat::BOX) {
@@ -312,7 +309,7 @@ int RunConvert(const CliOptions &options) {
 	return 0;
 }
 
-int RunExport(const CliOptions &options) {
+int RunExport(const CliOptions &options, const EnvSource &env) {
 	if (!options.inputs.empty()) {
 		throw InvalidInputException("`export` reads the configured catalog and takes no file arguments. To convert "
 		                            "files on disk, use `duckdb-otlp convert`.");
@@ -334,9 +331,9 @@ int RunExport(const CliOptions &options) {
 		}
 	}
 
-	auto config = ServerConfig::FromEnv();
+	auto config = ServerConfig::FromEnv(env);
 	duckdb::unique_ptr<duckdb::Connection> con;
-	auto db = OpenConfiguredDatabase(config, options.read_only, con);
+	auto db = OpenConfiguredDatabase(config, env, options.read_only, con);
 
 	for (const auto &signal : signals) {
 		auto source = duckdb::QualifiedTable(config.catalog, config.schema, signal.table);
@@ -353,7 +350,7 @@ int RunExport(const CliOptions &options) {
 	return 0;
 }
 
-int RunQuery(const CliOptions &options) {
+int RunQuery(const CliOptions &options, const EnvSource &env) {
 	string sql = options.sql;
 	if (!options.sql_file.empty()) {
 		std::ifstream file(options.sql_file);
@@ -372,9 +369,9 @@ int RunQuery(const CliOptions &options) {
 	// `duckdb-otlp query ... | ...` produces machine-readable output without extra flags.
 	auto format = ResolveFormat(options, StdoutIsTerminal() ? OutputFormat::BOX : OutputFormat::CSV);
 
-	auto config = ServerConfig::FromEnv();
+	auto config = ServerConfig::FromEnv(env);
 	duckdb::unique_ptr<duckdb::Connection> con;
-	auto db = OpenConfiguredDatabase(config, options.read_only, con);
+	auto db = OpenConfiguredDatabase(config, env, options.read_only, con);
 	// Resolve unqualified table names against the mode's telemetry catalog, so `FROM otlp_logs`
 	// works without spelling out the catalog and schema. Best-effort on purpose: the target
 	// schema is created by otlp_serve, so it does not exist before the first ingest, and a

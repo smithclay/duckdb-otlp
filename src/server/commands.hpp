@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cli.hpp"
+#include "env_source.hpp"
 
 namespace duckdb_otlp_server {
 
@@ -13,10 +14,10 @@ int RunConvert(const CliOptions &options);
 
 //! `duckdb-otlp export` — dump the configured catalog's signal tables.
 //! Needs the same mode setup and credentials as `serve`.
-int RunExport(const CliOptions &options);
+int RunExport(const CliOptions &options, const EnvSource &env);
 
 //! `duckdb-otlp query` — run one-shot SQL against the configured catalog.
-//! Opens the database read-only unless `options.write` is set.
-int RunQuery(const CliOptions &options);
+//! Opens the database read/write unless `options.read_only` is set.
+int RunQuery(const CliOptions &options, const EnvSource &env);
 
 } // namespace duckdb_otlp_server

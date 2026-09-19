@@ -13,35 +13,115 @@ namespace {
 
 using duckdb::InvalidInputException;
 using duckdb::string;
+using duckdb::StringUtil;
 
-// Every flag that maps 1:1 onto a configuration environment variable. Recording the
-// mapping in a table (rather than a switch) keeps the flag surface and the env surface
-// provably in sync: a new setting is one row plus one line of help text.
-struct FlagMapping {
+// Which field of CliOptions (or which environment override) a flag writes.
+enum class FlagTarget {
+	//! Recorded as an environment override; `env_name` names the variable.
+	ENV,
+	SIGNAL,
+	OUTPUT,
+	FORMAT,
+	SQL_FILE,
+	SINCE,
+	UNTIL,
+	WHERE,
+	PARTITION_BY,
+	//! convert's --otap: read OTAP files rather than open an OTAP listener.
+	OTAP_INPUT,
+	READ_ONLY,
+	OVERWRITE,
+};
+
+constexpr unsigned Bit(Command command) {
+	return 1u << static_cast<unsigned>(command);
+}
+
+//! Commands that resolve listeners: serve, the dry run of serve, and the probe of what serve
+//! bound. They take the full bind/auth surface.
+constexpr unsigned LISTENER_CMDS = Bit(Command::SERVE) | Bit(Command::VALIDATE) | Bit(Command::HEALTHCHECK);
+//! Commands that resolve the configured catalog: the listener commands write it, export and
+//! query read it back, so all five accept the same catalog-selection flags. `convert` is
+//! deliberately absent — it is stateless, and silently accepting --mode there would suggest
+//! it consults a catalog it never opens.
+constexpr unsigned CATALOG_CMDS = LISTENER_CMDS | Bit(Command::EXPORT) | Bit(Command::QUERY);
+//! Commands that write a result set somewhere.
+constexpr unsigned OUTPUT_CMDS = Bit(Command::CONVERT) | Bit(Command::EXPORT) | Bit(Command::QUERY);
+
+//! One accepted flag, and the set of commands that accept it.
+//!
+//! One table rather than one per command, with the commands as a bitmask: a flag named by a
+//! command outside its mask is an error that can say where the flag *does* belong, which a
+//! per-command table would have had to duplicate rows to achieve. It also settles --otap,
+//! which means a listener port for serve and a reader choice for convert, in the table
+//! instead of in a special case in the parse loop.
+struct FlagDef {
 	const char *long_name;
+	//! Accepted second long spelling, or nullptr.
+	const char *alias;
 	//! Single-character alias, or '\0'.
 	char short_name;
+	unsigned commands;
+	FlagTarget target;
+	//! For FlagTarget::ENV, the variable this flag overrides. Keeping the flag surface and
+	//! the environment surface in one table keeps them provably in sync: a new setting is one
+	//! row plus one line of help text.
 	const char *env_name;
-	//! True for flags that take no value; they set `env_name` to "1".
+	//! True for flags that take no value; an ENV switch sets its variable to "1".
 	bool is_switch;
 };
 
-const FlagMapping SERVE_FLAGS[] = {
-    {"mode", 'm', "DUCKDB_MODE", false},
-    {"host", '\0', "DUCKDB_OTLP_HOST", false},
-    {"http", '\0', "DUCKDB_OTLP_HTTP_PORT", false},
-    {"grpc", '\0', "DUCKDB_OTLP_GRPC_PORT", false},
-    {"otap", '\0', "DUCKDB_OTLP_OTAP_PORT", false},
-    {"data-dir", '\0', "DUCKDB_OTLP_DATA_DIR", false},
-    {"database", '\0', "DUCKDB_DATABASE", false},
-    {"catalog", '\0', "DUCKDB_CATALOG", false},
-    {"schema", '\0', "DUCKDB_SCHEMA", false},
-    {"token", '\0', "DUCKDB_OTLP_TOKEN", false},
-    {"no-auth", '\0', "DUCKDB_OTLP_DISABLE_AUTH", true},
-    {"quack", '\0', "DUCKDB_QUACK_PORT", false},
-    {"quack-token", '\0', "DUCKDB_QUACK_TOKEN", false},
-    {"startup-timeout", '\0', "DUCKDB_OTLP_STARTUP_TIMEOUT", false},
+const FlagDef FLAGS[] = {
+    // Catalog selection.
+    {"mode", nullptr, 'm', CATALOG_CMDS, FlagTarget::ENV, "DUCKDB_MODE", false},
+    {"data-dir", nullptr, '\0', CATALOG_CMDS, FlagTarget::ENV, "DUCKDB_OTLP_DATA_DIR", false},
+    {"database", nullptr, '\0', CATALOG_CMDS, FlagTarget::ENV, "DUCKDB_DATABASE", false},
+    {"catalog", nullptr, '\0', CATALOG_CMDS, FlagTarget::ENV, "DUCKDB_CATALOG", false},
+    {"schema", nullptr, '\0', CATALOG_CMDS, FlagTarget::ENV, "DUCKDB_SCHEMA", false},
+    // Listeners and authentication.
+    {"host", nullptr, '\0', LISTENER_CMDS, FlagTarget::ENV, "DUCKDB_OTLP_HOST", false},
+    {"http", nullptr, '\0', LISTENER_CMDS, FlagTarget::ENV, "DUCKDB_OTLP_HTTP_PORT", false},
+    {"grpc", nullptr, '\0', LISTENER_CMDS, FlagTarget::ENV, "DUCKDB_OTLP_GRPC_PORT", false},
+    {"otap", nullptr, '\0', LISTENER_CMDS, FlagTarget::ENV, "DUCKDB_OTLP_OTAP_PORT", false},
+    {"token", nullptr, '\0', LISTENER_CMDS, FlagTarget::ENV, "DUCKDB_OTLP_TOKEN", false},
+    {"no-auth", nullptr, '\0', LISTENER_CMDS, FlagTarget::ENV, "DUCKDB_OTLP_DISABLE_AUTH", true},
+    {"quack", nullptr, '\0', LISTENER_CMDS, FlagTarget::ENV, "DUCKDB_QUACK_PORT", false},
+    {"quack-token", nullptr, '\0', LISTENER_CMDS, FlagTarget::ENV, "DUCKDB_QUACK_TOKEN", false},
+    {"startup-timeout", nullptr, '\0', LISTENER_CMDS, FlagTarget::ENV, "DUCKDB_OTLP_STARTUP_TIMEOUT", false},
+    {"dry-run", nullptr, '\0', Bit(Command::SERVE) | Bit(Command::VALIDATE), FlagTarget::ENV, "DRY_RUN", true},
+    // Reading, writing, and filtering data.
+    {"otap", nullptr, '\0', Bit(Command::CONVERT), FlagTarget::OTAP_INPUT, nullptr, true},
+    {"signal", nullptr, 's', Bit(Command::CONVERT) | Bit(Command::EXPORT), FlagTarget::SIGNAL, nullptr, false},
+    {"to", "output", 'o', OUTPUT_CMDS, FlagTarget::OUTPUT, nullptr, false},
+    {"format", "fmt", 'f', OUTPUT_CMDS, FlagTarget::FORMAT, nullptr, false},
+    {"overwrite", nullptr, '\0', OUTPUT_CMDS, FlagTarget::OVERWRITE, nullptr, true},
+    {"since", nullptr, '\0', Bit(Command::EXPORT), FlagTarget::SINCE, nullptr, false},
+    {"until", nullptr, '\0', Bit(Command::EXPORT), FlagTarget::UNTIL, nullptr, false},
+    {"where", nullptr, '\0', Bit(Command::EXPORT), FlagTarget::WHERE, nullptr, false},
+    {"partition-by", nullptr, '\0', Bit(Command::EXPORT), FlagTarget::PARTITION_BY, nullptr, false},
+    {"file", nullptr, '\0', Bit(Command::QUERY), FlagTarget::SQL_FILE, nullptr, false},
+    {"readonly", "read-only", '\0', Bit(Command::QUERY), FlagTarget::READ_ONLY, nullptr, true},
 };
+
+struct CommandName {
+	Command command;
+	const char *name;
+};
+
+const CommandName COMMAND_NAMES[] = {
+    {Command::SERVE, "serve"},     {Command::CONVERT, "convert"},   {Command::EXPORT, "export"},
+    {Command::QUERY, "query"},     {Command::VALIDATE, "validate"}, {Command::HEALTHCHECK, "healthcheck"},
+    {Command::VERSION, "version"}, {Command::HELP, "help"},
+};
+
+const char *NameOfCommand(Command command) {
+	for (const auto &entry : COMMAND_NAMES) {
+		if (entry.command == command) {
+			return entry.name;
+		}
+	}
+	return "duckdb-otlp";
+}
 
 const SignalDef SIGNALS[] = {
     {"traces", "otlp_traces", "start_time_unix_nano", false},
@@ -121,16 +201,45 @@ string StripDashes(const string &arg) {
 	return arg.substr(start);
 }
 
-const FlagMapping *FindServeFlag(const string &name) {
-	for (const auto &flag : SERVE_FLAGS) {
-		if (name == flag.long_name) {
-			return &flag;
-		}
-		if (flag.short_name != '\0' && name.size() == 1 && name[0] == flag.short_name) {
+bool FlagNameMatches(const FlagDef &flag, const string &name) {
+	if (name == flag.long_name || (flag.alias && name == flag.alias)) {
+		return true;
+	}
+	return flag.short_name != '\0' && name.size() == 1 && name[0] == flag.short_name;
+}
+
+//! The flag `name` names for `command`, or nullptr when that command does not accept it.
+const FlagDef *FindFlag(const string &name, Command command) {
+	for (const auto &flag : FLAGS) {
+		if (FlagNameMatches(flag, name) && (flag.commands & Bit(command))) {
 			return &flag;
 		}
 	}
 	return nullptr;
+}
+
+//! Reject a flag `command` does not accept, naming the commands that do. Getting this wrong
+//! used to be silent: one global flag table meant `convert --quack 9494` parsed fine and then
+//! did nothing, because convert never starts a listener.
+[[noreturn]] void ThrowUnknownFlag(const string &arg, const string &name, Command command) {
+	duckdb::vector<string> accepted_by;
+	for (const auto &flag : FLAGS) {
+		if (!FlagNameMatches(flag, name)) {
+			continue;
+		}
+		for (const auto &entry : COMMAND_NAMES) {
+			if (flag.commands & Bit(entry.command)) {
+				accepted_by.emplace_back(entry.name);
+			}
+		}
+	}
+	if (accepted_by.empty()) {
+		throw InvalidInputException("Unknown flag \"%s\". Run `duckdb-otlp help %s` for the flags it accepts.", arg,
+		                            NameOfCommand(command));
+	}
+	throw InvalidInputException(
+	    "`%s` does not accept \"%s\"; it is a flag of: %s. Run `duckdb-otlp help %s` for the flags it accepts.",
+	    NameOfCommand(command), arg, StringUtil::Join(accepted_by, ", "), NameOfCommand(command));
 }
 
 //! Pull the value for a flag that needs one, either from "--name=value" (already split by
@@ -226,16 +335,6 @@ Command CommandFromName(const string &name) {
 	return recognized ? command : Command::HELP;
 }
 
-void ApplyEnvOverrides(const CliOptions &options) {
-	for (const auto &override_pair : options.env_overrides) {
-#ifdef _WIN32
-		_putenv_s(override_pair.first.c_str(), override_pair.second.c_str());
-#else
-		setenv(override_pair.first.c_str(), override_pair.second.c_str(), 1);
-#endif
-	}
-}
-
 CliOptions ParseCli(int argc, char **argv) {
 	CliOptions options;
 	int index = 1;
@@ -284,80 +383,66 @@ CliOptions ParseCli(int argc, char **argv) {
 			continue;
 		}
 
-		// Command-specific flags first, so a command can shadow a serve flag name.
-		if (name == "signal" || name == "s") {
-			options.signal = TakeValue(arg, has_inline, inline_value, argc, argv, index);
-			continue;
+		auto flag = FindFlag(name, options.command);
+		if (!flag) {
+			ThrowUnknownFlag(arg, name, options.command);
 		}
-		if (name == "to" || name == "o" || name == "output") {
-			options.output = TakeValue(arg, has_inline, inline_value, argc, argv, index);
-			continue;
+		string value;
+		if (!flag->is_switch) {
+			value = TakeValue(arg, has_inline, inline_value, argc, argv, index);
 		}
-		if (name == "format" || name == "f" || name == "fmt") {
-			options.format = ParseFormat(TakeValue(arg, has_inline, inline_value, argc, argv, index));
-			continue;
-		}
-		if (name == "file") {
-			options.sql_file = TakeValue(arg, has_inline, inline_value, argc, argv, index);
-			continue;
-		}
-		if (name == "since") {
-			options.since = TakeValue(arg, has_inline, inline_value, argc, argv, index);
-			continue;
-		}
-		if (name == "until") {
-			options.until = TakeValue(arg, has_inline, inline_value, argc, argv, index);
-			continue;
-		}
-		if (name == "where") {
-			options.where_clause = TakeValue(arg, has_inline, inline_value, argc, argv, index);
-			continue;
-		}
-		if (name == "partition-by") {
-			options.partition_by = TakeValue(arg, has_inline, inline_value, argc, argv, index);
-			continue;
-		}
-		if (name == "otap") {
-			// `--otap` is a switch for convert (read OTAP files) but takes a port for serve
-			// (the OTAP/Arrow listener). The command decides which.
-			if (options.command == Command::CONVERT) {
-				options.otap = true;
-				continue;
-			}
-			options.env_overrides.emplace_back("DUCKDB_OTLP_OTAP_PORT",
-			                                   TakeValue(arg, has_inline, inline_value, argc, argv, index));
-			continue;
-		}
-		if (name == "readonly" || name == "read-only") {
+		switch (flag->target) {
+		case FlagTarget::ENV:
+			options.env_overrides.emplace_back(flag->env_name, flag->is_switch ? "1" : value);
+			quack_port_set = quack_port_set || string(flag->env_name) == "DUCKDB_QUACK_PORT";
+			break;
+		case FlagTarget::SIGNAL:
+			options.signal = value;
+			break;
+		case FlagTarget::OUTPUT:
+			options.output = value;
+			break;
+		case FlagTarget::FORMAT:
+			options.format = ParseFormat(value);
+			break;
+		case FlagTarget::SQL_FILE:
+			options.sql_file = value;
+			break;
+		case FlagTarget::SINCE:
+			options.since = value;
+			break;
+		case FlagTarget::UNTIL:
+			options.until = value;
+			break;
+		case FlagTarget::WHERE:
+			options.where_clause = value;
+			break;
+		case FlagTarget::PARTITION_BY:
+			options.partition_by = value;
+			break;
+		case FlagTarget::OTAP_INPUT:
+			options.otap = true;
+			break;
+		case FlagTarget::READ_ONLY:
 			options.read_only = true;
-			continue;
-		}
-		if (name == "overwrite") {
+			break;
+		case FlagTarget::OVERWRITE:
 			options.overwrite = true;
-			continue;
+			break;
 		}
-		if (name == "dry-run") {
-			options.env_overrides.emplace_back("DRY_RUN", "1");
-			continue;
-		}
-
-		if (auto flag = FindServeFlag(name)) {
-			if (flag->is_switch) {
-				options.env_overrides.emplace_back(flag->env_name, "1");
-			} else {
-				auto value = TakeValue(arg, has_inline, inline_value, argc, argv, index);
-				options.env_overrides.emplace_back(flag->env_name, value);
-				quack_port_set = quack_port_set || string(flag->env_name) == "DUCKDB_QUACK_PORT";
-			}
-			continue;
-		}
-		throw InvalidInputException("Unknown flag \"%s\". Run `duckdb-otlp help` for the full flag list.", arg);
 	}
 
 	if (quack_port_set) {
 		// --quack PORT implies enabling Quack; an explicit DUCKDB_QUACK_ENABLED=0 in the
 		// environment is overridden because the flag is the more specific signal.
 		options.env_overrides.emplace_back("DUCKDB_QUACK_ENABLED", "1");
+	}
+	if (options.command == Command::VALIDATE) {
+		// `validate` IS `serve` with DRY_RUN set: it resolves the same configuration and prints
+		// the same generated SQL, then stops before opening a database or binding a socket.
+		// Recording it here rather than in main() keeps every command's configuration in one
+		// place, so what validate prints is exactly what serve would run.
+		options.env_overrides.emplace_back("DRY_RUN", "1");
 	}
 	if (!options.sql.empty() && !options.sql_file.empty()) {
 		throw InvalidInputException("Pass either an inline SQL string or --file, not both");
@@ -373,7 +458,8 @@ void PrintUsage(std::ostream &out, Command command) {
   duckdb-otlp convert FILE... [flags]
 
 This is a stateless conversion: it needs no DUCKDB_MODE, no data directory, no
-catalog, and no backend credentials.
+catalog, and no backend credentials — and it accepts none of those flags, so a
+misdirected `serve` flag is an error rather than a silent no-op.
 
 Flags:
   -s, --signal SIGNAL   traces | logs | metrics_gauge | metrics_sum |
@@ -410,6 +496,13 @@ Flags:
                         the serve-side Parquet export writes) | none (default)
       --overwrite       replace existing output files
 
+Catalog selection (the same flags `serve` uses to choose what it writes to):
+  -m, --mode MODE       DUCKDB_MODE (default: local-ducklake)
+      --data-dir DIR    data directory
+      --database PATH   control database file
+      --catalog NAME    target catalog
+      --schema NAME     target schema
+
 Examples:
   duckdb-otlp export --signal logs --since -24h --to out/
   duckdb-otlp export --mode local-ducklake --partition-by day --to s3://bucket/dump/
@@ -430,6 +523,14 @@ Flags:
                         json | ndjson | parquet
   -o, --to PATH         write results to a file instead of stdout
       --readonly        open the database read-only
+      --overwrite       replace an existing output file
+
+Catalog selection (the same flags `serve` uses to choose what it writes to):
+  -m, --mode MODE       DUCKDB_MODE (default: local-ducklake)
+      --data-dir DIR    data directory
+      --database PATH   control database file
+      --catalog NAME    target catalog
+      --schema NAME     target schema
 
 Examples:
   duckdb-otlp query "SELECT service_name, count(*) FROM otlp_logs GROUP BY 1"
@@ -458,6 +559,8 @@ Opens no database and starts no listener. Exits 0 when the configuration is vali
   duckdb-otlp healthcheck         probe every configured listener (exit 0 = healthy)
   duckdb-otlp version             print the version
   duckdb-otlp help [COMMAND]      show this help, or a command's help
+
+Each command accepts only the flags that apply to it; `help COMMAND` lists them.
 
 Serve flags (each overrides the matching environment variable):
   -m, --mode MODE             DUCKDB_MODE (default: local-ducklake)

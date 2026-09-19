@@ -144,7 +144,7 @@ A parallel set of `read_otap_*` functions (same six signals, identical output sc
 - **gRPC listener (`src/otlp_server_grpc.cpp`)**: `OtlpGrpcListener` bridges the embedded tonic gRPC server (in `otlp2records`) into the same server as the HTTP path via a per-batch C callback. Two disjoint gRPC service families, selected via the `service_flags` FFI arg: OTLP/gRPC unary `Export` for `otlp_serve(transport := 'grpc')`, OTAP/Arrow streaming for `otap_serve`
 - **Buffered storage (`src/otlp_storage.cpp`)**: Per-signal buffering and serialized background seal/group-commit path
 - **Start/stop SQL functions (`src/otlp_start_stop.cpp`)**: `otlp_serve` (HTTP), `otap_serve` (gRPC), `otlp_stop`, `otlp_flush`, and `otlp_server_list`
-- **Native CLI / daemon (`src/server/`)**: the `duckdb-otlp` binary. `cli.cpp` parses argv and dispatches subcommands; `commands.cpp` implements `convert`/`export`/`query`; `main.cpp`'s `RunServe` embeds DuckDB, loads the static OTLP extension, executes mode setup, starts one `otlp_serve` call covering every configured transport and optional `quack_serve`, handles SIGTERM/SIGINT, then calls `quack_stop`/`otlp_stop`. Flags are applied as environment overrides before `ServerConfig::FromEnv()`, which is what makes `flag > env > default` hold for every command with one config-resolution path
+- **Native CLI / daemon (`src/server/`)**: the `duckdb-otlp` binary. `cli.cpp` parses argv and dispatches subcommands; `commands.cpp` implements `convert`/`export`/`query`; `main.cpp`'s `RunServe` embeds DuckDB, loads the static OTLP extension, executes mode setup, starts one `otlp_serve` call covering every configured transport and optional `quack_serve`, handles SIGTERM/SIGINT, then calls `quack_stop`/`otlp_stop`. `cli.cpp` holds one flag table whose rows carry the set of commands that accept each flag, so a misdirected flag (`convert --quack`) is an error naming where it belongs rather than a silent no-op, and `--otap` can mean a listener port for `serve` and an input format for `convert` without a special case. Flag values are collected as `(name, value)` pairs and layered over the process environment in an `EnvSource` (`env_source.cpp`) that `ServerConfig::FromEnv(env)` reads: that is what makes `flag > env > default` hold for every command through one config-resolution path, without any command mutating the process environment (so a `--token` is never published through `getenv()`)
 - **Format Detection**: Automatic detection of JSON/NDJSON vs protobuf formats (handled by the Rust backend)
 
 ### Data Flow
@@ -187,7 +187,8 @@ Python dependencies (via `uv`):
 src/
 ├── server/
 │   ├── main.cpp               # `duckdb-otlp` entry point + subcommand dispatch + serve loop
-│   ├── cli.cpp                # argv parsing, flag->env overrides, per-command help
+│   ├── cli.cpp                # argv parsing, per-command flag table, per-command help
+│   ├── env_source.cpp         # Process environment + command-line overlay (one config source)
 │   ├── commands.cpp           # `convert` / `export` / `query` subcommands
 │   ├── server_util.cpp        # Shared query/env/filesystem helpers for all subcommands
 │   └── server_config.cpp      # Environment/mode config and generated setup SQL
