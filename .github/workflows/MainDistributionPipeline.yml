@@ -39,14 +39,13 @@ jobs:
       ci_tools_version: v1.5.5
       extension_name: otlp
       extra_toolchains: rust
-      # Windows is excluded: through v1.5.3, DuckDB's bundled fmt no longer compiled on any
-      # current GitHub Windows MSVC image (`stdext::checked_array_iterator` removed →
-      # fmt errors C2653/C7525), and bumping extension-ci-tools to the newer
-      # `windows-2025-vs2026` runner did not help (that MSVC is newer still). v1.5.5 has not
-      # been re-validated on Windows, so it stays excluded conservatively. Re-enable by
-      # removing windows_amd64;windows_amd64_mingw once a DuckDB release is confirmed to ship
-      # an MSVC-compatible fmt.
-      exclude_archs: "wasm_mvp;wasm_threads;linux_amd64_musl;windows_amd64;windows_amd64_mingw"
+      # windows_amd64 (MSVC) is back on: DuckDB v1.5.5's bundled fmt no longer references
+      # `stdext::checked_array_iterator` (the removed MSVC extension that broke every Windows
+      # build through v1.5.3 with C2653/C7525), and src/otlp_server.cpp now guards its
+      # POSIX-only socket headers behind `#ifdef _WIN32` with a Winsock equivalent (issue #37).
+      # windows_amd64_mingw stays excluded: the rtools42 gcc toolchain also needs the
+      # x86_64-pc-windows-gnu Rust target for otlp2records, which has never been validated here.
+      exclude_archs: "wasm_mvp;wasm_threads;linux_amd64_musl;windows_amd64_mingw"
 
   # Cheap guard so daemon breakage fails on PRs and feature-branch pushes without paying
   # for the 2-arch publish path. Compiles amd64 natively and warms the shared cache

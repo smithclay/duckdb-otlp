@@ -30,11 +30,21 @@
 #include "httplib.hpp"
 
 #include <cerrno>
+#ifdef _WIN32
+// Winsock is the Windows equivalent of the POSIX socket headers below. httplib.hpp (above)
+// already includes winsock2.h/ws2tcpip.h, links ws2_32, and owns the process-wide
+// WSAStartup/WSACleanup through its own static initializer, so these are include-order-safe
+// and no explicit WSAStartup is needed here. Including them anyway keeps the dependency
+// visible if the httplib vendoring ever changes.
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <fcntl.h>
 #include <netdb.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#endif
 #endif
 
 namespace duckdb {
@@ -1718,6 +1728,71 @@ bool OtlpHttpStatusOk(const string &host, int port, const string &path) {
 	return res && res->status >= 200 && res->status < 400;
 }
 
+namespace {
+
+// Platform seam for the TCP-connect probe below. Winsock mirrors the POSIX socket API closely
+// enough that only the handle type, the non-blocking switch, the "connect still in flight" error
+// code, the poll entry point, and close() differ; everything else (getaddrinfo, socket, connect,
+// getsockopt) is spelled the same on both.
+#ifdef _WIN32
+using probe_socket_t = SOCKET;
+
+bool ProbeSocketValid(probe_socket_t fd) {
+	return fd != INVALID_SOCKET;
+}
+void ProbeSocketClose(probe_socket_t fd) {
+	::closesocket(fd);
+}
+void ProbeSocketSetNonBlocking(probe_socket_t fd) {
+	u_long non_blocking = 1;
+	::ioctlsocket(fd, FIONBIO, &non_blocking);
+}
+//! True if the last connect() returned "in progress" rather than a hard failure.
+bool ProbeConnectPending() {
+	return ::WSAGetLastError() == WSAEWOULDBLOCK;
+}
+bool ProbeWaitWritable(probe_socket_t fd, int timeout_ms) {
+	WSAPOLLFD pfd {};
+	pfd.fd = fd;
+	pfd.events = POLLWRNORM;
+	return ::WSAPoll(&pfd, 1, timeout_ms) > 0 && (pfd.revents & POLLWRNORM) != 0;
+}
+bool ProbeConnectSucceeded(probe_socket_t fd) {
+	int err = 0;
+	int len = static_cast<int>(sizeof(err));
+	return ::getsockopt(fd, SOL_SOCKET, SO_ERROR, reinterpret_cast<char *>(&err), &len) == 0 && err == 0;
+}
+#else
+using probe_socket_t = int;
+
+bool ProbeSocketValid(probe_socket_t fd) {
+	return fd >= 0;
+}
+void ProbeSocketClose(probe_socket_t fd) {
+	::close(fd);
+}
+void ProbeSocketSetNonBlocking(probe_socket_t fd) {
+	auto flags = ::fcntl(fd, F_GETFL, 0);
+	::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+bool ProbeConnectPending() {
+	return errno == EINPROGRESS;
+}
+bool ProbeWaitWritable(probe_socket_t fd, int timeout_ms) {
+	struct pollfd pfd {};
+	pfd.fd = fd;
+	pfd.events = POLLOUT;
+	return ::poll(&pfd, 1, timeout_ms) > 0 && (pfd.revents & POLLOUT) != 0;
+}
+bool ProbeConnectSucceeded(probe_socket_t fd) {
+	int err = 0;
+	socklen_t len = sizeof(err);
+	return ::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) == 0 && err == 0;
+}
+#endif
+
+} // namespace
+
 // TCP-connect probe backing the daemon healthcheck for the gRPC (otap:) transport, which speaks
 // HTTP/2 and exposes no HTTP/1.1 /readyz endpoint. A successful connect confirms the tonic
 // listener is bound and accepting (the daemon binds synchronously before serving). 2s timeout.
@@ -1731,25 +1806,17 @@ bool OtlpTcpConnectOk(const string &host, int port) {
 	}
 	bool ok = false;
 	for (auto *ai = res; ai != nullptr && !ok; ai = ai->ai_next) {
-		int fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-		if (fd < 0) {
+		probe_socket_t fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+		if (!ProbeSocketValid(fd)) {
 			continue;
 		}
-		auto flags = fcntl(fd, F_GETFL, 0);
-		fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-		if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) {
+		ProbeSocketSetNonBlocking(fd);
+		if (connect(fd, ai->ai_addr, static_cast<socklen_t>(ai->ai_addrlen)) == 0) {
 			ok = true; // connected immediately (loopback)
-		} else if (errno == EINPROGRESS) {
-			struct pollfd pfd {};
-			pfd.fd = fd;
-			pfd.events = POLLOUT;
-			if (poll(&pfd, 1, 2000) > 0 && (pfd.revents & POLLOUT) != 0) {
-				int err = 0;
-				socklen_t len = sizeof(err);
-				ok = getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) == 0 && err == 0;
-			}
+		} else if (ProbeConnectPending() && ProbeWaitWritable(fd, 2000)) {
+			ok = ProbeConnectSucceeded(fd);
 		}
-		close(fd);
+		ProbeSocketClose(fd);
 	}
 	freeaddrinfo(res);
 	return ok;
