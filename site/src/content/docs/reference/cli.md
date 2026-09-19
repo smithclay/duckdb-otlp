@@ -69,6 +69,18 @@ ERROR: Unknown command "covert".
 Did you mean `duckdb-otlp convert`?
 ```
 
+## Exit codes and output streams
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success. |
+| `1` | The work failed — a listener is down, a table is missing, a query errored. |
+| `2` | The command line was wrong — unknown command or flag, a missing or extra argument. |
+
+The split matters to anything that checks the result rather than reading it: `2` says fix the invocation, `1` says the invocation was fine and the work was not.
+
+Data goes to stdout; progress, warnings and errors go to stderr. So `duckdb-otlp convert traces.pb --signal traces | jq` gets only rows, with the "Detected signal(s)" and "Wrote …" notices left on the terminal. The `serve` banner is written unbuffered, so a redirected or captured stdout (`docker logs`, a systemd journal, a CI log) shows it as the server starts rather than when it stops.
+
 ## Output files
 
 Two rules apply to `--to` across `convert`, `export` and `query`.
@@ -182,7 +194,13 @@ ok    OTLP http  127.0.0.1:4318
 FAIL  OTLP grpc  127.0.0.1:4317  (no response)
 ```
 
-Every check runs even after one fails, so a partial answer is visible rather than just the first problem. The container image's `HEALTHCHECK` is this command, and Docker keeps its output in the container's health log. `duckdb-otlp healthcheck` is still accepted as the same command, so existing probes keep working.
+Every check runs even after one fails, so a partial answer is visible rather than just the first problem. `--json` prints one object instead, for a monitor, a script or an agent that should not be parsing prose:
+
+```
+$ duckdb-otlp doctor --json
+{"healthy":false,"checks":[{"check":"OTLP http","endpoint":"127.0.0.1:4318","ok":true},
+                           {"check":"OTLP grpc","endpoint":"127.0.0.1:4317","ok":false}]}
+``` The container image's `HEALTHCHECK` is this command, and Docker keeps its output in the container's health log. `duckdb-otlp healthcheck` is still accepted as the same command, so existing probes keep working.
 
 ## `convert`
 

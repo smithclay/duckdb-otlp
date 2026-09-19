@@ -100,6 +100,9 @@ struct CliOptions {
 	bool read_only = false;
 	//! --overwrite: allow replacing existing output files.
 	bool overwrite = false;
+	//! doctor --json: emit one machine-readable object instead of a line per check, for a
+	//! caller (a monitor, a script, an agent) that should not be parsing prose.
+	bool json_output = false;
 };
 
 //! Parse argv. Throws InvalidInputException with an actionable message on bad usage.

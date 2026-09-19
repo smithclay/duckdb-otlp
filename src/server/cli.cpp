@@ -32,6 +32,7 @@ enum class FlagTarget {
 	OTAP_INPUT,
 	READ_ONLY,
 	OVERWRITE,
+	JSON_OUTPUT,
 };
 
 constexpr unsigned Bit(Command command) {
@@ -102,6 +103,7 @@ const FlagDef FLAGS[] = {
     {"partition-by", nullptr, '\0', Bit(Command::EXPORT), FlagTarget::PARTITION_BY, nullptr, false},
     {"file", nullptr, '\0', Bit(Command::QUERY), FlagTarget::SQL_FILE, nullptr, false},
     {"readonly", "read-only", '\0', Bit(Command::QUERY), FlagTarget::READ_ONLY, nullptr, true},
+    {"json", nullptr, '\0', Bit(Command::DOCTOR), FlagTarget::JSON_OUTPUT, nullptr, true},
 };
 
 struct CommandName {
@@ -543,6 +545,9 @@ CliOptions ParseCli(int argc, char **argv) {
 		case FlagTarget::OVERWRITE:
 			options.overwrite = true;
 			break;
+		case FlagTarget::JSON_OUTPUT:
+			options.json_output = true;
+			break;
 		}
 	}
 
@@ -560,6 +565,15 @@ CliOptions ParseCli(int argc, char **argv) {
 	}
 	if (!options.sql.empty() && !options.sql_file.empty()) {
 		throw InvalidInputException("Pass either an inline SQL string or --file, not both");
+	}
+	// Missing required positionals are a property of argv, so they belong here with the rest
+	// of the usage checks rather than inside the command — which is also what makes them exit
+	// 2 like every other usage error instead of 1.
+	if (options.command == Command::QUERY && options.sql.empty() && options.sql_file.empty()) {
+		throw InvalidInputException("`query` needs SQL: pass it as an argument or use --file PATH.");
+	}
+	if (options.command == Command::CONVERT && options.inputs.empty()) {
+		throw InvalidInputException("`convert` needs at least one input file. Run `duckdb-otlp help convert`.");
 	}
 	if (!options.inputs.empty()) {
 		switch (PositionalsFor(options.command)) {
@@ -678,9 +692,10 @@ Opens no database and starts no listener. Exits 0 when the configuration is vali
 	case Command::DOCTOR:
 		out << R"HELP(Check that the configured listeners are up, and report each one.
 
-  duckdb-otlp doctor [serve flags]
+  duckdb-otlp doctor [--json] [serve flags]
 
-Prints a line per check and exits 0 only when every one passed. Accepts the same
+Prints a line per check and exits 0 only when every one passed. With --json, prints
+one object instead, for a caller that should not be parsing prose. Accepts the same
 flags as `serve`, so it probes exactly what those settings would bind. Also
 accepted as `duckdb-otlp healthcheck`, which is the spelling the container image's
 HEALTHCHECK and existing compose probes use.

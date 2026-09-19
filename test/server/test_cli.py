@@ -27,6 +27,14 @@ DATA_DIR = REPO_ROOT / "test" / "data"
 TOKEN = "a-private-token-123456"
 
 
+def _free_port():
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
 def run(args, env=None, home: Path | None = None, timeout: int = 120):
     """Run the CLI with a scrubbed environment plus `env`.
 
@@ -67,7 +75,7 @@ def test_version_prints_a_version(tmp_path):
 
 def test_unknown_flag_is_rejected_with_guidance(tmp_path):
     result = run(["--nonsense"], home=tmp_path)
-    assert result.returncode == 1
+    assert result.returncode == 2  # usage error
     assert "Unknown flag" in result.stderr
     assert "duckdb-otlp help" in result.stderr
 
@@ -456,7 +464,7 @@ def test_convert_unions_several_inputs(tmp_path):
 
 def test_convert_without_input_explains_itself(tmp_path):
     result = run(["convert"], home=tmp_path)
-    assert result.returncode == 1
+    assert result.returncode == 2  # usage error
     assert "at least one input file" in result.stderr
 
 
@@ -469,7 +477,7 @@ def test_convert_rejects_an_unknown_signal_by_listing_them(tmp_path):
 def test_export_rejects_file_arguments(tmp_path):
     """The convert/export split has to be explained, not silently guessed."""
     result = run(["export", str(DATA_DIR / "logs_simple.jsonl")], home=tmp_path)
-    assert result.returncode == 1
+    assert result.returncode == 2  # usage error
     assert "duckdb-otlp convert" in result.stderr
 
 
@@ -539,7 +547,7 @@ def test_query_rejects_both_inline_sql_and_file(tmp_path):
     script = tmp_path / "q.sql"
     script.write_text("SELECT 1;")
     result = run(["query", "SELECT 1", "--file", str(script)], env=parquet_mode_env(tmp_path), home=tmp_path)
-    assert result.returncode == 1
+    assert result.returncode == 2  # usage error
     assert "not both" in result.stderr
 
 
@@ -629,14 +637,14 @@ def test_export_rejects_an_unknown_partition_scheme(tmp_path):
 )
 def test_a_flag_of_another_command_is_rejected_by_name(args, belongs_to, tmp_path):
     result = run(args, home=tmp_path)
-    assert result.returncode == 1
+    assert result.returncode == 2  # usage error
     assert "does not accept" in result.stderr
     assert belongs_to in result.stderr
 
 
 def test_an_unknown_flag_names_the_command_whose_help_to_read(tmp_path):
     result = run(["convert", "--nonsense", "x.pb"], home=tmp_path)
-    assert result.returncode == 1
+    assert result.returncode == 2  # usage error
     assert "Unknown flag" in result.stderr
     assert "help convert" in result.stderr
 
@@ -855,7 +863,7 @@ def test_query_preserves_ordering_through_the_output_view(tmp_path):
 )
 def test_a_mistyped_subcommand_is_rejected_with_a_suggestion(word, expected, tmp_path):
     result = run([word], home=tmp_path, timeout=30)
-    assert result.returncode == 1
+    assert result.returncode == 2  # usage error
     assert "Unknown command" in result.stderr
     assert expected in result.stderr
 
@@ -863,20 +871,20 @@ def test_a_mistyped_subcommand_is_rejected_with_a_suggestion(word, expected, tmp
 def test_an_unrecognizable_word_gets_no_guess(tmp_path):
     """A wrong guess is worse than none; DuckDB's TopNLevenshtein always returns its best."""
     result = run(["zzzzzzzz"], home=tmp_path, timeout=30)
-    assert result.returncode == 1
+    assert result.returncode == 2  # usage error
     assert "Did you mean" not in result.stderr
 
 
 def test_a_file_without_a_subcommand_suggests_convert(tmp_path):
     result = run([str(DATA_DIR / "otlp_traces.pb")], home=tmp_path, timeout=30)
-    assert result.returncode == 1
+    assert result.returncode == 2  # usage error
     assert "duckdb-otlp convert" in result.stderr
 
 
 @pytest.mark.parametrize("command", ["serve", "validate", "doctor"])
 def test_commands_that_take_no_files_reject_them(command, tmp_path):
     result = run([command, "some-file.pb"], home=tmp_path, timeout=30)
-    assert result.returncode == 1
+    assert result.returncode == 2  # usage error
     assert "takes no file arguments" in result.stderr
 
 
@@ -1018,7 +1026,7 @@ def test_doctor_reports_each_check_that_passed(tmp_path):
 @pytest.mark.parametrize(("typo", "expected"), [("healthchek", "doctor"), ("sqll", "query")])
 def test_a_typo_of_an_alias_suggests_the_canonical_command(typo, expected, tmp_path):
     result = run([typo], home=tmp_path, timeout=30)
-    assert result.returncode == 1
+    assert result.returncode == 2  # usage error
     assert f"duckdb-otlp {expected}" in result.stderr
 
 
@@ -1123,7 +1131,7 @@ def test_the_banner_names_where_data_lands_not_just_the_control_database(tmp_pat
 
 def test_dash_f_with_a_sql_file_suggests_the_file_flag(tmp_path):
     result = run(["query", "-f", "script.sql"], env=parquet_mode_env(tmp_path), home=tmp_path)
-    assert result.returncode == 1
+    assert result.returncode == 2  # usage error
     assert "--file script.sql" in result.stderr
 
 
@@ -1132,3 +1140,82 @@ def test_help_lists_the_modes(tmp_path):
     assert result.returncode == 0
     for mode in ("local-ducklake", "parquet", "aws-ducklake", "s3-tables"):
         assert mode in result.stdout
+
+
+# --------------------------------------------------------------------------------------
+# Output discipline, exit codes, and a machine-readable mode
+# --------------------------------------------------------------------------------------
+
+
+def test_the_startup_banner_is_visible_while_the_server_runs(tmp_path):
+    """std::cout is fully buffered when stdout is not a terminal, so a redirected log held
+    the whole banner until the process exited — `docker logs` on a healthy container showed
+    nothing about how it had started."""
+    import time
+
+    log = tmp_path / "server.log"
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": str(tmp_path),
+        "DUCKDB_MODE": "parquet",
+        "DUCKDB_DATABASE": ":memory:",
+        "PARQUET_EXPORT_PATH": str(tmp_path / "pq"),
+        "DUCKDB_OTLP_TRANSPORTS": "http",
+        "OTEL_HTTP_ADDR": f"127.0.0.1:{_free_port()}",
+        "DUCKDB_OTLP_STARTUP_TIMEOUT": "30",
+    }
+    with log.open("w") as handle:
+        process = subprocess.Popen([str(SERVER_BIN)], env=env, stdout=handle, stderr=handle)
+        try:
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline:
+                if "Starting server" in log.read_text():
+                    break
+                assert process.poll() is None, log.read_text()
+                time.sleep(0.5)
+            # Read while the process is still alive: the point is that nothing waits for exit.
+            assert process.poll() is None
+            running_output = log.read_text()
+            assert "Mode: parquet" in running_output
+            assert "OTLP http" in running_output
+        finally:
+            process.terminate()
+            try:
+                process.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+
+
+@pytest.mark.parametrize(
+    ("args", "code"),
+    [
+        (["version"], 0),
+        (["nonsense"], 2),
+        (["convert", "--bogus", "x.pb"], 2),
+        (["query"], 2),
+        (["doctor"], 1),
+    ],
+)
+def test_a_usage_error_exits_2_and_a_failure_exits_1(args, code, tmp_path):
+    """One exit code for everything forces a caller to parse stderr to tell a typo from a
+    real failure."""
+    result = run(args, env={"DUCKDB_OTLP_TRANSPORTS": "grpc"}, home=tmp_path, timeout=30)
+    assert result.returncode == code, result.stderr
+
+
+def test_doctor_json_is_parseable_and_agrees_with_the_exit_code(tmp_path):
+    import json
+
+    result = run(["doctor", "--json"], env={"DUCKDB_OTLP_TRANSPORTS": "grpc"}, home=tmp_path, timeout=30)
+    assert result.returncode == 1
+    report = json.loads(result.stdout)
+    assert report["healthy"] is False
+    assert [check["ok"] for check in report["checks"]] == [False]
+    assert report["checks"][0]["check"] == "OTLP grpc"
+
+
+def test_json_is_only_a_doctor_flag(tmp_path):
+    result = run(["convert", "--json", "x.pb"], home=tmp_path)
+    assert result.returncode == 2
+    assert "it is a flag of: doctor" in result.stderr

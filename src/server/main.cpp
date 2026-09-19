@@ -20,6 +20,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <thread>
+#include <vector>
 
 namespace duckdb {
 // Defined in otlp_server.cpp (linked into the daemon). Declared here rather than including
@@ -265,9 +266,32 @@ bool HealthProbe(const duckdb::string &addr, const duckdb::string &path, int por
 	return duckdb::OtlpHttpStatusOk(host, port, path);
 }
 
-// One line per check, so `doctor` answers "what is wrong" rather than only "something is".
-void ReportCheck(const duckdb::string &what, const duckdb::string &endpoint, bool ok) {
-	std::cout << (ok ? "ok    " : "FAIL  ") << what << "  " << endpoint << (ok ? "" : "  (no response)") << '\n';
+// One check's result. Collected rather than printed as it is found, so --json can emit one
+// object and the prose form still reports every check rather than only the first failure.
+struct DoctorCheck {
+	duckdb::string what;
+	duckdb::string endpoint;
+	bool ok = false;
+};
+
+void PrintDoctorReport(const std::vector<DoctorCheck> &checks, bool healthy, bool as_json) {
+	if (!as_json) {
+		for (const auto &check : checks) {
+			std::cout << (check.ok ? "ok    " : "FAIL  ") << check.what << "  " << check.endpoint
+			          << (check.ok ? "" : "  (no response)") << '\n';
+		}
+		return;
+	}
+	// Hand-rolled rather than pulled from DuckDB's JSON: the fields are a fixed shape with no
+	// user-supplied text beyond a host and a transport name, and `doctor` must not need a
+	// database open to answer.
+	std::cout << "{\"healthy\":" << (healthy ? "true" : "false") << ",\"checks\":[";
+	for (duckdb::idx_t i = 0; i < checks.size(); i++) {
+		const auto &check = checks[i];
+		std::cout << (i ? "," : "") << "{\"check\":\"" << check.what << "\",\"endpoint\":\"" << check.endpoint
+		          << "\",\"ok\":" << (check.ok ? "true" : "false") << "}";
+	}
+	std::cout << "]}\n";
 }
 
 // `doctor` (and its `healthcheck` spelling, which the container HEALTHCHECK and existing
@@ -281,8 +305,9 @@ void ReportCheck(const duckdb::string &what, const duckdb::string &endpoint, boo
 // Every check runs even after one fails: a partial answer ("http is up, grpc is not") is the
 // whole point of the command, and Docker keeps this output in the container's health log.
 // Exits 0 only when every check passed.
-int RunDoctor(const EnvSource &env) {
+int RunDoctor(const EnvSource &env, bool as_json) {
 	bool healthy = true;
+	std::vector<DoctorCheck> checks;
 	try {
 		for (const auto &listener : duckdb_otlp_server::ListenersFromEnv(env)) {
 			duckdb::OtlpUri uri(listener.uri);
@@ -294,8 +319,8 @@ int RunDoctor(const EnvSource &env) {
 			}
 			bool ok = listener.transport == "grpc" ? duckdb::OtlpTcpConnectOk(host, uri.Port())
 			                                       : duckdb::OtlpHttpStatusOk(host, uri.Port(), "/readyz");
-			ReportCheck(duckdb::string(listener.otap ? "OTAP " : "OTLP ") + listener.transport,
-			            host + ":" + std::to_string(uri.Port()), ok);
+			checks.push_back({duckdb::string(listener.otap ? "OTAP " : "OTLP ") + listener.transport,
+			                  host + ":" + std::to_string(uri.Port()), ok});
 			healthy = healthy && ok;
 		}
 	} catch (std::exception &ex) {
@@ -309,9 +334,10 @@ int RunDoctor(const EnvSource &env) {
 		// port than the server bound.
 		auto quack_addr = duckdb_otlp_server::QuackAddrFromEnv(env);
 		bool ok = HealthProbe(quack_addr, "/", 9494);
-		ReportCheck("Quack", quack_addr, ok);
+		checks.push_back({"Quack", quack_addr, ok});
 		healthy = healthy && ok;
 	}
+	PrintDoctorReport(checks, healthy, as_json);
 	return healthy ? 0 : 1;
 }
 
@@ -417,6 +443,9 @@ int RunServe(const EnvSource &env) {
 			}
 		} watcher_guard {startup_complete, interrupt_watcher};
 
+		// Mode setup installs extensions and attaches the catalog, which on a cold cache means
+		// downloads: the longest silence in a cold start, and the one most likely to look hung.
+		std::cout << "Setting up " << config.mode << " (installing extensions, attaching catalog)...\n";
 		Execute(con, config.mode_setup_sql, "mode setup");
 		// Make the mode's telemetry catalog the instance-wide default database. The Quack
 		// server handles each external client on a *fresh* Connection spun up from the
@@ -447,8 +476,11 @@ int RunServe(const EnvSource &env) {
 			return TryExecuteOtlpShutdown(con, config.StopOtlpSql(), "otlp shutdown");
 		};
 		try {
-			Execute(con, config.StartOtlpSql(), "otlp startup", true);
-			Execute(con, config.StartQuackSql(), "quack startup", true);
+			// Not printed: otlp_serve returns a listener table, which the banner above has
+			// already said in prose. Dumping it made the one thing visible in a redirected
+			// log a bare SQL result with no context.
+			Execute(con, config.StartOtlpSql(), "otlp startup");
+			Execute(con, config.StartQuackSql(), "quack startup");
 			if (!WaitForReady(con, config) && !shutdown_requested) {
 				throw std::runtime_error("Timed out waiting for OTLP listener readiness");
 			}
@@ -522,6 +554,14 @@ int RunDataCommand(Fn &&run, bool keep_sql_context = false) {
 } // namespace
 
 int main(int argc, char **argv) {
+	// std::cout is FULLY buffered when stdout is not a terminal, so a redirected or captured
+	// stdout held the whole startup banner until the process exited: `docker logs` on a
+	// healthy container showed a raw listener table and nothing else, and the mode, data
+	// location, listeners and auth notice only appeared once the container stopped. Flush
+	// per write — this CLI's stdout volume is banners and small result sets, and bulk data
+	// goes through DuckDB's own COPY handle rather than here.
+	std::cout << std::unitbuf;
+
 	duckdb_otlp_server::CliOptions options;
 	try {
 		options = duckdb_otlp_server::ParseCli(argc, argv);
@@ -533,7 +573,11 @@ int main(int argc, char **argv) {
 		if (message.find("duckdb-otlp help") == duckdb::string::npos) {
 			std::cerr << "\nRun `duckdb-otlp help` for usage.\n";
 		}
-		return 1;
+		// 2, not 1: a wrong command line is a different thing from work that failed, and a
+		// caller that gets 1 for everything has to parse stderr to tell them apart. This is
+		// the usual split (getopt-style tools exit 2 on usage), and it is the only one the
+		// CLI can make honestly — everything past argv parsing is genuine runtime failure.
+		return 2;
 	}
 	// Flag values are layered over the process environment rather than written into it, so
 	// every command resolves configuration from one consistent `flag > env > default` view
@@ -552,7 +596,7 @@ int main(int argc, char **argv) {
 		          << duckdb::DuckDB::LibraryVersion() << ")\n";
 		return 0;
 	case Command::DOCTOR:
-		return RunDoctor(env);
+		return RunDoctor(env, options.json_output);
 	case Command::CONVERT:
 		return RunDataCommand([&] { return duckdb_otlp_server::RunConvert(options); });
 	case Command::EXPORT:

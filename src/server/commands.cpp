@@ -334,9 +334,6 @@ void PrintBox(duckdb::MaterializedQueryResult &result) {
 } // namespace
 
 int RunConvert(const CliOptions &options) {
-	if (options.inputs.empty()) {
-		throw InvalidInputException("`convert` needs at least one input file. Run `duckdb-otlp help convert`.");
-	}
 	// Parquet when writing to a path, CSV when streaming to a terminal or a pipe.
 	auto format = ResolveFormat(options, options.output.empty() ? OutputFormat::CSV : OutputFormat::PARQUET);
 	if (format == OutputFormat::BOX) {
@@ -453,7 +450,9 @@ int RunQuery(const CliOptions &options, const EnvSource &env) {
 	}
 	StringUtil::Trim(sql);
 	if (sql.empty()) {
-		throw InvalidInputException("`query` needs SQL: pass it as an argument or use --file PATH.");
+		// Reached only for a --file whose contents are blank; an empty command line is caught
+		// as a usage error in ParseCli.
+		throw InvalidInputException("The SQL file \"%s\" is empty.", options.sql_file);
 	}
 	// Box on a terminal, CSV when piped — the same convention the duckdb CLI uses, so
 	// `duckdb-otlp query ... | ...` produces machine-readable output without extra flags.
