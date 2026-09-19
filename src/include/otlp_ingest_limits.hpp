@@ -16,6 +16,11 @@ namespace otlp_limits {
 
 // --- live ingest server (otlp_serve) defaults ---
 
+//! Minimum length of a bearer token the ingest server will accept. Enforced twice on
+//! purpose: the daemon checks it while resolving configuration so the failure names the
+//! environment variable, and otlp_serve() checks it again for direct SQL callers.
+constexpr uint64_t MIN_TOKEN_LENGTH = 16;
+
 //! Per-request OTLP/HTTP body cap. Bounds a single ingest POST's encoded request body;
 //! a larger body is rejected. This is the *wire* size of one request, distinct from the
 //! whole-file read cap below (which bounds an entire file materialized at once).

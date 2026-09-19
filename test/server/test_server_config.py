@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_BIN = REPO_ROOT / "build" / "release" / "extension" / "otlp" / "duckdb_otlp_server"
+DEFAULT_BIN = REPO_ROOT / "build" / "release" / "extension" / "otlp" / "duckdb-otlp"
 SERVER_BIN = Path(os.environ.get("DUCKDB_OTLP_SERVER_BIN", str(DEFAULT_BIN)))
 
 pytestmark = pytest.mark.skipif(
@@ -55,12 +55,15 @@ def run(env: dict, data_dir: Path) -> subprocess.CompletedProcess:
     )
 
 
-def test_missing_mode_fails_fast(tmp_path):
+def test_missing_mode_defaults_to_local_ducklake(tmp_path):
+    """DUCKDB_MODE is optional: a bare invocation must start a working local lakehouse.
+
+    Every other mode still has to be named, so this default cannot redirect an intended
+    remote target -- and the banner always prints the mode in effect.
+    """
     result = run({}, tmp_path)  # no DUCKDB_MODE
-    assert result.returncode == 1
-    assert "DUCKDB_MODE" in result.stderr
-    # Error is unwrapped, not a JSON blob.
-    assert "exception_type" not in result.stderr
+    assert result.returncode == 0, result.stderr
+    assert "Mode: local-ducklake" in result.stdout
 
 
 def test_unsupported_mode_lists_supported(tmp_path):
@@ -173,19 +176,34 @@ def test_promotion_off_by_default(tmp_path):
     assert "promote_scope_attributes" not in result.stdout
 
 
-def test_default_token_warns(tmp_path):
+def test_no_token_on_loopback_disables_auth(tmp_path):
+    """There is no built-in default token any more.
+
+    A token published in this repository authenticates nothing, so falling back to one gave
+    servers only the appearance of protection. With no token configured, an unauthenticated
+    server is allowed exactly where it cannot be reached from off the machine.
+    """
     result = run({"DUCKDB_MODE": "local-ducklake"}, tmp_path)  # no token set
     assert result.returncode == 0, result.stderr
-    assert "WARNING: using the built-in development OTLP token" in result.stdout
+    assert "Authentication is DISABLED" in result.stdout
+    assert "disable_auth := true" in result.stdout
+    assert "dev-otlp-token" not in result.stdout
 
 
-def test_explicit_token_does_not_warn(tmp_path):
+def test_no_token_on_a_public_bind_is_rejected(tmp_path):
+    result = run({"DUCKDB_MODE": "local-ducklake", "DUCKDB_OTLP_HOST": "0.0.0.0"}, tmp_path)
+    assert result.returncode == 1
+    assert "bearer token is required" in result.stderr
+
+
+def test_explicit_token_is_used(tmp_path):
     result = run(
         {"DUCKDB_MODE": "local-ducklake", "DUCKDB_OTLP_TOKEN": "a-private-token-123456"},
         tmp_path,
     )
     assert result.returncode == 0, result.stderr
-    assert "WARNING: using the built-in development OTLP token" not in result.stdout
+    assert "token := getvariable('duckdb_otlp_effective_token')" in result.stdout
+    assert "disable_auth" not in result.stdout
 
 
 def test_parquet_local_path(tmp_path):
@@ -393,46 +411,48 @@ def test_http_healthcheck_needs_real_http_not_just_tcp():
         sock.close()
 
 
-@pytest.mark.parametrize('transports', ['http', 'grpc', 'http,grpc', ' grpc, http '])
+@pytest.mark.parametrize("transports", ["http", "grpc", "http,grpc", " grpc, http "])
 def test_transport_selection(tmp_path, transports):
-    result = run({'DUCKDB_MODE': 'parquet', 'DUCKDB_OTLP_TRANSPORTS': transports}, tmp_path)
+    result = run({"DUCKDB_MODE": "parquet", "DUCKDB_OTLP_TRANSPORTS": transports}, tmp_path)
     assert result.returncode == 0, result.stderr
-    selected = [value.strip() for value in transports.split(',')]
+    selected = [value.strip() for value in transports.split(",")]
     # Every transport is a listener on one server: exactly one otlp_serve call, with the URIs
     # and transports as parallel lists in the order given.
-    assert result.stdout.count('FROM otlp_serve(') == 1
-    ports = {'http': 4318, 'grpc': 4317}
-    uris = ', '.join(f"'otlp:0.0.0.0:{ports[t]}'" for t in selected)
+    assert result.stdout.count("FROM otlp_serve(") == 1
+    ports = {"http": 4318, "grpc": 4317}
+    # The default bind host is loopback; the container image opts back into 0.0.0.0 via
+    # DUCKDB_OTLP_HOST in its Dockerfile.
+    uris = ", ".join(f"'otlp:127.0.0.1:{ports[t]}'" for t in selected)
     assert f"[{uris}]" in result.stdout
-    assert "transport := [" + ', '.join(f"'{t}'" for t in selected) + "]" in result.stdout
-    assert 'FROM otap_serve(' not in result.stdout
+    assert "transport := [" + ", ".join(f"'{t}'" for t in selected) + "]" in result.stdout
+    assert "FROM otap_serve(" not in result.stdout
 
 
-@pytest.mark.parametrize('transports', ['http,', ',grpc', 'http,,grpc', 'http,http', 'grpc,grpc', 'otap', ' ', 'HTTP'])
+@pytest.mark.parametrize("transports", ["http,", ",grpc", "http,,grpc", "http,http", "grpc,grpc", "otap", " ", "HTTP"])
 def test_invalid_transports_fail_before_startup(tmp_path, transports):
-    result = run({'DUCKDB_MODE': 'parquet', 'DUCKDB_OTLP_TRANSPORTS': transports}, tmp_path)
+    result = run({"DUCKDB_MODE": "parquet", "DUCKDB_OTLP_TRANSPORTS": transports}, tmp_path)
     assert result.returncode == 1
-    assert 'DUCKDB_OTLP_TRANSPORTS' in result.stderr
+    assert "DUCKDB_OTLP_TRANSPORTS" in result.stderr
 
 
 @pytest.mark.parametrize(
-    'env,complaint',
+    "env,complaint",
     [
-        ({'DUCKDB_OTLP_TRANSPORTS': 'http,grpc', 'DUCKDB_OTLP_LISTEN_URI': 'otlp:localhost:9000'}, 'single transport'),
-        ({'DUCKDB_OTLP_TRANSPORTS': 'grpc', 'DUCKDB_OTLP_LISTEN_URI': 'otap:localhost:9000'}, 'otap:'),
+        ({"DUCKDB_OTLP_TRANSPORTS": "http,grpc", "DUCKDB_OTLP_LISTEN_URI": "otlp:localhost:9000"}, "single transport"),
+        ({"DUCKDB_OTLP_TRANSPORTS": "grpc", "DUCKDB_OTLP_LISTEN_URI": "otap:localhost:9000"}, "otap:"),
         (
             {
-                'DUCKDB_OTLP_TRANSPORTS': 'http,grpc',
-                'OTEL_HTTP_ADDR': '0.0.0.0:9000',
-                'OTEL_GRPC_ADDR': 'localhost:9000',
+                "DUCKDB_OTLP_TRANSPORTS": "http,grpc",
+                "OTEL_HTTP_ADDR": "0.0.0.0:9000",
+                "OTEL_GRPC_ADDR": "localhost:9000",
             },
-            'different ports',
+            "different ports",
         ),
-        ({'DUCKDB_OTLP_TRANSPORTS': 'grpc', 'OTEL_GRPC_ADDR': '0.0.0.0:70000'}, 'port'),
+        ({"DUCKDB_OTLP_TRANSPORTS": "grpc", "OTEL_GRPC_ADDR": "0.0.0.0:70000"}, "port"),
     ],
 )
 def test_conflicting_or_invalid_listener_addresses(tmp_path, env, complaint):
-    result = run({'DUCKDB_MODE': 'parquet', **env}, tmp_path)
+    result = run({"DUCKDB_MODE": "parquet", **env}, tmp_path)
     assert result.returncode == 1
     assert complaint in result.stderr
 
@@ -440,24 +460,24 @@ def test_conflicting_or_invalid_listener_addresses(tmp_path, env, complaint):
 def test_grpc_uri_override_is_canonical_and_ignores_http_threads(tmp_path):
     result = run(
         {
-            'DUCKDB_MODE': 'parquet',
-            'DUCKDB_OTLP_TRANSPORTS': 'grpc',
-            'DUCKDB_OTLP_LISTEN_URI': 'otlp://127.0.0.1:9000',
-            'DUCKDB_OTLP_HTTP_THREADS': '4',
+            "DUCKDB_MODE": "parquet",
+            "DUCKDB_OTLP_TRANSPORTS": "grpc",
+            "DUCKDB_OTLP_LISTEN_URI": "otlp://127.0.0.1:9000",
+            "DUCKDB_OTLP_HTTP_THREADS": "4",
         },
         tmp_path,
     )
     assert result.returncode == 0, result.stderr
     assert "['otlp:127.0.0.1:9000']" in result.stdout
     assert "transport := ['grpc']" in result.stdout
-    assert 'http_threads :=' not in result.stdout
+    assert "http_threads :=" not in result.stdout
 
 
 def test_standard_grpc_healthcheck_uses_configured_grpc_port():
     with socket.socket() as sock:
-        sock.bind(('127.0.0.1', 0))
+        sock.bind(("127.0.0.1", 0))
         sock.listen(16)
-        env = {'DUCKDB_OTLP_TRANSPORTS': 'grpc', 'OTEL_GRPC_ADDR': f'127.0.0.1:{sock.getsockname()[1]}'}
+        env = {"DUCKDB_OTLP_TRANSPORTS": "grpc", "OTEL_GRPC_ADDR": f"127.0.0.1:{sock.getsockname()[1]}"}
         assert _healthcheck(env) == 0
     assert _healthcheck(env) == 1
 
@@ -468,21 +488,21 @@ def test_healthcheck_requires_both_listeners():
 
     class Ready(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
-            self.send_response(200 if self.path == '/readyz' else 404)
+            self.send_response(200 if self.path == "/readyz" else 404)
             self.end_headers()
 
         def log_message(self, *args):
             pass
 
-    with http.server.ThreadingHTTPServer(('127.0.0.1', 0), Ready) as httpd, socket.socket() as grpc_sock:
+    with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Ready) as httpd, socket.socket() as grpc_sock:
         thread = threading.Thread(target=httpd.serve_forever, daemon=True)
         thread.start()
-        grpc_sock.bind(('127.0.0.1', 0))
+        grpc_sock.bind(("127.0.0.1", 0))
         grpc_sock.listen(16)
         env = {
-            'DUCKDB_OTLP_TRANSPORTS': 'http,grpc',
-            'OTEL_HTTP_ADDR': f'127.0.0.1:{httpd.server_port}',
-            'OTEL_GRPC_ADDR': f'127.0.0.1:{grpc_sock.getsockname()[1]}',
+            "DUCKDB_OTLP_TRANSPORTS": "http,grpc",
+            "OTEL_HTTP_ADDR": f"127.0.0.1:{httpd.server_port}",
+            "OTEL_GRPC_ADDR": f"127.0.0.1:{grpc_sock.getsockname()[1]}",
         }
         try:
             assert _healthcheck(env) == 0
@@ -491,3 +511,46 @@ def test_healthcheck_requires_both_listeners():
         finally:
             httpd.shutdown()
             thread.join()
+
+
+def test_healthcheck_probes_the_configured_quack_port():
+    """The Quack probe has to resolve the same address startup binds.
+
+    It used to read only DUCKDB_QUACK_ADDR/QUACK_HTTP_ADDR and fall back to 9494, while
+    ServerConfig gives DUCKDB_QUACK_PORT (what `--quack PORT` sets) precedence — so
+    `--quack 9999` bound 9999 and the container HEALTHCHECK probed 9494 forever. Both now go
+    through QuackAddrFromEnv.
+    """
+    import http.server
+    import threading
+
+    class Ready(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200 if self.path in ("/readyz", "/") else 404)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    with (
+        http.server.ThreadingHTTPServer(("127.0.0.1", 0), Ready) as otlp,
+        http.server.ThreadingHTTPServer(("127.0.0.1", 0), Ready) as quack,
+    ):
+        threads = [threading.Thread(target=s.serve_forever, daemon=True) for s in (otlp, quack)]
+        for thread in threads:
+            thread.start()
+        env = {
+            "DUCKDB_OTLP_TRANSPORTS": "http",
+            "OTEL_HTTP_ADDR": f"127.0.0.1:{otlp.server_port}",
+            "DUCKDB_QUACK_ENABLED": "1",
+            "DUCKDB_QUACK_PORT": str(quack.server_port),
+        }
+        try:
+            assert _healthcheck(env) == 0
+            # A port nothing is listening on must fail, so the pass above is not vacuous.
+            assert _healthcheck({**env, "DUCKDB_QUACK_PORT": str(quack.server_port + 1)}) == 1
+        finally:
+            for server in (otlp, quack):
+                server.shutdown()
+            for thread in threads:
+                thread.join()

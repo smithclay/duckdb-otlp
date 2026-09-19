@@ -38,7 +38,7 @@ COPY . /src
 RUN GEN=ninja OVERRIDE_GIT_DESCRIBE=${DUCKDB_VERSION} make server-release
 
 FROM scratch AS daemon-export
-COPY --from=builder /src/build/release/extension/otlp/duckdb_otlp_server /duckdb-otlp-server
+COPY --from=builder /src/build/release/extension/otlp/duckdb-otlp /duckdb-otlp-server
 
 FROM debian:bookworm-slim AS deps
 
@@ -85,6 +85,11 @@ RUN set -eux; \
     cp -L "${libz}" /staging/lib/libz.so.1; \
     install -d -o "${RUN_UID}" -g "${RUN_GID}" /staging/data
 
+# Compatibility alias: the binary is `duckdb-otlp` (it is a general CLI now), but the
+# historical entry point was `duckdb-otlp-server`. Distroless has no shell, so the symlink
+# is created here and copied in; COPY preserves it rather than dereferencing it.
+RUN mkdir -p /staging/bin && ln -s duckdb-otlp /staging/bin/duckdb-otlp-server
+
 # The GCS extension's bundled libcurl looks for a Red Hat-style CA path during
 # ADC token refresh. Link it to the final Debian image's maintained trust store.
 # Copy the directory below to preserve the symlink rather than dereferencing it.
@@ -103,6 +108,19 @@ ENV LD_LIBRARY_PATH=/opt/duckdb-otlp/lib
 COPY --from=deps --chown=65532:65532 /duckdb-home /duckdb-home
 COPY --from=deps --chown=65532:65532 /staging/data /data
 ENV HOME=/duckdb-home
+# Copy the directory, not the file: a direct COPY of a symlink dereferences it (the same
+# reason the CA bundle above is copied as a directory), and this link's target only lands in
+# the leaf stage below.
+COPY --from=deps /staging/bin/ /usr/local/bin/
+
+# Container-shaped defaults live HERE, not in the C++ defaults, which are laptop-shaped
+# (loopback bind, XDG data dir, both transports). Keeping the split explicit means there is
+# no "am I in a container" detection at runtime, and these four lines are the complete
+# description of how the image differs from running the CLI directly.
+ENV DUCKDB_OTLP_DATA_DIR=/data \
+    DUCKDB_OTLP_HOST=0.0.0.0 \
+    DUCKDB_OTLP_TRANSPORTS=http \
+    DUCKDB_QUACK_ADDR=0.0.0.0:9494
 
 LABEL org.opencontainers.image.title="duckdb-otlp server" \
       org.opencontainers.image.description="DuckDB OTLP HTTP/gRPC ingest server with mode-based DuckDB catalog initialization" \
@@ -114,13 +132,13 @@ VOLUME ["/data"]
 # subcommand probes every enabled listener: HTTP /readyz, gRPC TCP connect, and
 # Quack when enabled. The daemon also logs a WARNING if seals stop committing.
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=3 \
-    CMD ["/usr/local/bin/duckdb-otlp-server", "healthcheck"]
+    CMD ["/usr/local/bin/duckdb-otlp", "healthcheck"]
 
-ENTRYPOINT ["/usr/local/bin/duckdb-otlp-server"]
+ENTRYPOINT ["/usr/local/bin/duckdb-otlp"]
 
 FROM runtime-base AS runtime-prebuilt
 ARG TARGETARCH
-COPY docker-bin/${TARGETARCH}/duckdb-otlp-server /usr/local/bin/duckdb-otlp-server
+COPY docker-bin/${TARGETARCH}/duckdb-otlp-server /usr/local/bin/duckdb-otlp
 
 FROM runtime-base AS runtime-source
-COPY --from=builder /src/build/release/extension/otlp/duckdb_otlp_server /usr/local/bin/duckdb-otlp-server
+COPY --from=builder /src/build/release/extension/otlp/duckdb-otlp /usr/local/bin/duckdb-otlp

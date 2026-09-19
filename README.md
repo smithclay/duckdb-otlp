@@ -159,10 +159,14 @@ The extension registers `read_otlp_metrics` and `read_otlp_metrics_summary`, but
 
 ## Installation
 
+The extension, inside any DuckDB:
+
 ```sql
 INSTALL otlp FROM community;
 LOAD otlp;
 ```
+
+The `duckdb-otlp` CLI and receiver, as a standalone binary. Each release ships a tarball for `linux-amd64`, `linux-arm64`, `darwin-amd64` and `darwin-arm64`, alongside `SHA256SUMS`; the container image holds the same binary. See the [CLI Reference](https://smithclay.github.io/duckdb-otlp/reference/cli/#install) for the download-and-verify steps.
 
 For source builds, development commands, and WASM builds, see [CONTRIBUTING.md](CONTRIBUTING.md). WASM supports JSON, JSONL, and protobuf file reads, but not the live ingest server.
 

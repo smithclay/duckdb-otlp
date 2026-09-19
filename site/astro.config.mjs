@@ -79,6 +79,7 @@ export default defineConfig({
           label: "Reference",
           items: [
             { label: "API", link: "/reference/api/" },
+            { label: "CLI", link: "/reference/cli/" },
             { label: "Schemas", link: "/reference/schemas/" },
             { label: "Live Ingest", link: "/reference/serve/" },
             { label: "Errors", link: "/reference/error-handling/" },

@@ -506,8 +506,9 @@ void OtlpServer::ValidateToken(const string &token) {
 	// 16 is the deliberate floor for *user-supplied* tokens. Auto-generated tokens
 	// (GenerateRandomToken) carry a full 128 bits of entropy as 32 hex chars; the
 	// lower minimum only bounds how weak a hand-picked token may be.
-	if (token.size() < 16) {
-		throw InvalidInputException("OTLP server token must be at least 16 characters long");
+	if (token.size() < otlp_limits::MIN_TOKEN_LENGTH) {
+		throw InvalidInputException("OTLP server token must be at least %llu characters long",
+		                            static_cast<uint64_t>(otlp_limits::MIN_TOKEN_LENGTH));
 	}
 }
 

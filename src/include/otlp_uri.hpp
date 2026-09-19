@@ -39,8 +39,14 @@ public:
 	bool IsGrpc() const {
 		return scheme == "otap";
 	}
+	//! True when this URI can only be reached from this machine. Two decisions depend on it:
+	//! the `allow_other_hostname` gate in otlp_serve, and the daemon's rule that an
+	//! unauthenticated server is acceptable only on loopback. They must agree about a given
+	//! URI, so there is one definition. The whole 127.0.0.0/8 block is loopback per RFC 1122,
+	//! not just 127.0.0.1.
 	bool IsLocal() const {
-		return StringUtil::Lower(host) == "localhost" || host == "127.0.0.1" || host == "::1";
+		auto lower = StringUtil::Lower(host);
+		return lower == "localhost" || lower == "::1" || StringUtil::StartsWith(host, "127.");
 	}
 
 private:

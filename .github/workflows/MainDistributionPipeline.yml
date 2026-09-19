@@ -29,6 +29,11 @@ concurrency:
 
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository }}
+  # The DuckDB version the daemon reports, pinned to a released one. Keep in sync with the
+  # DUCKDB_VERSION ARG in docker/duckdb-otlp-server/Dockerfile: the container reuses it to
+  # match its pre-primed extension cache, and a standalone binary needs it so its runtime
+  # INSTALL of ducklake/httpfs/... resolves to a published build.
+  DAEMON_DUCKDB_VERSION: v1.5.5
 
 jobs:
   duckdb-stable-build:
@@ -219,6 +224,71 @@ jobs:
             --platform linux/amd64 \
             --startup-timeout 120
 
+  # Native macOS daemon builds. The Linux daemon comes out of a Docker stage, which cannot
+  # produce a Darwin binary, so this is a separate job rather than two more matrix entries.
+  # Both architectures build on the arm64 macos-15 runner: OSX_BUILD_ARCH drives
+  # CMAKE_OSX_ARCHITECTURES and, through cmake/FindOtlp2Records.cmake, the Rust target — the
+  # same cross-compile extension-ci-tools uses for osx_amd64 (config/distribution_matrix.json).
+  # No vcpkg setup: vcpkg.json declares zlib for Windows only, so on macOS
+  # find_package(ZLIB) resolves to the SDK's libz and vcpkg would install nothing.
+  daemon-macos:
+    name: Build server daemon (${{ matrix.arch }})
+    if: ${{ github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: darwin-arm64
+            osx_build_arch: arm64
+            rust_target: aarch64-apple-darwin
+          - arch: darwin-amd64
+            osx_build_arch: x86_64
+            rust_target: x86_64-apple-darwin
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Add the Rust target
+        run: rustup target add ${{ matrix.rust_target }}
+
+      - name: Install ninja
+        run: brew install ninja
+
+      # server-release configures once and builds only the duckdb_otlp_server target, so this
+      # does not pay for the extension, the shell and the unittest binary as `make release` would.
+      - name: Build the daemon
+        env:
+          GEN: ninja
+          OSX_BUILD_ARCH: ${{ matrix.osx_build_arch }}
+          OVERRIDE_GIT_DESCRIBE: ${{ env.DAEMON_DUCKDB_VERSION }}
+        run: make server-release
+
+      - name: Check the binary's architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN=build/release/extension/otlp/duckdb-otlp
+          file "$BIN"
+          # Guards the cross-compile: a silently-native x86_64 job would ship an arm64 binary.
+          lipo -archs "$BIN" | tr ' ' '\n' | grep -qx '${{ matrix.osx_build_arch }}'
+          # Only the native slice can run here; the x86_64 one needs Rosetta.
+          if [ '${{ matrix.osx_build_arch }}' = 'arm64' ]; then
+            "$BIN" version
+          fi
+
+      - name: Upload daemon artifact
+        uses: actions/upload-artifact@v7
+        with:
+          # Deliberately NOT the `duckdb-otlp-server-*` prefix the Linux artifacts use: that is
+          # the glob docker-image downloads, and it must not pick up Darwin binaries.
+          name: duckdb-otlp-${{ matrix.arch }}
+          path: build/release/extension/otlp/duckdb-otlp
+          if-no-files-found: error
+
   docker-image:
     name: Build and publish server image
     if: ${{ github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
@@ -293,3 +363,62 @@ jobs:
       duckdb_version: v1.5.5
       ci_tools_version: v1.5.5
       extension_name: otlp
+
+  # Attach the daemon binaries to the GitHub release for a v* tag. Nothing is compiled here:
+  # these are the artifacts daemon-linux and daemon-macos already produced for this commit,
+  # and the gate on docker-smoke means a binary that failed the e2e never reaches a release.
+  daemon-release:
+    name: Attach daemon binaries to the release
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    needs:
+      - duckdb-stable-build
+      - code-quality-check
+      - daemon-linux
+      - daemon-macos
+      - docker-smoke
+    steps:
+      - name: Download daemon artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: duckdb-otlp-*
+          path: daemon-artifacts
+
+      - name: Package binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets stage
+          # The two builders name the file differently — the Dockerfile's daemon-export stage
+          # calls it duckdb-otlp-server, the macOS build leaves it as duckdb-otlp — so the
+          # source paths are spelled out rather than globbed. Everything ships as `duckdb-otlp`.
+          declare -A SOURCES=(
+            [linux-amd64]=daemon-artifacts/duckdb-otlp-server-amd64/duckdb-otlp-server
+            [linux-arm64]=daemon-artifacts/duckdb-otlp-server-arm64/duckdb-otlp-server
+            [darwin-amd64]=daemon-artifacts/duckdb-otlp-darwin-amd64/duckdb-otlp
+            [darwin-arm64]=daemon-artifacts/duckdb-otlp-darwin-arm64/duckdb-otlp
+          )
+          for platform in "${!SOURCES[@]}"; do
+            source="${SOURCES[$platform]}"
+            test -f "$source" || { echo "missing artifact: $source" >&2; exit 1; }
+            # A release asset does not carry the executable bit, so ship a tarball that does.
+            install -m 0755 "$source" stage/duckdb-otlp
+            tar -czf "release-assets/duckdb-otlp-${GITHUB_REF_NAME}-${platform}.tar.gz" -C stage duckdb-otlp
+            rm stage/duckdb-otlp
+          done
+          ( cd release-assets && sha256sum *.tar.gz > SHA256SUMS )
+          ls -l release-assets
+
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # The tag may have been pushed on its own or created by publishing a release in the
+          # UI, so handle both orders. Creating it here publishes a release, which is what
+          # triggers pages.yml to build and attach the extension repository.
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" release-assets/* --clobber
