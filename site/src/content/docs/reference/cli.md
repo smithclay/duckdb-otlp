@@ -12,6 +12,30 @@ duckdb-otlp
 
 That listens for OTLP/HTTP on `127.0.0.1:4318` and OTLP/gRPC on `127.0.0.1:4317`, and streams into a local DuckLake lakehouse under `$XDG_DATA_HOME/duckdb-otlp`.
 
+## Install
+
+Each release ships a tarball per platform — `linux-amd64`, `linux-arm64`, `darwin-amd64`, `darwin-arm64` — holding a single executable named `duckdb-otlp`, plus a `SHA256SUMS` file.
+
+```sh
+VERSION=v0.1.0
+PLATFORM=darwin-arm64    # or linux-amd64, linux-arm64, darwin-amd64
+BASE=https://github.com/smithclay/duckdb-otlp/releases/download/$VERSION
+
+curl -fsSLO "$BASE/duckdb-otlp-$VERSION-$PLATFORM.tar.gz"
+curl -fsSLO "$BASE/SHA256SUMS"
+shasum -a 256 -c SHA256SUMS --ignore-missing
+tar -xzf "duckdb-otlp-$VERSION-$PLATFORM.tar.gz"
+sudo mv duckdb-otlp /usr/local/bin/
+```
+
+On Linux use `sha256sum -c SHA256SUMS --ignore-missing` instead of `shasum`. macOS binaries are unsigned and unnotarized, so Gatekeeper will quarantine one downloaded through a browser; `curl` does not set the quarantine attribute, and `xattr -d com.apple.quarantine duckdb-otlp` clears it if you hit it.
+
+The container ships the same binary:
+
+```sh
+docker run --rm -p 4318:4318 ghcr.io/smithclay/duckdb-otlp:latest
+```
+
 ## Commands
 
 | Command | What it does |
