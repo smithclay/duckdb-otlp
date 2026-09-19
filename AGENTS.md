@@ -10,6 +10,14 @@ This file provides guidance to coding agents when working with code in this repo
   export VCPKG_TOOLCHAIN_PATH=`pwd`/vcpkg/scripts/buildsystems/vcpkg.cmake
   ```
 - Use `uv` for Python tooling (formatting, testing, dependency management)
+- **Windows (`windows_amd64`, MSVC) builds the extension only.** `CMakeLists.txt` gates the
+  native daemon (`duckdb_otlp_server`) and the C++ harnesses (`otlp_seal_harness`,
+  `otlp_arrow_harness`) on `NOT WIN32`, because `make release` builds the default ALL target
+  and the daemon only ships as the Linux container image. Windows-specific build details:
+  `src/otlp_server.cpp` selects Winsock over the POSIX socket headers under `#ifdef _WIN32`,
+  the extension targets get `/bigobj` (cpp-httplib is a large header), and the Rust archive is
+  built with `RUSTFLAGS=-C target-feature=+crt-static` so it matches DuckDB's static CRT.
+  `windows_amd64_mingw` remains excluded (untested `x86_64-pc-windows-gnu` Rust toolchain).
 
 ## Common Commands
 

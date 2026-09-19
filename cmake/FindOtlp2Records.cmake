@@ -33,6 +33,7 @@ elseif(WIN32)
     endif()
     set(RUST_LIB_PREFIX "")
     set(RUST_LIB_SUFFIX ".lib")
+    set(RUST_MSVC_STATIC_CRT TRUE)
   endif()
 elseif(APPLE)
   # For macOS, CMAKE_OSX_ARCHITECTURES takes precedence for cross-compilation
@@ -58,6 +59,19 @@ else()
   endif()
   set(RUST_LIB_PREFIX "lib")
   set(RUST_LIB_SUFFIX ".a")
+endif()
+
+# Cargo environment. On Windows/MSVC, DuckDB builds everything against the
+# STATIC CRT (CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded, and the
+# extension-distribution vcpkg triplet is x64-windows-static-release) while
+# Rust's *-pc-windows-msvc targets default to the DYNAMIC CRT. Linking the two
+# together fails with LNK2038 "mismatch detected for 'RuntimeLibrary'", so ask
+# rustc for the static CRT as well. Unset (and therefore a no-op) everywhere
+# else.
+if(RUST_MSVC_STATIC_CRT)
+  set(CARGO_ENV_ARGS "RUSTFLAGS=-C target-feature=+crt-static")
+else()
+  unset(CARGO_ENV_ARGS)
 endif()
 
 # Build type
@@ -138,8 +152,9 @@ file(GLOB_RECURSE OTLP2RECORDS_RUST_SOURCES CONFIGURE_DEPENDS
 # Custom command to build Rust library
 add_custom_command(
   OUTPUT ${OTLP2RECORDS_LIB_PATH}
-  COMMAND cargo build ${CARGO_BUILD_FLAGS} --target ${RUST_TARGET} --features
-          ${OTLP2RECORDS_CARGO_FEATURES}
+  COMMAND
+    ${CMAKE_COMMAND} -E env ${CARGO_ENV_ARGS} cargo build ${CARGO_BUILD_FLAGS}
+    --target ${RUST_TARGET} --features ${OTLP2RECORDS_CARGO_FEATURES}
   DEPENDS ${OTLP2RECORDS_RUST_SOURCES} "${OTLP2RECORDS_SOURCE_DIR}/Cargo.toml"
   WORKING_DIRECTORY ${OTLP2RECORDS_SOURCE_DIR}
   COMMENT "Building otlp2records Rust library (${CARGO_BUILD_TYPE})"

@@ -39,6 +39,15 @@ build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 set_target_properties(${LOADABLE_EXTENSION_NAME}
                       PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 
+if(MSVC)
+  # cpp-httplib is a ~12k-line header compiled into several of the TUs above,
+  # which pushes their object files past MSVC's default 2^16 section limit
+  # (C1128). DuckDB applies /bigobj to its own sources but not to out-of-tree
+  # extension targets.
+  target_compile_options(${EXTENSION_NAME} PRIVATE /bigobj)
+  target_compile_options(${LOADABLE_EXTENSION_NAME} PRIVATE /bigobj)
+endif()
+
 # Rust backend integration (required)
 message(STATUS "Enabling Rust backend via otlp2records")
 
@@ -57,7 +66,15 @@ if(NOT EMSCRIPTEN)
                              PRIVATE CPPHTTPLIB_ZLIB_SUPPORT)
   target_link_libraries(${EXTENSION_NAME} ZLIB::ZLIB)
   target_link_libraries(${LOADABLE_EXTENSION_NAME} ZLIB::ZLIB)
+endif()
 
+# The native daemon and the C++ test harnesses below are built on native
+# non-Windows targets only. `make release` builds the default ALL target, so
+# without the NOT WIN32 guard the Windows extension build would compile and link
+# them too — and the daemon is only ever shipped as the Linux distroless
+# container image (docker/duckdb-otlp-server), never as a Windows binary.
+# Windows therefore builds the extension (static + loadable) and nothing else.
+if(NOT EMSCRIPTEN AND NOT WIN32)
   add_executable(duckdb_otlp_server src/server/main.cpp
                                     src/server/server_config.cpp)
   target_include_directories(
