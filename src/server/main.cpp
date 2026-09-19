@@ -32,6 +32,7 @@ namespace {
 
 using duckdb_otlp_server::BindConfigEnvVariables;
 using duckdb_otlp_server::CheckResult;
+using duckdb_otlp_server::CliErrorMessage;
 using duckdb_otlp_server::EnvSource;
 using duckdb_otlp_server::Execute;
 
@@ -283,17 +284,24 @@ int RunHealthCheck(const EnvSource &env) {
 			bool healthy = listener.transport == "grpc" ? duckdb::OtlpTcpConnectOk(host, uri.Port())
 			                                            : duckdb::OtlpHttpStatusOk(host, uri.Port(), "/readyz");
 			if (!healthy) {
+				// Only on failure, so the container HEALTHCHECK stays silent when all is well.
+				// Without this a human running `healthcheck` got a bare exit 1 and no idea which
+				// of several listeners was unreachable.
+				std::cerr << "unhealthy: no response from " << (listener.otap ? "OTAP " : "OTLP ") << listener.transport
+				          << " at " << host << ":" << uri.Port() << '\n';
 				return 1;
 			}
 		}
 	} catch (std::exception &ex) {
-		std::cerr << "ERROR: " << duckdb::ErrorData(ex).RawMessage() << '\n';
+		std::cerr << "ERROR: " << CliErrorMessage(ex) << '\n';
 		return 1;
 	}
 	if (duckdb_otlp_server::QuackEnabledFromEnv(env)) {
 		// Resolved by the same function startup uses, so the probe cannot target a different
 		// port than the server bound.
-		if (!HealthProbe(duckdb_otlp_server::QuackAddrFromEnv(env), "/", 9494)) {
+		auto quack_addr = duckdb_otlp_server::QuackAddrFromEnv(env);
+		if (!HealthProbe(quack_addr, "/", 9494)) {
+			std::cerr << "unhealthy: no response from Quack at " << quack_addr << '\n';
 			return 1;
 		}
 	}
@@ -459,9 +467,9 @@ int RunServe(const EnvSource &env) {
 			std::cerr << "Shutdown requested during startup; exiting before the server became ready." << '\n';
 			return 0;
 		}
-		// DuckDB exceptions stringify as a JSON blob; RawMessage() gives the plain text a
-		// Docker user actually wants to read.
-		std::cerr << "ERROR: " << duckdb::ErrorData(ex).RawMessage() << '\n';
+		// DuckDB exceptions stringify as a JSON blob, and the mode setup SQL is generated
+		// here, so neither the blob nor the echoed statement helps the reader.
+		std::cerr << "ERROR: " << CliErrorMessage(ex) << '\n';
 		return 1;
 	}
 }
@@ -469,13 +477,18 @@ int RunServe(const EnvSource &env) {
 // convert/export/query differ only in which function runs; they share one error rendering,
 // so the dispatch names each command exactly once. `convert` is stateless and takes no
 // EnvSource, hence a callable rather than a uniform function pointer.
+//
+// `keep_sql_context` is true only for `query`, the one command whose failing statement the
+// user actually wrote: there DuckDB's "LINE 1: ... ^" echo points at their own typo. For
+// convert and export the statement is generated, so the echo showed the reader a COPY(...)
+// they never asked for instead of the missing file or table.
 template <typename Fn>
-int RunDataCommand(Fn &&run) {
+int RunDataCommand(Fn &&run, bool keep_sql_context = false) {
 	try {
 		return run();
 	} catch (std::exception &ex) {
-		// DuckDB exceptions stringify as a JSON blob; RawMessage() is the plain text.
-		std::cerr << "ERROR: " << duckdb::ErrorData(ex).RawMessage() << '\n';
+		// DuckDB exceptions stringify as a JSON blob; both helpers give the plain text.
+		std::cerr << "ERROR: " << (keep_sql_context ? duckdb::ErrorData(ex).RawMessage() : CliErrorMessage(ex)) << '\n';
 		return 1;
 	}
 }
@@ -487,8 +500,13 @@ int main(int argc, char **argv) {
 	try {
 		options = duckdb_otlp_server::ParseCli(argc, argv);
 	} catch (std::exception &ex) {
-		std::cerr << "ERROR: " << duckdb::ErrorData(ex).RawMessage() << '\n';
-		std::cerr << "\nRun `duckdb-otlp help` for usage.\n";
+		auto message = CliErrorMessage(ex);
+		std::cerr << "ERROR: " << message << '\n';
+		// The unknown-command message names the right next step itself; everything else gets
+		// the generic pointer rather than two conflicting suggestions.
+		if (message.find("duckdb-otlp help") == duckdb::string::npos) {
+			std::cerr << "\nRun `duckdb-otlp help` for usage.\n";
+		}
 		return 1;
 	}
 	// Flag values are layered over the process environment rather than written into it, so
@@ -514,7 +532,7 @@ int main(int argc, char **argv) {
 	case Command::EXPORT:
 		return RunDataCommand([&] { return duckdb_otlp_server::RunExport(options, env); });
 	case Command::QUERY:
-		return RunDataCommand([&] { return duckdb_otlp_server::RunQuery(options, env); });
+		return RunDataCommand([&] { return duckdb_otlp_server::RunQuery(options, env); }, true);
 	case Command::VALIDATE:
 	// `validate` is `serve` stopped just before anything is opened or bound (ParseCli sets
 	// DRY_RUN for it). Reusing the serve path rather than a parallel implementation is what

@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <set>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -37,8 +38,10 @@ using duckdb::StringUtil;
 //! the daemon and CLI are not built on Windows (see the NOT WIN32 guard in CMakeLists.txt).
 constexpr const char *STDOUT_PATH = "/dev/stdout";
 
-//! Temp view `query` writes its final SELECT through when the result is redirected to a file
-//! or a non-box format. Named distinctively because it shares the session's namespace.
+//! Fallback temp view for a redirected `query` result, used only when the statement carries
+//! a trailing ';' that cannot sit inside COPY (...). Named distinctively because it shares
+//! the session's namespace — and used as a fallback precisely so that it does not, for the
+//! catalog-introspection queries where it would otherwise appear in the user's own results.
 constexpr const char *RESULT_VIEW = "duckdb_otlp_query_result";
 
 bool StdoutIsTerminal() {
@@ -282,6 +285,32 @@ std::vector<SignalDef> DetectSignals(duckdb::Connection &con, const CliOptions &
 	return detected;
 }
 
+//! The signal tables that actually exist in the configured catalog and schema.
+//!
+//! `export` defaults to every signal, but a catalog normally holds only the signals that have
+//! been ingested — a logs-only deployment is the common case. Without this, the default
+//! export died on `otlp_traces` and wrote nothing at all. Returns an empty optional if the
+//! catalog cannot be listed, which means "do not filter" rather than "nothing is there".
+std::set<string> ExistingSignalTables(duckdb::Connection &con, const ServerConfig &config, bool &listed) {
+	std::set<string> tables;
+	auto sql = "SELECT table_name FROM duckdb_tables() WHERE schema_name = " + SqlQuote(config.schema);
+	if (!config.catalog.empty()) {
+		sql += " AND database_name = " + SqlQuote(config.catalog);
+	}
+	auto result = con.Query(sql);
+	if (!result || result->HasError()) {
+		listed = false;
+		return tables;
+	}
+	listed = true;
+	while (auto chunk = result->Fetch()) {
+		for (duckdb::idx_t row = 0; row < chunk->size(); row++) {
+			tables.insert(chunk->GetValue(0, row).GetValue<string>());
+		}
+	}
+	return tables;
+}
+
 OutputFormat ResolveFormat(const CliOptions &options, OutputFormat fallback) {
 	return options.format == OutputFormat::UNSET ? fallback : options.format;
 }
@@ -314,17 +343,15 @@ int RunConvert(const CliOptions &options) {
 }
 
 int RunExport(const CliOptions &options, const EnvSource &env) {
-	if (!options.inputs.empty()) {
-		throw InvalidInputException("`export` reads the configured catalog and takes no file arguments. To convert "
-		                            "files on disk, use `duckdb-otlp convert`.");
-	}
 	auto format = ResolveFormat(options, OutputFormat::PARQUET);
 	if (format == OutputFormat::BOX) {
 		throw InvalidInputException("`export` writes files; --format box is only valid for `duckdb-otlp query`.");
 	}
-	// "auto" is the convert-side default and has no meaning against a catalog, where every
-	// table exists whether or not it holds rows.
+	// "auto" is the convert-side default and has no meaning against a catalog.
 	auto signals = ResolveSignals(options.signal == "auto" ? "all" : options.signal);
+	// A fanned-out selection is a convenience, so a signal that was never ingested is skipped
+	// rather than fatal. A signal the user named explicitly is still an error if it is absent.
+	bool fanned_out = options.signal == "auto" || options.signal == "all" || options.signal == "metrics";
 	bool partitioned = !options.partition_by.empty() && options.partition_by != "none";
 	if (partitioned) {
 		if (options.partition_by != "day") {
@@ -339,7 +366,25 @@ int RunExport(const CliOptions &options, const EnvSource &env) {
 	duckdb::unique_ptr<duckdb::Connection> con;
 	auto db = OpenConfiguredDatabase(config, env, options.read_only, con);
 
+	bool listed = false;
+	auto existing = ExistingSignalTables(*con, config, listed);
+	duckdb::vector<string> skipped;
+	duckdb::vector<SignalDef> present;
 	for (const auto &signal : signals) {
+		if (fanned_out && listed && existing.find(signal.table) == existing.end()) {
+			skipped.push_back(signal.name);
+			continue;
+		}
+		present.push_back(signal);
+	}
+	if (present.empty()) {
+		throw InvalidInputException(
+		    "Nothing to export: the configured catalog holds none of the signal tables yet. They are created on the "
+		    "first ingest, so run `duckdb-otlp serve` and send some data first (looked in schema \"%s\").",
+		    config.schema);
+	}
+
+	for (const auto &signal : present) {
 		auto source = duckdb::QualifiedTable(config.catalog, config.schema, signal.table);
 		auto predicate = BuildPredicate(options, signal);
 		if (partitioned) {
@@ -349,7 +394,10 @@ int RunExport(const CliOptions &options, const EnvSource &env) {
 			continue;
 		}
 		WriteSignal(*con, options, signal, StringUtil::Format("SELECT * FROM %s%s", source, predicate), format,
-		            signals.size() > 1, "export");
+		            present.size() > 1, "export");
+	}
+	if (!skipped.empty()) {
+		std::cerr << "Skipped (not in this catalog yet): " << StringUtil::Join(skipped, ", ") << '\n';
 	}
 	return 0;
 }
@@ -440,17 +488,38 @@ int RunQuery(const CliOptions &options, const EnvSource &env) {
 		}
 		CreateParentDirectory(path);
 	}
-	// Route the result through a temp view rather than splicing the SQL into COPY (...).
+	// Writing the final statement out has two hazards, and no single spelling clears both.
+	//
 	// DuckDB gives the LAST statement of a script everything to the end of the input —
 	// Parser::ParseQuery sets its stmt_length to `query.size() - stmt_location` — so
-	// `SELECT 1;\n-- done` arrives with both the ';' and the comment attached. Inside
-	// COPY (...) the ';' is a syntax error and a trailing line comment swallows the closing
-	// paren. A view body is not nested in parentheses, so neither can hurt, and DuckDB's own
-	// parser decides where the statement ends instead of a hand-written scanner here (which
-	// would have to get dollar-quoted strings and nested block comments right).
-	Execute(*con, StringUtil::Format("CREATE OR REPLACE TEMP VIEW %s AS %s", RESULT_VIEW, final_sql), "query");
-	Execute(*con, StringUtil::Format("COPY %s TO %s %s;", RESULT_VIEW, SqlQuote(path), CopyFormatOptions(format)),
-	        "query");
+	// `SELECT 1;\n-- done` arrives with the ';' and the comment attached. Nested inside
+	// COPY (...) the ';' is a syntax error. And SHOW / DESCRIBE / SUMMARIZE / PRAGMA, which
+	// DuckDB types as SELECT statements, are rejected as a bare COPY subquery and as a view
+	// body, but accepted inside `SELECT * FROM (...)`.
+	//
+	// So: try the nested COPY first, because it creates nothing. A temp view is the fallback
+	// for the trailing-';' case only — a named view would otherwise show up in the user's own
+	// results, which is exactly what `query "SHOW TABLES"` is asking about.
+	auto copy_options = CopyFormatOptions(format);
+	auto trimmed = final_sql;
+	StringUtil::RTrim(trimmed, "; \t\n\r\f\v");
+	try {
+		// The closing parens go on their own line so a trailing line comment cannot eat them.
+		Execute(*con,
+		        StringUtil::Format("COPY (SELECT * FROM (\n%s\n)) TO %s %s;", trimmed, SqlQuote(path), copy_options),
+		        "query");
+	} catch (const std::exception &) {
+		try {
+			Execute(*con, StringUtil::Format("CREATE OR REPLACE TEMP VIEW %s AS %s", RESULT_VIEW, final_sql), "query");
+			Execute(*con, StringUtil::Format("COPY %s TO %s %s;", RESULT_VIEW, SqlQuote(path), copy_options), "query");
+		} catch (const std::exception &) {
+			// Neither spelling parsed. Run the statement as the user wrote it so the error
+			// quotes their SQL rather than a wrapper they never typed.
+			Execute(*con, final_sql, "query");
+			std::cerr << "Statement executed; its output cannot be written in the requested format.\n";
+			return 0;
+		}
+	}
 	if (path != STDOUT_PATH) {
 		std::cerr << "Wrote " << path << '\n';
 	}

@@ -834,3 +834,144 @@ def test_query_preserves_ordering_through_the_output_view(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip().splitlines()[1:] == ["1", "2", "3"]
+
+
+# --------------------------------------------------------------------------------------
+# Ergonomics: a mistake must not start a server
+#
+# A bare `duckdb-otlp` means serve, and unrecognized argv used to fall through to it — so
+# `duckdb-otlp covert traces.pb` bound ports and created a DuckLake instead of reporting a
+# typo, and the two stray words were never mentioned.
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("word", "expected"),
+    [
+        ("covert", "duckdb-otlp convert"),
+        ("expor", "duckdb-otlp export"),
+        ("quer", "duckdb-otlp query"),
+    ],
+)
+def test_a_mistyped_subcommand_is_rejected_with_a_suggestion(word, expected, tmp_path):
+    result = run([word], home=tmp_path, timeout=30)
+    assert result.returncode == 1
+    assert "Unknown command" in result.stderr
+    assert expected in result.stderr
+
+
+def test_an_unrecognizable_word_gets_no_guess(tmp_path):
+    """A wrong guess is worse than none; DuckDB's TopNLevenshtein always returns its best."""
+    result = run(["zzzzzzzz"], home=tmp_path, timeout=30)
+    assert result.returncode == 1
+    assert "Did you mean" not in result.stderr
+
+
+def test_a_file_without_a_subcommand_suggests_convert(tmp_path):
+    result = run([str(DATA_DIR / "otlp_traces.pb")], home=tmp_path, timeout=30)
+    assert result.returncode == 1
+    assert "duckdb-otlp convert" in result.stderr
+
+
+@pytest.mark.parametrize("command", ["serve", "validate", "healthcheck"])
+def test_commands_that_take_no_files_reject_them(command, tmp_path):
+    result = run([command, "some-file.pb"], home=tmp_path, timeout=30)
+    assert result.returncode == 1
+    assert "takes no file arguments" in result.stderr
+
+
+# --------------------------------------------------------------------------------------
+# Ergonomics: errors name the problem, not the SQL we generated
+# --------------------------------------------------------------------------------------
+
+
+def test_a_missing_input_file_does_not_echo_generated_sql(tmp_path):
+    result = run(["convert", "nope.pb", "--signal", "traces"], home=tmp_path)
+    assert result.returncode == 1
+    assert "nope.pb" in result.stderr
+    assert "COPY" not in result.stderr
+
+
+def test_a_query_syntax_error_still_shows_the_users_own_sql(tmp_path):
+    """The echo is only noise when the user did not write the statement."""
+    result = run(["query", "SELCT 1"], env=parquet_mode_env(tmp_path), home=tmp_path)
+    assert result.returncode == 1
+    assert "SELCT 1" in result.stderr
+    assert "TEMP VIEW" not in result.stderr
+
+
+# --------------------------------------------------------------------------------------
+# Ergonomics: `export` works on a catalog holding only some signals
+# --------------------------------------------------------------------------------------
+
+
+def _seed_logs_only(tmp_path):
+    seed = run(
+        [
+            "query",
+            "CREATE SCHEMA IF NOT EXISTS otlp; "
+            f"CREATE OR REPLACE TABLE otlp.otlp_logs AS SELECT * FROM read_otlp_logs('{DATA_DIR / 'logs_simple.jsonl'}');",
+        ],
+        env=parquet_mode_env(tmp_path),
+        home=tmp_path,
+    )
+    assert seed.returncode == 0, seed.stderr
+
+
+def test_export_all_skips_signals_the_catalog_does_not_hold(tmp_path):
+    """A logs-only catalog is the common case; `export` used to die on traces and write nothing."""
+    _seed_logs_only(tmp_path)
+    out = tmp_path / "dump"
+    result = run(["export", "--to", str(out) + "/"], env=parquet_mode_env(tmp_path), home=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (out / "logs.parquet").exists()
+    assert "Skipped" in result.stderr and "traces" in result.stderr
+
+
+def test_export_of_an_explicitly_named_missing_signal_still_fails(tmp_path):
+    _seed_logs_only(tmp_path)
+    result = run(
+        ["export", "--signal", "traces", "--to", str(tmp_path / "d2") + "/"],
+        env=parquet_mode_env(tmp_path),
+        home=tmp_path,
+    )
+    assert result.returncode == 1
+    assert "otlp_traces" in result.stderr
+
+
+def test_export_of_an_empty_catalog_says_so(tmp_path):
+    result = run(
+        ["export", "--to", str(tmp_path / "d3") + "/", "--schema", "nosuch"],
+        env=parquet_mode_env(tmp_path),
+        home=tmp_path,
+    )
+    assert result.returncode == 1
+    assert "Nothing to export" in result.stderr
+
+
+# --------------------------------------------------------------------------------------
+# Ergonomics: `query` handles the statements people actually explore with
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("sql", ["SHOW TABLES", "DESCRIBE otlp_logs", "SUMMARIZE SELECT 1 AS a"])
+def test_query_supports_show_describe_and_summarize(sql, tmp_path):
+    """DuckDB types these as SELECT but rejects them as a COPY subquery or a view body."""
+    _seed_logs_only(tmp_path)
+    result = run(["query", sql, "--format", "csv"], env=parquet_mode_env(tmp_path), home=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip()
+
+
+def test_query_does_not_leak_its_own_helper_view(tmp_path):
+    """The redirect used to create a named temp view, which `SHOW TABLES` then listed."""
+    _seed_logs_only(tmp_path)
+    result = run(["query", "SHOW TABLES", "--format", "csv"], env=parquet_mode_env(tmp_path), home=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "duckdb_otlp_query_result" not in result.stdout
+
+
+def test_healthcheck_names_the_listener_it_could_not_reach(tmp_path):
+    result = run(["healthcheck"], env={"DUCKDB_OTLP_TRANSPORTS": "grpc"}, home=tmp_path, timeout=30)
+    assert result.returncode == 1
+    assert "unhealthy" in result.stderr and "4317" in result.stderr

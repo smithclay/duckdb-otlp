@@ -61,6 +61,14 @@ duckdb-otlp convert traces.pb --signal traces --to out/
 duckdb-otlp export --signal logs --since -24h --to out/
 ```
 
+Mistyping a command is an error rather than a silent fall-through to `serve`:
+
+```
+$ duckdb-otlp covert traces.pb
+ERROR: Unknown command "covert".
+Did you mean `duckdb-otlp convert`?
+```
+
 ## Configuration precedence
 
 Command-line flag, then environment variable, then built-in default. Every flag that maps onto a setting overrides the matching variable, so `--http 4318` wins over `DUCKDB_OTLP_HTTP_PORT=9999`. A flag is layered over the environment rather than written into it, so its value — a `--token` above all — stays inside the configuration and is never published to the rest of the process.
@@ -198,6 +206,8 @@ duckdb-otlp export [flags]
 
 `export` also takes the catalog-selection flags `serve` uses, since it has to open the same catalog: `-m`/`--mode`, `--data-dir`, `--database`, `--catalog`, and `--schema`.
 
+A catalog normally holds only the signals that have been ingested, so the default `--signal all` exports the tables that exist and names the ones it skipped. Naming a signal explicitly is still an error when its table is absent, and a catalog with no signal tables at all reports that rather than writing nothing.
+
 `--since` and `--until` accept an absolute timestamp (`'2026-01-01'`) or a relative shorthand: a sign, a number, and a unit of `s`, `m`, `h`, `d`, or `w`.
 
 ```sh
@@ -230,7 +240,12 @@ duckdb-otlp query "SELECT service_name, count(*) FROM otlp_logs GROUP BY 1 ORDER
 duckdb-otlp query "FROM otlp_traces LIMIT 10" --format json
 ```
 
-A script may contain several statements. Only a trailing `SELECT` can be redirected to a file or non-`box` format; earlier statements run as setup. Trailing semicolons and comments are fine.
+A script may contain several statements. Only a trailing `SELECT` can be redirected to a file or non-`box` format; earlier statements run as setup. Trailing semicolons and comments are fine, and `SHOW TABLES`, `DESCRIBE`, `SUMMARIZE` and `PRAGMA` work as the final statement too:
+
+```sh
+duckdb-otlp query "SHOW TABLES"
+duckdb-otlp query "SUMMARIZE otlp_logs"
+```
 
 `--format` is not inferred from the output file's extension: `query` writes `box` on a terminal and `csv` when piped, so pass `--format parquet` when you want Parquet.
 

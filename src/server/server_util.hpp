@@ -4,6 +4,8 @@
 
 #include "duckdb/common/string.hpp"
 
+#include <exception>
+
 namespace duckdb {
 class Connection;
 class QueryResult;
@@ -32,6 +34,14 @@ void Execute(duckdb::Connection &con, const duckdb::string &sql, const duckdb::s
 //! runs mode setup needs it, so it lives here rather than being copied per command — a
 //! missing call makes backend credentials silently resolve to the empty string.
 void BindConfigEnvVariables(duckdb::Connection &con, const ServerConfig &config, const EnvSource &env);
+
+//! The message to print for `ex`, with DuckDB's echo of the offending statement removed.
+//!
+//! DuckDB appends the statement and a caret ("\nLINE 1: ... ^") to parser and binder errors.
+//! That is exactly what you want when the user wrote the SQL, and noise when they did not:
+//! `convert` and `export` generate their own statements, so a missing input file answered
+//! with our own COPY(...) text instead of saying the file was missing.
+duckdb::string CliErrorMessage(const std::exception &ex);
 
 //! Create `path` and any missing parents, throwing an actionable error on failure.
 void CreateDirectory(const duckdb::string &path);

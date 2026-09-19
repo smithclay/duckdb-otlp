@@ -1,7 +1,9 @@
 #include "server_util.hpp"
 
 #include "duckdb.hpp"
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/main/query_result.hpp"
 
 #include <filesystem>
@@ -44,6 +46,16 @@ void BindConfigEnvVariables(duckdb::Connection &con, const ServerConfig &config,
 	for (const auto &name : config.env_variables) {
 		con.context->config.SetUserVariable("env_" + name, duckdb::Value(env.Get(name.c_str())));
 	}
+}
+
+string CliErrorMessage(const std::exception &ex) {
+	auto message = duckdb::ErrorData(ex).RawMessage();
+	auto echo = message.find("\nLINE ");
+	if (echo != string::npos) {
+		message = message.substr(0, echo);
+	}
+	duckdb::StringUtil::RTrim(message);
+	return message;
 }
 
 void CreateDirectory(const string &path) {

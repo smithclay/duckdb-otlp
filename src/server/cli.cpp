@@ -4,6 +4,7 @@
 #include "duckdb/common/string_util.hpp"
 
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <iterator>
 #include <ostream>
@@ -113,6 +114,28 @@ const CommandName COMMAND_NAMES[] = {
     {Command::QUERY, "query"},     {Command::VALIDATE, "validate"}, {Command::HEALTHCHECK, "healthcheck"},
     {Command::VERSION, "version"}, {Command::HELP, "help"},
 };
+
+//! How many positional arguments a command takes. Enforcing this is what stops a typo'd
+//! subcommand from quietly starting a server: `duckdb-otlp covert traces.pb` used to fall
+//! through to `serve`, which ignored both words and bound ports for as long as you left it.
+enum class Positionals {
+	NONE,
+	//! `query` takes one: the SQL. A second one is a quoting mistake worth reporting.
+	ONE,
+	MANY,
+};
+
+Positionals PositionalsFor(Command command) {
+	switch (command) {
+	case Command::CONVERT:
+	case Command::HELP:
+		return Positionals::MANY;
+	case Command::QUERY:
+		return Positionals::ONE;
+	default:
+		return Positionals::NONE;
+	}
+}
 
 const char *NameOfCommand(Command command) {
 	for (const auto &entry : COMMAND_NAMES) {
@@ -344,6 +367,42 @@ CliOptions ParseCli(int argc, char **argv) {
 		if (recognized) {
 			options.command = command;
 			index = 2;
+		} else if (argv[1][0] != '\0' && argv[1][0] != '-') {
+			// A bare `duckdb-otlp` means serve, but a first word that is neither a flag nor a
+			// known subcommand is a mistake, not an argument to serve. Falling through used to
+			// start a listener and a DuckLake for `duckdb-otlp covert traces.pb`.
+			string word(argv[1]);
+			string hint;
+			if (std::ifstream(word).good()) {
+				// The likeliest version of this mistake is naming a file and forgetting the
+				// verb, so say the whole command back rather than guessing at a near-miss.
+				hint = "\n\"" + word + "\" is a file — did you mean `duckdb-otlp convert " + word + "`?";
+			} else {
+				duckdb::vector<string> known;
+				for (const auto &entry : COMMAND_NAMES) {
+					known.emplace_back(entry.name);
+				}
+				// Scored here rather than with StringUtil::TopNLevenshtein, whose threshold
+				// does not apply to the best match (TopNStrings always keeps scores[0]), so
+				// it answered "zzzzzzzz" with "did you mean help". Two edits is a typo; more
+				// than that is a different word, and a wrong guess is worse than none.
+				string best;
+				duckdb::idx_t best_distance = 3;
+				for (const auto &candidate : known) {
+					auto distance = StringUtil::SimilarityScore(candidate, word);
+					if (distance < best_distance) {
+						best_distance = distance;
+						best = candidate;
+					}
+				}
+				if (!best.empty()) {
+					hint = "\nDid you mean `duckdb-otlp " + best + "`?";
+				}
+			}
+			throw InvalidInputException(
+			    "Unknown command \"%s\".%s\nRun `duckdb-otlp help` for the command list, or `duckdb-otlp` with no "
+			    "arguments to start the receiver.",
+			    word, hint);
 		}
 	}
 	// `--quack PORT` has to also flip the enable switch; recorded here and applied at the end
@@ -448,6 +507,21 @@ CliOptions ParseCli(int argc, char **argv) {
 	}
 	if (!options.sql.empty() && !options.sql_file.empty()) {
 		throw InvalidInputException("Pass either an inline SQL string or --file, not both");
+	}
+	if (!options.inputs.empty()) {
+		switch (PositionalsFor(options.command)) {
+		case Positionals::MANY:
+			break;
+		case Positionals::ONE:
+			throw InvalidInputException(
+			    "`query` takes a single SQL string; got %llu more (\"%s\"). Quote the whole statement.",
+			    static_cast<uint64_t>(options.inputs.size()), options.inputs[0]);
+		case Positionals::NONE:
+			throw InvalidInputException(
+			    "`%s` takes no file arguments (got \"%s\"). To convert files on disk use "
+			    "`duckdb-otlp convert`, or to read the catalog use `duckdb-otlp export` / `duckdb-otlp query`.",
+			    NameOfCommand(options.command), options.inputs[0]);
+		}
 	}
 	return options;
 }
