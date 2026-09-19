@@ -38,10 +38,12 @@ env:
 jobs:
   duckdb-stable-build:
     name: Build extension binaries
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.5
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@main
     with:
-      duckdb_version: v1.5.5
-      ci_tools_version: v1.5.5
+      # DuckDB 2.0 ("cyanoptera") is still on its release branch; no v2.0.0 tag exists yet,
+      # so track the feature-frozen branch until the tag lands, then pin to it.
+      duckdb_version: v2.0-cyanoptera
+      ci_tools_version: main
       extension_name: otlp
       extra_toolchains: rust
       # windows_amd64 (MSVC) is back on: DuckDB v1.5.5's bundled fmt no longer references
@@ -358,10 +360,12 @@ jobs:
 
   code-quality-check:
     name: Code Quality Check
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v1.5.5
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@main
     with:
-      duckdb_version: v1.5.5
-      ci_tools_version: v1.5.5
+      # DuckDB 2.0 ("cyanoptera") is still on its release branch; no v2.0.0 tag exists yet,
+      # so track the feature-frozen branch until the tag lands, then pin to it.
+      duckdb_version: v2.0-cyanoptera
+      ci_tools_version: main
       extension_name: otlp
 
   # Attach the daemon binaries to the GitHub release for a v* tag. Nothing is compiled here:
