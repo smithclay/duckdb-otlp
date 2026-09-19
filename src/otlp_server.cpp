@@ -204,11 +204,12 @@ static idx_t AppendCollectionToTable(Connection &connection, ColumnDataCollectio
                                      const string &catalog_name, const string &schema_name, const string &table_name) {
 	unique_ptr<Appender> appender;
 	if (schema_name.empty()) {
-		appender = make_uniq<Appender>(connection, table_name);
+		appender = make_uniq<Appender>(connection, Identifier(table_name));
 	} else if (catalog_name.empty()) {
-		appender = make_uniq<Appender>(connection, schema_name, table_name);
+		appender = make_uniq<Appender>(connection, Identifier(schema_name), Identifier(table_name));
 	} else {
-		appender = make_uniq<Appender>(connection, catalog_name, schema_name, table_name);
+		appender =
+		    make_uniq<Appender>(connection, Identifier(catalog_name), Identifier(schema_name), Identifier(table_name));
 	}
 	idx_t batches = 0;
 	ColumnDataScanState scan;
@@ -273,7 +274,11 @@ void OtlpServer::GetSignalColumns(OtlpSignalType signal_type, vector<LogicalType
 	try {
 		OtlpArrowSchemaOptions options;
 		options.timestamp_ns_as_timestamp = true;
-		GetArrowSchemaColumns(arrow_schema, types, names, options);
+		vector<Identifier> identifiers;
+		GetArrowSchemaColumns(arrow_schema, types, identifiers, options);
+		for (auto &identifier : identifiers) {
+			names.push_back(identifier.GetIdentifierName());
+		}
 	} catch (...) {
 		if (arrow_schema.release) {
 			arrow_schema.release(&arrow_schema);
@@ -630,24 +635,27 @@ void OtlpServer::CreateOrValidateTable(Connection &con, OtlpSignalType signal_ty
 	// trailing columns are allowed: attribute promotion adds resource_attr_*/scope_attr_* columns
 	// via ALTER, and a restart against an already-promoted catalog must validate cleanly. The seal
 	// path targets columns by name so those extras are NULL-filled when not being populated.
-	if (result->names.size() < expected_names.size()) {
+	auto &result_names = result->GetNames();
+	auto &result_types = result->GetTypes();
+	if (result_names.size() < expected_names.size()) {
 		throw InvalidInputException("Target table %s has %llu columns, expected at least %llu", qualified,
-		                            static_cast<uint64_t>(result->names.size()),
+		                            static_cast<uint64_t>(result_names.size()),
 		                            static_cast<uint64_t>(expected_names.size()));
 	}
 	for (idx_t i = 0; i < expected_names.size(); i++) {
-		if (result->names[i] != expected_names[i]) {
+		if (result_names[i] != expected_names[i]) {
 			throw InvalidInputException("Target table %s column %llu is %s, expected %s", qualified,
-			                            static_cast<uint64_t>(i), result->names[i], expected_names[i]);
+			                            static_cast<uint64_t>(i), result_names[i].GetIdentifierName(),
+			                            expected_names[i]);
 		}
-		if (result->types[i] != expected_types[i]) {
+		if (result_types[i] != expected_types[i]) {
 			throw InvalidInputException("Target table %s column %s has type %s, expected %s", qualified,
-			                            expected_names[i], result->types[i].ToString(), expected_types[i].ToString());
+			                            expected_names[i], result_types[i].ToString(), expected_types[i].ToString());
 		}
 	}
 	// Recorded in EnsureTargetTables order (== signal_buffers order) so the seal can pick the
 	// column-targeting write path for a table that carries extra (promoted) columns.
-	table_has_extra_columns.push_back(result->names.size() > expected_names.size());
+	table_has_extra_columns.push_back(result_names.size() > expected_names.size());
 }
 
 OtlpIngestResult OtlpServer::Ingest(OtlpRequestKind kind, const string &content_type, const string &content_encoding,

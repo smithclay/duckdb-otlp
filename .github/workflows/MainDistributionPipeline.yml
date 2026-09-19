@@ -33,10 +33,17 @@ env:
 jobs:
   duckdb-stable-build:
     name: Build extension binaries
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.5
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@main
     with:
-      duckdb_version: v1.5.5
-      ci_tools_version: v1.5.5
+      # DuckDB 2.0 ("cyanoptera") is still on its release branch; no v2.0.0 tag exists yet,
+      # so track the feature-frozen branch until the tag lands, then pin to it. Note this
+      # string is both the git ref and the version stamped into the artifacts: a branch name
+      # is not a semver, so the resulting binaries resolve extensions under
+      # extensions.duckdb.org/v2.0-cyanoptera/ (which does not exist) and will not load into
+      # the published v2.0.0-alpha CLI. Fine here -- no test INSTALLs an extension -- but the
+      # Docker/daemon path still needs a version with published extension binaries.
+      duckdb_version: v2.0-cyanoptera
+      ci_tools_version: main
       extension_name: otlp
       extra_toolchains: rust
       # windows_amd64 (MSVC) is back on: DuckDB v1.5.5's bundled fmt no longer references
@@ -288,8 +295,15 @@ jobs:
 
   code-quality-check:
     name: Code Quality Check
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v1.5.5
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@main
     with:
-      duckdb_version: v1.5.5
-      ci_tools_version: v1.5.5
+      # DuckDB 2.0 ("cyanoptera") is still on its release branch; no v2.0.0 tag exists yet,
+      # so track the feature-frozen branch until the tag lands, then pin to it. Note this
+      # string is both the git ref and the version stamped into the artifacts: a branch name
+      # is not a semver, so the resulting binaries resolve extensions under
+      # extensions.duckdb.org/v2.0-cyanoptera/ (which does not exist) and will not load into
+      # the published v2.0.0-alpha CLI. Fine here -- no test INSTALLs an extension -- but the
+      # Docker/daemon path still needs a version with published extension binaries.
+      duckdb_version: v2.0-cyanoptera
+      ci_tools_version: main
       extension_name: otlp
