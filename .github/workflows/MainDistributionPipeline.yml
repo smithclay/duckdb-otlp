@@ -428,6 +428,16 @@ jobs:
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
             || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
           gh release upload "$GITHUB_REF_NAME" release-assets/* --clobber
+          # `gh release view` matches drafts too, so "a release by this name exists" is not the
+          # same as "a release by this name is published", and the check above short-circuits
+          # either way. Deleting a tag is enough to reach that state: GitHub turns the release
+          # that pointed at it into an untagged draft. Re-tagging v0.7.1 did exactly that, and
+          # the next run uploaded all six assets into the draft and reported success while
+          # nothing was published. Publish explicitly -- a no-op when it is already published.
+          if [ "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = "true" ]; then
+            echo "Publishing draft release $GITHUB_REF_NAME"
+            gh release edit "$GITHUB_REF_NAME" --draft=false
+          fi
 
       - name: Publish the Pages extension repository for this tag
         env:
