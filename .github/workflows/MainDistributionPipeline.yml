@@ -234,7 +234,7 @@ jobs:
   daemon-macos:
     name: Build server daemon (${{ matrix.arch }})
     if: ${{ github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: macos-15
+    runs-on: macos-26
     strategy:
       fail-fast: false
       matrix:
