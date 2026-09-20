@@ -507,8 +507,7 @@ private:
 	//! Parquet-export mode's half of CreateOrValidateTable: the dataset root has no table to
 	//! create, but it does have a shape the next seal has to match. Best effort -- a root with no
 	//! files yet is not a mismatch.
-	void ValidateParquetDatasetShape(Connection &con, const string &table_name,
-	                                 const vector<LogicalType> &expected_types, const vector<string> &expected_names);
+	void ValidateParquetDatasetShape(Connection &con, const string &table_name);
 	void GetSignalColumns(OtlpSignalType signal_type, vector<LogicalType> &types, vector<string> &names);
 	//! Create a TEMP table with columns `names`/`types` on the writer connection and append
 	//! `collection` into it. Returns the appended batch count. Shared staging step for the seal

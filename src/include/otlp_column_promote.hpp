@@ -72,6 +72,11 @@ private:
 		string target_column; //! resource_attr_<key> | scope_attr_<key>
 	};
 	void Disable(const string &reason);
+	//! The extract this promoter projects, over any bag expression: `json_extract_string(<bag>,
+	//! '$."<key>"')` or `CAST(variant_extract(<bag>, '<key>') AS VARCHAR)`. One definition, so
+	//! Initialize()'s capability probe runs the same expression the seal will, rather than a
+	//! second spelling of it that can pass while the real one fails.
+	string ExtractSql(const string &bag_expr, const string &key) const;
 
 	bool attributes_as_variant;
 	string catalog_name;

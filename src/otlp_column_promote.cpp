@@ -74,15 +74,19 @@ OtlpColumnPromoter::OtlpColumnPromoter(OtlpPromoteConfig config_p, bool attribut
 		add("scope_attributes", "scope_attr_", key);
 	}
 	for (auto &c : columns) {
-		// One expression per bag column type; the promoted column stays VARCHAR either way, so
-		// nothing downstream (the ALTER, the INSERT target list, a reader's COALESCE) changes.
-		const string extract = attributes_as_variant ? "CAST(variant_extract(" + QuoteIdentifier(c.source_column) +
-		                                                   ", " + SqlQuote(c.attr_key) + ") AS VARCHAR)"
-		                                             : "json_extract_string(" + QuoteIdentifier(c.source_column) +
-		                                                   ", " + JsonPathLiteral(c.attr_key) + ")";
-		suffix += ", " + extract + " AS " + QuoteIdentifier(c.target_column);
+		suffix +=
+		    ", " + ExtractSql(QuoteIdentifier(c.source_column), c.attr_key) + " AS " + QuoteIdentifier(c.target_column);
 		target_list += ", " + QuoteIdentifier(c.target_column);
 	}
+}
+
+string OtlpColumnPromoter::ExtractSql(const string &bag_expr, const string &key) const {
+	// The promoted column stays VARCHAR either way, so nothing downstream (the ALTER, the INSERT
+	// target list, a reader's COALESCE) depends on which of these it was.
+	if (attributes_as_variant) {
+		return "CAST(variant_extract(" + bag_expr + ", " + SqlQuote(key) + ") AS VARCHAR)";
+	}
+	return "json_extract_string(" + bag_expr + ", " + JsonPathLiteral(key) + ")";
 }
 
 void OtlpColumnPromoter::Disable(const string &reason) {
@@ -98,29 +102,25 @@ void OtlpColumnPromoter::Initialize(Connection &con) {
 	if (columns.empty()) {
 		return;
 	}
-	// The extract has to be runnable on this connection before any column is added. Over VARIANT
-	// bags it is entirely core -- the probe deliberately builds its VARIANT from a struct literal
-	// rather than from JSON text, because naming the JSON *type* in SQL needs the json extension
-	// that this path is otherwise free of. Over JSON text the extension is required, which is why
-	// the LOAD is attempted first and only a failing probe disables.
-	if (attributes_as_variant) {
-		try {
-			Exec(con, "SELECT CAST(variant_extract({'a': 1}::VARIANT, 'a') AS VARCHAR)");
-		} catch (std::exception &ex) {
-			Disable(string("VARIANT attribute extraction unavailable: ") + ex.what());
-			return;
-		}
-	} else {
+	// The extract has to be runnable on this connection before any column is added, so the probe is
+	// the projection itself over a literal bag. Over JSON text that needs the json extension, hence
+	// the best-effort LOAD; over VARIANT bags nothing has to be loaded, and the literal is built
+	// from a struct rather than from JSON text because naming the JSON *type* in SQL would drag in
+	// the very extension this path is free of.
+	if (!attributes_as_variant) {
 		try {
 			Exec(con, "LOAD json");
 		} catch (...) {
-			try {
-				Exec(con, "SELECT json_extract_string('{\"a\":1}', '$.\"a\"')");
-			} catch (std::exception &ex) {
-				Disable(string("json extension unavailable: ") + ex.what());
-				return;
-			}
+			// Not fatal on its own: the probe below is what decides.
 		}
+	}
+	const string bag = attributes_as_variant ? "{'a': 1}::VARIANT" : "'{\"a\":1}'";
+	try {
+		Exec(con, "SELECT " + ExtractSql(bag, "a"));
+	} catch (std::exception &ex) {
+		Disable(StringUtil::Format("%s attribute extraction unavailable: %s",
+		                           attributes_as_variant ? "VARIANT" : "JSON", ex.what()));
+		return;
 	}
 	// Add every promoted column on every signal table (idempotent). A fixed config means the first
 	// ALTER failure indicates the catalog cannot add columns (e.g. an Iceberg REST catalog without

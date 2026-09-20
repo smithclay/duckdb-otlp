@@ -98,6 +98,11 @@ struct ServerConfig {
 	//! first-class columns at ingest. Emitted into the otlp_serve() call when non-empty.
 	duckdb::string promote_resource_attributes;
 	duckdb::string promote_scope_attributes;
+	//! Whether either promotion list names a key. The daemon's half of OtlpPromoteConfig::Enabled(),
+	//! which it cannot use directly: these arrive as unparsed comma-separated strings.
+	bool PromotionRequested() const {
+		return !promote_resource_attributes.empty() || !promote_scope_attributes.empty();
+	}
 	//! Opt-in: create the attribute-bag columns as VARIANT instead of VARCHAR holding JSON text
 	//! (DUCKDB_OTLP_ATTRIBUTES_AS_VARIANT). Part of the destination table's shape: a catalog whose
 	//! signal tables were created the other way is rejected at startup, not rewritten.

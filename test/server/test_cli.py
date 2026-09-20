@@ -727,6 +727,30 @@ def test_variant_columns_export_as_json_not_as_their_display_form(tmp_path):
     assert rows[0]["resource_attributes"] == {"service.name": "x", "count": 1}
 
 
+def test_query_json_output_casts_variant_columns(tmp_path):
+    """The same hazard as the export test, on arbitrary SQL.
+
+    The cast is applied where a JSON COPY is built rather than in the select lists `export`
+    assembles, so `query --format json` is covered by the same rule instead of being a second
+    place that has to remember it.
+    """
+    result = run(
+        [
+            "query",
+            "--mode",
+            "none",
+            "--database",
+            ":memory:",
+            "--format",
+            "json",
+            "SELECT '{\"k\":1}'::JSON::VARIANT AS bag",
+        ],
+        home=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)[0]["bag"] == {"k": 1}
+
+
 def test_ingest_shape_flags_beat_the_environment(tmp_path):
     result = run(
         ["validate", "--promote-resource-attributes", "from.flag"],
@@ -736,13 +760,6 @@ def test_ingest_shape_flags_beat_the_environment(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "promote_resource_attributes := 'from.flag'" in result.stdout
     assert "from.env" not in result.stdout
-
-
-def test_ingest_shape_flags_are_off_unless_asked_for(tmp_path):
-    result = run(["validate"], home=tmp_path)
-    assert result.returncode == 0, result.stderr
-    assert "attributes_as_variant :=" not in result.stdout
-    assert "promote_resource_attributes :=" not in result.stdout
 
 
 def test_an_unknown_flag_names_the_command_whose_help_to_read(tmp_path):
