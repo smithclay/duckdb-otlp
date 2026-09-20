@@ -357,12 +357,87 @@ static TableFunctionSet BuildServeFunctionSet(const string &name, table_function
 	return set;
 }
 
-TableFunctionSet OtlpServeFunction::GetFunction() {
-	return BuildServeFunctionSet("otlp_serve", OtlpServeBind);
+//! Everything otlp_serve and otap_serve do not share, so the descriptions themselves can.
+struct ServeDocs {
+	//! SQL name, e.g. "otlp_serve".
+	const char *function_name;
+	//! Wire protocol as a reader should think of it, e.g. "OTLP".
+	const char *protocol;
+	//! Listen URI used when the function is called with no argument.
+	const char *default_uri;
+	//! Sentence about transport selection and the scheme this function is bound to.
+	const char *transport_note;
+	const char *uri_example;
+	const char *list_example;
+};
+
+//! One description per overload of the set: duckdb_functions() matches them on the positional
+//! argument types, which is why each repeats them.
+//!
+//! These two are the only functions here that take named parameters, and that limits what can
+//! be documented about them. duckdb_functions() renders positional and named parameters as one
+//! `parameters` list, and once a description's parameter_names is non-empty every entry past
+//! its end becomes "colN" -- so naming the single positional argument would replace every real
+//! named-parameter name with a placeholder. Nor can the named names be appended here: they come
+//! from an unordered_map that the catalog copies, so the order this code sees is not the order
+//! duckdb_functions() will print. Leaving parameter_names empty keeps DuckDB's fallback, which
+//! lists every named parameter by name and spells only the positional argument col0.
+static vector<FunctionDescription> ServeDescriptions(const ServeDocs &docs) {
+	const vector<string> categories = {"opentelemetry", "ingest"};
+	// True of all three overloads, and the part a caller most needs to know before pointing an
+	// exporter at this: an accepted request is not yet a committed row.
+	const string durability =
+	    " Rows land in the catalog named by the `catalog` parameter -- an attached database, a DuckLake or Iceberg "
+	    "catalog among them -- or in the default catalog when it is unset. They are buffered in memory and "
+	    "group-committed (sealed) in batches, so an accepted request is not durable yet: otlp_flush() commits on "
+	    "demand and otlp_stop() commits before returning. Returns one row per listener.";
+	vector<FunctionDescription> descriptions;
+	descriptions.push_back(
+	    OtlpDoc({}, {},
+	            StringUtil::Format("Start a live %s ingest server on the default listen URI %s.%s%s", docs.protocol,
+	                               docs.default_uri, docs.transport_note, durability),
+	            {StringUtil::Format("SELECT * FROM %s(token := 'replace-with-a-real-token');", docs.function_name)},
+	            categories));
+	descriptions.push_back(OtlpDoc({OtlpVarcharType()}, {},
+	                               StringUtil::Format("Start a live %s ingest server on one listen URI.%s%s",
+	                                                  docs.protocol, docs.transport_note, durability),
+	                               {docs.uri_example}, categories));
+	descriptions.push_back(
+	    OtlpDoc({LogicalType::LIST(OtlpVarcharType())}, {},
+	            StringUtil::Format("Start a live %s ingest server fed by several listeners -- one buffer set and one "
+	                               "sealer behind all of them, so any one of the URIs names the whole server to "
+	                               "otlp_stop() and otlp_flush().%s%s",
+	                               docs.protocol, docs.transport_note, durability),
+	            {docs.list_example}, categories));
+	return descriptions;
 }
 
-TableFunctionSet OtapServeFunction::GetFunction() {
-	return BuildServeFunctionSet("otap_serve", OtapServeBind);
+CreateTableFunctionInfo OtlpServeFunction::GetFunction() {
+	ServeDocs docs;
+	docs.function_name = "otlp_serve";
+	docs.protocol = "OTLP";
+	docs.default_uri = "otlp:localhost:4318";
+	docs.transport_note = " The transport is OTLP/HTTP by default (POST /v1/logs, /v1/traces, /v1/metrics); "
+	                      "transport := 'grpc' serves OTLP/gRPC unary Export instead. Only the otlp: scheme is "
+	                      "accepted.";
+	docs.uri_example = "SELECT * FROM otlp_serve('otlp:localhost:4318', token := 'replace-with-a-real-token');";
+	docs.list_example = "SELECT * FROM otlp_serve(['otlp:localhost:4318', 'otlp:localhost:4317'], "
+	                    "transport := ['http', 'grpc'], token := 'replace-with-a-real-token');";
+	return OtlpDocumented(BuildServeFunctionSet("otlp_serve", OtlpServeBind), ServeDescriptions(docs));
+}
+
+CreateTableFunctionInfo OtapServeFunction::GetFunction() {
+	ServeDocs docs;
+	docs.function_name = "otap_serve";
+	docs.protocol = "OTAP/Arrow";
+	docs.default_uri = "otap:localhost:4317";
+	docs.transport_note = " The transport is always gRPC: the canonical Arrow{Logs,Traces,Metrics}Service "
+	                      "bidirectional streams, which are disjoint from the services otlp_serve registers. Only "
+	                      "the otap: scheme is accepted.";
+	docs.uri_example = "SELECT * FROM otap_serve('otap:localhost:4317', token := 'replace-with-a-real-token');";
+	docs.list_example = "SELECT * FROM otap_serve(['otap:localhost:4317', 'otap:localhost:14317'], "
+	                    "token := 'replace-with-a-real-token');";
+	return OtlpDocumented(BuildServeFunctionSet("otap_serve", OtapServeBind), ServeDescriptions(docs));
 }
 
 struct OtlpStopFunctionData : public TableFunctionData {
@@ -455,13 +530,24 @@ static void OtlpStop(ClientContext &context, TableFunctionInput &data_p, DataChu
 	output.SetCardinality(row);
 }
 
-TableFunctionSet OtlpStopFunction::GetFunction() {
+CreateTableFunctionInfo OtlpStopFunction::GetFunction() {
 	TableFunctionSet set("otlp_stop");
 	// No argument: stop every server on this instance. Added alongside the URI form rather
 	// than replacing it because a targeted stop is still the common case.
 	set.AddFunction(TableFunction("otlp_stop", {}, OtlpStop, OtlpStopBind));
 	set.AddFunction(TableFunction("otlp_stop", {OtlpVarcharType()}, OtlpStop, OtlpStopBind));
-	return set;
+	const vector<string> categories = {"opentelemetry", "ingest"};
+	return OtlpDocumented(
+	    std::move(set),
+	    {OtlpDoc({}, {},
+	             "Stop every live ingest server on this database, committing each one's buffered rows before "
+	             "returning. One row per stopped server. Use this before closing a database you did not start "
+	             "every server on: a plain close drops buffered rows.",
+	             {"SELECT * FROM otlp_stop();"}, categories),
+	     OtlpDoc({OtlpVarcharType()}, {"listen_uri"},
+	             "Stop the live ingest server that owns listener `listen_uri`, including its other listeners, "
+	             "committing its buffered rows before returning.",
+	             {"SELECT * FROM otlp_stop('otlp:localhost:4318');"}, categories)});
 }
 
 struct OtlpServerListFunctionData : public TableFunctionData {
@@ -586,8 +672,15 @@ static void OtlpServerList(ClientContext &context, TableFunctionInput &data_p, D
 	output.SetCardinality(row);
 }
 
-TableFunction OtlpServerListFunction::GetFunction() {
-	return TableFunction("otlp_server_list", {}, OtlpServerList, OtlpServerListBind);
+CreateTableFunctionInfo OtlpServerListFunction::GetFunction() {
+	return OtlpDocumented(
+	    TableFunction("otlp_server_list", {}, OtlpServerList, OtlpServerListBind),
+	    {OtlpDoc({}, {},
+	             "List every live ingest listener on this database with its server's target catalog, transport and "
+	             "live counters: rows received, buffered rows and bytes, seal totals and failures, last seal age "
+	             "and last error.",
+	             {"SELECT listen_uri, transport, buffered_rows, seals_total FROM otlp_server_list();"},
+	             {"opentelemetry", "monitoring"})});
 }
 
 struct OtlpSealListFunctionData : public TableFunctionData {
@@ -641,8 +734,14 @@ static void OtlpSealList(ClientContext &context, TableFunctionInput &data_p, Dat
 	output.SetCardinality(row);
 }
 
-TableFunction OtlpSealListFunction::GetFunction() {
-	return TableFunction("otlp_seal_list", {}, OtlpSealList, OtlpSealListBind);
+CreateTableFunctionInfo OtlpSealListFunction::GetFunction() {
+	return OtlpDocumented(
+	    TableFunction("otlp_seal_list", {}, OtlpSealList, OtlpSealListBind),
+	    {OtlpDoc({}, {},
+	             "List the recent seal (group-commit) attempts of every live ingest server, with append and commit "
+	             "timings, rows and admitted bytes committed, and the error of any that failed.",
+	             {"SELECT listen_uri, seal_sequence, rows_committed, duration_ms FROM otlp_seal_list();"},
+	             {"opentelemetry", "monitoring"})});
 }
 
 struct OtlpFlushFunctionData : public TableFunctionData {
@@ -693,8 +792,14 @@ static void OtlpFlush(ClientContext &context, TableFunctionInput &data_p, DataCh
 	bind_data.finished = true;
 }
 
-TableFunction OtlpFlushFunction::GetFunction() {
-	return TableFunction("otlp_flush", {OtlpVarcharType()}, OtlpFlush, OtlpFlushBind);
+CreateTableFunctionInfo OtlpFlushFunction::GetFunction() {
+	return OtlpDocumented(
+	    TableFunction("otlp_flush", {OtlpVarcharType()}, OtlpFlush, OtlpFlushBind),
+	    {OtlpDoc({OtlpVarcharType()}, {"listen_uri"},
+	             "Force a synchronous seal (group-commit) on the live ingest server that owns listener "
+	             "`listen_uri`, so rows accepted so far become readable in the target catalog. The server keeps "
+	             "running.",
+	             {"SELECT * FROM otlp_flush('otlp:localhost:4318');"}, {"opentelemetry", "ingest"})});
 }
 
 } // namespace duckdb

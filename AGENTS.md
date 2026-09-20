@@ -173,6 +173,14 @@ The table functions emit schemas inspired by the OpenTelemetry ClickHouse export
 - **Metrics (gauge)**: 17 columns with timestamp, service info, metric metadata, and value
 - **Metrics (sum)**: 19 columns (gauge columns plus aggregation_temporality and is_monotonic)
 
+### Function metadata is part of the registration
+
+`duckdb_functions()` is the only description of this extension a SQL client can reach — the README and the community catalog's `extended_description` are not available over a connection. So no function is registered through the bare `loader.RegisterFunction(fn)` overload, which has nowhere to put documentation. Every one goes through `OtlpDocumented()` (`src/otlp_function_docs.cpp`), which wraps the function in the matching `Create*FunctionInfo`, attaches a `FunctionDescription` per overload, and sets `on_conflict = ALTER_ON_CONFLICT` — the bare overloads set that internally and `CreateInfo` defaults to `ERROR_ON_CONFLICT`, so the info form has to restore it. `test/sql/function_metadata.test` fails if a new function arrives without a description, an example, or with `colN` parameter names.
+
+Two constraints shape what can be written there. `duckdb_functions()` picks which description belongs to which overload by matching `parameter_types` against the overload's **positional** arguments, so a set with several overloads needs one description each (`otlp_stop()` and `otlp_stop(uri)` say different things). And it renders positional and named parameters as one `parameters` list, where every entry past the end of `parameter_names` becomes `colN` — so for `otlp_serve`/`otap_serve`, naming the one positional argument would replace every named parameter's real name with a placeholder. Their `parameter_names` is deliberately empty; the named parameters' order comes from an `unordered_map` the catalog copies, so it cannot be reproduced at registration time anyway.
+
+Examples are run, not guessed: a token shorter than `otlp_limits::MIN_TOKEN_LENGTH` is rejected at bind, and `read_otlp_metrics`/`read_otlp_metrics_summary` exist only to raise, which is why those two carry a description but no example.
+
 ## Dependencies
 
 Managed via VCPKG (see `vcpkg.json`):

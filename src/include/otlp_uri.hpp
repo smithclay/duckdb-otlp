@@ -1,7 +1,7 @@
 #pragma once
 
 #include "duckdb.hpp"
-#include "duckdb/function/scalar_function.hpp"
+#include "otlp_function_docs.hpp"
 
 namespace duckdb {
 
@@ -72,7 +72,7 @@ private:
 //! Exposes OtlpUri parsing as a scalar function so the parser can be unit-tested from SQL.
 class OtlpUriParserFunction {
 public:
-	static ScalarFunction GetFunction();
+	static CreateScalarFunctionInfo GetFunction();
 };
 
 } // namespace duckdb
