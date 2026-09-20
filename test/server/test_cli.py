@@ -1392,3 +1392,71 @@ def test_remote_output_does_not_create_a_local_directory(extra, tmp_path):
     assert "httpfs" in result.stderr
     assert not (cwd / "s3:").exists()
     assert list(cwd.iterdir()) == []
+
+
+def control_db_view_count(tmp_path, env):
+    """Views in the control database, read WITHOUT triggering registration (`--mode none`)."""
+    result = run(
+        [
+            "query",
+            "--mode",
+            "none",
+            "--database",
+            env["DUCKDB_DATABASE"],
+            "SELECT count(*) AS n FROM duckdb_views() WHERE NOT internal",
+            "--format",
+            "csv",
+        ],
+        env={"PATH": os.environ.get("PATH", "")},
+        home=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    return int(result.stdout.strip().splitlines()[1])
+
+
+def test_query_only_probes_the_signals_its_sql_names(tmp_path):
+    """Registering a view costs a directory listing per signal -- a remote LIST against an
+    `s3://` root -- so `query "SELECT 1"` must not pay for six of them."""
+    env = parquet_mode_env(tmp_path)
+    seed_parquet_dataset(tmp_path, env)
+
+    naming_nothing = run(["query", "SELECT 1 AS x", "--format", "csv"], env=env, home=tmp_path)
+    assert naming_nothing.returncode == 0, naming_nothing.stderr
+    assert control_db_view_count(tmp_path, env) == 0
+
+    naming_logs = run(["query", "SELECT count(*) FROM otlp_logs", "--format", "csv"], env=env, home=tmp_path)
+    assert naming_logs.returncode == 0, naming_logs.stderr
+    assert control_db_view_count(tmp_path, env) == 1
+
+
+def test_seal_created_view_and_cli_view_share_one_definition(tmp_path):
+    """The seal path already creates a view over the dataset after each successful export, and
+    the CLI creates one for a dataset this host has never sealed. Two hand-copied globs and two
+    sets of read_parquet options is how they would silently stop agreeing -- both now build the
+    SELECT from ParquetDatasetSelect, so the recorded definitions must match."""
+    env = parquet_mode_env(tmp_path)
+    seed_parquet_dataset(tmp_path, env)
+
+    # Force the CLI to define it, then read back what was recorded.
+    assert run(["query", "SELECT count(*) FROM otlp_logs"], env=env, home=tmp_path).returncode == 0
+    definition = run(
+        [
+            "query",
+            "--mode",
+            "none",
+            "--database",
+            env["DUCKDB_DATABASE"],
+            "SELECT sql FROM duckdb_views() WHERE view_name = 'otlp_logs'",
+            "--format",
+            "csv",
+        ],
+        env={"PATH": os.environ.get("PATH", "")},
+        home=tmp_path,
+    )
+    assert definition.returncode == 0, definition.stderr
+    body = definition.stdout
+    assert "/otlp_logs/**/*.parquet" in body
+    # Both options are load-bearing and must survive: hive_partitioning would append
+    # year/month/day columns no catalog mode has, union_by_name lets a schema change read.
+    assert "hive_partitioning" in body
+    assert "union_by_name" in body

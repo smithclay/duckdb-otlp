@@ -61,63 +61,67 @@ duckdb::unique_ptr<duckdb::DuckDB> OpenScratchDatabase() {
 	return db;
 }
 
-//! Point the configured schema's signal names at the Parquet dataset `serve` writes.
+//! Point the configured schema's signal names at the Parquet dataset, for a dataset whose
+//! control database does not already describe it.
 //!
-//! The `parquet` mode has no catalog -- the seal path COPYs straight to
-//! `<root>/<table>/year=/month=/day=/` -- so `query` and `export` opened the control database,
-//! found no signal tables in it, and dead-ended: `FROM otlp_logs` raised "Table with name
-//! otlp_logs does not exist", and `export` claimed the catalog was empty and advised running
-//! `serve`, which would never make it true. A view per signal makes both commands work the
-//! same way they do against a catalog mode.
+//! The `parquet` mode has no catalog, so a signal is readable only through a view over
+//! `<root>/<table>/**/*.parquet`. The seal path already creates exactly that view after every
+//! successful export (see SealParquet), which covers the ordinary case of serving and reading
+//! on one host. It does NOT cover a dataset written by another process or host, or one whose
+//! control database was never created locally -- there, nothing has ever run the seal, and
+//! `export` found no signal tables at all. Both sites build the view from
+//! ParquetDatasetSelect, so the two definitions cannot drift.
 //!
-//! Only signals that actually have files get a view: read_parquet over a glob that matches
-//! nothing is an error, and a view for a signal that was never ingested would turn `export
-//! --signal all` from a clean skip into a failure.
-//!
-//! The files carry exactly the signal schema (the COPY sets WRITE_PARTITION_COLUMNS false, so
-//! year/month/day live only in the path), which is what keeps `SELECT *` here identical to
-//! `SELECT *` against a catalog mode.
-void RegisterParquetExportViews(duckdb::Connection &con, const ServerConfig &config, bool read_only) {
-	if (config.parquet_export_path.empty()) {
+//! `signals` is what the caller might actually read: probing a dataset costs one glob per
+//! signal, which against an `s3://` root is a remote listing apiece, so `query "SELECT 1"`
+//! must not pay for six of them.
+void RegisterParquetExportViews(duckdb::Connection &con, const ServerConfig &config, bool read_only,
+                                const std::vector<SignalDef> &signals) {
+	if (config.parquet_export_path.empty() || signals.empty()) {
 		return;
 	}
-	auto root = config.parquet_export_path;
-	while (!root.empty() && root[root.size() - 1] == '/') {
-		root = root.substr(0, root.size() - 1);
-	}
-	// A read-only database cannot hold a view, so fall back to session-scoped ones. Persisting
-	// them when we can is deliberate: it also makes the control database a usable handle on the
-	// dataset from the plain `duckdb` CLI.
-	if (!read_only && !config.schema.empty()) {
+	// A read-only database cannot hold a view, so fall back to session-scoped ones.
+	const bool session_scoped = read_only || config.schema.empty();
+	if (!session_scoped) {
 		Execute(con, "CREATE SCHEMA IF NOT EXISTS " + QuoteIdentifier(config.schema) + ";", "parquet view schema");
 	}
-	for (const auto &signal : ResolveSignals("all")) {
-		auto glob = root + "/" + signal.table + "/**/*.parquet";
-		auto probe = con.Query("SELECT 1 FROM glob(" + SqlQuote(glob) + ") LIMIT 1;");
+	for (const auto &signal : signals) {
+		auto probe =
+		    con.Query("SELECT 1 FROM glob(" +
+		              SqlQuote(duckdb::ParquetDatasetGlob(config.parquet_export_path, signal.table)) + ") LIMIT 1;");
 		if (!probe || probe->HasError()) {
 			// An unreadable root (no credentials yet, a typo'd bucket) is not this function's
 			// error to raise: the user's own query reports it with far better context.
 			continue;
 		}
-		auto rows = probe->Cast<duckdb::MaterializedQueryResult>().RowCount();
-		if (rows == 0) {
+		if (probe->Cast<duckdb::MaterializedQueryResult>().RowCount() == 0) {
 			continue;
 		}
-		auto target = read_only || config.schema.empty()
-		                  ? "TEMP VIEW " + QuoteIdentifier(signal.table)
-		                  : "VIEW " + QuoteIdentifier(config.schema) + "." + QuoteIdentifier(signal.table);
-		// hive_partitioning = false keeps the view's schema identical to the same signal's
-		// table in a catalog mode. The seal writes year=/month=/day= into the PATH with
-		// WRITE_PARTITION_COLUMNS false, so they are not in the files -- but read_parquet
-		// infers them from the directory names and appends three columns, which showed up as
-		// three extra fields on every exported row.
-		// union_by_name so a schema that gained a column between seals still reads as one
-		// relation rather than failing on the first mismatched file.
+		auto target = session_scoped ? "TEMP VIEW " + QuoteIdentifier(signal.table)
+		                             : "VIEW " + QuoteIdentifier(config.schema) + "." + QuoteIdentifier(signal.table);
 		Execute(con,
-		        "CREATE OR REPLACE " + target + " AS SELECT * FROM read_parquet(" + SqlQuote(glob) +
-		            ", union_by_name = true, hive_partitioning = false);",
+		        "CREATE OR REPLACE " + target + " AS " +
+		            duckdb::ParquetDatasetSelect(config.parquet_export_path, signal.table) + ";",
 		        "parquet view " + string(signal.table));
 	}
+}
+
+//! The signals `sql` could possibly read, by name.
+//!
+//! Registering a view costs a directory listing per signal, so an arbitrary query should pay
+//! only for the signals it mentions -- and `SELECT 1` for none. It fails safe in the direction
+//! that matters: a false positive just does the work unconditionally, and a false negative
+//! needs the name to arrive indirectly (through a macro or a string), which the surrounding
+//! best-effort resolution already tolerates.
+std::vector<SignalDef> SignalsMentionedIn(const string &sql) {
+	auto lowered = StringUtil::Lower(sql);
+	std::vector<SignalDef> mentioned;
+	for (const auto &signal : ResolveSignals("all")) {
+		if (lowered.find(StringUtil::Lower(signal.table)) != string::npos) {
+			mentioned.push_back(signal);
+		}
+	}
+	return mentioned;
 }
 
 //! Open the database described by `config` and run its mode setup, mirroring what `serve`
@@ -125,7 +129,8 @@ void RegisterParquetExportViews(duckdb::Connection &con, const ServerConfig &con
 //! interpolated, exactly as in main.cpp, so they never reach the generated SQL text.
 duckdb::unique_ptr<duckdb::DuckDB> OpenConfiguredDatabase(const ServerConfig &config, const EnvSource &env,
                                                           bool read_only,
-                                                          duckdb::unique_ptr<duckdb::Connection> &con_out) {
+                                                          duckdb::unique_ptr<duckdb::Connection> &con_out,
+                                                          const std::vector<SignalDef> &signals) {
 	duckdb::DBConfig db_config;
 	if (read_only) {
 		db_config.options.access_mode = duckdb::AccessMode::READ_ONLY;
@@ -139,7 +144,7 @@ duckdb::unique_ptr<duckdb::DuckDB> OpenConfiguredDatabase(const ServerConfig &co
 	// there has to exist here too, or `export`/`query` could not read back what `serve` wrote.
 	Execute(*con, config.init_sql, "init SQL");
 	// After init SQL, so an operator script can point parquet_export_path somewhere first.
-	RegisterParquetExportViews(*con, config, read_only);
+	RegisterParquetExportViews(*con, config, read_only, signals);
 	con_out = std::move(con);
 	return db;
 }
@@ -255,17 +260,6 @@ string BuildCopyStatement(const CliOptions &options, const string &select_sql, c
 	throw InvalidInputException("Unsupported --partition-by \"%s\". Use day or none.", options.partition_by);
 }
 
-//! Where a partitioned export writes one signal: <root>/<table>, the root of its
-//! year=/month=/day= tree. Shared so the directory that gets created and the directory named
-//! in the COPY cannot drift apart.
-string PartitionedOutputDirectory(const string &root, const SignalDef &signal) {
-	auto directory = root;
-	if (!directory.empty() && directory[directory.size() - 1] != '/') {
-		directory += "/";
-	}
-	return directory + signal.table;
-}
-
 //! The partitioned variant: mirrors the <table>/year=/month=/day= layout the serve-side
 //! Parquet export writes, so a directory produced by `export` is laid out like one produced
 //! by live ingest and can be read back by the same glob.
@@ -275,7 +269,7 @@ string BuildPartitionedCopy(const CliOptions &options, const SignalDef &signal, 
 	auto select_sql = StringUtil::Format("SELECT *, CAST(year(%s) AS INTEGER) AS year, CAST(month(%s) AS INTEGER) AS "
 	                                     "month, CAST(day(%s) AS INTEGER) AS day FROM %s%s",
 	                                     time_col, time_col, time_col, source, predicate);
-	auto directory = PartitionedOutputDirectory(root, signal);
+	auto directory = duckdb::ParquetDatasetDirectory(root, signal.table);
 	auto copy_options = CopyFormatOptions(format);
 	// Splice PARTITION_BY into the format option list, which always ends in ')'.
 	copy_options = copy_options.substr(0, copy_options.size() - 1) + ", PARTITION_BY (year, month, day)" +
@@ -364,16 +358,17 @@ std::vector<SignalDef> DetectSignals(duckdb::Connection &con, const CliOptions &
 //! been ingested — a logs-only catalog is the common case. Without this, the default export
 //! died on `otlp_traces` and wrote nothing at all.
 std::optional<std::set<string>> ExistingSignalTables(duckdb::Connection &con, const ServerConfig &config) {
-	auto scope = " WHERE schema_name = " + SqlQuote(config.schema);
+	auto scope = "schema_name = " + SqlQuote(config.schema);
 	if (!config.catalog.empty()) {
 		scope += " AND database_name = " + SqlQuote(config.catalog);
 	}
 	// Views count as present: the `parquet` mode has no tables at all, and its signals are
-	// reachable only through the views RegisterParquetExportViews defines over the dataset.
-	// Session-scoped ones (the read-only fallback) live in temp.main, so they are matched by
-	// `temporary` rather than by the schema scope.
-	auto sql = "SELECT table_name FROM duckdb_tables()" + scope + " UNION SELECT view_name FROM duckdb_views()" +
-	           scope + " UNION SELECT view_name FROM duckdb_views() WHERE temporary";
+	// reachable only through a view over the dataset -- created by the seal, or by
+	// RegisterParquetExportViews for a dataset this host has never sealed. Session-scoped ones
+	// (the read-only fallback) live in temp.main, so they are matched by `temporary` rather
+	// than by the schema scope.
+	auto sql = "SELECT table_name FROM duckdb_tables() WHERE " + scope +
+	           " UNION SELECT view_name FROM duckdb_views() WHERE temporary OR (" + scope + ")";
 	auto result = con.Query(sql);
 	if (!result || result->HasError()) {
 		return {};
@@ -472,7 +467,9 @@ int RunExport(const CliOptions &options, const EnvSource &env) {
 
 	auto config = ServerConfig::FromEnv(env);
 	duckdb::unique_ptr<duckdb::Connection> con;
-	auto db = OpenConfiguredDatabase(config, env, options.read_only, con);
+	// `signals` is exactly what this export will read, so `--signal logs` probes the dataset
+	// once rather than once per signal.
+	auto db = OpenConfiguredDatabase(config, env, options.read_only, con, signals);
 
 	// Only listed when it can change the outcome: against a remote DuckLake/Iceberg catalog
 	// this is a metadata round trip, and `export --signal logs` never consults it.
@@ -514,7 +511,7 @@ int RunExport(const CliOptions &options, const EnvSource &env) {
 			// path that does not exist yet failed with "Failed to create directory
 			// <root>/<table>". The unpartitioned path has always created its parent (see
 			// ResolveOutputPath); this is the same guarantee for this one.
-			auto directory = PartitionedOutputDirectory(options.output, signal);
+			auto directory = duckdb::ParquetDatasetDirectory(options.output, signal.table);
 			CreateDirectory(directory);
 			Execute(*con, BuildPartitionedCopy(options, signal, source, predicate, options.output, format),
 			        "export " + string(signal.name));
@@ -549,7 +546,7 @@ int RunQuery(const CliOptions &options, const EnvSource &env) {
 
 	auto config = ServerConfig::FromEnv(env);
 	duckdb::unique_ptr<duckdb::Connection> con;
-	auto db = OpenConfiguredDatabase(config, env, options.read_only, con);
+	auto db = OpenConfiguredDatabase(config, env, options.read_only, con, SignalsMentionedIn(sql));
 	// Resolve unqualified table names against the mode's telemetry catalog, so `FROM otlp_logs`
 	// works without spelling out the catalog and schema. Best-effort on purpose: the target
 	// schema is created by otlp_serve, so it does not exist before the first ingest, and a

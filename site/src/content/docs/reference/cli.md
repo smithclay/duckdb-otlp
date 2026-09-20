@@ -203,14 +203,14 @@ Setting only one half of a key pair is an error, not a silent fall-through to th
 
 #### Reading back the `parquet` dataset
 
-`parquet` mode has no catalog — the seal writes straight to `<root>/<table>/year=/month=/day=/`. `query` and `export` register a view per signal over that dataset, so both work the same way they do against a catalog mode:
+`parquet` mode has no catalog — the seal writes straight to `<root>/<table>/year=/month=/day=/` and defines a view over it once files exist. `query` and `export` read through that view, and define it themselves for a dataset this host has never served, so both work the same way they do against a catalog mode:
 
 ```bash
 duckdb-otlp query "SELECT service_name, count(*) FROM otlp_logs GROUP BY 1" --mode parquet
 duckdb-otlp export --signal logs --since -24h --to out/ --mode parquet
 ```
 
-Only signals that have files get a view, so `--signal all` skips the rest instead of failing. The views select the signal's own columns and nothing else — the partition keys live in the path, not the files — so an exported row is identical to one exported from a catalog mode. The views are written into the control database when it is writable, which also makes it a usable handle on the dataset from the plain `duckdb` CLI; with `--readonly` they are session-scoped instead.
+Only signals that have files get a view, so `--signal all` skips the rest instead of failing. The views select the signal's own columns and nothing else — the partition keys live in the path, not the files — so an exported row is identical to one exported from a catalog mode. A `query` only looks for the signals its SQL names, since each check is a directory listing (a remote request against `s3://`). The views live in the control database, which also makes it a usable handle on the dataset from the plain `duckdb` CLI; with `--readonly` they are session-scoped instead.
 
 #### `--mode none`
 

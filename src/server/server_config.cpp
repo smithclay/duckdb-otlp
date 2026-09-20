@@ -132,17 +132,12 @@ public:
 	//! and the warehouse are both derived from CLOUDFLARE_ACCOUNT_ID), and listing it twice
 	//! would read as two separate problems.
 	void Add(const string &name, const string &note = "") {
-		for (const auto &seen : names) {
-			if (seen == name) {
+		for (const auto &entry : entries) {
+			if (entry.first == name) {
 				return;
 			}
 		}
-		names.push_back(name);
-		entries.push_back(note.empty() ? name : name + "  (" + note + ")");
-	}
-
-	bool Any() const {
-		return !entries.empty();
+		entries.emplace_back(name, note);
 	}
 
 	//! Throw one error listing every missing setting, or return if nothing is missing.
@@ -151,19 +146,19 @@ public:
 			return;
 		}
 		std::ostringstream msg;
-		msg << (entries.size() == 1
-		            ? "Missing 1 required setting for DUCKDB_MODE="
-		            : "Missing " + std::to_string(entries.size()) + " required settings for DUCKDB_MODE=")
-		    << mode << ":";
+		msg << "Missing " << entries.size() << " required setting" << (entries.size() == 1 ? "" : "s")
+		    << " for DUCKDB_MODE=" << mode << ":";
 		for (const auto &entry : entries) {
-			msg << "\n  " << entry;
+			msg << "\n  " << entry.first;
+			if (!entry.second.empty()) {
+				msg << "  (" << entry.second << ")";
+			}
 		}
 		throw InvalidInputException(msg.str());
 	}
 
 private:
-	std::vector<string> names;
-	std::vector<string> entries;
+	std::vector<std::pair<string, string>> entries;
 };
 
 //! Read `name`, recording it as missing when unset. Returns "" in that case: the caller keeps
@@ -195,44 +190,10 @@ string TrimSlashes(string value) {
 	while (!value.empty() && value[0] == '/') {
 		value = value.substr(1);
 	}
-	while (!value.empty() && value[value.size() - 1] == '/') {
-		value = value.substr(0, value.size() - 1);
-	}
+	// StringUtil has RTrim(str, chars) but no LTrim overload taking characters, hence the loop
+	// above and the call below rather than two of either.
+	StringUtil::RTrim(value, "/");
 	return value;
-}
-
-//! Object-storage credentials read from the environment.
-//!
-//! Both fields empty is a supported configuration, not an error: the mode then emits no
-//! `CREATE SECRET` at all and DuckDB resolves storage access through its own secret store
-//! (a `CREATE PERSISTENT SECRET` the operator made once, which lives in
-//! $HOME/.duckdb/stored_secrets and is loaded automatically) or its provider credential chain.
-//! Requiring them here is what forced every credential to be passed as an environment
-//! variable to every invocation.
-struct StorageCredentials {
-	string key_id_var;
-	string secret_var;
-
-	bool Configured() const {
-		return !key_id_var.empty() && !secret_var.empty();
-	}
-
-	//! True when exactly one half was set, which is a mistake rather than a choice to use the
-	//! secret store: silently ignoring the one that IS set would look like it took effect.
-	bool PartiallyConfigured() const {
-		return key_id_var.empty() != secret_var.empty();
-	}
-};
-
-StorageCredentials ResolveStorageCredentials(const EnvSource &env, const char *key_var, const char *secret_var) {
-	StorageCredentials creds;
-	if (env.Has(key_var)) {
-		creds.key_id_var = key_var;
-	}
-	if (env.Has(secret_var)) {
-		creds.secret_var = secret_var;
-	}
-	return creds;
 }
 
 //! R2's S3-compatible endpoint. Derived from the account ID unless named outright.
@@ -244,20 +205,16 @@ string R2EndpointDefault(const EnvSource &env, MissingSettings &missing) {
 	return account.empty() ? "" : account + ".r2.cloudflarestorage.com";
 }
 
-string R2BucketValue(const EnvSource &env, MissingSettings &missing) {
-	return RequireEnv(env, missing, "R2_BUCKET");
+//! `s3://<bucket>/<prefix>` from a bucket and prefix variable pair. R2 speaks the S3 API, so
+//! both clouds compose their data path the same way and differ only in which names carry it.
+string ObjectStorePath(const EnvSource &env, MissingSettings &missing, const char *bucket_var, const char *prefix_var) {
+	auto bucket = RequireEnv(env, missing, bucket_var);
+	auto prefix = TrimSlashes(env.Get(prefix_var, "duckdb-otlp"));
+	return prefix.empty() ? "s3://" + bucket : "s3://" + bucket + "/" + prefix;
 }
 
 string R2DataPath(const EnvSource &env, MissingSettings &missing) {
-	auto bucket = R2BucketValue(env, missing);
-	auto prefix = TrimSlashes(env.Get("R2_PREFIX", "duckdb-otlp"));
-	return prefix.empty() ? "s3://" + bucket : "s3://" + bucket + "/" + prefix;
-}
-
-string S3DataPath(const EnvSource &env, MissingSettings &missing) {
-	auto bucket = RequireEnv(env, missing, "S3_BUCKET");
-	auto prefix = TrimSlashes(env.Get("S3_PREFIX", "duckdb-otlp"));
-	return prefix.empty() ? "s3://" + bucket : "s3://" + bucket + "/" + prefix;
+	return ObjectStorePath(env, missing, "R2_BUCKET", "R2_PREFIX");
 }
 
 bool IsS3Path(const string &path) {
@@ -410,8 +367,8 @@ string DuckLakeSecretAttachOptions(const EnvSource &env) {
 // to passing a key and secret to every invocation. Emitting a CREATE OR REPLACE SECRET here would
 // shadow that stored secret with an empty one.
 string BuildR2StorageSecret(const EnvSource &env, ServerConfig &config, const string &secret_name,
-                            const StorageCredentials &creds, const string &endpoint) {
-	if (!creds.Configured()) {
+                            bool have_credentials, const string &endpoint) {
+	if (!have_credentials) {
 		return "";
 	}
 	return StringUtil::Format(R"SQL(
@@ -424,25 +381,33 @@ CREATE OR REPLACE SECRET %s (
   URL_STYLE 'path'
 );
 )SQL",
-	                          secret_name, EnvSql(env, config, creds.key_id_var), EnvSql(env, config, creds.secret_var),
-	                          SqlQuote(endpoint));
+	                          secret_name, EnvSql(env, config, "R2_ACCESS_KEY_ID"),
+	                          EnvSql(env, config, "R2_SECRET_ACCESS_KEY"), SqlQuote(endpoint));
 }
 
-//! Resolve R2 credentials and record how they were obtained, for the startup banner.
+//! Whether an R2 key pair is in the environment, recording how access will be resolved for the
+//! startup banner.
 //!
-//! Half a key pair is rejected here rather than silently ignored: setting only R2_ACCESS_KEY_ID
-//! looks like it configured something, and falling through to the secret store would hide the typo
+//! Neither set is a supported configuration, not an error: the mode then emits no
+//! `CREATE SECRET` at all and DuckDB resolves R2 access through its own secret store (a
+//! `CREATE PERSISTENT SECRET` the operator made once, which lives in $HOME/.duckdb/stored_secrets
+//! and is loaded automatically). Requiring them is what forced every credential to be passed as
+//! an environment variable to every invocation.
+//!
+//! Half a pair is rejected rather than silently ignored: setting only R2_ACCESS_KEY_ID looks
+//! like it configured something, and falling through to the secret store would hide the typo
 //! until the first seal failed against R2.
-StorageCredentials ResolveR2CredentialsOrRecord(const EnvSource &env, ServerConfig &config, MissingSettings &missing) {
-	auto creds = ResolveStorageCredentials(env, "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY");
-	if (creds.PartiallyConfigured()) {
-		missing.Add(creds.key_id_var.empty() ? "R2_ACCESS_KEY_ID" : "R2_SECRET_ACCESS_KEY",
+bool ResolveR2Credentials(const EnvSource &env, ServerConfig &config, MissingSettings &missing) {
+	bool has_key = env.Has("R2_ACCESS_KEY_ID");
+	bool has_secret = env.Has("R2_SECRET_ACCESS_KEY");
+	if (has_key != has_secret) {
+		missing.Add(has_key ? "R2_SECRET_ACCESS_KEY" : "R2_ACCESS_KEY_ID",
 		            "the other half of the R2 key pair is set, so this one is required");
-		return creds;
+		return false;
 	}
-	config.credentials_source = creds.Configured() ? "R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY"
-	                                               : "DuckDB secret store (no R2 key pair in the environment)";
-	return creds;
+	config.credentials_source =
+	    has_key ? "R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY" : "DuckDB secret store (no R2 key pair in the environment)";
+	return has_key;
 }
 
 // The PROVIDER credential_chain S3 secret block shared by the parquet and s3-tables modes. Both pick
@@ -603,12 +568,9 @@ void ConfigureR2DataCatalog(const EnvSource &env, ServerConfig &config, MissingS
 	config.mode_extensions = {"iceberg", "httpfs", "otlp"};
 	config.catalog = CatalogDefault(env, "r2catalog");
 	config.schema = SchemaDefault(env, "otlp");
-	auto catalog_token_var = env.Has("CLOUDFLARE_API_TOKEN") ? "CLOUDFLARE_API_TOKEN" : "";
-	if (!*catalog_token_var) {
-		missing.Add("CLOUDFLARE_API_TOKEN", "R2 Data Catalog read/write token");
-	}
-	auto creds = ResolveR2CredentialsOrRecord(env, config, missing);
-	auto bucket = R2BucketValue(env, missing);
+	RequireEnv(env, missing, "CLOUDFLARE_API_TOKEN", "R2 Data Catalog read/write token");
+	auto have_credentials = ResolveR2Credentials(env, config, missing);
+	auto bucket = RequireEnv(env, missing, "R2_BUCKET");
 	auto account = RequireEnv(env, missing, "CLOUDFLARE_ACCOUNT_ID");
 	// Derived from the account and bucket, which is exactly the URI wrangler prints when you
 	// enable the catalog. It was the one required setting an operator had to assemble by hand,
@@ -622,7 +584,7 @@ void ConfigureR2DataCatalog(const EnvSource &env, ServerConfig &config, MissingS
 		warehouse = account + "_" + bucket;
 	}
 	auto endpoint = R2EndpointDefault(env, missing);
-	auto storage_secret = BuildR2StorageSecret(env, config, "cloudflare_r2_secret", creds, endpoint);
+	auto storage_secret = BuildR2StorageSecret(env, config, "cloudflare_r2_secret", have_credentials, endpoint);
 
 	config.mode_setup_sql = StringUtil::Format(
 	    R"SQL(
@@ -639,8 +601,8 @@ ATTACH %s AS %s (
   SECRET cloudflare_catalog_secret
 );
 )SQL",
-	    storage_secret, EnvSql(env, config, catalog_token_var), SqlQuote(warehouse), QuoteIdentifier(config.catalog),
-	    SqlQuote(catalog_uri));
+	    storage_secret, EnvSql(env, config, "CLOUDFLARE_API_TOKEN"), SqlQuote(warehouse),
+	    QuoteIdentifier(config.catalog), SqlQuote(catalog_uri));
 }
 
 void ConfigureParquet(const EnvSource &env, ServerConfig &config, MissingSettings &missing) {
@@ -649,7 +611,8 @@ void ConfigureParquet(const EnvSource &env, ServerConfig &config, MissingSetting
 	config.schema = SchemaDefault(env, "otlp");
 	config.parquet_export_path = env.Get("PARQUET_EXPORT_PATH");
 	if (config.parquet_export_path.empty()) {
-		config.parquet_export_path = env.Has("S3_BUCKET") ? S3DataPath(env, missing) : config.data_dir + "/parquet";
+		config.parquet_export_path = env.Has("S3_BUCKET") ? ObjectStorePath(env, missing, "S3_BUCKET", "S3_PREFIX")
+		                                                  : config.data_dir + "/parquet";
 	}
 
 	config.data_location = config.parquet_export_path;
@@ -679,7 +642,7 @@ void ConfigureR2LocalDuckLake(const EnvSource &env, ServerConfig &config, Missin
 	config.mode_extensions = {"ducklake", "httpfs", "otlp"};
 	config.catalog = CatalogDefault(env, "lake");
 	config.schema = SchemaDefault(env, "otlp");
-	auto creds = ResolveR2CredentialsOrRecord(env, config, missing);
+	auto have_credentials = ResolveR2Credentials(env, config, missing);
 	auto catalog_path = env.Get("DUCKLAKE_CATALOG_PATH", config.data_dir + "/ducklake/catalog.duckdb");
 	auto data_path = env.Get("DUCKLAKE_DATA_PATH");
 	if (data_path.empty()) {
@@ -688,7 +651,7 @@ void ConfigureR2LocalDuckLake(const EnvSource &env, ServerConfig &config, Missin
 	config.data_location = data_path;
 	CreateParentDirectory(catalog_path);
 	auto endpoint = R2EndpointDefault(env, missing);
-	auto storage_secret = BuildR2StorageSecret(env, config, "r2_storage", creds, endpoint);
+	auto storage_secret = BuildR2StorageSecret(env, config, "r2_storage", have_credentials, endpoint);
 
 	config.mode_setup_sql =
 	    StringUtil::Format(R"SQL(
@@ -707,7 +670,7 @@ void ConfigureR2NeonDuckLake(const EnvSource &env, ServerConfig &config, Missing
 	config.mode_extensions = {"ducklake", "postgres", "httpfs", "otlp"};
 	config.catalog = CatalogDefault(env, "lake");
 	config.schema = SchemaDefault(env, "otlp");
-	auto creds = ResolveR2CredentialsOrRecord(env, config, missing);
+	auto have_credentials = ResolveR2Credentials(env, config, missing);
 	RequirePostgresCatalog(env, missing);
 	auto data_path = env.Get("DUCKLAKE_DATA_PATH");
 	if (data_path.empty()) {
@@ -715,7 +678,7 @@ void ConfigureR2NeonDuckLake(const EnvSource &env, ServerConfig &config, Missing
 	}
 	config.data_location = data_path;
 	auto endpoint = R2EndpointDefault(env, missing);
-	auto storage_secret = BuildR2StorageSecret(env, config, "r2_storage", creds, endpoint);
+	auto storage_secret = BuildR2StorageSecret(env, config, "r2_storage", have_credentials, endpoint);
 
 	config.mode_setup_sql = StringUtil::Format(
 	    R"SQL(
