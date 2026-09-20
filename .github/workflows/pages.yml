@@ -46,14 +46,16 @@ jobs:
       ci_tools_version: v1.5.5
       extension_name: otlp
       extra_toolchains: rust
-      # Windows is excluded: through v1.5.3, DuckDB's bundled fmt no longer compiled on any
-      # current GitHub Windows MSVC image (`stdext::checked_array_iterator` removed →
-      # fmt errors C2653/C7525), and bumping extension-ci-tools to the newer
-      # `windows-2025-vs2026` runner did not help (that MSVC is newer still). v1.5.5 has not
-      # been re-validated on Windows, so it stays excluded conservatively. Re-enable by
-      # removing windows_amd64;windows_amd64_mingw once a DuckDB release is confirmed to ship
-      # an MSVC-compatible fmt. Keep this list in sync with MainDistributionPipeline.yml.
-      exclude_archs: "wasm_mvp;wasm_threads;linux_amd64_musl;windows_amd64;windows_amd64_mingw"
+      # Kept in sync with MainDistributionPipeline.yml: a platform the release pipeline
+      # builds but this one excludes is a platform users cannot INSTALL from the Pages
+      # repository, which is how the v0.7.0 repository ended up with no Windows binary.
+      # windows_amd64 (MSVC) is back on: DuckDB v1.5.5's bundled fmt no longer references
+      # `stdext::checked_array_iterator` (the removed MSVC extension that broke every Windows
+      # build through v1.5.3 with C2653/C7525), and src/otlp_server.cpp guards its POSIX-only
+      # socket headers behind `#ifdef _WIN32` with a Winsock equivalent (issue #37).
+      # windows_amd64_mingw stays excluded: the rtools42 gcc toolchain also needs the
+      # x86_64-pc-windows-gnu Rust target for otlp2records, which has never been validated here.
+      exclude_archs: "wasm_mvp;wasm_threads;linux_amd64_musl;windows_amd64_mingw"
 
   extension-package:
     name: package extension repository
@@ -159,10 +161,16 @@ jobs:
           retention-days: 30
 
       - name: Upload extension repository release asset
-        if: github.event_name == 'release'
+        # Gate on the ref, not the event: MainDistributionPipeline dispatches this workflow on
+        # the tag after cutting the release, and `github.event.release` is empty on a dispatch.
+        # github.ref_name is the tag under both a tag dispatch and a release event.
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ github.event.release.tag_name }}" extension-repository.tar.gz --clobber
+          # This job only downloads artifacts and never checks out the repo, so gh has no git
+          # remote to infer the target from and would fail with "not a git repository".
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "${{ github.ref_name }}" extension-repository.tar.gz --clobber
 
   deploy:
     name: deploy site

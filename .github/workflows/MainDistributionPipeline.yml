@@ -420,8 +420,19 @@ jobs:
         run: |
           set -euo pipefail
           # The tag may have been pushed on its own or created by publishing a release in the
-          # UI, so handle both orders. Creating it here publishes a release, which is what
-          # triggers pages.yml to build and attach the extension repository.
+          # UI, so handle both orders.
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
             || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
           gh release upload "$GITHUB_REF_NAME" release-assets/* --clobber
+
+      - name: Publish the Pages extension repository for this tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        # A release created with GITHUB_TOKEN raises no release:published event, so pages.yml
+        # never hears about the release above and its `release` trigger cannot carry this.
+        # workflow_dispatch is one of the two events GITHUB_TOKEN is still allowed to raise,
+        # so asking pages.yml directly needs no PAT. Dispatch on the tag ref: that is what
+        # lets pages.yml attach the extension repository to this release (it reads
+        # github.ref_name, which is the tag under both a dispatch and a release event).
+        run: gh workflow run pages.yml --ref "$GITHUB_REF_NAME" -f publish_extension=true
