@@ -7,6 +7,8 @@
 #include "duckdb/main/query_result.hpp"
 
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <system_error>
 
 namespace duckdb_otlp_server {
@@ -56,6 +58,29 @@ string CliErrorMessage(const std::exception &ex) {
 	}
 	duckdb::StringUtil::RTrim(message);
 	return message;
+}
+
+string ReadSqlFile(const string &path, const string &what) {
+	// Rejecting a directory explicitly: an ifstream opened on one succeeds on some platforms
+	// and then reads nothing, which would silently turn a mistyped path into "no SQL to run".
+	std::error_code ec;
+	if (std::filesystem::is_directory(path, ec)) {
+		throw InvalidInputException("%s \"%s\" is a directory, not a SQL file", what, path);
+	}
+	std::ifstream file(path);
+	if (!file) {
+		throw InvalidInputException("Could not open %s \"%s\"", what, path);
+	}
+	std::ostringstream buffer;
+	buffer << file.rdbuf();
+	// An ifstream that opened but failed mid-read (an unreadable mount, an I/O error) would
+	// otherwise hand back a silently truncated script.
+	if (file.bad()) {
+		throw InvalidInputException("Failed to read %s \"%s\"", what, path);
+	}
+	auto sql = buffer.str();
+	duckdb::StringUtil::Trim(sql);
+	return sql;
 }
 
 bool PathExists(const string &path) {

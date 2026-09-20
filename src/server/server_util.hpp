@@ -43,6 +43,14 @@ void BindConfigEnvVariables(duckdb::Connection &con, const ServerConfig &config,
 //! with our own COPY(...) text instead of saying the file was missing.
 duckdb::string CliErrorMessage(const std::exception &ex);
 
+//! Read a SQL script from `path`, throwing an actionable error when it cannot be opened or
+//! read. `what` names the setting that supplied the path (for example "--init-sql"), so a
+//! bad init script and a bad `query --file` are distinguishable in the message.
+//!
+//! Returns the contents trimmed. Whether *empty* is an error is the caller's call: an empty
+//! init script is a no-op, an empty `query --file` is a usage error.
+duckdb::string ReadSqlFile(const duckdb::string &path, const duckdb::string &what);
+
 //! True when `path` exists, including as a directory. Lives here with the other filesystem
 //! helpers because two callers want it: the output-overwrite check and the CLI's "that word
 //! names a file, did you mean convert?" hint.

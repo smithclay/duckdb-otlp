@@ -1095,6 +1095,13 @@ ServerConfig ServerConfig::FromEnv(const EnvSource &env) {
 	    ParsePositiveUInt64Env(env, "DUCKDB_OTLP_TARGET_FILE_SIZE", otlp_limits::DEFAULT_TARGET_FILE_SIZE);
 	config.maintenance_retention_ms = ParsePositiveInt64Env(env, "DUCKDB_OTLP_MAINTENANCE_RETENTION_MS",
 	                                                        otlp_limits::DEFAULT_MAINTENANCE_RETENTION_MS);
+	// Read to contents here (not at execution time) so `validate` fails on an unreadable
+	// script and prints the SQL it would run. Empty/whitespace-only is a no-op, not an error:
+	// an operator templating this file into a container should be able to render it empty.
+	config.init_sql_path = env.Get("DUCKDB_OTLP_INIT_SQL", "");
+	if (!config.init_sql_path.empty()) {
+		config.init_sql = ReadSqlFile(config.init_sql_path, "--init-sql script");
+	}
 	config.promote_resource_attributes = env.Get("DUCKDB_OTLP_PROMOTE_RESOURCE_ATTRIBUTES", "");
 	config.promote_scope_attributes = env.Get("DUCKDB_OTLP_PROMOTE_SCOPE_ATTRIBUTES", "");
 
@@ -1235,9 +1242,14 @@ FROM quack_serve(
 
 string ServerConfig::StopOtlpSql() const {
 	// dropped_rows is non-zero only when the final shutdown drain failed and rows were dropped;
-	// main.cpp reads it to exit non-zero on a data-dropping shutdown (review finding M4). Any
-	// listener URI names the whole server, so one stop closes every listener and drains once.
-	return StringUtil::Format("SELECT status, dropped_rows FROM otlp_stop(%s);", SqlQuote(listeners.front().uri));
+	// main.cpp reads it to exit non-zero on a data-dropping shutdown (review finding M4).
+	//
+	// No argument, so this stops EVERY server on the instance, not just the one the daemon
+	// started. A server started out-of-band -- over Quack, or by the operator's --init-sql --
+	// was previously left to database teardown, where OtlpServer::db_ptr has already expired
+	// and the final seal is a silent no-op, so its buffered rows were dropped. This is the
+	// only shutdown point at which those rows can still be committed.
+	return "SELECT status, dropped_rows FROM otlp_stop();";
 }
 
 string ServerConfig::StopQuackSql() const {
@@ -1245,7 +1257,9 @@ string ServerConfig::StopQuackSql() const {
 }
 
 string ServerConfig::BootSql() const {
-	return mode_setup_sql + "\n" + StartOtlpSql() + "\n" + StartQuackSql();
+	// Same order the serve path executes in, so `validate` shows exactly what would run.
+	auto init = init_sql.empty() ? string() : init_sql + "\n";
+	return mode_setup_sql + "\n" + init + StartOtlpSql() + "\n" + StartQuackSql();
 }
 
 } // namespace duckdb_otlp_server
