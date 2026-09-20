@@ -1254,6 +1254,16 @@ ServerConfig ServerConfig::FromEnv(const EnvSource &env) {
 		config.data_location = "catalog " + config.catalog;
 	}
 	ValidateCatalogDoesNotShadowDatabase(config);
+	// Promotion adds real columns with ALTER TABLE, and a Parquet-export destination has no table
+	// to alter -- otlp_serve rejects the pair for that reason. Checking it here as well is what
+	// makes `validate` say so, instead of exiting 0 over a generated call that fails at startup.
+	if (!config.parquet_export_path.empty() &&
+	    !(config.promote_resource_attributes.empty() && config.promote_scope_attributes.empty())) {
+		throw InvalidInputException(
+		    "Attribute promotion needs a catalog to add columns to, and mode \"%s\" writes Parquet files "
+		    "(%s). Drop --promote-resource-attributes/--promote-scope-attributes, or pick a catalog mode.",
+		    config.mode, config.parquet_export_path);
+	}
 	return config;
 }
 

@@ -251,6 +251,15 @@ static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableF
 	};
 	parse_attr_keys("promote_resource_attributes", bind_data->config.promote.resource_keys);
 	parse_attr_keys("promote_scope_attributes", bind_data->config.promote.scope_keys);
+	// Promotion adds first-class columns with ALTER TABLE; a Parquet-export destination keeps no
+	// table to add them to, so the seal path skips promotion entirely there. Silently accepting the
+	// pair is how an operator gets a server that reports promoted_columns_total = 0 and no reason.
+	if (bind_data->config.promote.Enabled() && !bind_data->config.parquet_export_path.empty()) {
+		throw InvalidInputException(
+		    "promote_resource_attributes/promote_scope_attributes need a catalog target: promotion adds columns "
+		    "with ALTER TABLE, and parquet_export_path keeps no table to alter. Drop the promotion parameters, or "
+		    "target a catalog");
+	}
 	// Attribute bags as VARIANT rather than VARCHAR-holding-JSON. This is part of the destination
 	// table's shape, so it is fixed for the life of the server (see CreateOrValidateTable).
 	auto variant_param = input.named_parameters.find("attributes_as_variant");

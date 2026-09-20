@@ -15,6 +15,7 @@ Point the tests at a binary with DUCKDB_OTLP_SERVER_BIN, or rely on the default
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -666,6 +667,64 @@ def test_promotion_flags_accept_the_short_spelling(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "promote_resource_attributes := 'host.name'" in result.stdout
     assert "promote_scope_attributes := 'scope.team'" in result.stdout
+
+
+def test_promotion_flags_are_refused_by_a_mode_that_cannot_promote(tmp_path):
+    """`parquet` mode writes files, so there is no table for ALTER TABLE to add a column to.
+
+    The serve path skips promotion entirely there, so accepting the flags and reporting
+    promoted_columns_total = 0 at runtime is the silent no-op the per-command flag table exists
+    to prevent. `validate` has to be the one that says so -- it is where an operator checks a
+    configuration before starting it.
+    """
+    result = run(
+        ["validate", "--mode", "parquet", "--promote-resource-attributes", "service.name"],
+        env={"PARQUET_EXPORT_PATH": str(tmp_path / "dataset")},
+        home=tmp_path,
+    )
+    assert result.returncode != 0
+    assert "catalog" in result.stderr
+    assert "promote" in result.stderr
+
+
+def test_variant_columns_export_as_json_not_as_their_display_form(tmp_path):
+    """`export --format json` of a VARIANT bag must hold JSON values, not DuckDB's display form.
+
+    DuckDB's json writer renders a VARIANT through its VARCHAR display form, so the bag would be
+    written as the string "{'k': 1}" -- not JSON, not parseable, and the value types the bag is
+    stored for are gone. BuildSelectList casts VARIANT columns to JSON for the json/ndjson
+    formats; every other format is untouched.
+    """
+    init = tmp_path / "init.sql"
+    init.write_text(
+        "CREATE TABLE otlp_logs AS SELECT "
+        "'{\"service.name\":\"x\",\"count\":1}'::JSON::VARIANT AS resource_attributes, "
+        "TIMESTAMP '2026-01-01' AS time_unix_nano;\n"
+    )
+    out = tmp_path / "logs.json"
+    result = run(
+        [
+            "export",
+            "--mode",
+            "none",
+            # In memory because a DuckDB *file* older than storage version v1.5.0 cannot hold a
+            # VARIANT column at all -- which is a deployment constraint, not what this asserts.
+            "--database",
+            ":memory:",
+            "--init-sql",
+            str(init),
+            "--signal",
+            "logs",
+            "--to",
+            str(out),
+        ],
+        home=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    written = out.read_text()
+    assert "{'service.name'" not in written  # DuckDB's display form, the bug this guards
+    rows = json.loads(written)
+    assert rows[0]["resource_attributes"] == {"service.name": "x", "count": 1}
 
 
 def test_ingest_shape_flags_beat_the_environment(tmp_path):

@@ -397,6 +397,8 @@ duckdb-otlp export [flags]
 | `--until TS` | Rows strictly before this time |
 | `--where SQL` | Additional raw predicate |
 | `--partition-by day` | Write `<table>/year=/month=/day=`, matching the layout the serve-side Parquet export writes |
+
+With `--format json`/`--format ndjson`, columns stored as `VARIANT` (see [Attributes as VARIANT](../serve/#attributes-as-variant)) are cast to `JSON` so the output holds real JSON values rather than DuckDB's display form.
 | `--overwrite` | Replace existing output files |
 
 `export` also takes the catalog-selection flags `serve` uses, since it has to open the same catalog: `-m`/`--mode`, `--data-dir`, `--database`, `--catalog`, `--schema`, and `--init-sql`.

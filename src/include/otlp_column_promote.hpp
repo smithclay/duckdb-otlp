@@ -11,9 +11,11 @@ class Connection;
 //! User-specified attribute promotion. At ingest the named resource/scope attribute keys are
 //! extracted out of the `resource_attributes` / `scope_attributes` bags into first-class
 //! VARCHAR columns (`resource_attr_<key>` / `scope_attr_<key>`) so they get zone-map pruning. The
-//! bag is left intact (the residual); any value reconstructs with
-//! `COALESCE(resource_attr_x, json_extract_string(resource_attributes, '$."x"'))`. There is no
-//! auto-discovery: the promoted set is exactly what the operator lists. Catalog mode only.
+//! bag is left intact (the residual); any value reconstructs by COALESCEing the column with the
+//! same extract this promoter projects -- `json_extract_string(resource_attributes, '$."x"')` over
+//! a JSON bag, `CAST(variant_extract(resource_attributes, 'x') AS VARCHAR)` over a VARIANT one,
+//! since neither extract runs on the other's type. There is no auto-discovery: the promoted set is
+//! exactly what the operator lists. Catalog mode only.
 //!
 //! The extract follows the bag's column type (see OtlpServerConfig::attributes_as_variant):
 //! `json_extract_string(bag, '$."k"')` over JSON text, `CAST(variant_extract(bag, 'k') AS VARCHAR)`

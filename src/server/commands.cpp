@@ -275,6 +275,40 @@ string ResolveOutputPath(duckdb::Connection &con, const CliOptions &options, con
 	return path;
 }
 
+//! The select list to read one relation with: `*`, or an explicit list that casts VARIANT columns
+//! to JSON when the output format is JSON/NDJSON.
+//!
+//! DuckDB's json COPY renders a VARIANT through its display form, so a bag stored as
+//! `{"k": 1, "s": "x"}` is written as the *string* `"{'k': 1, 's': x}"` -- not JSON, not
+//! round-trippable, and the value types the bag was stored for are gone. The VARIANT -> JSON cast
+//! is what turns it back into a JSON value, and the json writer emits a JSON-typed column raw.
+//! Parquet stores VARIANT natively and CSV is a text format either way, so neither is touched.
+string BuildSelectList(duckdb::Connection &con, const string &source, OutputFormat format) {
+	if (format != OutputFormat::JSON && format != OutputFormat::NDJSON) {
+		return "*";
+	}
+	auto probe = con.Query("SELECT * FROM " + source + " LIMIT 0");
+	if (!probe || probe->HasError()) {
+		// Not this function's error to report: the COPY below hits the same relation and says
+		// what is wrong with it.
+		return "*";
+	}
+	duckdb::vector<string> columns;
+	bool any_variant = false;
+	for (idx_t i = 0; i < probe->names.size(); i++) {
+		auto column = QuoteIdentifier(probe->names[i]);
+		if (probe->types[i].id() == duckdb::LogicalTypeId::VARIANT) {
+			columns.push_back(StringUtil::Format("CAST(%s AS JSON) AS %s", column, column));
+			any_variant = true;
+			continue;
+		}
+		columns.push_back(column);
+	}
+	// `*` where nothing needed casting, so a plain export keeps emitting the statement it always
+	// did rather than a generated column list.
+	return any_variant ? StringUtil::Join(columns, ", ") : "*";
+}
+
 //! `COPY (<select>) TO '<path>' (...)`, or a partitioned write when --partition-by day is set.
 string BuildCopyStatement(const CliOptions &options, const string &select_sql, const string &path,
                           OutputFormat format) {
@@ -288,12 +322,13 @@ string BuildCopyStatement(const CliOptions &options, const string &select_sql, c
 //! The partitioned variant: mirrors the <table>/year=/month=/day= layout the serve-side
 //! Parquet export writes, so a directory produced by `export` is laid out like one produced
 //! by live ingest and can be read back by the same glob.
-string BuildPartitionedCopy(const CliOptions &options, const SignalDef &signal, const string &source,
-                            const string &predicate, const string &root, OutputFormat format) {
+string BuildPartitionedCopy(duckdb::Connection &con, const CliOptions &options, const SignalDef &signal,
+                            const string &source, const string &predicate, const string &root, OutputFormat format) {
 	auto time_col = QuoteIdentifier(signal.time_column);
-	auto select_sql = StringUtil::Format("SELECT *, CAST(year(%s) AS INTEGER) AS year, CAST(month(%s) AS INTEGER) AS "
-	                                     "month, CAST(day(%s) AS INTEGER) AS day FROM %s%s",
-	                                     time_col, time_col, time_col, source, predicate);
+	auto select_sql =
+	    StringUtil::Format("SELECT %s, CAST(year(%s) AS INTEGER) AS year, CAST(month(%s) AS INTEGER) AS "
+	                       "month, CAST(day(%s) AS INTEGER) AS day FROM %s%s",
+	                       BuildSelectList(con, source, format), time_col, time_col, time_col, source, predicate);
 	auto directory = duckdb::ParquetDatasetDirectory(root, signal.table);
 	auto copy_options = CopyFormatOptions(format);
 	// Splice PARTITION_BY into the format option list, which always ends in ')'.
@@ -545,13 +580,14 @@ int RunExport(const CliOptions &options, const EnvSource &env) {
 			// ResolveOutputPath); this is the same guarantee for this one.
 			auto directory = duckdb::ParquetDatasetDirectory(options.output, signal.table);
 			CreateDirectory(directory);
-			Execute(*con, BuildPartitionedCopy(options, signal, source, predicate, options.output, format),
+			Execute(*con, BuildPartitionedCopy(*con, options, signal, source, predicate, options.output, format),
 			        "export " + string(signal.name));
 			std::cerr << "Wrote " << directory << "/\n";
 			continue;
 		}
-		WriteSignal(*con, options, signal, StringUtil::Format("SELECT * FROM %s%s", source, predicate), format,
-		            present.size() > 1, "export");
+		WriteSignal(*con, options, signal,
+		            StringUtil::Format("SELECT %s FROM %s%s", BuildSelectList(*con, source, format), source, predicate),
+		            format, present.size() > 1, "export");
 	}
 	if (!skipped.empty()) {
 		std::cerr << (config.parquet_export_path.empty() ? "Skipped (not in this catalog yet): "

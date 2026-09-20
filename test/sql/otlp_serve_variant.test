@@ -7,6 +7,9 @@ require otlp
 # Same reason as otlp_serve.test: the ingest server is native-only.
 require 64bit
 
+# The Parquet-export dataset check below builds its fixture with a parquet COPY.
+require parquet
+
 query T
 SELECT listen_uri FROM otlp_serve('otlp:127.0.0.1:55471', token := 'dev-token-123456',
                                   attributes_as_variant := true);
@@ -82,3 +85,33 @@ query T
 SELECT status FROM otlp_stop('otlp:127.0.0.1:55472');
 ----
 Stopped listening on otlp:127.0.0.1:55472
+
+# Parquet export keeps no destination table, but the dataset root still has a shape: a seal
+# writes files beside the ones already there and every reader unions them by name, so flipping
+# the flag over an existing dataset would make the older rows read back as VARIANT *strings*.
+# Build a dataset with a JSON-text bag (the server creates the root; the COPY fills it)...
+statement ok
+SELECT listen_uri FROM otlp_serve('otlp:127.0.0.1:55473', token := 'dev-token-123456',
+                                  parquet_export_path := '__TEST_DIR__/variant_dataset');
+
+statement ok
+SELECT status FROM otlp_stop('otlp:127.0.0.1:55473');
+
+statement ok
+COPY (SELECT '{"service.name":"x"}' AS resource_attributes, 2026 AS year)
+TO '__TEST_DIR__/variant_dataset/otlp_logs' (FORMAT parquet, PARTITION_BY (year));
+
+# ... and a VARIANT server pointed at it is refused, rather than writing a second encoding in.
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55473', token := 'dev-token-123456',
+                parquet_export_path := '__TEST_DIR__/variant_dataset', attributes_as_variant := true);
+----
+was created with attributes_as_variant := false
+
+# The same dataset with the setting it was written on is fine.
+statement ok
+SELECT listen_uri FROM otlp_serve('otlp:127.0.0.1:55473', token := 'dev-token-123456',
+                                  parquet_export_path := '__TEST_DIR__/variant_dataset');
+
+statement ok
+SELECT status FROM otlp_stop('otlp:127.0.0.1:55473');

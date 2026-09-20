@@ -324,15 +324,24 @@ SELECT * FROM otlp_serve(
 ```
 
 - **Column naming.** Each key becomes `resource_attr_<key>` or `scope_attr_<key>` (non-alphanumeric characters become `_`), e.g. `deployment.environment` → `resource_attr_deployment_environment`, on **all six** signal tables. The columns are added once when the server starts.
-- **The JSON blob is kept.** A promoted column is an accelerator, not a replacement — the original key stays in `resource_attributes`/`scope_attributes`. Rows written *before* a key was promoted read back `NULL` for its column, so query across old and new data with:
+- **The bag is kept.** A promoted column is an accelerator, not a replacement — the original key stays in `resource_attributes`/`scope_attributes`. Rows written *before* a key was promoted read back `NULL` for its column, so query across old and new data by COALESCEing the column with the same extract the server projects. Over a JSON bag that is:
 
   ```sql
   COALESCE(resource_attr_deployment_environment,
            json_extract_string(resource_attributes, '$."deployment.environment"'))
   ```
 
+  and with [`attributes_as_variant`](#attributes-as-variant):
+
+  ```sql
+  COALESCE(resource_attr_deployment_environment,
+           CAST(variant_extract(resource_attributes, 'deployment.environment') AS VARCHAR))
+  ```
+
+  Neither extract runs on the other's type: `json_extract_string` over a VARIANT bag fails with `Malformed JSON`, because it is handed DuckDB's display form rather than JSON text.
+
 - **No auto-discovery.** The promoted set is exactly what you list — there is no workload observation or automatic promotion.
-- **Catalog mode only.** Promotion adds real columns via `ALTER TABLE`, so it requires a catalog target (DuckLake). It is ignored under `parquet_export_path`. On an Iceberg REST catalog it works only if the catalog supports `ADD COLUMN`; otherwise the server logs a warning and disables promotion (ingest continues).
+- **Catalog mode only.** Promotion adds real columns via `ALTER TABLE`, so it requires a catalog target (DuckLake). Combining it with `parquet_export_path` (or the daemon's `--mode parquet`) is rejected at startup rather than ignored — there is no table to add the columns to. On an Iceberg REST catalog it works only if the catalog supports `ADD COLUMN`; otherwise the server logs a warning and disables promotion (ingest continues).
 - **Type.** Promoted columns are `VARCHAR` (the JSON-extracted text).
 - `otlp_server_list().promoted_columns_total` reports the promoted column count per signal.
 
@@ -346,7 +355,7 @@ The daemon exposes the same option as `--promote-resource-attributes` / `--promo
 SELECT * FROM otlp_serve('otlp:0.0.0.0:4318', catalog := 'lake', attributes_as_variant := true);
 ```
 
-- **It is part of the table shape, not a runtime preference.** The server creates its six signal tables with the column types the flag implies, and on startup it validates the types it finds. Pointing a server at tables created the other way fails with an error naming the migration rather than writing the wrong encoding into them.
+- **It is part of the destination's shape, not a runtime preference.** The server creates its six signal tables with the column types the flag implies, and on startup it validates the types it finds. Pointing a server at tables created the other way fails with an error naming the migration rather than writing the wrong encoding into them. Under `parquet_export_path` the same check reads the existing dataset instead: files cannot be migrated in place, and two encodings under one root make the older rows unreadable (`union_by_name` hands them back as VARIANT *strings*), so a flipped flag is refused and the remedy is a new export root.
 - **Migrating an existing catalog** means one `ALTER` per bag column per signal table, with an explicit `USING` — a bare cast from `VARCHAR` would store the whole JSON document as a VARIANT *string* instead of parsing it:
 
   ```sql
@@ -355,7 +364,9 @@ SELECT * FROM otlp_serve('otlp:0.0.0.0:4318', catalog := 'lake', attributes_as_v
     USING CAST(resource_attributes AS JSON)::VARIANT;
   ```
 
+- **A DuckDB file catalog needs storage version 1.5.0.** `VARIANT` columns cannot be stored in a DuckDB database file written at an older storage version, and new files default to a backwards-compatible one — so a plain `--database`/`ATTACH` catalog fails at table creation with *"VARIANT columns are not supported in storage versions prior to v1.5.0"*. Create that database with `ATTACH 'x.duckdb' (STORAGE_VERSION 'v1.5.0')` (an `--init-sql` script is the place for it). DuckLake and `parquet_export_path` write Parquet and are unaffected.
 - **DuckLake and Parquet.** `VARIANT` columns are written to Parquet in the [Parquet variant encoding](https://duckdb.org/docs/stable/sql/data_types/variant) and shredded into typed subcolumns, which is where the storage and scan win comes from. DuckLake stores them natively from DuckLake 0.4; a catalog older than that cannot hold the column type.
+- **Text output casts back to JSON.** `duckdb-otlp export --format json` (and `--to x.json`) casts `VARIANT` columns to `JSON` for you, so the file holds real JSON values. In your own SQL — `duckdb-otlp query --format json`, or any `COPY ... TO '*.json'` you write — cast the bag yourself with `CAST(resource_attributes AS JSON)`: DuckDB's json writer otherwise emits a `VARIANT` through its display form, as the string `"{'k': 1}"`. Parquet stores `VARIANT` natively and needs no cast.
 - **Attribute promotion still works.** With `VARIANT` bags the promoted column is filled by `CAST(variant_extract(bag, 'key') AS VARCHAR)` rather than `json_extract_string`, and stays `VARCHAR` either way.
 - **Cost.** The Rust backend has no VARIANT encoder: it emits each bag as JSON either way, and the extension converts that text to `VARIANT` once per chunk on the way in. So this trades a parse at ingest for typed, shreddable storage — measure it against your ingest rate before turning it on at volume (`scripts/benchmark_catalog_ingest.py --attributes-as-variant` runs the daemon e2e benchmark with it on).
 
