@@ -82,6 +82,19 @@ Each serve function is bound to its own URI scheme (no mixing). `otlp_serve` run
 
 See the [Serve Reference](../serve/) for parameters, catalog targeting, endpoints, auth, and buffered commit behavior. For task-oriented walkthroughs, start with the [Live Ingest Quickstart](../../quickstart/serve/), [Stream to Local DuckLake](../../guides/stream-to-local-ducklake/), [Stream to Remote DuckLake](../../guides/stream-to-remote-ducklake/), [Stream to Parquet](../../guides/stream-to-parquet/), [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/), or [Stream to Cloudflare R2 Data Catalog](../../guides/stream-to-r2-data-catalog/).
 
+## Discovering these functions from SQL
+
+Every function this extension registers carries its own documentation in DuckDB's catalog, so a connected client — including an agent that has nothing but a SQL connection — can read it without leaving the database:
+
+```sql
+LOAD otlp;
+SELECT function_name, description, parameters, examples, categories
+FROM duckdb_functions()
+WHERE list_contains(categories, 'opentelemetry');
+```
+
+The `categories` column separates the two wire protocols (`otlp` vs `otap`) from the live-ingest functions (`ingest`, `monitoring`). `read_otlp_metrics` and `read_otlp_metrics_summary` are described but carry no example, because every call to them raises a not-implemented error.
+
 ## Examples
 
 For task-oriented examples, see the [How-to Guides](../../guides/).

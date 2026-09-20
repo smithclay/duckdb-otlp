@@ -23,6 +23,7 @@ set(EXTENSION_SOURCES
     src/storage/otlp_extension.cpp
     src/function/read_otlp.cpp
     src/otlp_arrow.cpp
+    src/otlp_function_docs.cpp
     src/otlp_uri.cpp
     src/otlp_column_promote.cpp
     src/otlp_server.cpp

@@ -1,0 +1,67 @@
+# name: test/sql/function_metadata.test
+# description: every otlp function carries duckdb_functions() metadata an agent can read
+# group: [sql]
+
+require otlp
+
+# A SQL client can only discover this extension through duckdb_functions(), so no function
+# registered here may be left without a description.
+query II
+SELECT function_name, parameter_types FROM duckdb_functions()
+WHERE (function_name LIKE 'read_ot%' OR function_name LIKE 'otlp\_%' ESCAPE '\'
+       OR function_name LIKE 'otap\_%' ESCAPE '\')
+  AND description IS NULL
+ORDER BY function_name;
+----
+
+# Every function has an example except the two readers that are registered only to raise a
+# not-implemented error -- an example that always throws would be worse than none.
+query I
+SELECT function_name FROM duckdb_functions()
+WHERE (function_name LIKE 'read_ot%' OR function_name LIKE 'otlp\_%' ESCAPE '\'
+       OR function_name LIKE 'otap\_%' ESCAPE '\')
+  AND len(examples) = 0
+ORDER BY function_name;
+----
+read_otlp_metrics
+read_otlp_metrics_summary
+
+# Placeholder parameter names are what this metadata exists to remove. The serve functions are
+# the exception: duckdb_functions() renders their positional argument and their named
+# parameters as one list, and naming the positional one turns every named parameter into
+# colN -- so there, col0 is the better trade. See ServeDescriptions in otlp_start_stop.cpp.
+query II
+SELECT function_name, parameters FROM duckdb_functions()
+WHERE (function_name LIKE 'read_ot%' OR function_name LIKE 'otlp\_%' ESCAPE '\'
+       OR function_name LIKE 'otap\_%' ESCAPE '\')
+  AND function_name NOT IN ('otlp_serve', 'otap_serve')
+  AND len(list_filter(parameters, lambda p: p SIMILAR TO 'col\d+')) > 0
+ORDER BY function_name;
+----
+
+# Each overload of a function set gets its own description, matched on its positional
+# argument types: otlp_stop() and otlp_stop(uri) do different things.
+query I
+SELECT count(DISTINCT description) FROM duckdb_functions() WHERE function_name = 'otlp_stop';
+----
+2
+
+query I
+SELECT count(DISTINCT description) FROM duckdb_functions() WHERE function_name = 'otlp_serve';
+----
+3
+
+# The scalar function's example is a runnable expression.
+query I
+SELECT otlp_uri_parser('otlp:localhost:4318').url;
+----
+http://localhost:4318
+
+# Categories put a reader on the right side of the OTLP/OTAP split.
+query II
+SELECT function_name, list_sort(categories) FROM duckdb_functions()
+WHERE function_name IN ('read_otlp_logs', 'read_otap_logs')
+ORDER BY function_name;
+----
+read_otap_logs	[opentelemetry, otap]
+read_otlp_logs	[opentelemetry, otlp]

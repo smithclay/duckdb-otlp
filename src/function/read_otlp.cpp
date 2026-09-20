@@ -12,6 +12,7 @@
 #include "duckdb/main/extension/extension_loader.hpp"
 
 #include "otlp_arrow.hpp"
+#include "otlp_function_docs.hpp"
 #include "otlp_ingest_limits.hpp"
 
 // Include the Rust FFI header
@@ -465,46 +466,115 @@ static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, D
 // ============================================================================
 
 void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
-	// The six supported read_otlp_* functions are identical except for their name and signal-specific
-	// bind function: same scan/init, single VARCHAR arg, projection pushdown on / filter pushdown off.
-	// Drive them from a table so the shared shape lives in one place. (The two unsupported functions
-	// below differ materially — different scan, no init, no pushdown — and stay hand-written.)
+	// The twelve supported readers are identical except for their name, signal-specific bind
+	// function and documentation: same scan/init, single VARCHAR arg, projection pushdown on /
+	// filter pushdown off. Drive them from a table so the shared shape lives in one place. (The two
+	// unsupported functions below differ materially — different scan, no init, no pushdown — and
+	// stay hand-written.)
 	struct ReadOtlpReg {
 		const char *name;
 		table_function_bind_t bind;
+		const char *description;
+		const char *example;
 	};
 	const ReadOtlpReg supported[] = {
-	    {"read_otlp_logs", ReadOTLPLogsRustBind},
-	    {"read_otlp_traces", ReadOTLPTracesRustBind},
-	    {"read_otlp_metrics_gauge", ReadOTLPMetricsGaugeRustBind},
-	    {"read_otlp_metrics_sum", ReadOTLPMetricsSumRustBind},
-	    {"read_otlp_metrics_exp_histogram", ReadOTLPMetricsExpHistogramRustBind},
-	    {"read_otlp_metrics_histogram", ReadOTLPMetricsHistogramRustBind},
-	    // read_otap_*: OpenTelemetry Arrow Protocol input, same schemas/scan as above.
-	    {"read_otap_logs", ReadOTAPLogsRustBind},
-	    {"read_otap_traces", ReadOTAPTracesRustBind},
-	    {"read_otap_metrics_gauge", ReadOTAPMetricsGaugeRustBind},
-	    {"read_otap_metrics_sum", ReadOTAPMetricsSumRustBind},
-	    {"read_otap_metrics_exp_histogram", ReadOTAPMetricsExpHistogramRustBind},
-	    {"read_otap_metrics_histogram", ReadOTAPMetricsHistogramRustBind},
+	    {"read_otlp_logs", ReadOTLPLogsRustBind,
+	     "Read OpenTelemetry log records from OTLP JSON, NDJSON or protobuf files into a flat "
+	     "18-column table. The encoding is detected from the file.",
+	     "SELECT * FROM read_otlp_logs('logs.pb');"},
+	    {"read_otlp_traces", ReadOTLPTracesRustBind,
+	     "Read OpenTelemetry trace spans from OTLP JSON, NDJSON or protobuf files into a flat "
+	     "24-column table, including events, links and a computed duration.",
+	     "SELECT * FROM read_otlp_traces('traces.pb');"},
+	    {"read_otlp_metrics_gauge", ReadOTLPMetricsGaugeRustBind,
+	     "Read OpenTelemetry gauge data points from OTLP JSON, NDJSON or protobuf files into a flat "
+	     "17-column table.",
+	     "SELECT * FROM read_otlp_metrics_gauge('metrics.pb');"},
+	    {"read_otlp_metrics_sum", ReadOTLPMetricsSumRustBind,
+	     "Read OpenTelemetry sum (counter) data points from OTLP JSON, NDJSON or protobuf files into "
+	     "a flat 19-column table with aggregation_temporality and is_monotonic.",
+	     "SELECT * FROM read_otlp_metrics_sum('metrics.pb');"},
+	    {"read_otlp_metrics_exp_histogram", ReadOTLPMetricsExpHistogramRustBind,
+	     "Read OpenTelemetry exponential histogram data points from OTLP JSON, NDJSON or protobuf "
+	     "files into a flat 27-column table with scale, zero bucket and positive/negative buckets.",
+	     "SELECT * FROM read_otlp_metrics_exp_histogram('metrics.pb');"},
+	    {"read_otlp_metrics_histogram", ReadOTLPMetricsHistogramRustBind,
+	     "Read OpenTelemetry explicit-bucket histogram data points from OTLP JSON, NDJSON or protobuf "
+	     "files into a flat 22-column table with bucket bounds and counts.",
+	     "SELECT * FROM read_otlp_metrics_histogram('metrics.pb');"},
+	    // read_otap_*: OpenTelemetry Arrow Protocol input, same schemas/scan as above. Each file is
+	    // one self-contained BatchArrowRecords message carrying one signal family.
+	    {"read_otap_logs", ReadOTAPLogsRustBind,
+	     "Read OpenTelemetry log records from an OTAP (OpenTelemetry Arrow Protocol) "
+	     "BatchArrowRecords file, returning the same 18 columns as read_otlp_logs.",
+	     "SELECT * FROM read_otap_logs('logs.bar');"},
+	    {"read_otap_traces", ReadOTAPTracesRustBind,
+	     "Read OpenTelemetry trace spans from an OTAP (OpenTelemetry Arrow Protocol) "
+	     "BatchArrowRecords file, returning the same 24 columns as read_otlp_traces.",
+	     "SELECT * FROM read_otap_traces('traces.bar');"},
+	    {"read_otap_metrics_gauge", ReadOTAPMetricsGaugeRustBind,
+	     "Read OpenTelemetry gauge data points from an OTAP (OpenTelemetry Arrow Protocol) "
+	     "BatchArrowRecords file, returning the same 17 columns as read_otlp_metrics_gauge.",
+	     "SELECT * FROM read_otap_metrics_gauge('metrics.bar');"},
+	    {"read_otap_metrics_sum", ReadOTAPMetricsSumRustBind,
+	     "Read OpenTelemetry sum (counter) data points from an OTAP (OpenTelemetry Arrow Protocol) "
+	     "BatchArrowRecords file, returning the same 19 columns as read_otlp_metrics_sum.",
+	     "SELECT * FROM read_otap_metrics_sum('metrics.bar');"},
+	    {"read_otap_metrics_exp_histogram", ReadOTAPMetricsExpHistogramRustBind,
+	     "Read OpenTelemetry exponential histogram data points from an OTAP (OpenTelemetry Arrow "
+	     "Protocol) BatchArrowRecords file, returning the same 27 columns as "
+	     "read_otlp_metrics_exp_histogram.",
+	     "SELECT * FROM read_otap_metrics_exp_histogram('metrics.bar');"},
+	    {"read_otap_metrics_histogram", ReadOTAPMetricsHistogramRustBind,
+	     "Read OpenTelemetry explicit-bucket histogram data points from an OTAP (OpenTelemetry Arrow "
+	     "Protocol) BatchArrowRecords file, returning the same 22 columns as "
+	     "read_otlp_metrics_histogram.",
+	     "SELECT * FROM read_otap_metrics_histogram('metrics.bar');"},
 	};
 	for (const auto &reg : supported) {
 		TableFunction func(reg.name, {LogicalType::VARCHAR}, ReadOTLPRustScan, reg.bind, ReadOTLPRustInitGlobal,
 		                   ReadOTLPRustInitLocal);
 		func.projection_pushdown = true;
 		func.filter_pushdown = false;
-		loader.RegisterFunction(func);
+		// The two protocols are the axis a caller has to choose along, so they are the second
+		// category; it is read off the name rather than carried in the table above.
+		const string protocol = StringUtil::StartsWith(reg.name, "read_otap_") ? "otap" : "otlp";
+		// Two facts hold for whole groups of these readers, so they are appended here rather than
+		// repeated across the table above.
+		string description = reg.description;
+		if (StringUtil::Contains(reg.name, "_metrics_")) {
+			description += " One file can hold several metric shapes; this reader takes its own and skips the "
+			               "rest, so the four metric readers all read the same file.";
+		}
+		description += " `path` is a single file or a glob, resolved through DuckDB's file systems (local, S3, "
+		               "HTTP(S), Azure, GCS).";
+		loader.RegisterFunction(
+		    OtlpDocumented(std::move(func), {OtlpDoc({LogicalType::VARCHAR}, {"path"}, std::move(description),
+		                                             {reg.example}, {"opentelemetry", protocol})}));
 	}
 
-	// read_otlp_metrics: registered solely to throw a not-implemented error at bind time.
+	// read_otlp_metrics: registered solely to throw a not-implemented error at bind time. Documented
+	// so that a caller who finds it in duckdb_functions() is pointed at the readers that do work;
+	// deliberately without an `examples` entry, since every call raises.
 	TableFunction metrics_func("read_otlp_metrics", {LogicalType::VARCHAR}, ReadOTLPMetricsUnsupportedScan,
 	                           ReadOTLPMetricsUnionUnsupportedBind);
-	loader.RegisterFunction(metrics_func);
+	loader.RegisterFunction(
+	    OtlpDocumented(std::move(metrics_func),
+	                   {OtlpDoc({LogicalType::VARCHAR}, {"path"},
+	                            "Not implemented: every call raises. OTLP metrics have shape-specific schemas, so "
+	                            "read one of read_otlp_metrics_gauge, read_otlp_metrics_sum, "
+	                            "read_otlp_metrics_histogram or read_otlp_metrics_exp_histogram instead.",
+	                            {}, {"opentelemetry", "otlp"})}));
 
 	// read_otlp_metrics_summary: likewise registered solely to throw a not-implemented error.
 	TableFunction summary_func("read_otlp_metrics_summary", {LogicalType::VARCHAR}, ReadOTLPMetricsUnsupportedScan,
 	                           ReadOTLPMetricsSummaryRustBind);
-	loader.RegisterFunction(summary_func);
+	loader.RegisterFunction(
+	    OtlpDocumented(std::move(summary_func),
+	                   {OtlpDoc({LogicalType::VARCHAR}, {"path"},
+	                            "Not implemented: every call raises. OTLP summary data points are not decoded; the "
+	                            "other read_otlp_metrics_* readers count them as skipped.",
+	                            {}, {"opentelemetry", "otlp"})}));
 }
 
 } // namespace duckdb

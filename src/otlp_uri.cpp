@@ -115,7 +115,7 @@ static void OtlpUriParser(const DataChunk &args, ExpressionState &, Vector &resu
 	result.SetVectorType(VectorType::CONSTANT_VECTOR);
 }
 
-ScalarFunction OtlpUriParserFunction::GetFunction() {
+CreateScalarFunctionInfo OtlpUriParserFunction::GetFunction() {
 	// Materialize the LogicalType constants into locals (read by value) before they
 	// reach perfect-forwarding APIs (pair/initializer_list). Binding a reference to
 	// the static constexpr LogicalType::VARCHAR/USMALLINT/BOOLEAN members ODR-uses
@@ -131,8 +131,15 @@ ScalarFunction OtlpUriParserFunction::GetFunction() {
 	struct_children.emplace_back("ipv6", boolean_type);
 	struct_children.emplace_back("url", varchar_type);
 
-	return ScalarFunction("otlp_uri_parser", {varchar_type}, LogicalType::STRUCT(std::move(struct_children)),
-	                      OtlpUriParser);
+	return OtlpDocumented(
+	    ScalarFunction("otlp_uri_parser", {varchar_type}, LogicalType::STRUCT(std::move(struct_children)),
+	                   OtlpUriParser),
+	    {OtlpDoc({varchar_type}, {"listen_uri"},
+	             "Parse an OTLP/OTAP listen URI into a struct of host, port, ipv6 and the http:// URL a "
+	             "listener would bind. The otlp: or otap: scheme is required; the host defaults to localhost "
+	             "and the port to 4318 for otlp: or 4317 for otap:, the same defaults otlp_serve and "
+	             "otap_serve apply. The argument must be constant.",
+	             {"otlp_uri_parser('otlp:localhost:4318')"}, {"opentelemetry", "utility"})});
 }
 
 } // namespace duckdb

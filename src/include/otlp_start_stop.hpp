@@ -1,12 +1,12 @@
 #pragma once
 
-#include "duckdb/function/table_function.hpp"
+#include "otlp_function_docs.hpp"
 
 namespace duckdb {
 
 class OtlpServeFunction {
 public:
-	static TableFunctionSet GetFunction();
+	static CreateTableFunctionInfo GetFunction();
 };
 
 //! Start a live ingest server over gRPC (OTLP/gRPC unary + OTAP/Arrow streaming).
@@ -14,7 +14,7 @@ public:
 //! selects the gRPC transport. otlp_serve('otap:...') is equivalent.
 class OtapServeFunction {
 public:
-	static TableFunctionSet GetFunction();
+	static CreateTableFunctionInfo GetFunction();
 };
 
 //! Stop a live ingest server, sealing its buffered rows before returning.
@@ -27,22 +27,22 @@ public:
 //! Returns one row per stopped server.
 class OtlpStopFunction {
 public:
-	static TableFunctionSet GetFunction();
+	static CreateTableFunctionInfo GetFunction();
 };
 
 class OtlpServerListFunction {
 public:
-	static TableFunction GetFunction();
+	static CreateTableFunctionInfo GetFunction();
 };
 
 class OtlpSealListFunction {
 public:
-	static TableFunction GetFunction();
+	static CreateTableFunctionInfo GetFunction();
 };
 
 class OtlpFlushFunction {
 public:
-	static TableFunction GetFunction();
+	static CreateTableFunctionInfo GetFunction();
 };
 
 } // namespace duckdb
