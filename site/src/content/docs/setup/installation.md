@@ -24,6 +24,23 @@ DuckDB downloads the pre-built extension for your platform.
   - macOS (Intel, Apple Silicon)
   - Windows (x86_64)
 
+## Install the `duckdb-otlp` CLI
+
+The extension also ships as a standalone binary that receives OTLP over the network, converts OTLP/OTAP files, and queries what it has stored — no DuckDB shell required.
+
+```sh
+# macOS or Linux (x86_64 or arm64), installs into ~/.local/bin
+curl -fsSL https://smithclay.github.io/duckdb-otlp/install.sh | sh
+```
+
+The script picks the latest release for your platform, verifies the download against the release's `SHA256SUMS`, and installs a single executable; re-run it to upgrade. Homebrew works too:
+
+```sh
+brew install smithclay/tap/duckdb-otlp
+```
+
+See the [CLI reference](../../reference/cli/) for install options, every command, and the release tarballs to install by hand.
+
 ## Use in Browser (DuckDB-WASM)
 
 Try the extension in your browser without installation:
@@ -85,6 +102,7 @@ SELECT count(*) FROM read_otlp_logs('test/data/logs_simple.jsonl');
 ## Next Steps
 
 - [Get Started](../../get-started/) - install, load, and run first queries.
+- [CLI Reference](../../reference/cli/) - the `duckdb-otlp` binary: serve, convert, export, query.
 - [OpenTelemetry Collector](../collector/) - export OTLP files from the collector.
 - [OpenTelemetry Demo](../otel-demo/) - stream demo traces, logs, and metrics into local DuckLake.
 - [How-to Guides](../../guides/) - query and export telemetry.

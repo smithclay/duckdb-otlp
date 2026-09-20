@@ -14,10 +14,42 @@ That listens for OTLP/HTTP on `127.0.0.1:4318` and OTLP/gRPC on `127.0.0.1:4317`
 
 ## Install
 
-Each release ships a tarball per platform — `linux-amd64`, `linux-arm64`, `darwin-amd64`, `darwin-arm64` — holding a single executable named `duckdb-otlp`, plus a `SHA256SUMS` file.
+### Install script
 
 ```sh
-VERSION=v0.1.0
+curl -fsSL https://smithclay.github.io/duckdb-otlp/install.sh | sh
+```
+
+That resolves the latest release, downloads the tarball for your platform, verifies it against the release's `SHA256SUMS`, and installs `duckdb-otlp` into `$HOME/.local/bin`. It needs `curl` or `wget` and `sha256sum` or `shasum`; nothing is installed if the checksum does not match. Pipe options through `sh -s --`:
+
+```sh
+# A specific release, installed system-wide
+curl -fsSL https://smithclay.github.io/duckdb-otlp/install.sh | sudo sh -s -- \
+  --version v0.7.2 --bin-dir /usr/local/bin
+```
+
+| Option | Environment variable | Default |
+|--------|----------------------|---------|
+| `--version <tag>` | `DUCKDB_OTLP_VERSION` | the latest release |
+| `--bin-dir <dir>` | `DUCKDB_OTLP_BIN_DIR` | `$HOME/.local/bin` |
+| `--platform <id>` | `DUCKDB_OTLP_PLATFORM` | detected from `uname` |
+
+A flag always wins over its variable. Re-running the script upgrades in place: the new binary is staged next to the old one and renamed over it, so a running `duckdb-otlp` is never left half-written. Exit codes match the CLI's own — `0` installed, `1` the install failed, `2` the command line was wrong — and everything it prints goes to stderr.
+
+### Homebrew
+
+```sh
+brew install smithclay/tap/duckdb-otlp
+```
+
+`brew services start duckdb-otlp` keeps it running in the background.
+
+### Release tarballs
+
+Each release ships a tarball per platform — `linux-amd64`, `linux-arm64`, `darwin-amd64`, `darwin-arm64` — holding a single executable named `duckdb-otlp`, plus a `SHA256SUMS` file. To do by hand what the script does:
+
+```sh
+VERSION=v0.7.2
 PLATFORM=darwin-arm64    # or linux-amd64, linux-arm64, darwin-amd64
 BASE=https://github.com/smithclay/duckdb-otlp/releases/download/$VERSION
 
