@@ -625,6 +625,9 @@ def test_export_rejects_an_unknown_partition_scheme(tmp_path):
         (["export", "--file", "script.sql"], "query"),
         (["--since", "-24h"], "export"),
         (["--readonly"], "query"),
+        (["convert", "--attributes-as-variant", "x.pb"], "serve"),
+        (["export", "--promote-resource-attributes", "host.name"], "serve"),
+        (["doctor", "--attributes-as-variant"], "serve"),
     ],
 )
 def test_a_flag_of_another_command_is_rejected_by_name(args, belongs_to, tmp_path):
@@ -632,6 +635,55 @@ def test_a_flag_of_another_command_is_rejected_by_name(args, belongs_to, tmp_pat
     assert result.returncode == 2  # usage error
     assert "does not accept" in result.stderr
     assert belongs_to in result.stderr
+
+
+def test_ingest_shape_flags_reach_the_generated_serve_call(tmp_path):
+    """--attributes-as-variant and the promotion flags are the CLI face of what ingest writes.
+
+    They were environment-only, so an operator running the binary by hand had to export a
+    variable to choose the attribute-bag column type or promote a key. Each is one row in the
+    flag table over the variable it overrides.
+    """
+    result = run(
+        [
+            "validate",
+            "--attributes-as-variant",
+            "--promote-resource-attributes",
+            "deployment.environment,k8s.namespace.name",
+            "--promote-scope-attributes",
+            "telemetry.sdk.name",
+        ],
+        home=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "attributes_as_variant := true" in result.stdout
+    assert "promote_resource_attributes := 'deployment.environment,k8s.namespace.name'" in result.stdout
+    assert "promote_scope_attributes := 'telemetry.sdk.name'" in result.stdout
+
+
+def test_promotion_flags_accept_the_short_spelling(tmp_path):
+    result = run(["validate", "--promote-resource", "host.name", "--promote-scope", "scope.team"], home=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "promote_resource_attributes := 'host.name'" in result.stdout
+    assert "promote_scope_attributes := 'scope.team'" in result.stdout
+
+
+def test_ingest_shape_flags_beat_the_environment(tmp_path):
+    result = run(
+        ["validate", "--promote-resource-attributes", "from.flag"],
+        env={"DUCKDB_OTLP_PROMOTE_RESOURCE_ATTRIBUTES": "from.env"},
+        home=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "promote_resource_attributes := 'from.flag'" in result.stdout
+    assert "from.env" not in result.stdout
+
+
+def test_ingest_shape_flags_are_off_unless_asked_for(tmp_path):
+    result = run(["validate"], home=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "attributes_as_variant" not in result.stdout
+    assert "promote_resource_attributes" not in result.stdout
 
 
 def test_an_unknown_flag_names_the_command_whose_help_to_read(tmp_path):

@@ -336,11 +336,11 @@ SELECT * FROM otlp_serve(
 - **Type.** Promoted columns are `VARCHAR` (the JSON-extracted text).
 - `otlp_server_list().promoted_columns_total` reports the promoted column count per signal.
 
-The daemon exposes the same option via `DUCKDB_OTLP_PROMOTE_RESOURCE_ATTRIBUTES` and `DUCKDB_OTLP_PROMOTE_SCOPE_ATTRIBUTES` (comma-separated). The daemon image must have the `json` extension available; if it cannot load it, promotion disables itself with a log.
+The daemon exposes the same option as `--promote-resource-attributes` / `--promote-scope-attributes` (or `DUCKDB_OTLP_PROMOTE_RESOURCE_ATTRIBUTES` / `DUCKDB_OTLP_PROMOTE_SCOPE_ATTRIBUTES`), comma-separated. The daemon image must have the `json` extension available; if it cannot load it, promotion disables itself with a log.
 
 ## Attributes as VARIANT
 
-`attributes_as_variant := true` makes the server create and fill every `*_attributes` column as DuckDB's [`VARIANT`](https://duckdb.org/docs/stable/sql/data_types/variant) type instead of `VARCHAR` holding JSON text. The readers take the same flag — see [Attributes as VARIANT](../schemas/#attributes-as-variant) for what changes about querying — and the daemon exposes it as `DUCKDB_OTLP_ATTRIBUTES_AS_VARIANT=1`.
+`attributes_as_variant := true` makes the server create and fill every `*_attributes` column as DuckDB's [`VARIANT`](https://duckdb.org/docs/stable/sql/data_types/variant) type instead of `VARCHAR` holding JSON text. The readers take the same flag — see [Attributes as VARIANT](../schemas/#attributes-as-variant) for what changes about querying — and the daemon exposes it as `--attributes-as-variant` (or `DUCKDB_OTLP_ATTRIBUTES_AS_VARIANT=1`).
 
 ```sql
 SELECT * FROM otlp_serve('otlp:0.0.0.0:4318', catalog := 'lake', attributes_as_variant := true);
