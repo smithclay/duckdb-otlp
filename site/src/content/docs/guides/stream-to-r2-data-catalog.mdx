@@ -21,7 +21,7 @@ Choose a bucket name and a Cloudflare account/token that can create R2 buckets a
 ```bash
 export CLOUDFLARE_ACCOUNT_ID=<account-id>
 export CLOUDFLARE_API_TOKEN=<r2-admin-read-write-token>
-export R2_BUCKET_NAME="duckdb-otlp-r2catalog-${CLOUDFLARE_ACCOUNT_ID}"
+export R2_BUCKET="duckdb-otlp-r2catalog-${CLOUDFLARE_ACCOUNT_ID}"
 ```
 
 Do not paste the API token into logs or source files. The token needs R2 storage read/write and R2 Data Catalog read/write permissions. Cloudflare's R2 Admin Read & Write token includes both.
@@ -29,13 +29,13 @@ Do not paste the API token into logs or source files. The token needs R2 storage
 Create the bucket:
 
 ```bash
-wrangler r2 bucket create "$R2_BUCKET_NAME"
+wrangler r2 bucket create "$R2_BUCKET"
 ```
 
 Enable R2 Data Catalog on the bucket:
 
 ```bash
-wrangler r2 bucket catalog enable "$R2_BUCKET_NAME"
+wrangler r2 bucket catalog enable "$R2_BUCKET"
 ```
 
 Wrangler prints the catalog values DuckDB needs:
@@ -45,21 +45,16 @@ Catalog URI: 'https://catalog.cloudflarestorage.com/<account-id>/<bucket-name>'
 Warehouse: '<account-id>_<bucket-name>'
 ```
 
-Save them in your shell:
-
-```bash
-export R2_CATALOG_URI="https://catalog.cloudflarestorage.com/${CLOUDFLARE_ACCOUNT_ID}/${R2_BUCKET_NAME}"
-export R2_WAREHOUSE="${CLOUDFLARE_ACCOUNT_ID}_${R2_BUCKET_NAME}"
-```
+You do not need to save either value. `duckdb-otlp` derives the catalog URI and the warehouse from `CLOUDFLARE_ACCOUNT_ID` and `R2_BUCKET`, which are the same two values Wrangler built them from. Set `CLOUDFLARE_CATALOG_URI` only if your catalog is not at the standard address.
 
 Enable R2 Data Catalog table maintenance before sustained ingest. Live OTLP ingest commits rows in batches, which can leave many small data files and table snapshots without Cloudflare managed maintenance.
 
 ```bash
-wrangler r2 bucket catalog compaction enable "$R2_BUCKET_NAME" \
+wrangler r2 bucket catalog compaction enable "$R2_BUCKET" \
   --target-size 128 \
   --token "$CLOUDFLARE_API_TOKEN"
 
-wrangler r2 bucket catalog snapshot-expiration enable "$R2_BUCKET_NAME" \
+wrangler r2 bucket catalog snapshot-expiration enable "$R2_BUCKET" \
   --token "$CLOUDFLARE_API_TOKEN" \
   --older-than-days 7 \
   --retain-last 10
@@ -67,7 +62,7 @@ wrangler r2 bucket catalog snapshot-expiration enable "$R2_BUCKET_NAME" \
 
 Compaction combines small files into larger files for faster queries; catalog-level compaction applies retroactively to existing tables. Snapshot expiration removes old Iceberg snapshots and unreferenced files according to the retention policy. Snapshot expiration requires Wrangler `4.56.0` or newer.
 
-You also need an R2 S3-compatible access key pair that can write objects to the bucket. Save those values as `CLOUDFLARE_ACCESS_KEY_ID` and `CLOUDFLARE_SECRET_ACCESS_KEY` in the next step.
+You also need an R2 S3-compatible access key pair that can write objects to the bucket. Save those values as `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` in the next step.
 
 ## Configure
 
@@ -85,12 +80,29 @@ DUCKDB_QUACK_ADDR=0.0.0.0:9494
 DUCKDB_QUACK_TOKEN=dev-quack-token-123456
 
 CLOUDFLARE_ACCOUNT_ID=<account-id>
-CLOUDFLARE_R2_BUCKET=<bucket-name>
-CLOUDFLARE_ACCESS_KEY_ID=<r2-s3-access-key-id>
-CLOUDFLARE_SECRET_ACCESS_KEY=<r2-s3-secret-access-key>
-CLOUDFLARE_CATALOG_URI=https://catalog.cloudflarestorage.com/<account-id>/<bucket-name>
-CLOUDFLARE_CATALOG_TOKEN=<r2-admin-read-write-token>
+R2_BUCKET=<bucket-name>
+CLOUDFLARE_API_TOKEN=<r2-admin-read-write-token>
+
+R2_ACCESS_KEY_ID=<r2-s3-access-key-id>
+R2_SECRET_ACCESS_KEY=<r2-s3-secret-access-key>
 ```
+
+The three settings above the blank line are the required ones. The key pair is optional: leave it out and DuckDB resolves R2 access from its own secret store instead, which is the better choice when you would rather not put credentials in an env file. Create the secret once, against the same data directory the server uses:
+
+```bash
+duckdb-otlp query --mode none "
+  INSTALL httpfs; LOAD httpfs;
+  CREATE PERSISTENT SECRET cloudflare_r2_secret (
+    TYPE s3,
+    KEY_ID '<r2-s3-access-key-id>',
+    SECRET '<r2-s3-secret-access-key>',
+    REGION 'auto',
+    ENDPOINT '<account-id>.r2.cloudflarestorage.com',
+    URL_STYLE 'path'
+  );"
+```
+
+The server prints which of the two it is using on startup (`Credentials: ...`). To keep secrets somewhere other than `$HOME/.duckdb/stored_secrets`, point both commands at it with `--secret-dir`.
 
 ## Start the server
 
@@ -157,14 +169,14 @@ docker stop duckdb-otlp
 Then disable the catalog and delete the bucket:
 
 ```bash
-wrangler r2 bucket catalog disable "$R2_BUCKET_NAME"
-wrangler r2 bucket delete "$R2_BUCKET_NAME"
+wrangler r2 bucket catalog disable "$R2_BUCKET"
+wrangler r2 bucket delete "$R2_BUCKET"
 ```
 
 If bucket deletion reports that the bucket is not empty, delete the remaining catalog objects and retry. For a bucket you created for this guide, those objects are the Iceberg metadata and data files under `__r2_data_catalog/`:
 
 ```bash
-export R2_OBJECTS_API="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/r2/buckets/${R2_BUCKET_NAME}/objects"
+export R2_OBJECTS_API="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/r2/buckets/${R2_BUCKET}/objects"
 
 curl -fsS \
   -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
@@ -177,7 +189,7 @@ curl -fsS \
       "${R2_OBJECTS_API}/${encoded}" >/dev/null
   done
 
-wrangler r2 bucket delete "$R2_BUCKET_NAME"
+wrangler r2 bucket delete "$R2_BUCKET"
 ```
 
 ## Run manually
@@ -256,8 +268,8 @@ FROM otlp_stop('otlp:0.0.0.0:4318');
 
 ## Troubleshooting
 
-- If the container cannot attach the catalog at startup, confirm `CLOUDFLARE_CATALOG_URI`, `CLOUDFLARE_CATALOG_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, and `CLOUDFLARE_R2_BUCKET` all refer to the same bucket.
-- If the container attaches the catalog but cannot write files, confirm `CLOUDFLARE_ACCESS_KEY_ID` and `CLOUDFLARE_SECRET_ACCESS_KEY` can write objects to the R2 bucket.
+- If the container cannot attach the catalog at startup, confirm `CLOUDFLARE_CATALOG_URI`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, and `R2_BUCKET` all refer to the same bucket.
+- If the container attaches the catalog but cannot write files, confirm `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` can write objects to the R2 bucket.
 - If no rows appear after a `202` response, run the flush command before querying.
 - If bucket deletion reports that the bucket is not empty, delete the remaining catalog objects as shown in [Clean up](#clean-up), then retry `wrangler r2 bucket delete`.
 - R2 Data Catalog supports R2 buckets in the default jurisdiction.

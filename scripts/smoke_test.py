@@ -167,7 +167,7 @@ def main() -> int:
     quack_port = free_port()
     env = {
         "DUCKDB_MODE": "local-ducklake",
-        "DUCKLAKE_NAME": CATALOG,
+        "DUCKDB_CATALOG": CATALOG,
         "DUCKLAKE_CATALOG_PATH": "/tmp/duckdb-otlp-smoke.ducklake",
         "DUCKLAKE_DATA_PATH": "/tmp/duckdb-otlp-smoke-files/",
         "DUCKDB_CATALOG": CATALOG,

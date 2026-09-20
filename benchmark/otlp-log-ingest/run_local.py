@@ -339,7 +339,7 @@ def start_container(ctx: Context, data_dir: Path) -> None:
         "DUCKDB_MODE": "local-ducklake",
         "DUCKDB_DATABASE": "/data/control.duckdb",
         "DUCKDB_OTLP_DATA_DIR": "/data",
-        "DUCKLAKE_NAME": "lake",
+        "DUCKDB_CATALOG": "lake",
         "DUCKLAKE_CATALOG_PATH": "/data/ducklake/catalog.duckdb",
         "DUCKLAKE_DATA_PATH": "/data/ducklake/storage",
         "DUCKDB_CATALOG": "lake",

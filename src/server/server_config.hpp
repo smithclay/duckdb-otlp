@@ -44,6 +44,13 @@ struct ServerConfig {
 	//! mode the banner used to print only the control DB, so anyone who opened the one path it
 	//! named found no telemetry in it.
 	duckdb::string data_location;
+	//! Where object-storage credentials came from, for the startup banner: an environment key
+	//! pair, or DuckDB's own secret store when none was set. Empty for modes that need no
+	//! storage credentials.
+	duckdb::string credentials_source;
+	//! Directory DuckDB loads persistent secrets from (DUCKDB_OTLP_SECRET_DIR / --secret-dir).
+	//! Empty leaves DuckDB's default, $HOME/.duckdb/stored_secrets.
+	duckdb::string secret_dir;
 	bool quack_enabled = false;
 	bool dry_run = false;
 	//! True when the server accepts unauthenticated requests. Set explicitly by

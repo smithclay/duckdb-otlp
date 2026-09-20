@@ -366,6 +366,16 @@ int RunServe(const EnvSource &env) {
 			// bookkeeping file, so naming only that sent people looking in the wrong place.
 			std::cout << "Data: " << config.data_location << "\n";
 		}
+		if (!config.credentials_source.empty()) {
+			// Say which credentials the mode will actually present. An empty key pair is a
+			// supported configuration now (DuckDB resolves storage access from its own secret
+			// store), so the difference between "using your environment keys" and "hoping a
+			// stored secret exists" must not be invisible.
+			std::cout << "Credentials: " << config.credentials_source << "\n";
+		}
+		if (!config.secret_dir.empty()) {
+			std::cout << "Secrets: " << config.secret_dir << "\n";
+		}
 		std::cout << "Database: " << config.database << " (control)\n\n";
 		for (const auto &listener : config.listeners) {
 			std::cout << ListenerLabel(listener) << ": " << listener.uri << '\n';

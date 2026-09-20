@@ -61,6 +61,65 @@ duckdb::unique_ptr<duckdb::DuckDB> OpenScratchDatabase() {
 	return db;
 }
 
+//! Point the configured schema's signal names at the Parquet dataset `serve` writes.
+//!
+//! The `parquet` mode has no catalog -- the seal path COPYs straight to
+//! `<root>/<table>/year=/month=/day=/` -- so `query` and `export` opened the control database,
+//! found no signal tables in it, and dead-ended: `FROM otlp_logs` raised "Table with name
+//! otlp_logs does not exist", and `export` claimed the catalog was empty and advised running
+//! `serve`, which would never make it true. A view per signal makes both commands work the
+//! same way they do against a catalog mode.
+//!
+//! Only signals that actually have files get a view: read_parquet over a glob that matches
+//! nothing is an error, and a view for a signal that was never ingested would turn `export
+//! --signal all` from a clean skip into a failure.
+//!
+//! The files carry exactly the signal schema (the COPY sets WRITE_PARTITION_COLUMNS false, so
+//! year/month/day live only in the path), which is what keeps `SELECT *` here identical to
+//! `SELECT *` against a catalog mode.
+void RegisterParquetExportViews(duckdb::Connection &con, const ServerConfig &config, bool read_only) {
+	if (config.parquet_export_path.empty()) {
+		return;
+	}
+	auto root = config.parquet_export_path;
+	while (!root.empty() && root[root.size() - 1] == '/') {
+		root = root.substr(0, root.size() - 1);
+	}
+	// A read-only database cannot hold a view, so fall back to session-scoped ones. Persisting
+	// them when we can is deliberate: it also makes the control database a usable handle on the
+	// dataset from the plain `duckdb` CLI.
+	if (!read_only && !config.schema.empty()) {
+		Execute(con, "CREATE SCHEMA IF NOT EXISTS " + QuoteIdentifier(config.schema) + ";", "parquet view schema");
+	}
+	for (const auto &signal : ResolveSignals("all")) {
+		auto glob = root + "/" + signal.table + "/**/*.parquet";
+		auto probe = con.Query("SELECT 1 FROM glob(" + SqlQuote(glob) + ") LIMIT 1;");
+		if (!probe || probe->HasError()) {
+			// An unreadable root (no credentials yet, a typo'd bucket) is not this function's
+			// error to raise: the user's own query reports it with far better context.
+			continue;
+		}
+		auto rows = probe->Cast<duckdb::MaterializedQueryResult>().RowCount();
+		if (rows == 0) {
+			continue;
+		}
+		auto target = read_only || config.schema.empty()
+		                  ? "TEMP VIEW " + QuoteIdentifier(signal.table)
+		                  : "VIEW " + QuoteIdentifier(config.schema) + "." + QuoteIdentifier(signal.table);
+		// hive_partitioning = false keeps the view's schema identical to the same signal's
+		// table in a catalog mode. The seal writes year=/month=/day= into the PATH with
+		// WRITE_PARTITION_COLUMNS false, so they are not in the files -- but read_parquet
+		// infers them from the directory names and appends three columns, which showed up as
+		// three extra fields on every exported row.
+		// union_by_name so a schema that gained a column between seals still reads as one
+		// relation rather than failing on the first mismatched file.
+		Execute(con,
+		        "CREATE OR REPLACE " + target + " AS SELECT * FROM read_parquet(" + SqlQuote(glob) +
+		            ", union_by_name = true, hive_partitioning = false);",
+		        "parquet view " + string(signal.table));
+	}
+}
+
 //! Open the database described by `config` and run its mode setup, mirroring what `serve`
 //! does before it starts listening. Secrets are bound as session variables rather than
 //! interpolated, exactly as in main.cpp, so they never reach the generated SQL text.
@@ -79,6 +138,8 @@ duckdb::unique_ptr<duckdb::DuckDB> OpenConfiguredDatabase(const ServerConfig &co
 	// The same operator SQL `serve` runs, in the same position: a catalog or view defined
 	// there has to exist here too, or `export`/`query` could not read back what `serve` wrote.
 	Execute(*con, config.init_sql, "init SQL");
+	// After init SQL, so an operator script can point parquet_export_path somewhere first.
+	RegisterParquetExportViews(*con, config, read_only);
 	con_out = std::move(con);
 	return db;
 }
@@ -296,10 +357,16 @@ std::vector<SignalDef> DetectSignals(duckdb::Connection &con, const CliOptions &
 //! been ingested — a logs-only catalog is the common case. Without this, the default export
 //! died on `otlp_traces` and wrote nothing at all.
 std::optional<std::set<string>> ExistingSignalTables(duckdb::Connection &con, const ServerConfig &config) {
-	auto sql = "SELECT table_name FROM duckdb_tables() WHERE schema_name = " + SqlQuote(config.schema);
+	auto scope = " WHERE schema_name = " + SqlQuote(config.schema);
 	if (!config.catalog.empty()) {
-		sql += " AND database_name = " + SqlQuote(config.catalog);
+		scope += " AND database_name = " + SqlQuote(config.catalog);
 	}
+	// Views count as present: the `parquet` mode has no tables at all, and its signals are
+	// reachable only through the views RegisterParquetExportViews defines over the dataset.
+	// Session-scoped ones (the read-only fallback) live in temp.main, so they are matched by
+	// `temporary` rather than by the schema scope.
+	auto sql = "SELECT table_name FROM duckdb_tables()" + scope + " UNION SELECT view_name FROM duckdb_views()" +
+	           scope + " UNION SELECT view_name FROM duckdb_views() WHERE temporary";
 	auto result = con.Query(sql);
 	if (!result || result->HasError()) {
 		return {};
@@ -416,6 +483,15 @@ int RunExport(const CliOptions &options, const EnvSource &env) {
 		present.push_back(signal);
 	}
 	if (present.empty()) {
+		// Name the place actually looked in. In `parquet` mode there is no catalog, and the
+		// old wording ("run serve and send some data") described a state that mode could
+		// never reach, because ingest lands in the dataset rather than in a catalog.
+		if (!config.parquet_export_path.empty()) {
+			throw InvalidInputException(
+			    "Nothing to export: no Parquet files under \"%s\" yet. They are written when a seal completes, so "
+			    "run `duckdb-otlp serve`, send some data, and let it flush (or call otlp_flush).",
+			    config.parquet_export_path);
+		}
 		throw InvalidInputException(
 		    "Nothing to export: the configured catalog holds none of the signal tables yet. They are created on the "
 		    "first ingest, so run `duckdb-otlp serve` and send some data first (looked in schema \"%s\").",
@@ -435,7 +511,9 @@ int RunExport(const CliOptions &options, const EnvSource &env) {
 		            present.size() > 1, "export");
 	}
 	if (!skipped.empty()) {
-		std::cerr << "Skipped (not in this catalog yet): " << StringUtil::Join(skipped, ", ") << '\n';
+		std::cerr << (config.parquet_export_path.empty() ? "Skipped (not in this catalog yet): "
+		                                                 : "Skipped (not in this dataset yet): ")
+		          << StringUtil::Join(skipped, ", ") << '\n';
 	}
 	return 0;
 }

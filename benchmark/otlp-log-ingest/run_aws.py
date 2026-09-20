@@ -475,7 +475,7 @@ def start_consumer(args: argparse.Namespace, state: dict[str, Any]) -> None:
             "-e DUCKDB_MODE=aws-ducklake -e DUCKDB_DATABASE=/data/control.duckdb "
             "-e DUCKDB_OTLP_DATA_DIR=/data -e DUCKLAKE_CATALOG_PATH=/data/ducklake/catalog.duckdb "
             f"-e DUCKLAKE_DATA_PATH=s3://{bucket}/{prefix} -e AWS_REGION={args.region} "
-            "-e DUCKLAKE_NAME=lake -e DUCKDB_CATALOG=lake -e DUCKDB_SCHEMA=otlp "
+            "-e DUCKDB_CATALOG=lake -e DUCKDB_CATALOG=lake -e DUCKDB_SCHEMA=otlp "
             "-e OTEL_HTTP_ADDR=0.0.0.0:4318 -e DUCKDB_QUACK_ENABLED=1 -e DUCKDB_QUACK_ADDR=0.0.0.0:9494 "
             "-e DUCKDB_OTLP_HTTP_THREADS=4 -e DUCKDB_OTLP_MAX_BODY_BYTES=2097152 "
             f"-e DUCKDB_OTLP_MAX_BUFFERED_BYTES={args.max_buffered_bytes} "

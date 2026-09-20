@@ -1232,3 +1232,105 @@ def test_an_ipv6_host_is_bracketed_in_the_quack_address_too(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "quack:[::1]:9494" in result.stdout
     assert "otlp:[::1]:4318" in result.stdout
+
+
+def seed_parquet_dataset(tmp_path, env, table="otlp_logs", fixture="logs_simple.jsonl"):
+    """Write the exact partitioned layout the serve-side seal produces.
+
+    Reproducing the COPY rather than running a server keeps this deterministic and offline;
+    the shape is what matters (year=/month=/day= in the PATH, WRITE_PARTITION_COLUMNS false,
+    so the files carry only the signal's own columns).
+    """
+    root = Path(env["PARQUET_EXPORT_PATH"]) / table
+    reader = "read_otlp_logs" if table == "otlp_logs" else "read_otlp_traces"
+    time_column = "time_unix_nano" if table == "otlp_logs" else "start_time_unix_nano"
+    result = run(
+        [
+            "query",
+            f"COPY (SELECT *, strftime({time_column}, '%Y') AS year, strftime({time_column}, '%m') AS month, "
+            f"strftime({time_column}, '%d') AS day FROM {reader}('{DATA_DIR / fixture}')) "
+            f"TO '{root}' (FORMAT PARQUET, PARTITION_BY (year, month, day), APPEND, "
+            "FILENAME_PATTERN 'seal_{uuid}', WRITE_PARTITION_COLUMNS false)",
+        ],
+        env=env,
+        home=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    return root
+
+
+def test_query_reads_the_parquet_dataset_by_signal_name(tmp_path):
+    """`parquet` mode has no catalog, so `FROM otlp_logs` used to dead-end with "Table with
+    name otlp_logs does not exist" even though serve had written the rows."""
+    env = parquet_mode_env(tmp_path)
+    seed_parquet_dataset(tmp_path, env)
+
+    result = run(["query", "SELECT count(*) AS n FROM otlp_logs", "--format", "csv"], env=env, home=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert int(result.stdout.strip().splitlines()[1]) > 0
+
+
+def test_parquet_dataset_view_has_the_same_columns_as_a_catalog_table(tmp_path):
+    """read_parquet infers year/month/day from the directory names; left on, every exported
+    row carried three columns a catalog mode's export does not have."""
+    env = parquet_mode_env(tmp_path)
+    seed_parquet_dataset(tmp_path, env)
+
+    via_view = run(["query", "SELECT * FROM otlp_logs LIMIT 0", "--format", "csv"], env=env, home=tmp_path)
+    direct = run(
+        ["query", f"SELECT * FROM read_otlp_logs('{DATA_DIR / 'logs_simple.jsonl'}') LIMIT 0", "--format", "csv"],
+        env=env,
+        home=tmp_path,
+    )
+    assert via_view.returncode == 0, via_view.stderr
+    assert direct.returncode == 0, direct.stderr
+    assert via_view.stdout.strip() == direct.stdout.strip()
+    for partition_column in ("year", "month", "day"):
+        assert partition_column not in via_view.stdout.strip().split(",")
+
+
+def test_export_reads_the_parquet_dataset(tmp_path):
+    env = parquet_mode_env(tmp_path)
+    seed_parquet_dataset(tmp_path, env)
+
+    out = tmp_path / "dump"
+    result = run(["export", "--signal", "logs", "--to", str(out) + "/"], env=env, home=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (out / "logs.parquet").exists()
+
+
+def test_export_skips_signals_absent_from_the_dataset(tmp_path):
+    """`--signal all` stays a clean skip, so a logs-only dataset does not fail the export."""
+    env = parquet_mode_env(tmp_path)
+    seed_parquet_dataset(tmp_path, env)
+
+    out = tmp_path / "all"
+    result = run(["export", "--to", str(out) + "/"], env=env, home=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (out / "logs.parquet").exists()
+    assert "Skipped" in result.stderr
+    assert "traces" in result.stderr
+    # The wording has to match the mode: this one has no catalog to be "not in" yet.
+    assert "dataset" in result.stderr
+
+
+def test_export_names_the_dataset_when_there_is_nothing_to_export(tmp_path):
+    """The catalog wording advised running serve to create tables -- a state `parquet` mode
+    never reaches, because ingest lands in the dataset rather than in a catalog."""
+    env = parquet_mode_env(tmp_path)
+    result = run(["export", "--to", str(tmp_path / "out") + "/"], env=env, home=tmp_path)
+    assert result.returncode != 0
+    assert "no Parquet files under" in result.stderr
+    assert env["PARQUET_EXPORT_PATH"] in result.stderr
+
+
+def test_parquet_dataset_is_readable_with_a_read_only_database(tmp_path):
+    """A read-only database cannot hold a view, so the session-scoped fallback has to work."""
+    env = parquet_mode_env(tmp_path)
+    seed_parquet_dataset(tmp_path, env)
+
+    result = run(
+        ["query", "SELECT count(*) AS n FROM otlp_logs", "--format", "csv", "--readonly"], env=env, home=tmp_path
+    )
+    assert result.returncode == 0, result.stderr
+    assert int(result.stdout.strip().splitlines()[1]) > 0

@@ -29,9 +29,9 @@ Create or choose a Cloudflare R2 bucket for DuckLake data files:
 
 ```bash
 export CLOUDFLARE_ACCOUNT_ID=<account-id>
-export R2_BUCKET_NAME=duckdb-otlp-ducklake
+export R2_BUCKET=duckdb-otlp-ducklake
 
-wrangler r2 bucket create "$R2_BUCKET_NAME"
+wrangler r2 bucket create "$R2_BUCKET"
 ```
 
 Create an R2 S3-compatible access key pair that can write objects to the bucket. Save the access key ID and secret access key for the next step.
@@ -44,7 +44,7 @@ Create `remote-ducklake.env`:
 DUCKDB_MODE=r2-neon-ducklake
 DUCKDB_OTLP_TOKEN=dev-token-123456
 
-DUCKLAKE_NAME=lake
+DUCKDB_CATALOG=lake
 DUCKDB_SCHEMA=otlp
 
 DUCKDB_QUACK_ENABLED=1
@@ -52,20 +52,20 @@ DUCKDB_QUACK_ADDR=0.0.0.0:9494
 DUCKDB_QUACK_TOKEN=dev-quack-token-123456
 
 CLOUDFLARE_ACCOUNT_ID=<account-id>
-CLOUDFLARE_R2_BUCKET=<bucket-name>
-CLOUDFLARE_R2_PREFIX=duckdb-otlp/
-CLOUDFLARE_ACCESS_KEY_ID=<r2-s3-access-key-id>
-CLOUDFLARE_SECRET_ACCESS_KEY=<r2-s3-secret-access-key>
+R2_BUCKET=<bucket-name>
+R2_PREFIX=duckdb-otlp/
+R2_ACCESS_KEY_ID=<r2-s3-access-key-id>
+R2_SECRET_ACCESS_KEY=<r2-s3-secret-access-key>
 
-NEON_PGHOST=<neon-host>
-NEON_PGPORT=5432
-NEON_PGDATABASE=<database>
-NEON_PGUSER=<user>
-NEON_PGPASSWORD=<password>
-NEON_PGSSLMODE=require
+PGHOST=<neon-host>
+PGPORT=5432
+PGDATABASE=<database>
+PGUSER=<user>
+PGPASSWORD=<password>
+PGSSLMODE=require
 ```
 
-If you use a custom R2 endpoint, add `CLOUDFLARE_R2_ENDPOINT=<endpoint-host>`.
+If you use a custom R2 endpoint, add `R2_ENDPOINT=<endpoint-host>`.
 
 ## Start the server
 
@@ -219,9 +219,9 @@ FROM otlp_stop('otlp:0.0.0.0:4318');
 
 ## Troubleshooting
 
-- If the container cannot connect to Neon at startup, confirm `NEON_PGHOST`, `NEON_PGDATABASE`, `NEON_PGUSER`, `NEON_PGPASSWORD`, and `NEON_PGSSLMODE=require`.
-- If the container connects to Neon but cannot write data files, confirm the R2 access key can write objects to `CLOUDFLARE_R2_BUCKET`.
-- If R2 paths use the wrong location, confirm `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_R2_BUCKET`, and `CLOUDFLARE_R2_PREFIX`.
+- If the container cannot connect to Neon at startup, confirm `PGHOST`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, and `PGSSLMODE=require`.
+- If the container connects to Neon but cannot write data files, confirm the R2 access key can write objects to `R2_BUCKET`.
+- If R2 paths use the wrong location, confirm `CLOUDFLARE_ACCOUNT_ID`, `R2_BUCKET`, and `R2_PREFIX`.
 - If no rows appear after a `202` response, run the flush command before querying.
 - `otlp_flush` seals buffered ingest rows. Run DuckDB or DuckLake maintenance commands when you need compaction.
 

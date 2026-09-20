@@ -104,7 +104,7 @@ def test_otap_listen_uri_routes_to_otap_serve(tmp_path):
     assert "FROM otlp_serve(" not in out
 
 
-def test_aws_ducklake_uses_instance_role_and_local_catalog(tmp_path):
+def test_aws_ducklake_uses_the_shared_credential_chain_and_local_catalog(tmp_path):
     catalog = tmp_path / "ducklake" / "catalog.duckdb"
     result = run(
         {
@@ -119,7 +119,9 @@ def test_aws_ducklake_uses_instance_role_and_local_catalog(tmp_path):
     assert result.returncode == 0, result.stderr
     out = result.stdout
     assert "PROVIDER credential_chain" in out
-    assert "CHAIN instance" in out
+    # The same chain the parquet and s3-tables modes build. Hardcoding CHAIN instance here
+    # meant AWS_PROFILE worked in one AWS mode and was silently ignored in another.
+    assert "CHAIN env" in out
     assert f"ATTACH 'ducklake:{catalog}'" in out
     assert "'s3://benchmark-bucket/run-123'" in out
     assert "KEY_ID" not in out
@@ -229,42 +231,42 @@ def test_r2_data_catalog_secrets_use_getvariable(tmp_path):
         "DUCKDB_MODE": "r2-data-catalog",
         "DUCKDB_OTLP_TOKEN": "a-private-token-123456",
         "CLOUDFLARE_ACCOUNT_ID": "acct123",
-        "CLOUDFLARE_R2_BUCKET": "mybucket",
+        "R2_BUCKET": "mybucket",
         "CLOUDFLARE_CATALOG_URI": "https://catalog.example/uri",
-        "CLOUDFLARE_CATALOG_TOKEN": SECRET,
-        "CLOUDFLARE_ACCESS_KEY_ID": SECRET,
-        "CLOUDFLARE_SECRET_ACCESS_KEY": SECRET,
+        "CLOUDFLARE_API_TOKEN": SECRET,
+        "R2_ACCESS_KEY_ID": SECRET,
+        "R2_SECRET_ACCESS_KEY": SECRET,
     }
     result = run(env, tmp_path)
     assert result.returncode == 0, result.stderr
     out = result.stdout
     assert SECRET not in out, "a secret value leaked into generated SQL"
     assert "getenv(" not in out, "getenv() is not available in the embedded daemon; use getvariable()"
-    assert "getvariable('env_CLOUDFLARE_CATALOG_TOKEN')" in out
-    assert "getvariable('env_CLOUDFLARE_ACCESS_KEY_ID')" in out
-    assert "getvariable('env_CLOUDFLARE_SECRET_ACCESS_KEY')" in out
+    assert "getvariable('env_CLOUDFLARE_API_TOKEN')" in out
+    assert "getvariable('env_R2_ACCESS_KEY_ID')" in out
+    assert "getvariable('env_R2_SECRET_ACCESS_KEY')" in out
 
 
 def test_r2_neon_ducklake_secrets_use_getvariable(tmp_path):
     env = {
         "DUCKDB_MODE": "r2-neon-ducklake",
         "DUCKDB_OTLP_TOKEN": "a-private-token-123456",
-        "CLOUDFLARE_R2_BUCKET": "mybucket",
-        "CLOUDFLARE_ACCESS_KEY_ID": SECRET,
-        "CLOUDFLARE_SECRET_ACCESS_KEY": SECRET,
-        "CLOUDFLARE_R2_ENDPOINT": "https://acct.r2.cloudflarestorage.com",
-        "NEON_PGHOST": "db.example",
-        "NEON_PGDATABASE": "lake",
-        "NEON_PGUSER": "lakeuser",
-        "NEON_PGPASSWORD": SECRET,
+        "R2_BUCKET": "mybucket",
+        "R2_ACCESS_KEY_ID": SECRET,
+        "R2_SECRET_ACCESS_KEY": SECRET,
+        "R2_ENDPOINT": "https://acct.r2.cloudflarestorage.com",
+        "PGHOST": "db.example",
+        "PGDATABASE": "lake",
+        "PGUSER": "lakeuser",
+        "PGPASSWORD": SECRET,
     }
     result = run(env, tmp_path)
     assert result.returncode == 0, result.stderr
     out = result.stdout
     assert SECRET not in out, "a secret value leaked into generated SQL"
     assert "getenv(" not in out, "getenv() is not available in the embedded daemon; use getvariable()"
-    assert "getvariable('env_NEON_PGPASSWORD')" in out
-    assert "getvariable('env_CLOUDFLARE_ACCESS_KEY_ID')" in out
+    assert "getvariable('env_PGPASSWORD')" in out
+    assert "getvariable('env_R2_ACCESS_KEY_ID')" in out
 
 
 def gcp_env():
@@ -301,7 +303,7 @@ def test_gcp_ducklake_uses_adc_and_remote_postgres(tmp_path):
 
 def test_gcp_ducklake_proxy_and_catalog_overrides(tmp_path):
     env = gcp_env()
-    env.update({"PGPORT": "5433", "PGSSLMODE": "disable", "DUCKLAKE_NAME": "trace-lake", "DUCKDB_SCHEMA": "traces"})
+    env.update({"PGPORT": "5433", "PGSSLMODE": "disable", "DUCKDB_CATALOG": "trace-lake", "DUCKDB_SCHEMA": "traces"})
     result = run(env, tmp_path)
     assert result.returncode == 0, result.stderr
     assert "PORT getvariable('env_PGPORT')" in result.stdout
@@ -611,3 +613,126 @@ def test_empty_init_sql_is_a_no_op(tmp_path):
     result = run({"DUCKDB_OTLP_INIT_SQL": str(script)}, tmp_path)
     assert result.returncode == 0, result.stderr
     assert "FROM otlp_serve(" in result.stdout
+
+
+def test_every_missing_setting_is_reported_in_one_run(tmp_path):
+    """Configuration errors are reported as a set, not one per run.
+
+    Reporting the first miss and stopping turned configuring a remote lakehouse into a
+    guessing game: r2-data-catalog took six runs to satisfy because each named a single
+    variable. The count in the header is what makes "am I nearly there?" answerable.
+    """
+    result = run({"DUCKDB_MODE": "r2-data-catalog"}, tmp_path)
+    assert result.returncode != 0
+    assert "Missing 3 required settings" in result.stderr
+    for name in ("CLOUDFLARE_API_TOKEN", "R2_BUCKET", "CLOUDFLARE_ACCOUNT_ID"):
+        assert name in result.stderr
+
+
+def test_a_variable_several_settings_need_is_listed_once(tmp_path):
+    """CLOUDFLARE_ACCOUNT_ID feeds both the endpoint and the warehouse; one miss, one line."""
+    result = run({"DUCKDB_MODE": "r2-data-catalog"}, tmp_path)
+    assert result.stderr.count("CLOUDFLARE_ACCOUNT_ID") == 1
+
+
+def test_r2_catalog_uri_is_derived_from_account_and_bucket(tmp_path):
+    """The catalog URI is mechanically derivable from two values the mode already requires.
+
+    It was the one setting an operator had to assemble by hand, while the warehouse -- built
+    from the same two -- was already derived.
+    """
+    result = run(
+        {
+            "DUCKDB_MODE": "r2-data-catalog",
+            "CLOUDFLARE_API_TOKEN": SECRET,
+            "CLOUDFLARE_ACCOUNT_ID": "acct123",
+            "R2_BUCKET": "mybucket",
+        },
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ENDPOINT 'https://catalog.cloudflarestorage.com/acct123/mybucket'" in result.stdout
+    assert "ATTACH 'acct123_mybucket'" in result.stdout
+
+
+def test_storage_credentials_fall_back_to_the_duckdb_secret_store(tmp_path):
+    """No key pair in the environment is a supported configuration, not an error.
+
+    DuckDB loads a CREATE PERSISTENT SECRET from its own store automatically, so emitting a
+    CREATE OR REPLACE SECRET here would shadow the stored one with an empty credential.
+    """
+    result = run(
+        {
+            "DUCKDB_MODE": "r2-local-ducklake",
+            "R2_BUCKET": "mybucket",
+            "CLOUDFLARE_ACCOUNT_ID": "acct123",
+        },
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "CREATE OR REPLACE SECRET r2_storage" not in result.stdout
+    # The banner must say so: "using your keys" and "hoping a stored secret exists" are very
+    # different deployments and the difference must not be invisible.
+    assert "Credentials: DuckDB secret store" in result.stdout
+
+
+def test_half_an_r2_key_pair_is_an_error_not_a_silent_fallback(tmp_path):
+    """One half set is a typo. Falling through to the secret store would hide it until the
+    first seal failed against R2."""
+    result = run(
+        {
+            "DUCKDB_MODE": "r2-local-ducklake",
+            "R2_BUCKET": "mybucket",
+            "CLOUDFLARE_ACCOUNT_ID": "acct123",
+            "R2_ACCESS_KEY_ID": SECRET,
+        },
+        tmp_path,
+    )
+    assert result.returncode != 0
+    assert "R2_SECRET_ACCESS_KEY" in result.stderr
+    assert SECRET not in result.stderr
+
+
+def test_secret_dir_is_set_before_anything_touches_the_secret_manager(tmp_path):
+    """secret_directory has to be set before the first CREATE SECRET initializes the manager."""
+    secrets = tmp_path / "secrets"
+    result = run(
+        {
+            "DUCKDB_MODE": "r2-local-ducklake",
+            "R2_BUCKET": "mybucket",
+            "CLOUDFLARE_ACCOUNT_ID": "acct123",
+            "DUCKDB_OTLP_SECRET_DIR": str(secrets),
+        },
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    sql = result.stdout[result.stdout.index("Generated initialization SQL:") :]
+    assert f"SET secret_directory = '{secrets}';" in sql
+    assert sql.index("SET secret_directory") < sql.index("INSTALL")
+
+
+def test_mode_none_attaches_nothing_and_leaves_the_target_to_init_sql(tmp_path):
+    """The escape hatch: --init-sql layered on an unwanted local-ducklake ATTACH was the only
+    way to reach a layout the eight presets do not cover (S3 data, Postgres catalog)."""
+    script = tmp_path / "attach.sql"
+    script.write_text("ATTACH 'ducklake:postgres:dbname=lake' AS lake (DATA_PATH 's3://b/p');\n")
+    result = run(
+        {
+            "DUCKDB_MODE": "none",
+            "DUCKDB_OTLP_INIT_SQL": str(script),
+            "DUCKDB_CATALOG": "lake",
+        },
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "INSTALL ducklake" not in result.stdout
+    assert "ATTACH 'ducklake:postgres:dbname=lake'" in result.stdout
+    assert "catalog := 'lake'" in result.stdout
+
+
+def test_mode_none_without_init_sql_writes_to_the_control_database(tmp_path):
+    """A bare `none` is still a working server, not a half-configured one."""
+    result = run({"DUCKDB_MODE": "none"}, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "catalog := ''" in result.stdout
+    assert "Mode: none" in result.stdout
