@@ -17,9 +17,17 @@ public:
 	static TableFunctionSet GetFunction();
 };
 
+//! Stop a live ingest server, sealing its buffered rows before returning.
+//!
+//! Two overloads: otlp_stop(uri) stops the server that owns `uri` (any of its listeners),
+//! and otlp_stop() stops every server on the instance. The no-argument form is what makes
+//! the documented "call otlp_stop before closing the database" contract satisfiable when the
+//! caller does not know every listen URI -- a server started out-of-band would otherwise
+//! survive to database teardown, where the final seal is a no-op and its rows are dropped.
+//! Returns one row per stopped server.
 class OtlpStopFunction {
 public:
-	static TableFunction GetFunction();
+	static TableFunctionSet GetFunction();
 };
 
 class OtlpServerListFunction {

@@ -71,6 +71,17 @@ struct ServerConfig {
 	duckdb::string promote_scope_attributes;
 
 	duckdb::string mode_setup_sql;
+	//! Operator-supplied SQL run after mode setup and before the ingest server starts
+	//! (`--init-sql` / DUCKDB_OTLP_INIT_SQL). The escape hatch for DuckDB configuration the
+	//! modes do not model: extra ATTACHes, SET statements, secrets, views over the ingest
+	//! tables. Empty when unset.
+	//!
+	//! Resolved to CONTENTS here rather than kept as a path so `validate` reports an
+	//! unreadable script exactly as `serve` would and prints the SQL it would run. `doctor`
+	//! never calls FromEnv, so a container HEALTHCHECK does not read (or execute) this.
+	duckdb::string init_sql;
+	//! Where init_sql came from, for error messages and the startup banner. Empty when unset.
+	duckdb::string init_sql_path;
 	std::vector<duckdb::string> mode_extensions;
 	//! Environment-variable names that the generated secret SQL reads via getvariable().
 	//! The daemon binds each ("env_<NAME>" -> the env value) as a session variable before

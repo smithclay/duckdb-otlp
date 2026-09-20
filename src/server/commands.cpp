@@ -76,6 +76,9 @@ duckdb::unique_ptr<duckdb::DuckDB> OpenConfiguredDatabase(const ServerConfig &co
 	auto con = duckdb::make_uniq<duckdb::Connection>(*db);
 	BindConfigEnvVariables(*con, config, env);
 	Execute(*con, config.mode_setup_sql, "mode setup");
+	// The same operator SQL `serve` runs, in the same position: a catalog or view defined
+	// there has to exist here too, or `export`/`query` could not read back what `serve` wrote.
+	Execute(*con, config.init_sql, "init SQL");
 	con_out = std::move(con);
 	return db;
 }
@@ -440,13 +443,7 @@ int RunExport(const CliOptions &options, const EnvSource &env) {
 int RunQuery(const CliOptions &options, const EnvSource &env) {
 	string sql = options.sql;
 	if (!options.sql_file.empty()) {
-		std::ifstream file(options.sql_file);
-		if (!file) {
-			throw InvalidInputException("Could not open SQL file \"%s\"", options.sql_file);
-		}
-		std::ostringstream buffer;
-		buffer << file.rdbuf();
-		sql = buffer.str();
+		sql = ReadSqlFile(options.sql_file, "SQL file");
 	}
 	StringUtil::Trim(sql);
 	if (sql.empty()) {

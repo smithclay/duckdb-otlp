@@ -36,8 +36,25 @@ public:
 		//! Rows still buffered after the final shutdown drain failed (dropped). 0 on a clean stop.
 		//! Lets otlp_stop / the daemon distinguish a clean shutdown from a data-dropping one (M4).
 		idx_t dropped_rows = 0;
+		//! Non-empty when the stop itself threw. Only StopAllServers can report one: it keeps
+		//! going after a failed server so one wedged backend cannot leave the rest unsealed,
+		//! and the error has to travel back per server rather than as an exception.
+		string error;
 	};
 	StopResult StopServer(ClientContext &context, const OtlpUri &listen_uri);
+
+	//! Gracefully stop (and seal) EVERY registered server, returning one result per server.
+	//!
+	//! This is the whole-instance counterpart of StopServer, and the only way to drain a
+	//! server whose listen URI the caller does not know -- for example one started
+	//! out-of-band over Quack. It must be called while the DatabaseInstance is still alive:
+	//! the private StopAllServers() teardown path runs from ~OtlpStorageExtensionInfo, by
+	//! which point OtlpServer::db_ptr has expired and the final seal is a no-op, so buffered
+	//! rows are dropped rather than committed.
+	//!
+	//! Unlike that teardown path this does NOT mark the registry shut down: the instance
+	//! stays usable and a later otlp_serve can start a new server.
+	vector<StopResult> StopAllServersGraceful();
 
 	//! One row per listener. Listeners of the same server share every buffer/seal/maintenance
 	//! counter; is_listening/last_error/transport are per listener.

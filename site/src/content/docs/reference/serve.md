@@ -103,6 +103,7 @@ The extension registers six server functions (two to start a server, two lifecyc
 | `otap_serve([uri], ...)` | Start an **OTAP/Arrow** gRPC streaming server and create/validate target tables. Same parameters and output as `otlp_serve`. Returns one row per listener. |
 | `otlp_flush(uri)` | Force a synchronous commit of buffered rows when readers need fresh data. Returns commit stats. It leaves catalog maintenance alone. |
 | `otlp_stop(uri)` | Stop the server that owns listener `uri`, including its other listeners (commits remaining rows first). Returns a status string. |
+| `otlp_stop()` | Stop every server on this database, committing each first. Returns one row per server. |
 | `otlp_server_list()` | List every running listener with its server's live counters, buffer state, and health. |
 | `otlp_seal_list()` | List recent seal attempts with append, commit, row, byte, and error telemetry. |
 
@@ -157,7 +158,7 @@ SELECT * FROM otlp_serve('otlp:localhost:4318', catalog := 'lake', token := 'my-
 | `catalog_name` | VARCHAR | Target catalog. Empty for the connection's default catalog. |
 | `transport` | VARCHAR | `http` or `grpc`. |
 
-Starting a second server on the same URI, or for the same catalog target, fails (`OTLP server already exists`). If any listener fails to bind, the listeners already started are closed and no server is registered. The DuckDB `DatabaseInstance` owns the server lifetime: DuckDB stops all servers when the database closes, but it does **not** commit their buffers at that point (see Durability below). Call `otlp_stop` before closing the database to avoid losing buffered rows.
+Starting a second server on the same URI, or for the same catalog target, fails (`OTLP server already exists`). If any listener fails to bind, the listeners already started are closed and no server is registered. The DuckDB `DatabaseInstance` owns the server lifetime: DuckDB stops all servers when the database closes, but it does **not** commit their buffers at that point (see Durability below). Call `otlp_stop` before closing the database to avoid losing buffered rows — `otlp_stop()` with no argument covers every server, including any you did not start yourself.
 
 ### `otap_serve([uri], ...)`
 
@@ -209,11 +210,22 @@ Stops the server that owns listener `uri`: every listener of that server stops a
 SELECT status FROM otlp_stop('otlp:localhost:4318');
 ```
 
-**Output column:**
+### `otlp_stop()`
+
+Stops **every** server on this database, committing each one before returning, and returns one row per server. The registry stays usable afterwards: this is a graceful drain, not teardown, so a later `otlp_serve` still works.
+
+```sql
+SELECT status, dropped_rows FROM otlp_stop();
+```
+
+Prefer this over `otlp_stop(uri)` in a shutdown path. A stop that names one URI reaches only that server, so a server started somewhere else — by another connection, or by the daemon's [`--init-sql`](../cli/) script — survives to database teardown, where the final commit can no longer write and its buffered rows are dropped. With no servers running it returns a single `No OTLP servers are running` row.
+
+**Output columns (both forms):**
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `status` | VARCHAR | `Stopped listening on <uri>[, <uri>...]` listing every listener that was stopped, or `No server found listening on <uri>` if none matched. |
+| `dropped_rows` | UBIGINT | Rows still buffered after the final commit failed, and therefore lost. `0` on a clean stop. |
 
 ### `otlp_server_list()`
 

@@ -368,3 +368,58 @@ SELECT maintenance_contended_total FROM otlp_server_list() WHERE listen_uri = 'o
 
 statement ok
 CALL otlp_stop('otlp:127.0.0.1:55480');
+
+# --- otlp_stop() with no argument: stop every server on the instance ---
+#
+# This is what the daemon's shutdown runs. The single-URI form only reaches the server it
+# names, so a server started out-of-band (over Quack, or by the daemon's --init-sql script)
+# used to survive to database teardown -- where OtlpServer::db_ptr has already expired, the
+# final seal is a silent no-op, and its buffered rows are dropped. Covered here because the
+# loss is invisible from the URI form's own result.
+
+# no servers: one informational row rather than an empty result, so the caller is never
+# left guessing whether the stop ran.
+query TI
+SELECT status, dropped_rows FROM otlp_stop();
+----
+No OTLP servers are running	0
+
+statement ok
+CREATE SCHEMA stop_all_other;
+
+statement ok
+CALL otlp_serve('otlp:127.0.0.1:55481', token := 'dev-token-123456');
+
+# a second server: a distinct target (schema), which is what the one-server-per-target rule
+# requires, standing in for the out-of-band server the daemon does not know about.
+statement ok
+CALL otlp_serve('otlp:127.0.0.1:55482', token := 'dev-token-123456', schema := 'stop_all_other');
+
+query I
+SELECT count(*) FROM otlp_server_list();
+----
+2
+
+# one row per server, and no rows dropped: both were sealed while the database was alive.
+query I
+SELECT count(*) FROM otlp_stop() WHERE status LIKE 'Stopped listening on%' AND dropped_rows = 0;
+----
+2
+
+query I
+SELECT count(*) FROM otlp_server_list();
+----
+0
+
+# the registry stays usable: a graceful stop-all is not teardown, so otlp_serve still works.
+statement ok
+CALL otlp_serve('otlp:127.0.0.1:55483', token := 'dev-token-123456');
+
+query I
+SELECT count(*) FROM otlp_stop();
+----
+1
+
+# CASCADE: serve created the six ingest tables in this schema.
+statement ok
+DROP SCHEMA stop_all_other CASCADE;

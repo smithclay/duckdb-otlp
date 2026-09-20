@@ -119,6 +119,7 @@ duckdb-otlp serve [flags]
 | `--database PATH` | `DUCKDB_DATABASE` | `<data-dir>/duckdb-otlp-control.duckdb` |
 | `--catalog NAME` | `DUCKDB_CATALOG` | mode-dependent |
 | `--schema NAME` | `DUCKDB_SCHEMA` | mode-dependent |
+| `--init-sql PATH` | `DUCKDB_OTLP_INIT_SQL` | *(none)* |
 | `--token TOKEN` | `DUCKDB_OTLP_TOKEN` | *(none)* |
 | `--no-auth` | `DUCKDB_OTLP_DISABLE_AUTH` | `0` |
 | `--quack PORT` | `DUCKDB_QUACK_PORT` | off (`0` disables) |
@@ -126,6 +127,43 @@ duckdb-otlp serve [flags]
 | `--startup-timeout SECS` | `DUCKDB_OTLP_STARTUP_TIMEOUT` | `60` |
 
 Passing a token as a flag makes it visible in the process list; prefer `DUCKDB_OTLP_TOKEN` outside of local use.
+
+### Custom DuckDB setup (`--init-sql`)
+
+`--init-sql PATH` (or `DUCKDB_OTLP_INIT_SQL`) runs a SQL script **after** the mode has attached its catalog and **before** ingest starts. It is the escape hatch for DuckDB configuration the modes do not model: extra `ATTACH`es, `SET` statements, additional secrets, or views over the ingest tables.
+
+```sql
+-- /etc/duckdb-otlp/init.sql
+SET memory_limit = '8GB';
+CREATE OR REPLACE VIEW recent_errors AS
+  SELECT * FROM otlp_logs WHERE severity_number >= 17;
+```
+
+```bash
+duckdb-otlp serve --init-sql /etc/duckdb-otlp/init.sql
+```
+
+Behavior worth knowing:
+
+- **`serve`, `validate`, `export`, and `query` all run it.** `export` and `query` open the same catalog, so a view or `ATTACH` defined here is available when you read the data back. `doctor` deliberately does **not** — the container `HEALTHCHECK` runs it on every probe, and a liveness check must not execute operator SQL. `convert` opens no catalog.
+- **`validate` prints the script in place** without running it, so `duckdb-otlp validate --init-sql ...` shows exactly what startup would execute.
+- **Failures are fatal.** An unreadable path or a failing statement stops startup rather than silently serving without the configuration you asked for. An empty script is a no-op.
+- The script runs before the mode's catalog becomes the instance default, so it can `ATTACH` a catalog that `--catalog` then names.
+
+#### Adding a second destination
+
+A server has exactly **one** ingest target — `otlp_serve` rejects `parquet_export_path` combined with a catalog, and the commit path writes either Parquet or a catalog, never both. To land data in two places, start a second server on its own port from the init script:
+
+```sql
+-- alongside the mode's DuckLake catalog on 4318, a plain Parquet drop on 4319
+SELECT 1 FROM otlp_serve('otlp:0.0.0.0:4319',
+                         parquet_export_path := '/data/parquet',
+                         token := getvariable('duckdb_otlp_effective_token'));
+```
+
+This is **fan-out by port, not a tee**: a batch lands in whichever port received it, so the exporter chooses the destination. There is no supported way to mirror one stream into two targets — one target has one writer by design, which is what keeps a single sealer per catalog.
+
+Servers started this way are stopped and committed on shutdown along with the daemon's own, because shutdown runs [`otlp_stop()`](../serve/#otlp_stop) with no argument.
 
 ### Selecting listeners
 
@@ -248,7 +286,7 @@ duckdb-otlp export [flags]
 | `--partition-by day` | Write `<table>/year=/month=/day=`, matching the layout the serve-side Parquet export writes |
 | `--overwrite` | Replace existing output files |
 
-`export` also takes the catalog-selection flags `serve` uses, since it has to open the same catalog: `-m`/`--mode`, `--data-dir`, `--database`, `--catalog`, and `--schema`.
+`export` also takes the catalog-selection flags `serve` uses, since it has to open the same catalog: `-m`/`--mode`, `--data-dir`, `--database`, `--catalog`, `--schema`, and `--init-sql`.
 
 A catalog normally holds only the signals that have been ingested, so the default `--signal all` exports the tables that exist and names the ones it skipped. Naming a signal explicitly is still an error when its table is absent, and a catalog with no signal tables at all reports that rather than writing nothing.
 
@@ -275,7 +313,7 @@ duckdb-otlp query --file script.sql [flags]
 | `--readonly` | Open the database read-only |
 | `--overwrite` | Replace an existing output file |
 
-Like `export`, `query` takes the catalog-selection flags: `-m`/`--mode`, `--data-dir`, `--database`, `--catalog`, and `--schema`.
+Like `export`, `query` takes the catalog-selection flags: `-m`/`--mode`, `--data-dir`, `--database`, `--catalog`, `--schema`, and `--init-sql`.
 
 Unqualified table names resolve against the mode's catalog and schema, so `FROM otlp_logs` works directly:
 

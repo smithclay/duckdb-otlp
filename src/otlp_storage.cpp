@@ -115,6 +115,36 @@ OtlpServer &OtlpStorageExtensionInfo::CreateServer(ClientContext &context, const
 #endif
 }
 
+//! Close one server -- stop every listener, then run the single final seal -- and describe
+//! what that cost. Shared by the single-server and whole-instance stops so both report the
+//! same thing; the caller has already unregistered `server` from the map.
+//!
+//! `catch_errors` decides who owns a throwing Close(). StopServer has exactly one server and
+//! lets the exception reach its caller. StopAllServersGraceful must not: aborting the loop
+//! would leave every server after the failed one unsealed, which is the exact data loss the
+//! whole-instance stop exists to prevent, so it records the error and moves on.
+static OtlpStorageExtensionInfo::StopResult CloseAndDescribe(OtlpServer &server, bool catch_errors) {
+	OtlpStorageExtensionInfo::StopResult result;
+	result.found = true;
+	for (auto &listener : server.Listeners()) {
+		result.listen_uris.push_back(listener->Uri().Uri());
+	}
+	try {
+		server.Close();
+	} catch (std::exception &ex) {
+		if (!catch_errors) {
+			throw;
+		}
+		result.error = ErrorData(ex).RawMessage();
+	}
+	// Close() ran ShutdownIngest()'s final drain; read how many rows it had to drop so the
+	// caller can surface a data-dropping shutdown (review finding M4). Read the recorded value
+	// rather than ShutdownIngest()'s return so we are not coupled to which of the (idempotent)
+	// teardown calls actually performed the drain.
+	result.dropped_rows = server.ShutdownDroppedRows();
+	return result;
+}
+
 OtlpStorageExtensionInfo::StopResult OtlpStorageExtensionInfo::StopServer(ClientContext &context,
                                                                           const OtlpUri &listen_uri) {
 	shared_ptr<OtlpServer> to_destroy;
@@ -134,17 +164,7 @@ OtlpStorageExtensionInfo::StopResult OtlpStorageExtensionInfo::StopServer(Client
 	// Synchronously stop every listener, then drain the final seal once before returning.
 	// A concurrent otlp_flush may still hold another shared_ptr; Close() is idempotent
 	// and serializes with it through the server's writer mutex.
-	to_destroy->Close();
-	StopResult result;
-	result.found = true;
-	for (auto &listener : to_destroy->Listeners()) {
-		result.listen_uris.push_back(listener->Uri().Uri());
-	}
-	// Close() ran ShutdownIngest()'s final drain; read how many rows it had to drop so the
-	// caller can surface a data-dropping shutdown (review finding M4). Read the recorded value
-	// rather than ShutdownIngest()'s return so we are not coupled to which of the (idempotent)
-	// teardown calls actually performed the drain.
-	result.dropped_rows = to_destroy->ShutdownDroppedRows();
+	auto result = CloseAndDescribe(*to_destroy, /*catch_errors=*/false);
 	to_destroy.reset();
 	return result;
 }
@@ -180,6 +200,29 @@ OtlpStorageExtensionInfo::FlushResult OtlpStorageExtensionInfo::FlushServer(cons
 	}
 	result.seals_total = server->SealsTotal();
 	return result;
+}
+
+vector<OtlpStorageExtensionInfo::StopResult> OtlpStorageExtensionInfo::StopAllServersGraceful() {
+	vector<shared_ptr<OtlpServer>> to_destroy;
+	{
+		std::lock_guard<std::mutex> lock(servers_mutex);
+		EnsureNotShutDown();
+		to_destroy = DistinctServers();
+		// Unregister before closing, so a listener that is still draining cannot be found and
+		// stopped a second time by a concurrent otlp_stop. Deliberately NOT setting
+		// shutting_down: this is a graceful drain, not teardown, and the instance stays usable.
+		servers.clear();
+	}
+	// Close outside the lock for the same reason StopServer does: a final seal against a
+	// remote catalog can take a long time and must not head-of-line-block every other
+	// registry operation.
+	vector<StopResult> results;
+	results.reserve(to_destroy.size());
+	for (auto &server : to_destroy) {
+		results.push_back(CloseAndDescribe(*server, /*catch_errors=*/true));
+	}
+	to_destroy.clear();
+	return results;
 }
 
 void OtlpStorageExtensionInfo::StopAllServers() {

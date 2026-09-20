@@ -76,6 +76,7 @@ Each serve function is bound to its own URI scheme (no mixing). `otlp_serve` run
 - **`otap_serve([uri], catalog := '<attached_db>', ...)`** - Start an **OTAP/Arrow** gRPC streaming server (`otap:` scheme; defaults to `otap:localhost:4317`, gRPC-only). Same parameters as `otlp_serve`. OTAP/Arrow streams keep one stateful decoder per stream (cross-message Arrow dictionary reuse).
 - **`otlp_flush(uri)`** - Force a synchronous commit when readers need the latest accepted rows now.
 - **`otlp_stop(uri)`** - Stop the server that owns listener `uri`, including its other listeners (commits remaining rows first).
+- **`otlp_stop()`** - Stop **every** server on this database, committing each before returning. One row per server. Use this before closing a database when you did not start every server yourself.
 - **`otlp_server_list()`** - List running listeners with their server's live counters, buffer state, and health.
 - **`otlp_seal_list()`** - List recent seal attempts with append/commit timing, row/byte counts, and any error.
 

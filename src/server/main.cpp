@@ -391,6 +391,9 @@ int RunServe(const EnvSource &env) {
 		} else {
 			std::cout << "Quack: disabled\n";
 		}
+		if (!config.init_sql_path.empty()) {
+			std::cout << "Init SQL: " << config.init_sql_path << "\n";
+		}
 		if (!config.mode_extensions.empty()) {
 			std::cout << "\nExtensions:\n";
 			for (auto &extension : config.mode_extensions) {
@@ -457,6 +460,14 @@ int RunServe(const EnvSource &env) {
 		// downloads: the longest silence in a cold start, and the one most likely to look hung.
 		std::cout << "Setting up " << config.mode << " (installing extensions, attaching catalog)...\n";
 		Execute(con, config.mode_setup_sql, "mode setup");
+		// Operator SQL, after the mode's ATTACH so it can build on the telemetry catalog, and
+		// before SetDefaultDatabase so a catalog the script itself attaches can still be named
+		// by --catalog. Failures are fatal: a script that was meant to attach a second catalog
+		// or widen a memory limit has no safe "carry on without it" reading.
+		if (!config.init_sql.empty()) {
+			std::cout << "Running init SQL from " << config.init_sql_path << "...\n";
+			Execute(con, config.init_sql, "init SQL");
+		}
 		// Make the mode's telemetry catalog the instance-wide default database. The Quack
 		// server handles each external client on a *fresh* Connection spun up from the
 		// DatabaseInstance (quack_server.cpp: make_uniq<Connection>(*db)), not on this

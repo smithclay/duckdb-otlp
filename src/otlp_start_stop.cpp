@@ -365,14 +365,34 @@ TableFunctionSet OtapServeFunction::GetFunction() {
 	return BuildServeFunctionSet("otap_serve", OtapServeBind);
 }
 
+struct OtlpStopFunctionData : public TableFunctionData {
+	//! True for the no-argument overload: stop every registered server rather than the one
+	//! named by a URI. This is the only way to drain a server whose listen URI the caller does
+	//! not know -- notably one started out-of-band over Quack, which the daemon's own
+	//! otlp_stop('<its uri>') never reached, so its buffered rows were dropped unsealed at
+	//! database teardown.
+	bool stop_all = false;
+	OtlpUri listen_uri;
+	// Side-effecting control-plane call that also returns a status row. DuckDB may rescan a
+	// table function, so the stop runs once (`executed`) and the rows it produced are then
+	// paged out; a rescan must not stop servers a second time.
+	bool executed = false;
+	idx_t offset = 0;
+	vector<OtlpStorageExtensionInfo::StopResult> results;
+};
+
 static unique_ptr<FunctionData> OtlpStopBind(ClientContext &context, TableFunctionBindInput &input,
                                              vector<LogicalType> &return_types, vector<string> &names) {
-	auto bind_data = make_uniq<OtlpStartStopFunctionData>();
-	auto &uri_value = input.inputs[0];
-	if (uri_value.IsNull() || uri_value.GetValue<string>().empty()) {
-		throw InvalidInputException("Invalid OTLP listen URI specified");
+	auto bind_data = make_uniq<OtlpStopFunctionData>();
+	if (input.inputs.empty()) {
+		bind_data->stop_all = true;
+	} else {
+		auto &uri_value = input.inputs[0];
+		if (uri_value.IsNull() || uri_value.GetValue<string>().empty()) {
+			throw InvalidInputException("Invalid OTLP listen URI specified");
+		}
+		bind_data->listen_uri = OtlpUri(uri_value.GetValue<string>());
 	}
-	bind_data->listen_uri = OtlpUri(uri_value.GetValue<string>());
 	names.emplace_back("status");
 	return_types.emplace_back(OtlpVarcharType());
 	// Rows still buffered after the final shutdown drain failed (dropped). 0 on a clean stop.
@@ -382,32 +402,66 @@ static unique_ptr<FunctionData> OtlpStopBind(ClientContext &context, TableFuncti
 	return std::move(bind_data);
 }
 
-static void OtlpStop(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
-	auto &bind_data = data_p.bind_data->CastNoConst<OtlpStartStopFunctionData>();
-	if (bind_data.finished) {
-		return;
+//! The status text for one stopped server.
+static string StopStatusMessage(const OtlpStorageExtensionInfo::StopResult &stop) {
+	auto uris = StringUtil::Join(stop.listen_uris, ", ");
+	// Report the error and the row count together: a failed stop that dropped nothing and one
+	// that lost a buffer are very different events, and the daemon exit code keys off the latter.
+	if (!stop.error.empty()) {
+		return StringUtil::Format("Failed to stop %s: %s; dropped %llu un-sealed buffered rows", uris, stop.error,
+		                          static_cast<uint64_t>(stop.dropped_rows));
 	}
-	auto &state = OtlpStorageExtensionInfo::GetState(*context.db);
-	auto stop = state.StopServer(context, bind_data.listen_uri);
-	if (stop.found) {
-		auto uris = StringUtil::Join(stop.listen_uris, ", ");
-		if (stop.dropped_rows > 0) {
-			output.SetValue(0, 0,
-			                StringUtil::Format("Stopped listening on %s; dropped %llu un-sealed buffered rows", uris,
-			                                   static_cast<uint64_t>(stop.dropped_rows)));
-		} else {
-			output.SetValue(0, 0, StringUtil::Format("Stopped listening on %s", uris));
-		}
-	} else {
-		output.SetValue(0, 0, StringUtil::Format("No server found listening on %s", bind_data.listen_uri.Uri()));
+	if (stop.dropped_rows > 0) {
+		return StringUtil::Format("Stopped listening on %s; dropped %llu un-sealed buffered rows", uris,
+		                          static_cast<uint64_t>(stop.dropped_rows));
 	}
-	output.SetValue(1, 0, Value::UBIGINT(stop.dropped_rows));
-	output.SetCardinality(1);
-	bind_data.finished = true;
+	return StringUtil::Format("Stopped listening on %s", uris);
 }
 
-TableFunction OtlpStopFunction::GetFunction() {
-	return TableFunction("otlp_stop", {OtlpVarcharType()}, OtlpStop, OtlpStopBind);
+static void OtlpStop(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &bind_data = data_p.bind_data->CastNoConst<OtlpStopFunctionData>();
+	auto &state = OtlpStorageExtensionInfo::GetState(*context.db);
+	if (!bind_data.executed) {
+		bind_data.executed = true;
+		if (bind_data.stop_all) {
+			bind_data.results = state.StopAllServersGraceful();
+		} else {
+			bind_data.results.push_back(state.StopServer(context, bind_data.listen_uri));
+		}
+	}
+	// Nothing to stop. Answer with one informational row rather than an empty result, so both
+	// overloads always say something and `SELECT * FROM otlp_stop()` is never silent.
+	if (bind_data.results.empty()) {
+		if (bind_data.offset > 0) {
+			return;
+		}
+		bind_data.offset = 1;
+		output.SetValue(0, 0, Value("No OTLP servers are running"));
+		output.SetValue(1, 0, Value::UBIGINT(0));
+		output.SetCardinality(1);
+		return;
+	}
+	idx_t row = 0;
+	while (bind_data.offset < bind_data.results.size() && row < STANDARD_VECTOR_SIZE) {
+		auto &stop = bind_data.results[bind_data.offset];
+		// Only the URI form can miss: the stop-all form reports whatever it found.
+		auto status = stop.found ? StopStatusMessage(stop)
+		                         : StringUtil::Format("No server found listening on %s", bind_data.listen_uri.Uri());
+		output.SetValue(0, row, Value(status));
+		output.SetValue(1, row, Value::UBIGINT(stop.dropped_rows));
+		bind_data.offset++;
+		row++;
+	}
+	output.SetCardinality(row);
+}
+
+TableFunctionSet OtlpStopFunction::GetFunction() {
+	TableFunctionSet set("otlp_stop");
+	// No argument: stop every server on this instance. Added alongside the URI form rather
+	// than replacing it because a targeted stop is still the common case.
+	set.AddFunction(TableFunction("otlp_stop", {}, OtlpStop, OtlpStopBind));
+	set.AddFunction(TableFunction("otlp_stop", {OtlpVarcharType()}, OtlpStop, OtlpStopBind));
+	return set;
 }
 
 struct OtlpServerListFunctionData : public TableFunctionData {

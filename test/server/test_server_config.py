@@ -561,3 +561,53 @@ def test_healthcheck_probes_the_configured_quack_port():
                 server.shutdown()
             for thread in threads:
                 thread.join()
+
+
+# --- --init-sql / DUCKDB_OTLP_INIT_SQL -------------------------------------------------
+#
+# The escape hatch for DuckDB configuration the modes do not model. Resolved to contents
+# during config resolution, so DRY_RUN both validates the path and prints the SQL -- which
+# is what makes these tests possible without opening a database.
+
+
+def test_init_sql_lands_between_mode_setup_and_serve(tmp_path):
+    """Position is the contract: after the catalog ATTACH, before ingest starts.
+
+    Earlier and the script could not reference the telemetry catalog; later and it could
+    not configure the server that is already running.
+    """
+    script = tmp_path / "init.sql"
+    script.write_text("SET memory_limit='2GB';\n")
+    result = run({"DUCKDB_OTLP_INIT_SQL": str(script)}, tmp_path)
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert "SET memory_limit='2GB';" in out
+    assert out.index("ATTACH 'ducklake:") < out.index("SET memory_limit")
+    assert out.index("SET memory_limit") < out.index("FROM otlp_serve(")
+    # The banner names the script, so a serve log says which file shaped the instance.
+    assert f"Init SQL: {script}" in out
+
+
+def test_init_sql_missing_file_is_a_hard_error(tmp_path):
+    """A script that cannot be read must not degrade to "start without it": the operator
+    asked for an ATTACH or a limit that the running server would silently lack."""
+    result = run({"DUCKDB_OTLP_INIT_SQL": str(tmp_path / "nope.sql")}, tmp_path)
+    assert result.returncode == 1
+    assert "Could not open --init-sql script" in result.stderr
+
+
+def test_init_sql_directory_is_rejected(tmp_path):
+    # An ifstream on a directory opens on some platforms and reads nothing, which would
+    # turn a mistyped path into a silent no-op.
+    result = run({"DUCKDB_OTLP_INIT_SQL": str(tmp_path)}, tmp_path)
+    assert result.returncode == 1
+    assert "is a directory, not a SQL file" in result.stderr
+
+
+def test_empty_init_sql_is_a_no_op(tmp_path):
+    # An operator templating this file into a container should be able to render it empty.
+    script = tmp_path / "init.sql"
+    script.write_text("\n   \n")
+    result = run({"DUCKDB_OTLP_INIT_SQL": str(script)}, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "FROM otlp_serve(" in result.stdout

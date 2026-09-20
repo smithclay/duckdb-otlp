@@ -48,6 +48,12 @@ constexpr unsigned LISTENER_CMDS = Bit(Command::SERVE) | Bit(Command::VALIDATE) 
 //! deliberately absent — it is stateless, and silently accepting --mode there would suggest
 //! it consults a catalog it never opens.
 constexpr unsigned CATALOG_CMDS = LISTENER_CMDS | Bit(Command::EXPORT) | Bit(Command::QUERY);
+//! Commands that run the operator's init SQL: everything that opens the configured catalog
+//! except `doctor`. The health probe is excluded deliberately -- the container HEALTHCHECK
+//! runs it on every probe, and executing operator SQL there would make a liveness check a
+//! write path. `convert` is absent for the same reason it takes no --mode: it opens no catalog.
+constexpr unsigned INIT_SQL_CMDS = CATALOG_CMDS & ~Bit(Command::DOCTOR);
+
 //! Commands that write a result set somewhere.
 constexpr unsigned OUTPUT_CMDS = Bit(Command::CONVERT) | Bit(Command::EXPORT) | Bit(Command::QUERY);
 
@@ -81,6 +87,7 @@ const FlagDef FLAGS[] = {
     {"database", nullptr, '\0', CATALOG_CMDS, FlagTarget::ENV, "DUCKDB_DATABASE", false},
     {"catalog", nullptr, '\0', CATALOG_CMDS, FlagTarget::ENV, "DUCKDB_CATALOG", false},
     {"schema", nullptr, '\0', CATALOG_CMDS, FlagTarget::ENV, "DUCKDB_SCHEMA", false},
+    {"init-sql", nullptr, '\0', INIT_SQL_CMDS, FlagTarget::ENV, "DUCKDB_OTLP_INIT_SQL", false},
     // Listeners and authentication.
     {"host", nullptr, '\0', LISTENER_CMDS, FlagTarget::ENV, "DUCKDB_OTLP_HOST", false},
     {"http", nullptr, '\0', LISTENER_CMDS, FlagTarget::ENV, "DUCKDB_OTLP_HTTP_PORT", false},
@@ -592,6 +599,7 @@ constexpr const char *CATALOG_FLAGS_HELP =
       --database PATH   control database file
       --catalog NAME    target catalog
       --schema NAME     target schema
+      --init-sql PATH   SQL script run after the catalog is set up
 )HELP";
 
 void PrintUsage(std::ostream &out, Command command) {
@@ -725,6 +733,10 @@ Serve flags (each overrides the matching environment variable):
       --database PATH         control database file
       --catalog NAME          target catalog
       --schema NAME           target schema
+      --init-sql PATH         SQL script run after the catalog is attached and before
+                              ingest starts. The escape hatch for DuckDB settings the
+                              modes do not model: extra ATTACH, SET, secrets, views.
+                              `validate` prints it without running it.
       --token TOKEN           bearer token clients must present. Prefer the
                               DUCKDB_OTLP_TOKEN variable: a flag is visible in `ps`.
       --no-auth               accept unauthenticated requests
