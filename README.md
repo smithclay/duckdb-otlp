@@ -58,7 +58,7 @@ SELECT time_unix_nano, service_name, severity_text, body FROM read_otap_logs('ht
 
 You can start a server that accepts OpenTelemetry data from instrumented code, AI agents such as [Claude Code or Codex](https://smithclay.github.io/duckdb-otlp/guides/store-agent-traces-local-ducklake/), or OpenTelemetry Collectors. 
 
-You can either run a Docker image that runs the extension as a daemon, or type some short commands in DuckDB shell.
+You can type some short commands in the DuckDB shell, run a Docker image that runs the extension as a daemon, or install the `duckdb-otlp` CLI with Homebrew.
 
 <details>
 <summary>Start server in the DuckDB shell</summary>
@@ -94,6 +94,32 @@ docker run --rm --name duckdb-otlp \
 To query the running daemon using Quack protocol, [see docs here](https://smithclay.github.io/duckdb-otlp/guides/query-with-quack/).
 
 </details>
+
+<details>
+<summary>Install via Homebrew and use as a CLI</summary>
+
+```sh
+# macOS or Linux, installs a single `duckdb-otlp` binary
+brew install smithclay/tap/duckdb-otlp
+
+# Listens for OTLP/HTTP on 127.0.0.1:4318 and OTLP/gRPC on 127.0.0.1:4317
+# Writes data to a local DuckLake under ~/.local/share/duckdb-otlp
+# Loopback-only with no token, so authentication is disabled automatically
+duckdb-otlp serve
+```
+
+To keep it running in the background instead, use `brew services start duckdb-otlp`.
+
+The running server holds a lock on its catalog. Stop it first (Ctrl-C commits buffered rows), then query with the same binary:
+
+```sh
+duckdb-otlp query "SELECT time_unix_nano, service_name, severity_text, body FROM otlp_logs"
+```
+
+The same binary converts OTLP/OTAP files to Parquet with no server running: `duckdb-otlp convert traces.pb --to out/`. See the [CLI reference](https://smithclay.github.io/duckdb-otlp/reference/cli/) for every command and flag.
+
+</details>
+
 Send one hello-world log in OTLP/HTTP format with cURL:
 
 ```bash
