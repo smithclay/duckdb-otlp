@@ -120,6 +120,7 @@ duckdb-otlp serve [flags]
 | `--catalog NAME` | `DUCKDB_CATALOG` | mode-dependent |
 | `--schema NAME` | `DUCKDB_SCHEMA` | mode-dependent |
 | `--init-sql PATH` | `DUCKDB_OTLP_INIT_SQL` | *(none)* |
+| `--secret-dir DIR` | `DUCKDB_OTLP_SECRET_DIR` | `$HOME/.duckdb/stored_secrets` |
 | `--token TOKEN` | `DUCKDB_OTLP_TOKEN` | *(none)* |
 | `--no-auth` | `DUCKDB_OTLP_DISABLE_AUTH` | `0` |
 | `--quack PORT` | `DUCKDB_QUACK_PORT` | off (`0` disables) |
@@ -127,6 +128,107 @@ duckdb-otlp serve [flags]
 | `--startup-timeout SECS` | `DUCKDB_OTLP_STARTUP_TIMEOUT` | `60` |
 
 Passing a token as a flag makes it visible in the process list; prefer `DUCKDB_OTLP_TOKEN` outside of local use.
+
+### Destinations (`--mode`)
+
+A mode is a preset: it contributes some setup SQL and a catalog name, and nothing else. Each one is a point in a grid of three independent choices — the catalog kind, where that catalog lives, and where the data files go.
+
+| Mode | Catalog | Catalog store | Data files | Required settings |
+|------|---------|---------------|------------|-------------------|
+| `local-ducklake` *(default)* | DuckLake | local DuckDB file | local directory | *(none)* |
+| `parquet` | *(none)* | — | local directory or `s3://` | `S3_BUCKET`, `AWS_REGION` for S3 |
+| `aws-ducklake` | DuckLake | local DuckDB file | `s3://` | `DUCKLAKE_DATA_PATH`, `AWS_REGION` |
+| `gcp-ducklake` | DuckLake | Postgres | `gcss://` | `DUCKLAKE_DATA_PATH`, `PGHOST`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` |
+| `r2-local-ducklake` | DuckLake | local DuckDB file | R2 | `R2_BUCKET`, `CLOUDFLARE_ACCOUNT_ID` |
+| `r2-neon-ducklake` | DuckLake | Postgres | R2 | the two above, plus `PGHOST`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` |
+| `r2-data-catalog` | Iceberg REST | Cloudflare | R2 (catalog-managed) | `R2_BUCKET`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` |
+| `s3-tables` | Iceberg REST | AWS | S3 (catalog-managed) | `S3_TABLES_BUCKET_ARN` |
+| `none` | *(whatever `--init-sql` attaches)* | — | — | *(none)* |
+
+Missing settings are reported together, in one run:
+
+```console
+$ duckdb-otlp validate --mode r2-data-catalog
+ERROR: Missing 3 required settings for DUCKDB_MODE=r2-data-catalog:
+  CLOUDFLARE_API_TOKEN  (R2 Data Catalog read/write token)
+  R2_BUCKET
+  CLOUDFLARE_ACCOUNT_ID
+```
+
+#### Storage settings
+
+One name per concept, across every mode that uses it.
+
+| Setting | Used by | Notes |
+|---------|---------|-------|
+| `DUCKLAKE_DATA_PATH` | every DuckLake mode | where Parquet data files go |
+| `DUCKLAKE_CATALOG_PATH` | DuckLake modes with a local catalog | a `postgres:…` value moves the catalog to Postgres |
+| `PARQUET_EXPORT_PATH` | `parquet` | local path or `s3://`; overrides `S3_BUCKET`/`S3_PREFIX` |
+| `S3_BUCKET`, `S3_PREFIX` | `parquet` | composed into `s3://bucket/prefix` |
+| `S3_ENDPOINT`, `S3_URL_STYLE` | `parquet` | for S3-compatible storage |
+| `S3_TABLES_BUCKET_ARN` | `s3-tables` | region is read from the ARN when `AWS_REGION` is unset |
+| `AWS_REGION`, `AWS_PROFILE` | every AWS mode | standard AWS variables; `AWS_DEFAULT_*` also accepted |
+| `R2_BUCKET`, `R2_PREFIX` | every R2 mode | composed into `s3://bucket/prefix` |
+| `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | every R2 mode | optional — see below |
+| `R2_ENDPOINT` | every R2 mode | defaults to `<account>.r2.cloudflarestorage.com` |
+| `CLOUDFLARE_ACCOUNT_ID` | every R2 mode | derives the endpoint, catalog URI, and warehouse |
+| `CLOUDFLARE_API_TOKEN` | `r2-data-catalog` | R2 Data Catalog read/write token |
+| `CLOUDFLARE_CATALOG_URI`, `CLOUDFLARE_WAREHOUSE` | `r2-data-catalog` | both derived from the account and bucket; set only to override |
+| `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, `PGSSLMODE` | Postgres-catalog modes | the standard libpq names |
+
+Credential values are never interpolated into the generated SQL. They are bound as session variables and referenced with `getvariable()`, so `validate` can print the full boot SQL without disclosing them.
+
+#### Credentials from the DuckDB secret store
+
+Storage credentials do not have to be environment variables. If no key pair is set, the mode emits no `CREATE SECRET` at all and DuckDB resolves access through its own persistent secret store (or, for AWS and GCP, the provider credential chain). Create the secret once:
+
+```bash
+duckdb-otlp query --mode none "
+  INSTALL httpfs; LOAD httpfs;
+  CREATE PERSISTENT SECRET r2_storage (
+    TYPE s3, KEY_ID '...', SECRET '...',
+    REGION 'auto', ENDPOINT '<account>.r2.cloudflarestorage.com', URL_STYLE 'path');"
+```
+
+It is written to `$HOME/.duckdb/stored_secrets` with `0600` permissions and loaded automatically by every later run. `--secret-dir` moves that directory, for deployments that mount secrets read-only somewhere else.
+
+The startup banner always names the source it resolved, so the two cases are never confused:
+
+```text
+Credentials: R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY
+Credentials: DuckDB secret store (no R2 key pair in the environment)
+```
+
+Setting only one half of a key pair is an error, not a silent fall-through to the store.
+
+#### Reading back the `parquet` dataset
+
+`parquet` mode has no catalog — the seal writes straight to `<root>/<table>/year=/month=/day=/` and defines a view over it once files exist. `query` and `export` read through that view, and define it themselves for a dataset this host has never served, so both work the same way they do against a catalog mode:
+
+```bash
+duckdb-otlp query "SELECT service_name, count(*) FROM otlp_logs GROUP BY 1" --mode parquet
+duckdb-otlp export --signal logs --since -24h --to out/ --mode parquet
+```
+
+Only signals that have files get a view, so `--signal all` skips the rest instead of failing. The views select the signal's own columns and nothing else — the partition keys live in the path, not the files — so an exported row is identical to one exported from a catalog mode. A `query` only looks for the signals its SQL names, since each check is a directory listing (a remote request against `s3://`). The views live in the control database, which also makes it a usable handle on the dataset from the plain `duckdb` CLI; with `--readonly` they are session-scoped instead.
+
+#### `--mode none`
+
+`none` attaches nothing and installs nothing. The destination is entirely whatever `--init-sql` sets up, and `--catalog` names it:
+
+```bash
+duckdb-otlp serve --mode none --init-sql ./lake.sql --catalog lake
+```
+
+```sql
+-- lake.sql: S3 data files with a Postgres catalog, which no preset covers
+INSTALL ducklake; INSTALL postgres; INSTALL httpfs;
+LOAD ducklake; LOAD postgres; LOAD httpfs;
+ATTACH 'ducklake:postgres:dbname=lake host=db.internal' AS lake
+  (DATA_PATH 's3://telemetry/lake');
+```
+
+With no `--catalog`, data lands in the control database — a working single-file server with no lakehouse at all.
 
 ### Custom DuckDB setup (`--init-sql`)
 

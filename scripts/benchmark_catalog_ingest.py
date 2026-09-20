@@ -167,22 +167,22 @@ def first_env(env: dict[str, str], *names: str) -> str | None:
 def r2_access_key(env: dict[str, str]) -> str | None:
     return first_env(
         env,
-        "CLOUDFLARE_ACCESS_KEY_ID",
         "R2_ACCESS_KEY_ID",
-        "CLOUDFLARE_S3_ACCESS_KEY_ID",
-        "CLOUDFLARE_R2_ACCESS_KEY_ID",
-        "CLOUDFLARE_S3_KEY_ID",
+        "R2_ACCESS_KEY_ID",
+        "R2_ACCESS_KEY_ID",
+        "R2_ACCESS_KEY_ID",
+        "R2_ACCESS_KEY_ID",
     )
 
 
 def r2_secret_key(env: dict[str, str]) -> str | None:
     return first_env(
         env,
-        "CLOUDFLARE_SECRET_ACCESS_KEY",
         "R2_SECRET_ACCESS_KEY",
-        "CLOUDFLARE_S3_SECRET_ACCESS_KEY",
-        "CLOUDFLARE_R2_SECRET_ACCESS_KEY",
-        "CLOUDFLARE_S3_SECRET_KEY",
+        "R2_SECRET_ACCESS_KEY",
+        "R2_SECRET_ACCESS_KEY",
+        "R2_SECRET_ACCESS_KEY",
+        "R2_SECRET_ACCESS_KEY",
     )
 
 
@@ -232,7 +232,7 @@ def cloudflare_account_id(ctx: ScenarioContext) -> str:
 
 
 def r2_s3_endpoint(ctx: ScenarioContext) -> str:
-    host = first_env(ctx.env, "CLOUDFLARE_S3_API_HOST", "R2_ENDPOINT")
+    host = first_env(ctx.env, "R2_ENDPOINT", "R2_ENDPOINT")
     if host:
         return host if host.startswith("http://") or host.startswith("https://") else f"https://{host}"
     return f"https://{cloudflare_account_id(ctx)}.r2.cloudflarestorage.com"
@@ -244,7 +244,7 @@ def r2_s3_cli_env(ctx: ScenarioContext) -> dict[str, str]:
     if not access_key or not secret_key:
         raise BenchError(
             "missing R2 S3 credentials; set R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY "
-            "or CLOUDFLARE_S3_ACCESS_KEY_ID/CLOUDFLARE_S3_SECRET_ACCESS_KEY"
+            "or R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY"
         )
     env = dict(ctx.env)
     for key in (
@@ -546,9 +546,9 @@ def r2_data_catalog_setup(ctx: ScenarioContext) -> None:
         {
             "DUCKDB_MODE": "r2-data-catalog",
             "CLOUDFLARE_ACCOUNT_ID": account_id,
-            "CLOUDFLARE_R2_BUCKET": bucket,
+            "R2_BUCKET": bucket,
             "CLOUDFLARE_CATALOG_URI": catalog_uri,
-            "CLOUDFLARE_CATALOG_TOKEN": ctx.env["CLOUDFLARE_API_TOKEN"],
+            "CLOUDFLARE_API_TOKEN": ctx.env["CLOUDFLARE_API_TOKEN"],
             "CLOUDFLARE_WAREHOUSE": warehouse,
         }
     )
@@ -561,7 +561,7 @@ def local_ducklake_setup(ctx: ScenarioContext) -> None:
     ctx.docker_env.update(
         {
             "DUCKDB_MODE": "local-ducklake",
-            "DUCKLAKE_NAME": ctx.catalog,
+            "DUCKDB_CATALOG": ctx.catalog,
             "DUCKLAKE_CATALOG_PATH": metadata_path,
             "DUCKLAKE_DATA_PATH": data_path,
         }
@@ -718,13 +718,13 @@ def r2_storage_secret_sql(ctx: ScenarioContext) -> str:
     if not access_key or not secret_key:
         raise BenchError(
             "missing R2 S3 credentials; set R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY "
-            "or CLOUDFLARE_S3_ACCESS_KEY_ID/CLOUDFLARE_S3_SECRET_ACCESS_KEY"
+            "or R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY"
         )
     ctx.docker_env["R2_ACCESS_KEY_ID"] = access_key
     ctx.docker_env["R2_SECRET_ACCESS_KEY"] = secret_key
-    ctx.docker_env["CLOUDFLARE_ACCESS_KEY_ID"] = access_key
-    ctx.docker_env["CLOUDFLARE_SECRET_ACCESS_KEY"] = secret_key
-    ctx.docker_env["CLOUDFLARE_R2_ENDPOINT"] = r2_s3_endpoint(ctx)
+    ctx.docker_env["R2_ACCESS_KEY_ID"] = access_key
+    ctx.docker_env["R2_SECRET_ACCESS_KEY"] = secret_key
+    ctx.docker_env["R2_ENDPOINT"] = r2_s3_endpoint(ctx)
     return ""
 
 
@@ -833,14 +833,14 @@ def r2_neon_ducklake_setup(ctx: ScenarioContext) -> None:
     ctx.docker_env.update(
         {
             "DUCKDB_MODE": "r2-neon-ducklake",
-            "CLOUDFLARE_R2_BUCKET": bucket,
-            "CLOUDFLARE_R2_PREFIX": prefix,
-            "NEON_PGHOST": pg["host"],
-            "NEON_PGPORT": pg["port"],
-            "NEON_PGDATABASE": pg["database"],
-            "NEON_PGUSER": pg["user"],
-            "NEON_PGPASSWORD": pg["password"],
-            "NEON_PGSSLMODE": pg["sslmode"],
+            "R2_BUCKET": bucket,
+            "R2_PREFIX": prefix,
+            "PGHOST": pg["host"],
+            "PGPORT": pg["port"],
+            "PGDATABASE": pg["database"],
+            "PGUSER": pg["user"],
+            "PGPASSWORD": pg["password"],
+            "PGSSLMODE": pg["sslmode"],
         }
     )
     r2_storage_secret_sql(ctx)
@@ -870,8 +870,8 @@ def r2_local_ducklake_setup(ctx: ScenarioContext) -> None:
     ctx.docker_env.update(
         {
             "DUCKDB_MODE": "r2-local-ducklake",
-            "CLOUDFLARE_R2_BUCKET": bucket,
-            "CLOUDFLARE_R2_PREFIX": prefix,
+            "R2_BUCKET": bucket,
+            "R2_PREFIX": prefix,
             "DUCKLAKE_CATALOG_PATH": "/tmp/duckdb-otlp-bench.ducklake",
         }
     )

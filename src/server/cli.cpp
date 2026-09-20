@@ -88,6 +88,7 @@ const FlagDef FLAGS[] = {
     {"catalog", nullptr, '\0', CATALOG_CMDS, FlagTarget::ENV, "DUCKDB_CATALOG", false},
     {"schema", nullptr, '\0', CATALOG_CMDS, FlagTarget::ENV, "DUCKDB_SCHEMA", false},
     {"init-sql", nullptr, '\0', INIT_SQL_CMDS, FlagTarget::ENV, "DUCKDB_OTLP_INIT_SQL", false},
+    {"secret-dir", nullptr, '\0', CATALOG_CMDS, FlagTarget::ENV, "DUCKDB_OTLP_SECRET_DIR", false},
     // Listeners and authentication.
     {"host", nullptr, '\0', LISTENER_CMDS, FlagTarget::ENV, "DUCKDB_OTLP_HOST", false},
     {"http", nullptr, '\0', LISTENER_CMDS, FlagTarget::ENV, "DUCKDB_OTLP_HTTP_PORT", false},
@@ -600,6 +601,7 @@ constexpr const char *CATALOG_FLAGS_HELP =
       --catalog NAME    target catalog
       --schema NAME     target schema
       --init-sql PATH   SQL script run after the catalog is set up
+      --secret-dir DIR  directory DuckDB loads persistent secrets from
 )HELP";
 
 void PrintUsage(std::ostream &out, Command command) {
@@ -724,7 +726,8 @@ Serve flags (each overrides the matching environment variable):
   -m, --mode MODE             where to store data (default: local-ducklake). One of:
                               local-ducklake, parquet, aws-ducklake, gcp-ducklake,
                               r2-local-ducklake, r2-neon-ducklake, r2-data-catalog,
-                              s3-tables
+                              s3-tables, none. `none` attaches nothing and leaves
+                              the destination entirely to --init-sql/--catalog.
       --host HOST             bind host (default: 127.0.0.1)
       --http PORT             OTLP/HTTP port, 0 to disable (default: 4318)
       --grpc PORT             OTLP/gRPC port, 0 to disable (default: 4317)
@@ -737,6 +740,10 @@ Serve flags (each overrides the matching environment variable):
                               ingest starts. The escape hatch for DuckDB settings the
                               modes do not model: extra ATTACH, SET, secrets, views.
                               `validate` prints it without running it.
+      --secret-dir DIR        directory DuckDB loads persistent secrets from
+                              (default: $HOME/.duckdb/stored_secrets). Create one with
+                              `duckdb-otlp query "CREATE PERSISTENT SECRET ..."` and the
+                              storage credential variables become unnecessary.
       --token TOKEN           bearer token clients must present. Prefer the
                               DUCKDB_OTLP_TOKEN variable: a flag is visible in `ps`.
       --no-auth               accept unauthenticated requests

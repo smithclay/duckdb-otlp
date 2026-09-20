@@ -9,6 +9,28 @@
 
 namespace duckdb_otlp_server {
 
+//! How a DuckDB extension becomes available to the daemon's session.
+//!
+//! This is the only thing that varies between extensions, and it decides everything derived
+//! from the list: what setup SQL to emit (if any) and how the startup banner reports it.
+//! Before this, each mode declared its extensions twice -- once as a list for the banner and
+//! once as hand-written INSTALL/LOAD text -- so the two could disagree with no symptom until
+//! someone read the banner.
+enum class ExtensionSource {
+	//! Linked into the binary; there is nothing to install or load. The otlp extension is
+	//! statically embedded, which is why it must never appear in generated INSTALL SQL.
+	BUILT_IN,
+	//! DuckDB's core extension repository.
+	CORE,
+	//! The community repository, which `INSTALL` needs told about explicitly.
+	COMMUNITY,
+};
+
+struct ModeExtension {
+	duckdb::string name;
+	ExtensionSource source = ExtensionSource::CORE;
+};
+
 struct IngestListener {
 	duckdb::string uri;
 	duckdb::string transport;
@@ -44,6 +66,13 @@ struct ServerConfig {
 	//! mode the banner used to print only the control DB, so anyone who opened the one path it
 	//! named found no telemetry in it.
 	duckdb::string data_location;
+	//! Where object-storage credentials came from, for the startup banner: an environment key
+	//! pair, or DuckDB's own secret store when none was set. Empty for modes that need no
+	//! storage credentials.
+	duckdb::string credentials_source;
+	//! Directory DuckDB loads persistent secrets from (DUCKDB_OTLP_SECRET_DIR / --secret-dir).
+	//! Empty leaves DuckDB's default, $HOME/.duckdb/stored_secrets.
+	duckdb::string secret_dir;
 	bool quack_enabled = false;
 	bool dry_run = false;
 	//! True when the server accepts unauthenticated requests. Set explicitly by
@@ -82,7 +111,9 @@ struct ServerConfig {
 	duckdb::string init_sql;
 	//! Where init_sql came from, for error messages and the startup banner. Empty when unset.
 	duckdb::string init_sql_path;
-	std::vector<duckdb::string> mode_extensions;
+	//! Every extension this mode needs, declared once. `mode_setup_sql` derives its INSTALL/LOAD
+	//! prelude from this list and the startup banner prints it, so neither can drift from it.
+	std::vector<ModeExtension> mode_extensions;
 	//! Environment-variable names that the generated secret SQL reads via getvariable().
 	//! The daemon binds each ("env_<NAME>" -> the env value) as a session variable before
 	//! running mode setup, so secret values never appear in the generated SQL text.
@@ -102,6 +133,12 @@ struct ServerConfig {
 	duckdb::string StopOtlpSql() const;
 	duckdb::string StopQuackSql() const;
 	duckdb::string BootSql() const;
+
+	//! Every extension this configuration will make available, for the startup banner: the
+	//! mode's own, plus Quack when it is enabled. Quack is not a mode extension -- it is loaded
+	//! by the serve path only, so `query`/`export` must not pull it in -- but it is still an
+	//! extension the process ends up running, and the banner omitted it entirely.
+	std::vector<ModeExtension> AllExtensions() const;
 };
 
 } // namespace duckdb_otlp_server

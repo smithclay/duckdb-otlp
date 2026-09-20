@@ -13,7 +13,7 @@ cat > .env <<'EOF'
 DUCKDB_MODE=local-ducklake
 DUCKDB_OTLP_TOKEN=dev-token-123456
 
-DUCKLAKE_NAME=lake
+DUCKDB_CATALOG=lake
 DUCKLAKE_CATALOG_PATH=/data/ducklake/catalog.duckdb
 DUCKLAKE_DATA_PATH=/data/ducklake/storage
 

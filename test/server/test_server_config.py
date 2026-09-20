@@ -16,6 +16,7 @@ Point the tests at a binary with DUCKDB_OTLP_SERVER_BIN, or rely on the default
 from __future__ import annotations
 
 import os
+import re
 import socket
 import subprocess
 from pathlib import Path
@@ -104,7 +105,7 @@ def test_otap_listen_uri_routes_to_otap_serve(tmp_path):
     assert "FROM otlp_serve(" not in out
 
 
-def test_aws_ducklake_uses_instance_role_and_local_catalog(tmp_path):
+def test_aws_ducklake_uses_the_shared_credential_chain_and_local_catalog(tmp_path):
     catalog = tmp_path / "ducklake" / "catalog.duckdb"
     result = run(
         {
@@ -119,7 +120,14 @@ def test_aws_ducklake_uses_instance_role_and_local_catalog(tmp_path):
     assert result.returncode == 0, result.stderr
     out = result.stdout
     assert "PROVIDER credential_chain" in out
-    assert "CHAIN instance" in out
+    # The same chain the parquet and s3-tables modes build. Hardcoding CHAIN instance here
+    # meant AWS_PROFILE worked in one AWS mode and was silently ignored in another.
+    #
+    # It must stay a MULTI-source chain. Sharing the builder originally swapped this mode's
+    # `CHAIN instance` for `CHAIN env`, which took instance-role credentials away from exactly
+    # the EC2/ECS deployments that have nothing else.
+    assert "CHAIN 'env;config;instance'" in out
+    assert "instance" in out
     assert f"ATTACH 'ducklake:{catalog}'" in out
     assert "'s3://benchmark-bucket/run-123'" in out
     assert "KEY_ID" not in out
@@ -229,42 +237,42 @@ def test_r2_data_catalog_secrets_use_getvariable(tmp_path):
         "DUCKDB_MODE": "r2-data-catalog",
         "DUCKDB_OTLP_TOKEN": "a-private-token-123456",
         "CLOUDFLARE_ACCOUNT_ID": "acct123",
-        "CLOUDFLARE_R2_BUCKET": "mybucket",
+        "R2_BUCKET": "mybucket",
         "CLOUDFLARE_CATALOG_URI": "https://catalog.example/uri",
-        "CLOUDFLARE_CATALOG_TOKEN": SECRET,
-        "CLOUDFLARE_ACCESS_KEY_ID": SECRET,
-        "CLOUDFLARE_SECRET_ACCESS_KEY": SECRET,
+        "CLOUDFLARE_API_TOKEN": SECRET,
+        "R2_ACCESS_KEY_ID": SECRET,
+        "R2_SECRET_ACCESS_KEY": SECRET,
     }
     result = run(env, tmp_path)
     assert result.returncode == 0, result.stderr
     out = result.stdout
     assert SECRET not in out, "a secret value leaked into generated SQL"
     assert "getenv(" not in out, "getenv() is not available in the embedded daemon; use getvariable()"
-    assert "getvariable('env_CLOUDFLARE_CATALOG_TOKEN')" in out
-    assert "getvariable('env_CLOUDFLARE_ACCESS_KEY_ID')" in out
-    assert "getvariable('env_CLOUDFLARE_SECRET_ACCESS_KEY')" in out
+    assert "getvariable('env_CLOUDFLARE_API_TOKEN')" in out
+    assert "getvariable('env_R2_ACCESS_KEY_ID')" in out
+    assert "getvariable('env_R2_SECRET_ACCESS_KEY')" in out
 
 
 def test_r2_neon_ducklake_secrets_use_getvariable(tmp_path):
     env = {
         "DUCKDB_MODE": "r2-neon-ducklake",
         "DUCKDB_OTLP_TOKEN": "a-private-token-123456",
-        "CLOUDFLARE_R2_BUCKET": "mybucket",
-        "CLOUDFLARE_ACCESS_KEY_ID": SECRET,
-        "CLOUDFLARE_SECRET_ACCESS_KEY": SECRET,
-        "CLOUDFLARE_R2_ENDPOINT": "https://acct.r2.cloudflarestorage.com",
-        "NEON_PGHOST": "db.example",
-        "NEON_PGDATABASE": "lake",
-        "NEON_PGUSER": "lakeuser",
-        "NEON_PGPASSWORD": SECRET,
+        "R2_BUCKET": "mybucket",
+        "R2_ACCESS_KEY_ID": SECRET,
+        "R2_SECRET_ACCESS_KEY": SECRET,
+        "R2_ENDPOINT": "https://acct.r2.cloudflarestorage.com",
+        "PGHOST": "db.example",
+        "PGDATABASE": "lake",
+        "PGUSER": "lakeuser",
+        "PGPASSWORD": SECRET,
     }
     result = run(env, tmp_path)
     assert result.returncode == 0, result.stderr
     out = result.stdout
     assert SECRET not in out, "a secret value leaked into generated SQL"
     assert "getenv(" not in out, "getenv() is not available in the embedded daemon; use getvariable()"
-    assert "getvariable('env_NEON_PGPASSWORD')" in out
-    assert "getvariable('env_CLOUDFLARE_ACCESS_KEY_ID')" in out
+    assert "getvariable('env_PGPASSWORD')" in out
+    assert "getvariable('env_R2_ACCESS_KEY_ID')" in out
 
 
 def gcp_env():
@@ -301,7 +309,7 @@ def test_gcp_ducklake_uses_adc_and_remote_postgres(tmp_path):
 
 def test_gcp_ducklake_proxy_and_catalog_overrides(tmp_path):
     env = gcp_env()
-    env.update({"PGPORT": "5433", "PGSSLMODE": "disable", "DUCKLAKE_NAME": "trace-lake", "DUCKDB_SCHEMA": "traces"})
+    env.update({"PGPORT": "5433", "PGSSLMODE": "disable", "DUCKDB_CATALOG": "trace-lake", "DUCKDB_SCHEMA": "traces"})
     result = run(env, tmp_path)
     assert result.returncode == 0, result.stderr
     assert "PORT getvariable('env_PGPORT')" in result.stdout
@@ -611,3 +619,326 @@ def test_empty_init_sql_is_a_no_op(tmp_path):
     result = run({"DUCKDB_OTLP_INIT_SQL": str(script)}, tmp_path)
     assert result.returncode == 0, result.stderr
     assert "FROM otlp_serve(" in result.stdout
+
+
+def test_every_missing_setting_is_reported_in_one_run(tmp_path):
+    """Configuration errors are reported as a set, not one per run.
+
+    Reporting the first miss and stopping turned configuring a remote lakehouse into a
+    guessing game: r2-data-catalog took six runs to satisfy because each named a single
+    variable. The count in the header is what makes "am I nearly there?" answerable.
+    """
+    result = run({"DUCKDB_MODE": "r2-data-catalog"}, tmp_path)
+    assert result.returncode != 0
+    assert "Missing 3 required settings" in result.stderr
+    for name in ("CLOUDFLARE_API_TOKEN", "R2_BUCKET", "CLOUDFLARE_ACCOUNT_ID"):
+        assert name in result.stderr
+
+
+def test_a_variable_several_settings_need_is_listed_once(tmp_path):
+    """CLOUDFLARE_ACCOUNT_ID feeds both the endpoint and the warehouse; one miss, one line."""
+    result = run({"DUCKDB_MODE": "r2-data-catalog"}, tmp_path)
+    assert result.stderr.count("CLOUDFLARE_ACCOUNT_ID") == 1
+
+
+def test_r2_catalog_uri_is_derived_from_account_and_bucket(tmp_path):
+    """The catalog URI is mechanically derivable from two values the mode already requires.
+
+    It was the one setting an operator had to assemble by hand, while the warehouse -- built
+    from the same two -- was already derived.
+    """
+    result = run(
+        {
+            "DUCKDB_MODE": "r2-data-catalog",
+            "CLOUDFLARE_API_TOKEN": SECRET,
+            "CLOUDFLARE_ACCOUNT_ID": "acct123",
+            "R2_BUCKET": "mybucket",
+        },
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ENDPOINT 'https://catalog.cloudflarestorage.com/acct123/mybucket'" in result.stdout
+    assert "ATTACH 'acct123_mybucket'" in result.stdout
+
+
+def test_storage_credentials_fall_back_to_the_duckdb_secret_store(tmp_path):
+    """No key pair in the environment is a supported configuration, not an error.
+
+    DuckDB loads a CREATE PERSISTENT SECRET from its own store automatically, so emitting a
+    CREATE OR REPLACE SECRET here would shadow the stored one with an empty credential.
+    """
+    result = run(
+        {
+            "DUCKDB_MODE": "r2-local-ducklake",
+            "R2_BUCKET": "mybucket",
+            "CLOUDFLARE_ACCOUNT_ID": "acct123",
+        },
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "CREATE OR REPLACE SECRET r2_storage" not in result.stdout
+    # The banner must say so: "using your keys" and "hoping a stored secret exists" are very
+    # different deployments and the difference must not be invisible.
+    assert "Credentials: DuckDB secret store" in result.stdout
+
+
+def test_half_an_r2_key_pair_is_an_error_not_a_silent_fallback(tmp_path):
+    """One half set is a typo. Falling through to the secret store would hide it until the
+    first seal failed against R2."""
+    result = run(
+        {
+            "DUCKDB_MODE": "r2-local-ducklake",
+            "R2_BUCKET": "mybucket",
+            "CLOUDFLARE_ACCOUNT_ID": "acct123",
+            "R2_ACCESS_KEY_ID": SECRET,
+        },
+        tmp_path,
+    )
+    assert result.returncode != 0
+    assert "R2_SECRET_ACCESS_KEY" in result.stderr
+    assert SECRET not in result.stderr
+
+
+def test_secret_dir_is_set_before_anything_touches_the_secret_manager(tmp_path):
+    """secret_directory has to be set before the first CREATE SECRET initializes the manager."""
+    secrets = tmp_path / "secrets"
+    result = run(
+        {
+            "DUCKDB_MODE": "r2-local-ducklake",
+            "R2_BUCKET": "mybucket",
+            "CLOUDFLARE_ACCOUNT_ID": "acct123",
+            "DUCKDB_OTLP_SECRET_DIR": str(secrets),
+        },
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    sql = result.stdout[result.stdout.index("Generated initialization SQL:") :]
+    assert f"SET secret_directory = '{secrets}';" in sql
+    assert sql.index("SET secret_directory") < sql.index("INSTALL")
+
+
+def test_mode_none_attaches_nothing_and_leaves_the_target_to_init_sql(tmp_path):
+    """The escape hatch: --init-sql layered on an unwanted local-ducklake ATTACH was the only
+    way to reach a layout the eight presets do not cover (S3 data, Postgres catalog)."""
+    script = tmp_path / "attach.sql"
+    script.write_text("ATTACH 'ducklake:postgres:dbname=lake' AS lake (DATA_PATH 's3://b/p');\n")
+    result = run(
+        {
+            "DUCKDB_MODE": "none",
+            "DUCKDB_OTLP_INIT_SQL": str(script),
+            "DUCKDB_CATALOG": "lake",
+        },
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "INSTALL ducklake" not in result.stdout
+    assert "ATTACH 'ducklake:postgres:dbname=lake'" in result.stdout
+    assert "catalog := 'lake'" in result.stdout
+
+
+def test_mode_none_without_init_sql_writes_to_the_control_database(tmp_path):
+    """A bare `none` is still a working server, not a half-configured one."""
+    result = run({"DUCKDB_MODE": "none"}, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "catalog := ''" in result.stdout
+    assert "Mode: none" in result.stdout
+
+
+# Minimal configuration for each mode, so every mode can be resolved far enough to report the
+# extensions it needs. Mirrors the required-settings table in the CLI reference.
+MODE_FIXTURES = {
+    "local-ducklake": {},
+    "none": {},
+    "parquet": {},
+    "parquet-s3": {"DUCKDB_MODE": "parquet", "S3_BUCKET": "b", "AWS_REGION": "us-east-1"},
+    "aws-ducklake": {"DUCKLAKE_DATA_PATH": "s3://b/p", "AWS_REGION": "us-east-1"},
+    "gcp-ducklake": {
+        "DUCKLAKE_DATA_PATH": "gcss://b/p",
+        "PGHOST": "h",
+        "PGDATABASE": "d",
+        "PGUSER": "u",
+        "PGPASSWORD": SECRET,
+    },
+    "r2-local-ducklake": {"R2_BUCKET": "b", "CLOUDFLARE_ACCOUNT_ID": "a"},
+    "r2-neon-ducklake": {
+        "R2_BUCKET": "b",
+        "CLOUDFLARE_ACCOUNT_ID": "a",
+        "PGHOST": "h",
+        "PGDATABASE": "d",
+        "PGUSER": "u",
+        "PGPASSWORD": SECRET,
+    },
+    "r2-data-catalog": {"R2_BUCKET": "b", "CLOUDFLARE_ACCOUNT_ID": "a", "CLOUDFLARE_API_TOKEN": SECRET},
+    "s3-tables": {"S3_TABLES_BUCKET_ARN": "arn:aws:s3tables:us-west-2:1:bucket/b"},
+    # Quack is not a mode extension, but it is one the process ends up running, so the image
+    # has to prime it too.
+    "local-ducklake+quack": {
+        "DUCKDB_MODE": "local-ducklake",
+        "DUCKDB_QUACK_ENABLED": "1",
+        "DUCKDB_QUACK_TOKEN": "a-quack-token-123456",
+    },
+}
+
+
+def extensions_reported_by(mode: str, tmp_path) -> dict:
+    """The banner's Extensions block for `mode`, as {name: source}."""
+    env = dict(MODE_FIXTURES[mode])
+    env.setdefault("DUCKDB_MODE", mode)
+    result = run(env, tmp_path)
+    assert result.returncode == 0, f"{mode}: {result.stderr}"
+    reported = {}
+    in_block = False
+    for line in result.stdout.splitlines():
+        if line.startswith("Extensions:"):
+            in_block = True
+            continue
+        if in_block:
+            if not line.strip():
+                break
+            name, _, note = line.strip().partition(" ")
+            reported[name] = note.strip("()") or "core"
+    return reported
+
+
+@pytest.mark.parametrize("mode", sorted(MODE_FIXTURES))
+def test_generated_sql_installs_exactly_what_the_banner_reports(mode, tmp_path):
+    """The banner and the setup SQL are two renderings of one declaration.
+
+    They used to be written out separately -- a list for the banner, hand-typed INSTALL/LOAD
+    for the SQL -- so a mode could load an extension it never mentioned, or name one it never
+    loaded, with no symptom beyond a misleading banner.
+    """
+    env = dict(MODE_FIXTURES[mode])
+    env.setdefault("DUCKDB_MODE", mode)
+    result = run(env, tmp_path)
+    assert result.returncode == 0, result.stderr
+    reported = extensions_reported_by(mode, tmp_path)
+
+    installed = set(re.findall(r"^INSTALL ([a-z0-9_]+)", result.stdout, re.M))
+    loaded = set(re.findall(r"^LOAD ([a-z0-9_]+);", result.stdout, re.M))
+    # `otlp` is statically embedded: reported, never installed. Everything else is both.
+    needs_install = {name for name, source in reported.items() if source != "built in"}
+    assert installed == needs_install
+    assert loaded == needs_install
+    assert "otlp" not in installed, "the statically embedded extension must never be INSTALLed"
+    # A community extension needs its repository named or the INSTALL resolves nowhere.
+    for name, source in reported.items():
+        if source == "community":
+            assert f"INSTALL {name} FROM community;" in result.stdout
+
+
+def test_the_image_primes_every_extension_some_mode_needs(tmp_path):
+    """The container's offline extension cache is a third copy of this list, in another
+    language and build stage, so it cannot share the declaration -- but it can be checked.
+
+    If a mode gains an extension the image does not prime, the daemon's startup INSTALL goes to
+    the network, or fails outright in an offline deployment. That is invisible until someone
+    runs the image without egress.
+    """
+    dockerfile = (REPO_ROOT / "docker" / "duckdb-otlp-server" / "Dockerfile").read_text()
+    loop = re.search(r"for ext in ([a-z0-9_ ]+); do", dockerfile)
+    primed = set(loop.group(1).split()) if loop else set()
+    primed |= set(re.findall(r"INSTALL ([a-z0-9_]+)(?: FROM community)?", dockerfile))
+    # A parse failure must say so, rather than showing up as "every extension is missing".
+    assert primed, (
+        "could not read the extension list out of docker/duckdb-otlp-server/Dockerfile; "
+        "the priming step's shape changed and this test needs updating alongside it"
+    )
+
+    needed = set()
+    for mode in MODE_FIXTURES:
+        needed |= {name for name, source in extensions_reported_by(mode, tmp_path).items() if source != "built in"}
+
+    missing = needed - primed
+    assert not missing, (
+        f"{sorted(missing)} is needed by a mode but not primed into the image's extension cache "
+        f"(docker/duckdb-otlp-server/Dockerfile). Add it there, or the container will reach the "
+        f"network on startup."
+    )
+
+
+def test_quack_is_installed_before_it_is_loaded(tmp_path):
+    """`LOAD quack` carried no INSTALL, so enabling Quack on any host without a pre-primed
+    extension cache died with `Extension "quack" not found. Install it first`. Only the
+    container worked, because its image primes the cache."""
+    env = dict(MODE_FIXTURES["local-ducklake+quack"])
+    result = run(env, tmp_path)
+    assert result.returncode == 0, result.stderr
+    sql = result.stdout[result.stdout.index("Generated initialization SQL:") :]
+    assert "INSTALL quack;" in sql
+    assert sql.index("INSTALL quack;") < sql.index("LOAD quack;")
+    # Core, not community: `INSTALL quack FROM community` 404s.
+    assert "INSTALL quack FROM community" not in sql
+
+
+def test_quack_appears_in_the_banner_only_when_enabled(tmp_path):
+    """The banner listed the mode's extensions only, so a running Quack endpoint -- an
+    administrative one granting full SQL access -- was absent from the startup report."""
+    enabled = extensions_reported_by("local-ducklake+quack", tmp_path)
+    assert "quack" in enabled
+
+    disabled = extensions_reported_by("local-ducklake", tmp_path)
+    assert "quack" not in disabled
+
+
+@pytest.mark.parametrize("mode,extra", [("parquet", {"S3_BUCKET": "b"}), ("s3-tables", {}), ("aws-ducklake", {})])
+def test_every_aws_mode_keeps_the_instance_role_in_its_chain(mode, extra, tmp_path):
+    """A single-source chain is a trap: whichever source it names, the others stop working.
+
+    `CHAIN env` cannot see an EC2/ECS instance role, and `CHAIN instance` cannot see the
+    standard AWS environment variables. Every AWS mode has to accept both.
+    """
+    env = {"DUCKDB_MODE": mode, "AWS_REGION": "us-west-2", **extra}
+    if mode == "aws-ducklake":
+        env["DUCKLAKE_DATA_PATH"] = "s3://b/p"
+    if mode == "s3-tables":
+        env["S3_TABLES_BUCKET_ARN"] = "arn:aws:s3tables:us-west-2:1:bucket/b"
+    result = run(env, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "CHAIN 'env;config;instance'" in result.stdout
+
+
+def test_the_banner_names_the_chain_that_is_actually_emitted(tmp_path):
+    """The banner said "environment, then instance role" while the SQL restricted the chain to
+    `env`, which misdirects exactly the person debugging an ignored instance role."""
+    result = run({"DUCKDB_MODE": "parquet", "S3_BUCKET": "b", "AWS_REGION": "us-west-2"}, tmp_path)
+    assert result.returncode == 0, result.stderr
+    for source in ("environment", "config", "instance role"):
+        assert source in result.stdout
+
+
+def test_an_aws_profile_still_selects_that_profile(tmp_path):
+    result = run(
+        {"DUCKDB_MODE": "parquet", "S3_BUCKET": "b", "AWS_REGION": "us-west-2", "AWS_PROFILE": "dev"}, tmp_path
+    )
+    assert result.returncode == 0, result.stderr
+    assert "CHAIN config" in result.stdout
+    assert "PROFILE 'dev'" in result.stdout
+    assert 'AWS profile "dev"' in result.stdout
+
+
+def test_r2_data_path_keeps_its_trailing_slash(tmp_path):
+    """DuckLake treats DATA_PATH as a directory prefix. Dropping the trailing slash would point
+    an existing deployment at a different prefix than the one in its catalog."""
+    result = run({"DUCKDB_MODE": "r2-local-ducklake", "R2_BUCKET": "bkt", "CLOUDFLARE_ACCOUNT_ID": "acct"}, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "DATA_PATH 's3://bkt/duckdb-otlp/'" in result.stdout
+
+
+def test_a_malformed_value_is_reported_alongside_a_missing_one(tmp_path):
+    """A malformed value used to throw from inside the mode function, skipping everything after
+    it -- so this reported the path and only mentioned AWS_REGION on the next run."""
+    result = run({"DUCKDB_MODE": "aws-ducklake", "DUCKLAKE_DATA_PATH": "/local/path"}, tmp_path)
+    assert result.returncode != 0
+    assert "DUCKLAKE_DATA_PATH" in result.stderr
+    assert "s3://bucket/prefix" in result.stderr
+    assert "AWS_REGION" in result.stderr
+
+
+def test_parquet_rejects_a_remote_scheme_it_cannot_write(tmp_path):
+    """An `IsS3Path` locality test sent a gcss:// export path down the local branch, so nothing
+    was loaded to write it and `validate` reported success. The first seal was the first sign."""
+    result = run({"DUCKDB_MODE": "parquet", "PARQUET_EXPORT_PATH": "gcss://bucket/prefix"}, tmp_path)
+    assert result.returncode != 0
+    assert "PARQUET_EXPORT_PATH" in result.stderr
+    assert "s3://" in result.stderr

@@ -1232,3 +1232,282 @@ def test_an_ipv6_host_is_bracketed_in_the_quack_address_too(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "quack:[::1]:9494" in result.stdout
     assert "otlp:[::1]:4318" in result.stdout
+
+
+def seed_parquet_dataset(tmp_path, env, table="otlp_logs", fixture="logs_simple.jsonl"):
+    """Write the exact partitioned layout the serve-side seal produces.
+
+    Reproducing the COPY rather than running a server keeps this deterministic and offline;
+    the shape is what matters (year=/month=/day= in the PATH, WRITE_PARTITION_COLUMNS false,
+    so the files carry only the signal's own columns).
+    """
+    root = Path(env["PARQUET_EXPORT_PATH"]) / table
+    reader = "read_otlp_logs" if table == "otlp_logs" else "read_otlp_traces"
+    time_column = "time_unix_nano" if table == "otlp_logs" else "start_time_unix_nano"
+    result = run(
+        [
+            "query",
+            f"COPY (SELECT *, strftime({time_column}, '%Y') AS year, strftime({time_column}, '%m') AS month, "
+            f"strftime({time_column}, '%d') AS day FROM {reader}('{DATA_DIR / fixture}')) "
+            f"TO '{root}' (FORMAT PARQUET, PARTITION_BY (year, month, day), APPEND, "
+            "FILENAME_PATTERN 'seal_{uuid}', WRITE_PARTITION_COLUMNS false)",
+        ],
+        env=env,
+        home=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    return root
+
+
+def test_query_reads_the_parquet_dataset_by_signal_name(tmp_path):
+    """`parquet` mode has no catalog, so `FROM otlp_logs` used to dead-end with "Table with
+    name otlp_logs does not exist" even though serve had written the rows."""
+    env = parquet_mode_env(tmp_path)
+    seed_parquet_dataset(tmp_path, env)
+
+    result = run(["query", "SELECT count(*) AS n FROM otlp_logs", "--format", "csv"], env=env, home=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert int(result.stdout.strip().splitlines()[1]) > 0
+
+
+def test_parquet_dataset_view_has_the_same_columns_as_a_catalog_table(tmp_path):
+    """read_parquet infers year/month/day from the directory names; left on, every exported
+    row carried three columns a catalog mode's export does not have."""
+    env = parquet_mode_env(tmp_path)
+    seed_parquet_dataset(tmp_path, env)
+
+    via_view = run(["query", "SELECT * FROM otlp_logs LIMIT 0", "--format", "csv"], env=env, home=tmp_path)
+    direct = run(
+        ["query", f"SELECT * FROM read_otlp_logs('{DATA_DIR / 'logs_simple.jsonl'}') LIMIT 0", "--format", "csv"],
+        env=env,
+        home=tmp_path,
+    )
+    assert via_view.returncode == 0, via_view.stderr
+    assert direct.returncode == 0, direct.stderr
+    assert via_view.stdout.strip() == direct.stdout.strip()
+    for partition_column in ("year", "month", "day"):
+        assert partition_column not in via_view.stdout.strip().split(",")
+
+
+def test_export_reads_the_parquet_dataset(tmp_path):
+    env = parquet_mode_env(tmp_path)
+    seed_parquet_dataset(tmp_path, env)
+
+    out = tmp_path / "dump"
+    result = run(["export", "--signal", "logs", "--to", str(out) + "/"], env=env, home=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (out / "logs.parquet").exists()
+
+
+def test_export_skips_signals_absent_from_the_dataset(tmp_path):
+    """`--signal all` stays a clean skip, so a logs-only dataset does not fail the export."""
+    env = parquet_mode_env(tmp_path)
+    seed_parquet_dataset(tmp_path, env)
+
+    out = tmp_path / "all"
+    result = run(["export", "--to", str(out) + "/"], env=env, home=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert (out / "logs.parquet").exists()
+    assert "Skipped" in result.stderr
+    assert "traces" in result.stderr
+    # The wording has to match the mode: this one has no catalog to be "not in" yet.
+    assert "dataset" in result.stderr
+
+
+def test_export_names_the_dataset_when_there_is_nothing_to_export(tmp_path):
+    """The catalog wording advised running serve to create tables -- a state `parquet` mode
+    never reaches, because ingest lands in the dataset rather than in a catalog."""
+    env = parquet_mode_env(tmp_path)
+    result = run(["export", "--to", str(tmp_path / "out") + "/"], env=env, home=tmp_path)
+    assert result.returncode != 0
+    assert "no Parquet files under" in result.stderr
+    assert env["PARQUET_EXPORT_PATH"] in result.stderr
+
+
+def test_parquet_dataset_is_readable_with_a_read_only_database(tmp_path):
+    """A read-only database cannot hold a view, so the session-scoped fallback has to work."""
+    env = parquet_mode_env(tmp_path)
+    seed_parquet_dataset(tmp_path, env)
+
+    result = run(
+        ["query", "SELECT count(*) AS n FROM otlp_logs", "--format", "csv", "--readonly"], env=env, home=tmp_path
+    )
+    assert result.returncode == 0, result.stderr
+    assert int(result.stdout.strip().splitlines()[1]) > 0
+
+
+def test_partitioned_export_creates_a_missing_output_directory(tmp_path):
+    """DuckDB's partitioned COPY creates the year=/month=/day= levels but not the root above
+    them, and its directory creation is not recursive, so this failed with "Failed to create
+    directory <root>/<table>". The unpartitioned path has always created its parent."""
+    env = parquet_mode_env(tmp_path)
+    seed_parquet_dataset(tmp_path, env)
+
+    out = tmp_path / "does-not-exist-yet"
+    result = run(
+        ["export", "--signal", "logs", "--partition-by", "day", "--to", str(out) + "/"], env=env, home=tmp_path
+    )
+    assert result.returncode == 0, result.stderr
+    assert list(out.glob("otlp_logs/year=*/month=*/day=*/*.parquet"))
+    # The reported path is the directory actually written, with no doubled separator.
+    assert f"Wrote {out}/otlp_logs/" in result.stderr
+
+
+def test_partitioned_export_creates_a_nested_missing_directory(tmp_path):
+    env = parquet_mode_env(tmp_path)
+    seed_parquet_dataset(tmp_path, env)
+
+    out = tmp_path / "a" / "b" / "c"
+    result = run(
+        ["export", "--signal", "logs", "--partition-by", "day", "--to", str(out) + "/"], env=env, home=tmp_path
+    )
+    assert result.returncode == 0, result.stderr
+    assert list(out.glob("otlp_logs/year=*/month=*/day=*/*.parquet"))
+
+
+@pytest.mark.parametrize("extra", [[], ["--partition-by", "day"]])
+def test_remote_output_does_not_create_a_local_directory(extra, tmp_path):
+    """An `s3://` destination is a URI, not a path. std::filesystem does not reject one -- it
+    builds a literal "s3:/bucket/prefix" tree under the working directory -- so exporting to
+    object storage quietly littered wherever the command happened to run.
+
+    Runs with cwd set to tmp_path rather than the repo, since the bug's whole symptom is
+    creating directories relative to the working directory.
+    """
+    env = parquet_mode_env(tmp_path)
+    seed_parquet_dataset(tmp_path, env)
+
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    result = subprocess.run(
+        [str(SERVER_BIN), "export", "--signal", "logs", "--to", "s3://fake-bucket/dump/", *extra],
+        env={"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path), **env},
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=str(cwd),
+    )
+    # It fails for want of httpfs, which is the honest error; what matters is what it did NOT
+    # leave behind on the way there.
+    assert "httpfs" in result.stderr
+    assert not (cwd / "s3:").exists()
+    assert list(cwd.iterdir()) == []
+
+
+def control_db_view_count(tmp_path, env):
+    """Views in the control database, read WITHOUT triggering registration (`--mode none`)."""
+    result = run(
+        [
+            "query",
+            "--mode",
+            "none",
+            "--database",
+            env["DUCKDB_DATABASE"],
+            "SELECT count(*) AS n FROM duckdb_views() WHERE NOT internal",
+            "--format",
+            "csv",
+        ],
+        env={"PATH": os.environ.get("PATH", "")},
+        home=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    return int(result.stdout.strip().splitlines()[1])
+
+
+def test_query_only_probes_the_signals_its_sql_names(tmp_path):
+    """Registering a view costs a directory listing per signal -- a remote LIST against an
+    `s3://` root -- so `query "SELECT 1"` must not pay for six of them."""
+    env = parquet_mode_env(tmp_path)
+    seed_parquet_dataset(tmp_path, env)
+
+    naming_nothing = run(["query", "SELECT 1 AS x", "--format", "csv"], env=env, home=tmp_path)
+    assert naming_nothing.returncode == 0, naming_nothing.stderr
+    assert control_db_view_count(tmp_path, env) == 0
+
+    naming_logs = run(["query", "SELECT count(*) FROM otlp_logs", "--format", "csv"], env=env, home=tmp_path)
+    assert naming_logs.returncode == 0, naming_logs.stderr
+    assert control_db_view_count(tmp_path, env) == 1
+
+
+def test_seal_created_view_and_cli_view_share_one_definition(tmp_path):
+    """The seal path already creates a view over the dataset after each successful export, and
+    the CLI creates one for a dataset this host has never sealed. Two hand-copied globs and two
+    sets of read_parquet options is how they would silently stop agreeing -- both now build the
+    SELECT from ParquetDatasetSelect, so the recorded definitions must match."""
+    env = parquet_mode_env(tmp_path)
+    seed_parquet_dataset(tmp_path, env)
+
+    # Force the CLI to define it, then read back what was recorded.
+    assert run(["query", "SELECT count(*) FROM otlp_logs"], env=env, home=tmp_path).returncode == 0
+    definition = run(
+        [
+            "query",
+            "--mode",
+            "none",
+            "--database",
+            env["DUCKDB_DATABASE"],
+            "SELECT sql FROM duckdb_views() WHERE view_name = 'otlp_logs'",
+            "--format",
+            "csv",
+        ],
+        env={"PATH": os.environ.get("PATH", "")},
+        home=tmp_path,
+    )
+    assert definition.returncode == 0, definition.stderr
+    body = definition.stdout
+    assert "/otlp_logs/**/*.parquet" in body
+    # Both options are load-bearing and must survive: hive_partitioning would append
+    # year/month/day columns no catalog mode has, union_by_name lets a schema change read.
+    assert "hive_partitioning" in body
+    assert "union_by_name" in body
+
+
+def test_a_stray_temp_view_does_not_fool_a_catalog_mode(tmp_path):
+    """ExistingSignalTables answers "can I SELECT from catalog.schema.table". An unscoped
+    `temporary` arm matched every temp view in the session, so an --init-sql script defining one
+    named like a signal made `export --signal all` claim it existed and then fail binding it."""
+    init = tmp_path / "init.sql"
+    init.write_text("CREATE TEMP VIEW otlp_traces AS SELECT 1 AS x;\n")
+    result = run(
+        ["export", "--to", str(tmp_path / "out") + "/", "--init-sql", str(init)],
+        env={"DUCKDB_OTLP_DATA_DIR": str(tmp_path / "data")},
+        home=tmp_path,
+    )
+    # Nothing was ingested, so every signal is absent: the honest answer is "nothing to
+    # export", not a binder error about otlp_traces.
+    assert result.returncode != 0
+    assert "Nothing to export" in result.stderr
+    assert "Binder Error" not in result.stderr
+    assert "otlp_traces does not exist" not in result.stderr
+
+
+def test_registering_nothing_leaves_no_schema_behind(tmp_path):
+    """The schema was created before the probe loop, so a query against a dataset with no files
+    left a stray empty schema in the control database."""
+    env = parquet_mode_env(tmp_path)
+    run(["query", "SELECT count(*) FROM otlp_logs"], env=env, home=tmp_path)
+
+    def schema_count():
+        result = run(
+            [
+                "query",
+                "--mode",
+                "none",
+                "--database",
+                env["DUCKDB_DATABASE"],
+                f"SELECT count(*) AS n FROM duckdb_schemas() WHERE schema_name = '{env['DUCKDB_SCHEMA'] if 'DUCKDB_SCHEMA' in env else 'otlp'}'",
+                "--format",
+                "csv",
+            ],
+            env={"PATH": os.environ.get("PATH", "")},
+            home=tmp_path,
+        )
+        assert result.returncode == 0, result.stderr
+        return int(result.stdout.strip().splitlines()[1])
+
+    assert schema_count() == 0
+
+    # Once the dataset has files, the view — and only then the schema — is created.
+    seed_parquet_dataset(tmp_path, env)
+    assert run(["query", "SELECT count(*) FROM otlp_logs"], env=env, home=tmp_path).returncode == 0
+    assert schema_count() == 1

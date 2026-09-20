@@ -21,7 +21,7 @@ Create `.env`:
 
 ```ini
 DUCKDB_MODE=local-ducklake
-DUCKLAKE_NAME=lake
+DUCKDB_CATALOG=lake
 DUCKDB_OTLP_TOKEN=dev-otlp-token-123456
 
 DUCKDB_QUACK_ENABLED=1

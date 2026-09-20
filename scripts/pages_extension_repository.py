@@ -45,9 +45,7 @@ def unpack(archive, destination):
             path = member.name.removeprefix("./")
             if member.isdir():
                 continue
-            if not member.isfile() or not (
-                path in {"extensions/index.html", ".nojekyll"} or BINARY.fullmatch(path)
-            ):
+            if not member.isfile() or not (path in {"extensions/index.html", ".nojekyll"} or BINARY.fullmatch(path)):
                 raise ValueError(f"Unexpected extension archive member: {member.name}")
             target = destination / path
             target.parent.mkdir(parents=True, exist_ok=True)

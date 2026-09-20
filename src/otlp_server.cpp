@@ -106,17 +106,6 @@ static bool TimingSafeEqual(const string &a, const string &b) {
 	return diff == 0;
 }
 
-static string ExportRootForTable(const string &root, const string &table_name) {
-	if (root.empty()) {
-		return "";
-	}
-	auto value = root;
-	while (!value.empty() && value[value.size() - 1] == '/') {
-		value = value.substr(0, value.size() - 1);
-	}
-	return value + "/" + table_name;
-}
-
 static const char *PartitionTimestampColumn(const string &table_name) {
 	if (table_name == "otlp_traces") {
 		return "start_time_unix_nano";
@@ -132,7 +121,7 @@ static string BuildParquetExportSql(const string &temp_table, const string &tabl
 	    << "strftime(" << QuoteIdentifier(timestamp_column) << ", '%Y') AS year, "
 	    << "strftime(" << QuoteIdentifier(timestamp_column) << ", '%m') AS month, "
 	    << "strftime(" << QuoteIdentifier(timestamp_column) << ", '%d') AS day "
-	    << "FROM " << quoted_temp << ") TO " << SqlQuote(ExportRootForTable(root, table_name)) << " ("
+	    << "FROM " << quoted_temp << ") TO " << SqlQuote(ParquetDatasetDirectory(root, table_name)) << " ("
 	    << "FORMAT PARQUET, "
 	    << "COMPRESSION ZSTD, "
 	    << "PARTITION_BY (year, month, day), "
@@ -1174,9 +1163,8 @@ OtlpIngestResult OtlpServer::SealParquet(SealingPlan &plan, int64_t seal_started
 				// inspect the data without keeping a second local copy. Created here, after
 				// files exist, so the view binds a resolvable schema.
 				auto view = QualifiedTable(config.catalog_name, config.schema_name, buf.table_name);
-				auto glob = ExportRootForTable(config.parquet_export_path, buf.table_name) + "/**/*.parquet";
-				RunSQL(*writer_con, "CREATE VIEW IF NOT EXISTS " + view + " AS SELECT * FROM read_parquet(" +
-				                        SqlQuote(glob) + ", hive_partitioning=false, union_by_name=true)");
+				RunSQL(*writer_con, "CREATE VIEW IF NOT EXISTS " + view + " AS " +
+				                        ParquetDatasetSelect(config.parquet_export_path, buf.table_name));
 			} catch (...) {
 				// Inspection view is a convenience; retried on the next successful seal.
 			}

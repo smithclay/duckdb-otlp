@@ -366,6 +366,16 @@ int RunServe(const EnvSource &env) {
 			// bookkeeping file, so naming only that sent people looking in the wrong place.
 			std::cout << "Data: " << config.data_location << "\n";
 		}
+		if (!config.credentials_source.empty()) {
+			// Say which credentials the mode will actually present. An empty key pair is a
+			// supported configuration now (DuckDB resolves storage access from its own secret
+			// store), so the difference between "using your environment keys" and "hoping a
+			// stored secret exists" must not be invisible.
+			std::cout << "Credentials: " << config.credentials_source << "\n";
+		}
+		if (!config.secret_dir.empty()) {
+			std::cout << "Secrets: " << config.secret_dir << "\n";
+		}
 		std::cout << "Database: " << config.database << " (control)\n\n";
 		for (const auto &listener : config.listeners) {
 			std::cout << ListenerLabel(listener) << ": " << listener.uri << '\n';
@@ -394,10 +404,25 @@ int RunServe(const EnvSource &env) {
 		if (!config.init_sql_path.empty()) {
 			std::cout << "Init SQL: " << config.init_sql_path << "\n";
 		}
-		if (!config.mode_extensions.empty()) {
+		auto extensions = config.AllExtensions();
+		if (!extensions.empty()) {
+			// Derived from the same list the setup SQL is generated from, and it says WHERE each
+			// one comes from: "built in" is why otlp never appears in an INSTALL, and
+			// "community" is why that one needs a different repository to be reachable offline.
 			std::cout << "\nExtensions:\n";
-			for (auto &extension : config.mode_extensions) {
-				std::cout << "  " << extension << "\n";
+			for (auto &extension : extensions) {
+				std::cout << "  " << extension.name;
+				switch (extension.source) {
+				case duckdb_otlp_server::ExtensionSource::BUILT_IN:
+					std::cout << " (built in)";
+					break;
+				case duckdb_otlp_server::ExtensionSource::COMMUNITY:
+					std::cout << " (community)";
+					break;
+				case duckdb_otlp_server::ExtensionSource::CORE:
+					break;
+				}
+				std::cout << "\n";
 			}
 		}
 		std::cout << '\n';
