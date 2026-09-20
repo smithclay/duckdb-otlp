@@ -56,10 +56,20 @@ duckdb::string ReadSqlFile(const duckdb::string &path, const duckdb::string &wha
 //! names a file, did you mean convert?" hint.
 bool PathExists(const duckdb::string &path);
 
+//! True when `path` carries a URI scheme ("s3://bucket/...", "gcss://...", "https://...").
+//!
+//! Object stores have no directories to create, and treating a URI as a local path does not
+//! fail loudly -- `std::filesystem` happily builds a literal "s3:/bucket/prefix" tree under
+//! the working directory -- so the filesystem helpers below check this rather than letting
+//! every caller remember to.
+bool IsRemotePath(const duckdb::string &path);
+
 //! Create `path` and any missing parents, throwing an actionable error on failure.
+//! A remote path is a no-op: there is no local directory to create.
 void CreateDirectory(const duckdb::string &path);
 
 //! Create the parent directory of `path` (a file), throwing an actionable error on failure.
+//! A remote path is a no-op, for the same reason.
 void CreateParentDirectory(const duckdb::string &path);
 
 } // namespace duckdb_otlp_server

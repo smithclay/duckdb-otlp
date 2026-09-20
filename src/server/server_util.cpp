@@ -6,6 +6,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/query_result.hpp"
 
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -88,8 +89,28 @@ bool PathExists(const string &path) {
 	return std::filesystem::exists(path, ec);
 }
 
+bool IsRemotePath(const string &path) {
+	// A scheme followed by "://" (s3://, gcss://, https://, az://, ...). Deliberately not a
+	// list of known schemes: any URI names an object store or a server, and none of them has
+	// local directories to create.
+	auto sep = path.find("://");
+	if (sep == string::npos || sep == 0) {
+		return false;
+	}
+	if (std::isalpha(static_cast<unsigned char>(path[0])) == 0) {
+		return false;
+	}
+	for (duckdb::idx_t i = 1; i < sep; i++) {
+		auto c = static_cast<unsigned char>(path[i]);
+		if (std::isalnum(c) == 0 && c != '+' && c != '-' && c != '.') {
+			return false;
+		}
+	}
+	return true;
+}
+
 void CreateDirectory(const string &path) {
-	if (path.empty()) {
+	if (path.empty() || IsRemotePath(path)) {
 		return;
 	}
 	std::error_code ec;
@@ -101,6 +122,9 @@ void CreateDirectory(const string &path) {
 }
 
 void CreateParentDirectory(const string &path) {
+	if (IsRemotePath(path)) {
+		return;
+	}
 	auto parent = std::filesystem::path(path).parent_path();
 	if (parent.empty()) {
 		return;

@@ -255,6 +255,17 @@ string BuildCopyStatement(const CliOptions &options, const string &select_sql, c
 	throw InvalidInputException("Unsupported --partition-by \"%s\". Use day or none.", options.partition_by);
 }
 
+//! Where a partitioned export writes one signal: <root>/<table>, the root of its
+//! year=/month=/day= tree. Shared so the directory that gets created and the directory named
+//! in the COPY cannot drift apart.
+string PartitionedOutputDirectory(const string &root, const SignalDef &signal) {
+	auto directory = root;
+	if (!directory.empty() && directory[directory.size() - 1] != '/') {
+		directory += "/";
+	}
+	return directory + signal.table;
+}
+
 //! The partitioned variant: mirrors the <table>/year=/month=/day= layout the serve-side
 //! Parquet export writes, so a directory produced by `export` is laid out like one produced
 //! by live ingest and can be read back by the same glob.
@@ -264,11 +275,7 @@ string BuildPartitionedCopy(const CliOptions &options, const SignalDef &signal, 
 	auto select_sql = StringUtil::Format("SELECT *, CAST(year(%s) AS INTEGER) AS year, CAST(month(%s) AS INTEGER) AS "
 	                                     "month, CAST(day(%s) AS INTEGER) AS day FROM %s%s",
 	                                     time_col, time_col, time_col, source, predicate);
-	auto directory = root;
-	if (!directory.empty() && directory[directory.size() - 1] != '/') {
-		directory += "/";
-	}
-	directory += signal.table;
+	auto directory = PartitionedOutputDirectory(root, signal);
 	auto copy_options = CopyFormatOptions(format);
 	// Splice PARTITION_BY into the format option list, which always ends in ')'.
 	copy_options = copy_options.substr(0, copy_options.size() - 1) + ", PARTITION_BY (year, month, day)" +
@@ -502,9 +509,16 @@ int RunExport(const CliOptions &options, const EnvSource &env) {
 		auto source = duckdb::QualifiedTable(config.catalog, config.schema, signal.table);
 		auto predicate = BuildPredicate(options, signal);
 		if (partitioned) {
+			// DuckDB's partitioned COPY creates the year=/month=/day= levels but not the root
+			// above them, and its directory creation is not recursive, so exporting into a
+			// path that does not exist yet failed with "Failed to create directory
+			// <root>/<table>". The unpartitioned path has always created its parent (see
+			// ResolveOutputPath); this is the same guarantee for this one.
+			auto directory = PartitionedOutputDirectory(options.output, signal);
+			CreateDirectory(directory);
 			Execute(*con, BuildPartitionedCopy(options, signal, source, predicate, options.output, format),
 			        "export " + string(signal.name));
-			std::cerr << "Wrote " << options.output << "/" << signal.table << "/\n";
+			std::cerr << "Wrote " << directory << "/\n";
 			continue;
 		}
 		WriteSignal(*con, options, signal, StringUtil::Format("SELECT * FROM %s%s", source, predicate), format,
