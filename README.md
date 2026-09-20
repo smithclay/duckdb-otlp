@@ -58,7 +58,7 @@ SELECT time_unix_nano, service_name, severity_text, body FROM read_otap_logs('ht
 
 You can start a server that accepts OpenTelemetry data from instrumented code, AI agents such as [Claude Code or Codex](https://smithclay.github.io/duckdb-otlp/guides/store-agent-traces-local-ducklake/), or OpenTelemetry Collectors. 
 
-You can type some short commands in the DuckDB shell, run a Docker image that runs the extension as a daemon, or install the `duckdb-otlp` CLI with Homebrew.
+You can type some short commands in the DuckDB shell, run a Docker image that runs the extension as a daemon, or install the `duckdb-otlp` CLI with the install script or Homebrew.
 
 <details>
 <summary>Start server in the DuckDB shell</summary>
@@ -92,6 +92,23 @@ docker run --rm --name duckdb-otlp \
 ```
 
 To query the running daemon using Quack protocol, [see docs here](https://smithclay.github.io/duckdb-otlp/guides/query-with-quack/).
+
+</details>
+
+<details>
+<summary>Install the CLI with the install script</summary>
+
+```sh
+# macOS or Linux, installs a single `duckdb-otlp` binary into ~/.local/bin
+curl -fsSL https://smithclay.github.io/duckdb-otlp/install.sh | sh
+
+# Listens for OTLP/HTTP on 127.0.0.1:4318 and OTLP/gRPC on 127.0.0.1:4317
+# Writes data to a local DuckLake under ~/.local/share/duckdb-otlp
+# Loopback-only with no token, so authentication is disabled automatically
+duckdb-otlp serve
+```
+
+The script downloads the release tarball for your platform, verifies it against the release's `SHA256SUMS`, and installs the binary. Pass options after `--`, for example `| sh -s -- --version v0.7.2 --bin-dir /usr/local/bin`. See the [CLI reference](https://smithclay.github.io/duckdb-otlp/reference/cli/) for the full list.
 
 </details>
 

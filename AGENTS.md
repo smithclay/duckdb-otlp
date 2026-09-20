@@ -223,6 +223,7 @@ test/
 
 site/
 ├── src/content/docs/  # Astro/Starlight documentation pages
+├── public/install.sh  # `curl ... | sh` installer for the duckdb-otlp CLI
 └── public/wasm-demo/  # Browser demo, WASM extension, and sample OTLP files
 
 docker/
@@ -241,6 +242,8 @@ Follow the Diátaxis documentation framework and keep docs lean:
 - **Reference**: exact API, schema, server contract, and operational limits under `site/src/content/docs/reference/`.
 - **Explanation**: architecture and design context in `site/src/content/docs/architecture.md`.
 
+The CLI installer lives at `site/public/install.sh` rather than in `scripts/`, because that path *is* its URL: Astro copies `site/public/` into the Pages artifact verbatim, so `https://smithclay.github.io/duckdb-otlp/install.sh` and the file in this repository cannot drift. It installs the release tarballs that `daemon-release` attaches (`duckdb-otlp-<tag>-<platform>.tar.gz` + `SHA256SUMS`), so a change to that naming is a change to the installer. It follows the CLI's own conventions — `flag > env > default`, exit `2` for a bad command line, messaging on stderr — and refuses to install anything whose checksum does not match.
+
 Prefer one canonical page per topic and link to it instead of duplicating examples. Since this is an early-stage project, do not add backwards-compatibility redirect pages or migration stubs unless explicitly requested.
 
 ## Testing Notes
@@ -248,6 +251,7 @@ Prefer one canonical page per topic and link to it instead of duplicating exampl
 - SQLLogicTests under `test/sql/` cover JSON parsing, protobuf parsing, option handling, and schema projections.
 - All tests run against DuckDB with the extension statically linked (`make test`).
 - Test data in `test/data/` includes representative OTLP JSON and protobuf fixtures used by the table functions.
+- `test/pages/` holds the published-site tests (`python3 -m unittest discover -s test/pages`, run by `site-check.yml`): the extension-repository packaging, and `install.sh` driven against a fake release served over loopback.
 - The Docker benchmark harness (`scripts/benchmark_catalog_ingest.py`) starts the daemon image, sends OTLP/HTTP log batches, flushes via Quack, and queries row counts/server metrics over Quack. Because the image is distroless (no in-container shell/`duckdb`), it publishes the Quack port and runs Quack queries from a **host `duckdb` CLI** — so the harness now requires `duckdb` on `PATH` (the `docker-smoke` CI job installs the pinned v1.5.5 CLI). It intentionally avoids the old FIFO controller path.
 
 ## Known Limitations
