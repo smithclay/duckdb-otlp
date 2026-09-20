@@ -1212,6 +1212,7 @@ ServerConfig ServerConfig::FromEnv(const EnvSource &env) {
 	}
 	config.promote_resource_attributes = env.Get("DUCKDB_OTLP_PROMOTE_RESOURCE_ATTRIBUTES", "");
 	config.promote_scope_attributes = env.Get("DUCKDB_OTLP_PROMOTE_SCOPE_ATTRIBUTES", "");
+	config.attributes_as_variant = IsTruthy(env.Get("DUCKDB_OTLP_ATTRIBUTES_AS_VARIANT", "0"));
 
 	config.quack_token = env.Get("DUCKDB_QUACK_TOKEN");
 	if (config.quack_enabled && config.quack_token.empty()) {
@@ -1285,14 +1286,19 @@ string ServerConfig::StartOtlpSql() const {
 	auto export_sql = parquet_export_path.empty()
 	                      ? string("")
 	                      : StringUtil::Format(",\n    parquet_export_path := %s", SqlQuote(parquet_export_path));
-	// Attribute promotion params, emitted only when set so the common path is unchanged.
-	string promote_sql;
+	// Attribute options (promotion, VARIANT bags), emitted only when set so the common path is
+	// unchanged.
+	string attribute_sql;
 	if (!promote_resource_attributes.empty()) {
-		promote_sql +=
+		attribute_sql +=
 		    StringUtil::Format(",\n    promote_resource_attributes := %s", SqlQuote(promote_resource_attributes));
 	}
 	if (!promote_scope_attributes.empty()) {
-		promote_sql += StringUtil::Format(",\n    promote_scope_attributes := %s", SqlQuote(promote_scope_attributes));
+		attribute_sql +=
+		    StringUtil::Format(",\n    promote_scope_attributes := %s", SqlQuote(promote_scope_attributes));
+	}
+	if (attributes_as_variant) {
+		attribute_sql += ",\n    attributes_as_variant := true";
 	}
 	auto schema_target =
 	    catalog.empty() ? QuoteIdentifier(schema) : QuoteIdentifier(catalog) + "." + QuoteIdentifier(schema);
@@ -1325,7 +1331,7 @@ FROM %s(
 );
 )SQL",
 	                          schema_target, serve_fn, uris_sql, transports_sql, SqlQuote(catalog), SqlQuote(schema),
-	                          auth_sql, thread_sql, limits_sql, export_sql, promote_sql);
+	                          auth_sql, thread_sql, limits_sql, export_sql, attribute_sql);
 }
 
 std::vector<ModeExtension> ServerConfig::AllExtensions() const {

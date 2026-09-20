@@ -9,11 +9,16 @@ namespace duckdb {
 class Connection;
 
 //! User-specified attribute promotion. At ingest the named resource/scope attribute keys are
-//! extracted out of the JSON `resource_attributes` / `scope_attributes` blobs into first-class
+//! extracted out of the `resource_attributes` / `scope_attributes` bags into first-class
 //! VARCHAR columns (`resource_attr_<key>` / `scope_attr_<key>`) so they get zone-map pruning. The
-//! blob is left intact (the residual); any value reconstructs with
+//! bag is left intact (the residual); any value reconstructs with
 //! `COALESCE(resource_attr_x, json_extract_string(resource_attributes, '$."x"'))`. There is no
 //! auto-discovery: the promoted set is exactly what the operator lists. Catalog mode only.
+//!
+//! The extract follows the bag's column type (see OtlpServerConfig::attributes_as_variant):
+//! `json_extract_string(bag, '$."k"')` over JSON text, `CAST(variant_extract(bag, 'k') AS VARCHAR)`
+//! over VARIANT. Both return NULL for an absent key, and variant_extract takes a literal key -- not
+//! a path -- so a dotted OTLP key like `service.name` resolves as one member either way.
 struct OtlpPromoteConfig {
 	vector<string> resource_keys;
 	vector<string> scope_keys;
@@ -27,7 +32,7 @@ struct OtlpPromoteConfig {
 //! otlp_server_list reads PromotedColumnsTotal() without locking.
 class OtlpColumnPromoter {
 public:
-	OtlpColumnPromoter(OtlpPromoteConfig config, string catalog_name, string schema_name,
+	OtlpColumnPromoter(OtlpPromoteConfig config, bool attributes_as_variant, string catalog_name, string schema_name,
 	                   std::function<void(const string &)> log);
 
 	bool Enabled() const {
@@ -42,7 +47,7 @@ public:
 
 	//! INSERT...SELECT projection suffix, identical for every signal (resource/scope columns are
 	//! common to all signal tables): `, json_extract_string("resource_attributes", '$."k"') AS
-	//! "resource_attr_k", ...`. Empty when disabled.
+	//! "resource_attr_k", ...` (or the variant_extract form). Empty when disabled.
 	const string &ProjectionSuffix() const {
 		return suffix;
 	}
@@ -66,6 +71,7 @@ private:
 	};
 	void Disable(const string &reason);
 
+	bool attributes_as_variant;
 	string catalog_name;
 	string schema_name;
 	std::function<void(const string &)> log;

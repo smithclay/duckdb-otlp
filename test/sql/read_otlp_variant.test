@@ -1,0 +1,102 @@
+# name: test/sql/read_otlp_variant.test
+# description: attributes_as_variant reads the OTLP attribute bags as VARIANT
+# group: [sql]
+
+require otlp
+
+# Off by default: the bags stay VARCHAR holding JSON text.
+query IIII
+SELECT typeof(resource_attributes), typeof(scope_attributes), typeof(log_attributes), typeof(body)
+FROM read_otlp_logs('test/data/logs_simple.jsonl') LIMIT 1;
+----
+VARCHAR	VARCHAR	VARCHAR	VARCHAR
+
+# On: every *_attributes column becomes VARIANT. Nothing else moves -- `body` and the
+# JSON *array* columns (events_json, links_json, exemplars_json) are out of scope.
+query IIII
+SELECT typeof(resource_attributes), typeof(scope_attributes), typeof(log_attributes), typeof(body)
+FROM read_otlp_logs('test/data/logs_simple.jsonl', attributes_as_variant := true) LIMIT 1;
+----
+VARIANT	VARIANT	VARIANT	VARCHAR
+
+query IIIII
+SELECT typeof(resource_attributes), typeof(scope_attributes), typeof(span_attributes),
+       typeof(events_json), typeof(links_json)
+FROM read_otlp_traces('test/data/traces_simple.jsonl', attributes_as_variant := true) LIMIT 1;
+----
+VARIANT	VARIANT	VARIANT	VARCHAR	VARCHAR
+
+query III
+SELECT typeof(resource_attributes), typeof(metric_attributes), typeof(exemplars_json)
+FROM read_otlp_metrics_gauge('test/data/metrics_simple.jsonl', attributes_as_variant := true) LIMIT 1;
+----
+VARIANT	VARIANT	VARCHAR
+
+# false is the same as omitting it.
+query I
+SELECT typeof(resource_attributes)
+FROM read_otlp_logs('test/data/logs_simple.jsonl', attributes_as_variant := false) LIMIT 1;
+----
+VARCHAR
+
+# A dotted OTLP key resolves as one member: variant_extract takes a literal key, not a path.
+query I
+SELECT DISTINCT CAST(variant_extract(resource_attributes, 'service.name') AS VARCHAR)
+FROM read_otlp_logs('test/data/logs_simple.jsonl', attributes_as_variant := true);
+----
+test-service
+
+# ... and every row reads back the value the JSON form extracts.
+query I
+SELECT count(*) FROM read_otlp_logs('test/data/logs_simple.jsonl', attributes_as_variant := true)
+WHERE CAST(variant_extract(resource_attributes, 'service.name') AS VARCHAR) = 'test-service';
+----
+3
+
+# An absent key is NULL, not an error.
+query I
+SELECT DISTINCT variant_extract(resource_attributes, 'no.such.key') IS NULL
+FROM read_otlp_logs('test/data/logs_simple.jsonl', attributes_as_variant := true);
+----
+true
+
+# The point of the type: attribute values keep their OTLP type instead of all being JSON text.
+query IIIIII
+SELECT variant_typeof(variant_extract(log_attributes, 'string.attribute')),
+       variant_typeof(variant_extract(log_attributes, 'boolean.attribute')),
+       variant_typeof(variant_extract(log_attributes, 'int.attribute')),
+       variant_typeof(variant_extract(log_attributes, 'double.attribute')),
+       variant_typeof(variant_extract(log_attributes, 'array.attribute')),
+       variant_typeof(variant_extract(log_attributes, 'map.attribute'))
+FROM read_otlp_logs('test/data/logs_document.json', attributes_as_variant := true);
+----
+VARCHAR	BOOL_TRUE	UINT64	DOUBLE	ARRAY(2)	OBJECT(some.map.key)
+
+# Nested values are reachable, and arithmetic works without a cast from text.
+query II
+SELECT CAST(variant_extract(variant_extract(log_attributes, 'map.attribute'), 'some.map.key') AS VARCHAR),
+       CAST(variant_extract(log_attributes, 'int.attribute') AS BIGINT) + 1
+FROM read_otlp_logs('test/data/logs_document.json', attributes_as_variant := true);
+----
+some value	11
+
+# An empty bag stays NULL rather than becoming an empty VARIANT object: the Rust backend
+# writes no JSON for a record without attributes, and the cast carries the NULL through.
+query I
+SELECT count(*) FROM read_otlp_metrics_gauge('test/data/metrics_simple.jsonl', attributes_as_variant := true)
+WHERE metric_attributes IS NULL;
+----
+1
+
+# Projection pushdown still prunes: selecting only the VARIANT column works.
+query I
+SELECT count(resource_attributes) FROM read_otlp_logs('test/data/logs_simple.jsonl', attributes_as_variant := true);
+----
+3
+
+# The OTAP readers share the schema and the flag.
+query II
+SELECT typeof(resource_attributes), typeof(log_attributes)
+FROM read_otap_logs('test/data/otap/logs-initial.bar', attributes_as_variant := true) LIMIT 1;
+----
+VARIANT	VARIANT

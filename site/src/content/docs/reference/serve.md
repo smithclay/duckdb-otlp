@@ -140,6 +140,7 @@ SELECT * FROM otlp_serve('otlp:localhost:4318', catalog := 'lake', token := 'my-
 | `maintenance_retention_ms` | BIGINT | `900000` (15 min) | DuckLake only. How old snapshots and unused data files must be before the post-seal `CHECKPOINT` expires and deletes them (`expire_older_than` / `delete_older_than`), and how old an untracked data file must be before the orphan sweep deletes it. Keep it longer than your longest read; time-travel below this window is unavailable. Must be greater than zero. |
 | `promote_resource_attributes` | VARCHAR | *(none)* | Comma-separated **resource** attribute keys to promote into first-class columns at ingest. See [Attribute promotion](#attribute-promotion). Catalog mode only. |
 | `promote_scope_attributes` | VARCHAR | *(none)* | Comma-separated **scope** attribute keys to promote into first-class columns at ingest. See [Attribute promotion](#attribute-promotion). Catalog mode only. |
+| `attributes_as_variant` | BOOLEAN | `false` | Create and fill the attribute bags as `VARIANT` instead of `VARCHAR` holding JSON text. See [Attributes as VARIANT](#attributes-as-variant). |
 
 **Output columns** (one row per listener):
 
@@ -336,6 +337,27 @@ SELECT * FROM otlp_serve(
 - `otlp_server_list().promoted_columns_total` reports the promoted column count per signal.
 
 The daemon exposes the same option via `DUCKDB_OTLP_PROMOTE_RESOURCE_ATTRIBUTES` and `DUCKDB_OTLP_PROMOTE_SCOPE_ATTRIBUTES` (comma-separated). The daemon image must have the `json` extension available; if it cannot load it, promotion disables itself with a log.
+
+## Attributes as VARIANT
+
+`attributes_as_variant := true` makes the server create and fill every `*_attributes` column as DuckDB's [`VARIANT`](https://duckdb.org/docs/stable/sql/data_types/variant) type instead of `VARCHAR` holding JSON text. The readers take the same flag — see [Attributes as VARIANT](../schemas/#attributes-as-variant) for what changes about querying — and the daemon exposes it as `DUCKDB_OTLP_ATTRIBUTES_AS_VARIANT=1`.
+
+```sql
+SELECT * FROM otlp_serve('otlp:0.0.0.0:4318', catalog := 'lake', attributes_as_variant := true);
+```
+
+- **It is part of the table shape, not a runtime preference.** The server creates its six signal tables with the column types the flag implies, and on startup it validates the types it finds. Pointing a server at tables created the other way fails with an error naming the migration rather than writing the wrong encoding into them.
+- **Migrating an existing catalog** means one `ALTER` per bag column per signal table, with an explicit `USING` — a bare cast from `VARCHAR` would store the whole JSON document as a VARIANT *string* instead of parsing it:
+
+  ```sql
+  ALTER TABLE lake.main.otlp_logs
+    ALTER COLUMN resource_attributes SET DATA TYPE VARIANT
+    USING CAST(resource_attributes AS JSON)::VARIANT;
+  ```
+
+- **DuckLake and Parquet.** `VARIANT` columns are written to Parquet in the [Parquet variant encoding](https://duckdb.org/docs/stable/sql/data_types/variant) and shredded into typed subcolumns, which is where the storage and scan win comes from. DuckLake stores them natively from DuckLake 0.4; a catalog older than that cannot hold the column type.
+- **Attribute promotion still works.** With `VARIANT` bags the promoted column is filled by `CAST(variant_extract(bag, 'key') AS VARCHAR)` rather than `json_extract_string`, and stays `VARCHAR` either way.
+- **Cost.** The Rust backend has no VARIANT encoder: it emits each bag as JSON either way, and the extension converts that text to `VARIANT` once per chunk on the way in. So this trades a parse at ingest for typed, shreddable storage — measure it against your ingest rate before turning it on at volume (`scripts/benchmark_catalog_ingest.py --attributes-as-variant` runs the daemon e2e benchmark with it on).
 
 ## URI scheme
 

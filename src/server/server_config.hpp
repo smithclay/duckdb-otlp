@@ -98,6 +98,10 @@ struct ServerConfig {
 	//! first-class columns at ingest. Emitted into the otlp_serve() call when non-empty.
 	duckdb::string promote_resource_attributes;
 	duckdb::string promote_scope_attributes;
+	//! Opt-in: create the attribute-bag columns as VARIANT instead of VARCHAR holding JSON text
+	//! (DUCKDB_OTLP_ATTRIBUTES_AS_VARIANT). Part of the destination table's shape: a catalog whose
+	//! signal tables were created the other way is rejected at startup, not rewritten.
+	bool attributes_as_variant = false;
 
 	duckdb::string mode_setup_sql;
 	//! Operator-supplied SQL run after mode setup and before the ingest server starts

@@ -50,9 +50,10 @@ string JsonPathLiteral(const string &key) {
 
 } // namespace
 
-OtlpColumnPromoter::OtlpColumnPromoter(OtlpPromoteConfig config_p, string catalog_name_p, string schema_name_p,
-                                       std::function<void(const string &)> log_p)
-    : catalog_name(std::move(catalog_name_p)), schema_name(std::move(schema_name_p)), log(std::move(log_p)) {
+OtlpColumnPromoter::OtlpColumnPromoter(OtlpPromoteConfig config_p, bool attributes_as_variant_p, string catalog_name_p,
+                                       string schema_name_p, std::function<void(const string &)> log_p)
+    : attributes_as_variant(attributes_as_variant_p), catalog_name(std::move(catalog_name_p)),
+      schema_name(std::move(schema_name_p)), log(std::move(log_p)) {
 	auto add = [&](const string &source, const char *prefix, const string &key) {
 		if (key.empty()) {
 			return;
@@ -73,8 +74,13 @@ OtlpColumnPromoter::OtlpColumnPromoter(OtlpPromoteConfig config_p, string catalo
 		add("scope_attributes", "scope_attr_", key);
 	}
 	for (auto &c : columns) {
-		suffix += ", json_extract_string(" + QuoteIdentifier(c.source_column) + ", " + JsonPathLiteral(c.attr_key) +
-		          ") AS " + QuoteIdentifier(c.target_column);
+		// One expression per bag column type; the promoted column stays VARCHAR either way, so
+		// nothing downstream (the ALTER, the INSERT target list, a reader's COALESCE) changes.
+		const string extract = attributes_as_variant ? "CAST(variant_extract(" + QuoteIdentifier(c.source_column) +
+		                                                   ", " + SqlQuote(c.attr_key) + ") AS VARCHAR)"
+		                                             : "json_extract_string(" + QuoteIdentifier(c.source_column) +
+		                                                   ", " + JsonPathLiteral(c.attr_key) + ")";
+		suffix += ", " + extract + " AS " + QuoteIdentifier(c.target_column);
 		target_list += ", " + QuoteIdentifier(c.target_column);
 	}
 }
@@ -92,15 +98,26 @@ void OtlpColumnPromoter::Initialize(Connection &con) {
 	if (columns.empty()) {
 		return;
 	}
-	// JSON functions back the extract; if unavailable we cannot promote.
-	try {
-		Exec(con, "LOAD json");
-	} catch (...) {
+	// The extract has to be runnable on this connection before any column is added. Over VARIANT
+	// that is core (variant_extract plus the JSON->VARIANT cast); over JSON text it needs the json
+	// extension, which is why the LOAD is attempted first and only a failing probe disables.
+	if (attributes_as_variant) {
 		try {
-			Exec(con, "SELECT json_extract_string('{\"a\":1}', '$.\"a\"')");
+			Exec(con, "SELECT CAST(variant_extract('{\"a\":1}'::JSON::VARIANT, 'a') AS VARCHAR)");
 		} catch (std::exception &ex) {
-			Disable(string("json extension unavailable: ") + ex.what());
+			Disable(string("VARIANT attribute extraction unavailable: ") + ex.what());
 			return;
+		}
+	} else {
+		try {
+			Exec(con, "LOAD json");
+		} catch (...) {
+			try {
+				Exec(con, "SELECT json_extract_string('{\"a\":1}', '$.\"a\"')");
+			} catch (std::exception &ex) {
+				Disable(string("json extension unavailable: ") + ex.what());
+				return;
+			}
 		}
 	}
 	// Add every promoted column on every signal table (idempotent). A fixed config means the first

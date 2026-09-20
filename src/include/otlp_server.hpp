@@ -96,6 +96,10 @@ struct OtlpServerConfig {
 	//! Opt-in attribute promotion: extract these resource/scope attribute keys into first-class
 	//! columns at ingest. Off when both lists are empty. Catalog (non-Parquet-export) mode only.
 	OtlpPromoteConfig promote;
+	//! Opt-in: create and fill the attribute-bag columns as VARIANT instead of VARCHAR-holding-JSON
+	//! (see OtlpArrowSchemaOptions). It changes the destination table's column types, so an existing
+	//! table built the other way is rejected by CreateOrValidateTable rather than written into.
+	bool attributes_as_variant = false;
 };
 
 struct OtlpIngestResult {

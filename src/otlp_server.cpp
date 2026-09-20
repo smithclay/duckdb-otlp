@@ -262,6 +262,7 @@ void OtlpServer::GetSignalColumns(OtlpSignalType signal_type, vector<LogicalType
 	try {
 		OtlpArrowSchemaOptions options;
 		options.timestamp_ns_as_timestamp = true;
+		options.attributes_as_variant = config.attributes_as_variant;
 		GetArrowSchemaColumns(arrow_schema, types, names, options);
 	} catch (...) {
 		if (arrow_schema.release) {
@@ -437,8 +438,9 @@ OtlpServer::OtlpServer(ClientContext &context, const vector<OtlpListenerSpec> &l
 	// Attribute promotion (opt-in, catalog mode only): add the operator-specified resource/scope
 	// attribute columns once, before the sealer fires. Parquet-export mode has no table to ALTER.
 	if (config.promote.Enabled() && config.parquet_export_path.empty()) {
-		promoter = make_uniq<OtlpColumnPromoter>(config.promote, config.catalog_name, config.schema_name,
-		                                         [this](const string &msg) { LogServerEvent(msg); });
+		promoter =
+		    make_uniq<OtlpColumnPromoter>(config.promote, config.attributes_as_variant, config.catalog_name,
+		                                  config.schema_name, [this](const string &msg) { LogServerEvent(msg); });
 		promoter->Initialize(*writer_con);
 	}
 	StartSealer();
@@ -631,8 +633,26 @@ void OtlpServer::CreateOrValidateTable(Connection &con, OtlpSignalType signal_ty
 			                            static_cast<uint64_t>(i), result->names[i], expected_names[i]);
 		}
 		if (result->types[i] != expected_types[i]) {
-			throw InvalidInputException("Target table %s column %s has type %s, expected %s", qualified,
-			                            expected_names[i], result->types[i].ToString(), expected_types[i].ToString());
+			// The attribute bags are the one column type a supported configuration change moves
+			// (attributes_as_variant), and a table created on the other setting is otherwise a bare
+			// "expected X, got Y". Name the knob and the migration instead. The USING clause is not
+			// decoration: a bare VARCHAR -> VARIANT cast would store each bag as a VARIANT *string*
+			// rather than parsing the JSON object, and VARIANT -> VARCHAR renders DuckDB's display
+			// form, not JSON.
+			string hint;
+			if (OtlpIsAttributeBagColumn(expected_names[i])) {
+				const bool want_variant = expected_types[i].id() == LogicalTypeId::VARIANT;
+				const auto column = QuoteIdentifier(expected_names[i]);
+				hint = StringUtil::Format(
+				    ". The table was created with attributes_as_variant := %s; either start this server "
+				    "the same way, or migrate every signal table with ALTER TABLE %s ALTER COLUMN %s SET "
+				    "DATA TYPE %s USING %s",
+				    want_variant ? "false" : "true", qualified, column, expected_types[i].ToString(),
+				    want_variant ? "CAST(" + column + " AS JSON)::VARIANT" : "CAST(" + column + " AS JSON)");
+			}
+			throw InvalidInputException("Target table %s column %s has type %s, expected %s%s", qualified,
+			                            expected_names[i], result->types[i].ToString(), expected_types[i].ToString(),
+			                            hint);
 		}
 	}
 	// Recorded in EnsureTargetTables order (== signal_buffers order) so the seal can pick the
