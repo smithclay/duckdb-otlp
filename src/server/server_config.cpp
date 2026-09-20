@@ -438,6 +438,40 @@ CREATE OR REPLACE SECRET %s (
 	return secret_sql;
 }
 
+//! Shorthands for declaring a mode's extension list.
+ModeExtension Core(const char *name) {
+	return {name, ExtensionSource::CORE};
+}
+
+ModeExtension Community(const char *name) {
+	return {name, ExtensionSource::COMMUNITY};
+}
+
+//! The otlp extension, statically embedded in the daemon. Declared so the banner reports it,
+//! never emitted as SQL -- INSTALLing it would reach for a published build that is not the one
+//! running.
+const ModeExtension BUILT_IN_OTLP = {"otlp", ExtensionSource::BUILT_IN};
+
+//! The INSTALL/LOAD prelude for a mode's extensions, derived from the one declaration.
+//!
+//! All the INSTALLs precede all the LOADs, which is the order these blocks were written by
+//! hand and the order DuckDB wants when one extension's load depends on another being present.
+//! Built-in extensions contribute nothing. Returns "" when nothing needs installing, so a mode
+//! whose only extension is otlp emits no setup SQL at all.
+string ExtensionSetupSql(const std::vector<ModeExtension> &extensions) {
+	string installs;
+	string loads;
+	for (const auto &extension : extensions) {
+		if (extension.source == ExtensionSource::BUILT_IN) {
+			continue;
+		}
+		installs += "\nINSTALL " + extension.name;
+		installs += extension.source == ExtensionSource::COMMUNITY ? " FROM community;" : ";";
+		loads += "\nLOAD " + extension.name + ";";
+	}
+	return installs.empty() ? string() : installs + loads;
+}
+
 //! AWS region, from the standard SDK variables. Both spellings are genuine AWS conventions
 //! rather than aliases this project invented, so both stay.
 string AwsRegion(const EnvSource &env, MissingSettings &missing) {
@@ -498,7 +532,7 @@ void ConfigureNone(const EnvSource &env, ServerConfig &config, MissingSettings &
 	// Postgres catalog, say) had their script layered on top of an unwanted local-ducklake
 	// ATTACH. This makes the general mechanism reachable, so an uncovered combination needs no
 	// new mode.
-	config.mode_extensions = {"otlp"};
+	config.mode_extensions = {BUILT_IN_OTLP};
 	// No fallback: an empty catalog means the control database, which is a legitimate minimal
 	// setup, and a script that attaches its own catalog names it with --catalog.
 	config.catalog = env.Get("DUCKDB_CATALOG", "");
@@ -508,7 +542,7 @@ void ConfigureNone(const EnvSource &env, ServerConfig &config, MissingSettings &
 }
 
 void ConfigureLocalDuckLake(const EnvSource &env, ServerConfig &config, MissingSettings &) {
-	config.mode_extensions = {"ducklake", "otlp"};
+	config.mode_extensions = {Core("ducklake"), BUILT_IN_OTLP};
 	config.catalog = CatalogDefault(env, "otel");
 	config.schema = SchemaDefault(env, "main");
 	auto catalog_path = env.Get("DUCKLAKE_CATALOG_PATH", config.data_dir + "/ducklake/catalog.duckdb");
@@ -517,9 +551,8 @@ void ConfigureLocalDuckLake(const EnvSource &env, ServerConfig &config, MissingS
 	CreateParentDirectory(catalog_path);
 	CreateDirectory(data_path);
 
-	config.mode_setup_sql = StringUtil::Format(R"SQL(
-INSTALL ducklake;
-LOAD ducklake;
+	config.mode_setup_sql = ExtensionSetupSql(config.mode_extensions) +
+	                        StringUtil::Format(R"SQL(
 ATTACH %s AS %s (
   DATA_PATH %s%s
 );
@@ -529,7 +562,7 @@ ATTACH %s AS %s (
 }
 
 void ConfigureAwsDuckLake(const EnvSource &env, ServerConfig &config, MissingSettings &missing) {
-	config.mode_extensions = {"ducklake", "aws", "httpfs", "otlp"};
+	config.mode_extensions = {Core("ducklake"), Core("aws"), Core("httpfs"), BUILT_IN_OTLP};
 	config.catalog = CatalogDefault(env, "lake");
 	config.schema = SchemaDefault(env, "otlp");
 	auto catalog_path = env.Get("DUCKLAKE_CATALOG_PATH", config.data_dir + "/ducklake/catalog.duckdb");
@@ -549,13 +582,8 @@ void ConfigureAwsDuckLake(const EnvSource &env, ServerConfig &config, MissingSet
 	config.credentials_source = AwsCredentialsSource(profile);
 
 	config.mode_setup_sql =
+	    ExtensionSetupSql(config.mode_extensions) +
 	    StringUtil::Format(R"SQL(
-INSTALL ducklake;
-INSTALL aws;
-INSTALL httpfs;
-LOAD ducklake;
-LOAD aws;
-LOAD httpfs;
 %sATTACH %s AS %s (
   DATA_PATH %s%s
 );
@@ -565,7 +593,7 @@ LOAD httpfs;
 }
 
 void ConfigureR2DataCatalog(const EnvSource &env, ServerConfig &config, MissingSettings &missing) {
-	config.mode_extensions = {"iceberg", "httpfs", "otlp"};
+	config.mode_extensions = {Core("iceberg"), Core("httpfs"), BUILT_IN_OTLP};
 	config.catalog = CatalogDefault(env, "r2catalog");
 	config.schema = SchemaDefault(env, "otlp");
 	RequireEnv(env, missing, "CLOUDFLARE_API_TOKEN", "R2 Data Catalog read/write token");
@@ -586,12 +614,10 @@ void ConfigureR2DataCatalog(const EnvSource &env, ServerConfig &config, MissingS
 	auto endpoint = R2EndpointDefault(env, missing);
 	auto storage_secret = BuildR2StorageSecret(env, config, "cloudflare_r2_secret", have_credentials, endpoint);
 
-	config.mode_setup_sql = StringUtil::Format(
-	    R"SQL(
-INSTALL iceberg;
-INSTALL httpfs;
-LOAD iceberg;
-LOAD httpfs;%sCREATE OR REPLACE SECRET cloudflare_catalog_secret (
+	config.mode_setup_sql = ExtensionSetupSql(config.mode_extensions) +
+	                        StringUtil::Format(
+	                            R"SQL(
+%sCREATE OR REPLACE SECRET cloudflare_catalog_secret (
   TYPE ICEBERG,
   TOKEN %s
 );
@@ -601,12 +627,12 @@ ATTACH %s AS %s (
   SECRET cloudflare_catalog_secret
 );
 )SQL",
-	    storage_secret, EnvSql(env, config, "CLOUDFLARE_API_TOKEN"), SqlQuote(warehouse),
-	    QuoteIdentifier(config.catalog), SqlQuote(catalog_uri));
+	                            storage_secret, EnvSql(env, config, "CLOUDFLARE_API_TOKEN"), SqlQuote(warehouse),
+	                            QuoteIdentifier(config.catalog), SqlQuote(catalog_uri));
 }
 
 void ConfigureParquet(const EnvSource &env, ServerConfig &config, MissingSettings &missing) {
-	config.mode_extensions = {"otlp"};
+	config.mode_extensions = {BUILT_IN_OTLP};
 	config.catalog = "";
 	config.schema = SchemaDefault(env, "otlp");
 	config.parquet_export_path = env.Get("PARQUET_EXPORT_PATH");
@@ -622,24 +648,18 @@ void ConfigureParquet(const EnvSource &env, ServerConfig &config, MissingSetting
 		return;
 	}
 
-	config.mode_extensions = {"aws", "httpfs", "otlp"};
+	config.mode_extensions = {Core("aws"), Core("httpfs"), BUILT_IN_OTLP};
 	auto region = AwsRegion(env, missing);
 	auto profile = env.Get("AWS_PROFILE", env.Get("AWS_DEFAULT_PROFILE"));
 	auto secret_sql =
 	    BuildCredentialChainSecret("plain_s3_secret", region, profile, env.Get("S3_ENDPOINT"), env.Get("S3_URL_STYLE"));
 	config.credentials_source = AwsCredentialsSource(profile);
 
-	config.mode_setup_sql = StringUtil::Format(R"SQL(
-INSTALL aws;
-INSTALL httpfs;
-LOAD aws;
-LOAD httpfs;
-%s)SQL",
-	                                           secret_sql);
+	config.mode_setup_sql = ExtensionSetupSql(config.mode_extensions) + secret_sql;
 }
 
 void ConfigureR2LocalDuckLake(const EnvSource &env, ServerConfig &config, MissingSettings &missing) {
-	config.mode_extensions = {"ducklake", "httpfs", "otlp"};
+	config.mode_extensions = {Core("ducklake"), Core("httpfs"), BUILT_IN_OTLP};
 	config.catalog = CatalogDefault(env, "lake");
 	config.schema = SchemaDefault(env, "otlp");
 	auto have_credentials = ResolveR2Credentials(env, config, missing);
@@ -654,11 +674,9 @@ void ConfigureR2LocalDuckLake(const EnvSource &env, ServerConfig &config, Missin
 	auto storage_secret = BuildR2StorageSecret(env, config, "r2_storage", have_credentials, endpoint);
 
 	config.mode_setup_sql =
+	    ExtensionSetupSql(config.mode_extensions) +
 	    StringUtil::Format(R"SQL(
-INSTALL ducklake;
-INSTALL httpfs;
-LOAD ducklake;
-LOAD httpfs;%sATTACH %s AS %s (
+%sATTACH %s AS %s (
   DATA_PATH %s%s
 );
 )SQL",
@@ -667,7 +685,7 @@ LOAD httpfs;%sATTACH %s AS %s (
 }
 
 void ConfigureR2NeonDuckLake(const EnvSource &env, ServerConfig &config, MissingSettings &missing) {
-	config.mode_extensions = {"ducklake", "postgres", "httpfs", "otlp"};
+	config.mode_extensions = {Core("ducklake"), Core("postgres"), Core("httpfs"), BUILT_IN_OTLP};
 	config.catalog = CatalogDefault(env, "lake");
 	config.schema = SchemaDefault(env, "otlp");
 	auto have_credentials = ResolveR2Credentials(env, config, missing);
@@ -680,21 +698,17 @@ void ConfigureR2NeonDuckLake(const EnvSource &env, ServerConfig &config, Missing
 	auto endpoint = R2EndpointDefault(env, missing);
 	auto storage_secret = BuildR2StorageSecret(env, config, "r2_storage", have_credentials, endpoint);
 
-	config.mode_setup_sql = StringUtil::Format(
-	    R"SQL(
-INSTALL ducklake;
-INSTALL postgres;
-INSTALL httpfs;
-LOAD ducklake;
-LOAD postgres;
-LOAD httpfs;%s%sATTACH 'ducklake:ducklake_secret' AS %s%s;
+	config.mode_setup_sql = ExtensionSetupSql(config.mode_extensions) +
+	                        StringUtil::Format(
+	                            R"SQL(
+%s%sATTACH 'ducklake:ducklake_secret' AS %s%s;
 )SQL",
-	    storage_secret, BuildPostgresCatalogSecrets(env, config, data_path), QuoteIdentifier(config.catalog),
-	    DuckLakeSecretAttachOptions(env));
+	                            storage_secret, BuildPostgresCatalogSecrets(env, config, data_path),
+	                            QuoteIdentifier(config.catalog), DuckLakeSecretAttachOptions(env));
 }
 
 void ConfigureGcpDuckLake(const EnvSource &env, ServerConfig &config, MissingSettings &missing) {
-	config.mode_extensions = {"ducklake", "postgres", "gcs", "otlp"};
+	config.mode_extensions = {Core("ducklake"), Core("postgres"), Community("gcs"), BUILT_IN_OTLP};
 	config.catalog = CatalogDefault(env, "lake");
 	config.schema = SchemaDefault(env, "otlp");
 	auto data_path = RequireEnv(env, missing, "DUCKLAKE_DATA_PATH", "gcss://bucket/prefix for the data files");
@@ -707,26 +721,21 @@ void ConfigureGcpDuckLake(const EnvSource &env, ServerConfig &config, MissingSet
 	RequirePostgresCatalog(env, missing);
 	config.credentials_source = "Google application default credentials";
 
-	config.mode_setup_sql = StringUtil::Format(
-	    R"SQL(
-INSTALL ducklake;
-INSTALL postgres;
-INSTALL gcs FROM community;
-LOAD ducklake;
-LOAD postgres;
-LOAD gcs;
+	config.mode_setup_sql = ExtensionSetupSql(config.mode_extensions) +
+	                        StringUtil::Format(
+	                            R"SQL(
 CREATE OR REPLACE SECRET gcp_storage (
   TYPE gcp,
   PROVIDER credential_chain
 );
 %sATTACH 'ducklake:ducklake_secret' AS %s%s;
 )SQL",
-	    BuildPostgresCatalogSecrets(env, config, data_path), QuoteIdentifier(config.catalog),
-	    DuckLakeSecretAttachOptions(env));
+	                            BuildPostgresCatalogSecrets(env, config, data_path), QuoteIdentifier(config.catalog),
+	                            DuckLakeSecretAttachOptions(env));
 }
 
 void ConfigureS3Tables(const EnvSource &env, ServerConfig &config, MissingSettings &missing) {
-	config.mode_extensions = {"iceberg", "aws", "httpfs", "otlp"};
+	config.mode_extensions = {Core("iceberg"), Core("aws"), Core("httpfs"), BUILT_IN_OTLP};
 	config.catalog = CatalogDefault(env, "s3tables");
 	config.schema = SchemaDefault(env, "otlp");
 	auto bucket_arn = RequireEnv(env, missing, "S3_TABLES_BUCKET_ARN", "the S3 Tables table-bucket ARN");
@@ -752,13 +761,8 @@ void ConfigureS3Tables(const EnvSource &env, ServerConfig &config, MissingSettin
 	                                             /*url_style=*/"");
 	config.credentials_source = AwsCredentialsSource(profile);
 
-	config.mode_setup_sql = StringUtil::Format(R"SQL(
-INSTALL iceberg;
-INSTALL aws;
-INSTALL httpfs;
-LOAD iceberg;
-LOAD aws;
-LOAD httpfs;
+	config.mode_setup_sql = ExtensionSetupSql(config.mode_extensions) +
+	                        StringUtil::Format(R"SQL(
 %sATTACH %s AS %s (
   TYPE iceberg,
   ENDPOINT_TYPE s3_tables

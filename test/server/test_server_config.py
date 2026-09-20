@@ -16,6 +16,7 @@ Point the tests at a binary with DUCKDB_OTLP_SERVER_BIN, or rely on the default
 from __future__ import annotations
 
 import os
+import re
 import socket
 import subprocess
 from pathlib import Path
@@ -736,3 +737,103 @@ def test_mode_none_without_init_sql_writes_to_the_control_database(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "catalog := ''" in result.stdout
     assert "Mode: none" in result.stdout
+
+
+# Minimal configuration for each mode, so every mode can be resolved far enough to report the
+# extensions it needs. Mirrors the required-settings table in the CLI reference.
+MODE_FIXTURES = {
+    "local-ducklake": {},
+    "none": {},
+    "parquet": {},
+    "parquet-s3": {"DUCKDB_MODE": "parquet", "S3_BUCKET": "b", "AWS_REGION": "us-east-1"},
+    "aws-ducklake": {"DUCKLAKE_DATA_PATH": "s3://b/p", "AWS_REGION": "us-east-1"},
+    "gcp-ducklake": {
+        "DUCKLAKE_DATA_PATH": "gcss://b/p",
+        "PGHOST": "h",
+        "PGDATABASE": "d",
+        "PGUSER": "u",
+        "PGPASSWORD": SECRET,
+    },
+    "r2-local-ducklake": {"R2_BUCKET": "b", "CLOUDFLARE_ACCOUNT_ID": "a"},
+    "r2-neon-ducklake": {
+        "R2_BUCKET": "b",
+        "CLOUDFLARE_ACCOUNT_ID": "a",
+        "PGHOST": "h",
+        "PGDATABASE": "d",
+        "PGUSER": "u",
+        "PGPASSWORD": SECRET,
+    },
+    "r2-data-catalog": {"R2_BUCKET": "b", "CLOUDFLARE_ACCOUNT_ID": "a", "CLOUDFLARE_API_TOKEN": SECRET},
+    "s3-tables": {"S3_TABLES_BUCKET_ARN": "arn:aws:s3tables:us-west-2:1:bucket/b"},
+}
+
+
+def extensions_reported_by(mode: str, tmp_path) -> dict:
+    """The banner's Extensions block for `mode`, as {name: source}."""
+    env = dict(MODE_FIXTURES[mode])
+    env.setdefault("DUCKDB_MODE", mode)
+    result = run(env, tmp_path)
+    assert result.returncode == 0, f"{mode}: {result.stderr}"
+    reported = {}
+    in_block = False
+    for line in result.stdout.splitlines():
+        if line.startswith("Extensions:"):
+            in_block = True
+            continue
+        if in_block:
+            if not line.strip():
+                break
+            name, _, note = line.strip().partition(" ")
+            reported[name] = note.strip("()") or "core"
+    return reported
+
+
+@pytest.mark.parametrize("mode", sorted(MODE_FIXTURES))
+def test_generated_sql_installs_exactly_what_the_banner_reports(mode, tmp_path):
+    """The banner and the setup SQL are two renderings of one declaration.
+
+    They used to be written out separately -- a list for the banner, hand-typed INSTALL/LOAD
+    for the SQL -- so a mode could load an extension it never mentioned, or name one it never
+    loaded, with no symptom beyond a misleading banner.
+    """
+    env = dict(MODE_FIXTURES[mode])
+    env.setdefault("DUCKDB_MODE", mode)
+    result = run(env, tmp_path)
+    assert result.returncode == 0, result.stderr
+    reported = extensions_reported_by(mode, tmp_path)
+
+    installed = set(re.findall(r"^INSTALL ([a-z0-9_]+)", result.stdout, re.M))
+    loaded = set(re.findall(r"^LOAD ([a-z0-9_]+);", result.stdout, re.M))
+    # `otlp` is statically embedded: reported, never installed. Everything else is both.
+    needs_install = {name for name, source in reported.items() if source != "built in"}
+    assert installed == needs_install
+    assert loaded == needs_install
+    assert "otlp" not in installed, "the statically embedded extension must never be INSTALLed"
+    # A community extension needs its repository named or the INSTALL resolves nowhere.
+    for name, source in reported.items():
+        if source == "community":
+            assert f"INSTALL {name} FROM community;" in result.stdout
+
+
+def test_the_image_primes_every_extension_some_mode_needs(tmp_path):
+    """The container's offline extension cache is a third copy of this list, in another
+    language and build stage, so it cannot share the declaration -- but it can be checked.
+
+    If a mode gains an extension the image does not prime, the daemon's startup INSTALL goes to
+    the network, or fails outright in an offline deployment. That is invisible until someone
+    runs the image without egress.
+    """
+    dockerfile = (REPO_ROOT / "docker" / "duckdb-otlp-server" / "Dockerfile").read_text()
+    primed = set(re.search(r"for ext in ([a-z0-9 ]+); do", dockerfile).group(1).split())
+    primed |= set(re.findall(r"INSTALL ([a-z0-9_]+) FROM community", dockerfile))
+
+    needed = set()
+    for mode in MODE_FIXTURES:
+        needed |= {name for name, source in extensions_reported_by(mode, tmp_path).items() if source != "built in"}
+
+    missing = needed - primed
+    assert not missing, (
+        f"{sorted(missing)} is needed by a mode but not primed into the image's extension cache "
+        f"(docker/duckdb-otlp-server/Dockerfile). Add it there, or the container will reach the "
+        f"network on startup."
+    )
