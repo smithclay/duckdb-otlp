@@ -99,11 +99,13 @@ void OtlpColumnPromoter::Initialize(Connection &con) {
 		return;
 	}
 	// The extract has to be runnable on this connection before any column is added. Over VARIANT
-	// that is core (variant_extract plus the JSON->VARIANT cast); over JSON text it needs the json
-	// extension, which is why the LOAD is attempted first and only a failing probe disables.
+	// bags it is entirely core -- the probe deliberately builds its VARIANT from a struct literal
+	// rather than from JSON text, because naming the JSON *type* in SQL needs the json extension
+	// that this path is otherwise free of. Over JSON text the extension is required, which is why
+	// the LOAD is attempted first and only a failing probe disables.
 	if (attributes_as_variant) {
 		try {
-			Exec(con, "SELECT CAST(variant_extract('{\"a\":1}'::JSON::VARIANT, 'a') AS VARCHAR)");
+			Exec(con, "SELECT CAST(variant_extract({'a': 1}::VARIANT, 'a') AS VARCHAR)");
 		} catch (std::exception &ex) {
 			Disable(string("VARIANT attribute extraction unavailable: ") + ex.what());
 			return;

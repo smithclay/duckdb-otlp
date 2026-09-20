@@ -81,12 +81,12 @@ FROM read_otlp_logs('test/data/logs_document.json', attributes_as_variant := tru
 some value	11
 
 # An empty bag stays NULL rather than becoming an empty VARIANT object: the Rust backend
-# writes no JSON for a record without attributes, and the cast carries the NULL through.
-query I
-SELECT count(*) FROM read_otlp_metrics_gauge('test/data/metrics_simple.jsonl', attributes_as_variant := true)
-WHERE metric_attributes IS NULL;
+# writes no JSON for a scope without attributes, and the cast carries that NULL through.
+query II
+SELECT count(*) FILTER (scope_attributes IS NULL), count(*) FILTER (resource_attributes IS NOT NULL)
+FROM read_otlp_logs('test/data/logs_simple.jsonl', attributes_as_variant := true);
 ----
-1
+3	3
 
 # Projection pushdown still prunes: selecting only the VARIANT column works.
 query I

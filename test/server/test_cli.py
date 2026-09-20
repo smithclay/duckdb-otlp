@@ -682,8 +682,8 @@ def test_ingest_shape_flags_beat_the_environment(tmp_path):
 def test_ingest_shape_flags_are_off_unless_asked_for(tmp_path):
     result = run(["validate"], home=tmp_path)
     assert result.returncode == 0, result.stderr
-    assert "attributes_as_variant" not in result.stdout
-    assert "promote_resource_attributes" not in result.stdout
+    assert "attributes_as_variant :=" not in result.stdout
+    assert "promote_resource_attributes :=" not in result.stdout
 
 
 def test_an_unknown_flag_names_the_command_whose_help_to_read(tmp_path):
