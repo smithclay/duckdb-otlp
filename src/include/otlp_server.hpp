@@ -589,17 +589,17 @@ private:
 #endif
 };
 
-//! Loopback HTTP probe backing the daemon's `healthcheck` subcommand. Distroless images
+//! Loopback HTTP probe backing the daemon's `doctor` subcommand. Distroless images
 //! ship no shell/curl, so the daemon health-checks itself: returns true if
 //! GET http://127.0.0.1:<port><path> answers 2xx/3xx within a short timeout. Defined in
 //! otlp_server_http.cpp (httplib lives there); not built for wasm.
 #ifndef __EMSCRIPTEN__
 bool OtlpLoopbackHttpStatusOk(int port, const string &path);
-//! Host-aware variant: probes GET http://<host>:<port><path>. Used by the daemon healthcheck so
+//! Host-aware variant: probes GET http://<host>:<port><path>. Used by `doctor` so
 //! a server bound to an explicit non-loopback interface is reachable (review finding M5). Defined
 //! in otlp_server.cpp; not built for wasm.
 bool OtlpHttpStatusOk(const string &host, int port, const string &path);
-//! TCP-connect probe for the daemon healthcheck's gRPC (otap:) transport, which has no HTTP
+//! TCP-connect probe for `doctor`'s gRPC (otap:) transport, which has no HTTP
 //! /readyz endpoint. Returns true if a connection to <host>:<port> succeeds within 2s. Defined
 //! in otlp_server.cpp; not built for wasm.
 bool OtlpTcpConnectOk(const string &host, int port);

@@ -24,7 +24,7 @@
 #include <sstream>
 
 #ifndef __EMSCRIPTEN__
-// Only for the host-aware healthcheck probes (OtlpHttpStatusOk / OtlpTcpConnectOk) at the bottom
+// Only for the host-aware `doctor` probes (OtlpHttpStatusOk / OtlpTcpConnectOk) at the bottom
 // of this file. The HTTP server itself lives in otlp_server_http.cpp; both TUs are in the same
 // archive, so the header-only library's inline symbols deduplicate at link time.
 #include "httplib.hpp"
@@ -506,8 +506,9 @@ void OtlpServer::ValidateToken(const string &token) {
 	// 16 is the deliberate floor for *user-supplied* tokens. Auto-generated tokens
 	// (GenerateRandomToken) carry a full 128 bits of entropy as 32 hex chars; the
 	// lower minimum only bounds how weak a hand-picked token may be.
-	if (token.size() < 16) {
-		throw InvalidInputException("OTLP server token must be at least 16 characters long");
+	if (token.size() < otlp_limits::MIN_TOKEN_LENGTH) {
+		throw InvalidInputException("OTLP server token must be at least %llu characters long",
+		                            static_cast<uint64_t>(otlp_limits::MIN_TOKEN_LENGTH));
 	}
 }
 
@@ -1713,7 +1714,7 @@ idx_t OtlpServer::ShutdownIngest() {
 }
 
 #ifndef __EMSCRIPTEN__
-// Host-aware HTTP probe backing the daemon's `healthcheck` subcommand. The loopback-only
+// Host-aware HTTP probe backing the daemon's `doctor` subcommand. The loopback-only
 // OtlpLoopbackHttpStatusOk (otlp_server_http.cpp) cannot reach a server bound to an explicit
 // non-loopback interface (e.g. OTEL_HTTP_ADDR=192.168.x.x:4318), which made the container
 // HEALTHCHECK probe 127.0.0.1 and fail forever on a healthy server (review finding M5). This
@@ -1793,7 +1794,7 @@ bool ProbeConnectSucceeded(probe_socket_t fd) {
 
 } // namespace
 
-// TCP-connect probe backing the daemon healthcheck for the gRPC (otap:) transport, which speaks
+// TCP-connect probe backing `doctor` for the gRPC (otap:) transport, which speaks
 // HTTP/2 and exposes no HTTP/1.1 /readyz endpoint. A successful connect confirms the tonic
 // listener is bound and accepting (the daemon binds synchronously before serving). 2s timeout.
 bool OtlpTcpConnectOk(const string &host, int port) {

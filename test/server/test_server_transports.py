@@ -18,15 +18,9 @@ import pytest
 from opentelemetry.proto.collector.trace.v1 import trace_service_pb2, trace_service_pb2_grpc
 from opentelemetry.proto.trace.v1 import trace_pb2
 
-from test_server_config import SERVER_BIN, pytestmark
+from test_server_config import free_port, SERVER_BIN, pytestmark
 
 TOKEN = 'transport-test-token-0123456789'
-
-
-def free_port():
-    with socket.socket() as sock:
-        sock.bind(('127.0.0.1', 0))
-        return sock.getsockname()[1]
 
 
 def configuration(tmp_path, transports):
@@ -71,7 +65,7 @@ def wait_ready(process, env, log_path):
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         assert process.poll() is None, log_path.read_text()
-        ready = subprocess.run([str(SERVER_BIN), 'healthcheck'], env=env, capture_output=True, timeout=10)
+        ready = subprocess.run([str(SERVER_BIN), 'doctor'], env=env, capture_output=True, timeout=10)
         if ready.returncode == 0:
             return
         time.sleep(0.05)

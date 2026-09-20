@@ -1,4 +1,8 @@
+#include "cli.hpp"
+#include "commands.hpp"
+#include "env_source.hpp"
 #include "server_config.hpp"
+#include "server_util.hpp"
 #include "storage/otlp_extension.hpp"
 #include "otlp_sql_util.hpp"
 #include "otlp_uri.hpp"
@@ -9,6 +13,7 @@
 #include "duckdb/main/database_manager.hpp"
 #include "duckdb/main/query_result.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -16,6 +21,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <thread>
+#include <vector>
 
 namespace duckdb {
 // Defined in otlp_server.cpp (linked into the daemon). Declared here rather than including
@@ -25,6 +31,12 @@ bool OtlpTcpConnectOk(const string &host, int port);
 } // namespace duckdb
 
 namespace {
+
+using duckdb_otlp_server::BindConfigEnvVariables;
+using duckdb_otlp_server::CheckResult;
+using duckdb_otlp_server::CliErrorMessage;
+using duckdb_otlp_server::EnvSource;
+using duckdb_otlp_server::Execute;
 
 // Written from a signal handler, so it must be a mutable global volatile sig_atomic_t.
 volatile std::sig_atomic_t shutdown_requested = 0; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
@@ -36,46 +48,6 @@ void HandleSignal(int) {
 void InstallSignalHandlers() {
 	std::signal(SIGINT, HandleSignal);
 	std::signal(SIGTERM, HandleSignal);
-}
-
-void SetEnv(const char *name, const duckdb::string &value) {
-#ifdef _WIN32
-	_putenv_s(name, value.c_str());
-#else
-	setenv(name, value.c_str(), 1);
-#endif
-}
-
-void SetDefaultEnv(const char *name, const duckdb::string &value) {
-	if (std::getenv(name)) {
-		return;
-	}
-	SetEnv(name, value);
-}
-
-void CheckResult(duckdb::QueryResult &result, const duckdb::string &label) {
-	if (result.HasError()) {
-		result.ThrowError(label + ": ");
-	}
-	auto next = result.next.get();
-	while (next) {
-		if (next->HasError()) {
-			next->ThrowError(label + ": ");
-		}
-		next = next->next.get();
-	}
-}
-
-void Execute(duckdb::Connection &con, const duckdb::string &sql, const duckdb::string &label,
-             bool print_result = false) {
-	if (sql.empty()) {
-		return;
-	}
-	auto result = con.Query(sql);
-	CheckResult(*result, label);
-	if (print_result) {
-		result->Print();
-	}
 }
 
 bool TryExecuteShutdown(duckdb::Connection &con, const duckdb::string &sql, const duckdb::string &label) {
@@ -243,11 +215,6 @@ bool WaitForShutdownOrListenerFailure(duckdb::Connection &con, const duckdb_otlp
 	return true;
 }
 
-duckdb::string EnvOr(const char *name, const duckdb::string &fallback) {
-	auto value = std::getenv(name);
-	return value && value[0] ? duckdb::string(value) : fallback;
-}
-
 int PortFromAddr(const duckdb::string &addr, int fallback) {
 	auto colon = addr.rfind(':');
 	if (colon == duckdb::string::npos) {
@@ -280,16 +247,32 @@ duckdb::string HostFromAddr(const duckdb::string &addr) {
 	return addr.substr(0, colon);
 }
 
-// The host the healthcheck should probe for a server bound to `addr`. A wildcard/unspecified bind
-// (0.0.0.0, ::, empty) is reachable on loopback, so probe loopback (the previous behavior). An
-// explicit interface (e.g. 192.168.1.5) is NOT reachable on loopback, so probe it directly —
-// otherwise the container HEALTHCHECK fails forever on a healthy server (review finding M5).
-duckdb::string HealthCheckHost(const duckdb::string &addr) {
-	auto host = HostFromAddr(addr);
-	if (host.empty() || host == "0.0.0.0" || host == "::" || host == "[::]") {
+// The host to reach a server bound to `host` on. A wildcard/unspecified bind is reachable on
+// the loopback of its own family; an explicit interface (192.168.1.5) is NOT reachable on
+// loopback and must be used directly, or the container HEALTHCHECK fails forever on a healthy
+// server (review finding M5).
+//
+// One definition on purpose: this rule had grown three spellings in this file — the listener
+// probe, the Quack probe and the startup banner's endpoint hint — which disagreed about `::`
+// and about the empty host, so a change to the rule would have fixed one and left two.
+duckdb::string ReachableHost(const duckdb::string &host) {
+	if (host.empty() || host == "0.0.0.0") {
 		return "127.0.0.1";
 	}
+	if (host == "::" || host == "[::]") {
+		return "::1";
+	}
 	return host;
+}
+
+// The same rule for a "host:port" bind address rather than a bare host.
+duckdb::string HealthCheckHost(const duckdb::string &addr) {
+	return ReachableHost(HostFromAddr(addr));
+}
+
+// How a listener is named in the doctor report and in the startup banner.
+duckdb::string ListenerLabel(const duckdb_otlp_server::IngestListener &listener) {
+	return duckdb::string(listener.otap ? "OTAP " : "OTLP ") + listener.transport;
 }
 
 // Probe GET http://<host>:<port><path>. Loopback for a wildcard host, the configured host
@@ -300,103 +283,106 @@ bool HealthProbe(const duckdb::string &addr, const duckdb::string &path, int por
 	return duckdb::OtlpHttpStatusOk(host, port, path);
 }
 
-// Container HEALTHCHECK entry point. Distroless images ship no shell/curl, so the daemon
-// probes itself. It probes the CONFIGURED bind host (loopback for a 0.0.0.0/:: wildcard bind,
-// the explicit interface otherwise — see HealthCheckHost), so a non-loopback bind is supported
-// without a forever-failing loopback probe (review finding M5). HTTP listeners use /readyz,
-// gRPC listeners use TCP connect, and Quack is checked when enabled. Returns 0 only when
-// every configured listener is healthy.
-int RunHealthCheck() {
+// One check's result. Collected rather than printed as it is found, so --json can emit one
+// object and the prose form still reports every check rather than only the first failure.
+struct DoctorCheck {
+	duckdb::string what;
+	duckdb::string endpoint;
+	bool ok = false;
+};
+
+void PrintDoctorReport(const std::vector<DoctorCheck> &checks, bool healthy, bool as_json) {
+	if (!as_json) {
+		for (const auto &check : checks) {
+			std::cout << (check.ok ? "ok    " : "FAIL  ") << check.what << "  " << check.endpoint
+			          << (check.ok ? "" : "  (no response)") << '\n';
+		}
+		return;
+	}
+	// Hand-rolled rather than pulled from DuckDB's JSON: the fields are a fixed shape with no
+	// user-supplied text beyond a host and a transport name, and `doctor` must not need a
+	// database open to answer.
+	std::cout << "{\"healthy\":" << (healthy ? "true" : "false") << ",\"checks\":[";
+	for (duckdb::idx_t i = 0; i < checks.size(); i++) {
+		const auto &check = checks[i];
+		std::cout << (i ? "," : "") << "{\"check\":\"" << check.what << "\",\"endpoint\":\"" << check.endpoint
+		          << "\",\"ok\":" << (check.ok ? "true" : "false") << "}";
+	}
+	std::cout << "]}\n";
+}
+
+// `doctor` (and its `healthcheck` spelling, which the container HEALTHCHECK and existing
+// compose probes call): check every configured listener and report each one. Distroless
+// images ship no shell/curl, so the daemon probes itself. It probes the CONFIGURED bind host
+// (loopback for a 0.0.0.0/:: wildcard bind, the explicit interface otherwise — see
+// HealthCheckHost), so a non-loopback bind is supported without a forever-failing loopback
+// probe. HTTP listeners use /readyz, gRPC listeners use TCP connect, and Quack is checked
+// when enabled.
+//
+// Every check runs even after one fails: a partial answer ("http is up, grpc is not") is the
+// whole point of the command, and Docker keeps this output in the container's health log.
+// Exits 0 only when every check passed.
+int RunDoctor(const EnvSource &env, bool as_json) {
+	std::vector<DoctorCheck> checks;
 	try {
-		for (const auto &listener : duckdb_otlp_server::ListenersFromEnv()) {
+		for (const auto &listener : duckdb_otlp_server::ListenersFromEnv(env)) {
 			duckdb::OtlpUri uri(listener.uri);
-			auto host = uri.Host();
-			if (host == "0.0.0.0" || host == "::") {
-				host = "127.0.0.1";
-			}
-			bool healthy = listener.transport == "grpc" ? duckdb::OtlpTcpConnectOk(host, uri.Port())
-			                                            : duckdb::OtlpHttpStatusOk(host, uri.Port(), "/readyz");
-			if (!healthy) {
-				return 1;
-			}
+			auto host = ReachableHost(uri.Host());
+			bool ok = listener.transport == "grpc" ? duckdb::OtlpTcpConnectOk(host, uri.Port())
+			                                       : duckdb::OtlpHttpStatusOk(host, uri.Port(), "/readyz");
+			checks.push_back({ListenerLabel(listener), host + ":" + std::to_string(uri.Port()), ok});
 		}
 	} catch (std::exception &ex) {
-		std::cerr << "ERROR: " << duckdb::ErrorData(ex).RawMessage() << '\n';
+		// Configuration that cannot even be resolved is not a failed check, it is a broken
+		// setup: report it as an error rather than as an unreachable listener.
+		std::cerr << "ERROR: " << CliErrorMessage(ex) << '\n';
 		return 1;
 	}
-	if (duckdb_otlp_server::EnvTruthy("DUCKDB_QUACK_ENABLED") || duckdb_otlp_server::EnvTruthy("QUACK_ENABLED")) {
-		auto quack_addr = EnvOr("DUCKDB_QUACK_ADDR", EnvOr("QUACK_HTTP_ADDR", "0.0.0.0:9494"));
-		if (!HealthProbe(quack_addr, "/", 9494)) {
-			return 1;
-		}
+	if (duckdb_otlp_server::QuackEnabledFromEnv(env)) {
+		// Resolved by the same function startup uses, so the probe cannot target a different
+		// port than the server bound.
+		auto quack_addr = duckdb_otlp_server::QuackAddrFromEnv(env);
+		checks.push_back({"Quack", quack_addr, HealthProbe(quack_addr, "/", 9494)});
 	}
-	return 0;
+	// Derived rather than tracked: a check appended without a companion `healthy &&= ok` would
+	// have printed "healthy" next to a FAIL, and nothing local showed the invariant.
+	bool healthy = std::all_of(checks.begin(), checks.end(), [](const DoctorCheck &check) { return check.ok; });
+	PrintDoctorReport(checks, healthy, as_json);
+	return healthy ? 0 : 1;
 }
 
-void PrintUsage() {
-	std::cout << R"HELP(Usage:
-
-  duckdb-otlp-server
-
-Required:
-
-  DUCKDB_MODE=local-ducklake|aws-ducklake|gcp-ducklake|parquet|r2-data-catalog|s3-tables|r2-neon-ducklake|r2-local-ducklake
-
-Useful common settings:
-
-  DUCKDB_DATABASE=/data/duckdb-otlp-control.duckdb
-  DUCKDB_OTLP_TRANSPORTS=http|grpc|http,grpc
-  OTEL_HTTP_ADDR=0.0.0.0:4318
-  OTEL_GRPC_ADDR=0.0.0.0:4317
-  DUCKDB_OTLP_TOKEN=change-me-at-least-16-chars
-  DUCKDB_QUACK_ENABLED=0
-  DUCKDB_QUACK_ADDR=0.0.0.0:9494
-  DUCKDB_QUACK_TOKEN=required-when-quack-enabled
-  DUCKDB_OTLP_HTTP_THREADS=auto
-  DUCKDB_OTLP_MAX_BODY_BYTES=16777216
-  DUCKDB_OTLP_MAX_BUFFERED_BYTES=536870912
-  DUCKDB_OTLP_SEAL_TARGET_BYTES=134217728
-  DUCKDB_OTLP_SEAL_MAX_AGE_MS=5000
-  DUCKDB_OTLP_TARGET_FILE_SIZE=268435456
-  DUCKDB_OTLP_MAINTENANCE_RETENTION_MS=900000
-  DUCKLAKE_DATA_INLINING_ROW_LIMIT=0   (DuckLake modes; 0 disables inlining, unset keeps the DuckLake default)
-  DUCKDB_OTLP_STARTUP_TIMEOUT=60
-  DRY_RUN=1
-)HELP";
-}
-
-} // namespace
-
-int main(int argc, char **argv) {
-	if (argc > 1) {
-		auto arg = duckdb::string(argv[1]);
-		if (arg == "help" || arg == "--help" || arg == "-h") {
-			PrintUsage();
-			return 0;
-		}
-		if (arg == "healthcheck") {
-			return RunHealthCheck();
-		}
-		std::cerr << "ERROR: unsupported argument: " << arg << '\n';
-		PrintUsage();
-		return 1;
-	}
-
+// The `serve` subcommand (and the bare invocation, which means the same thing): resolve
+// configuration, run mode setup, start every listener, then block until a signal arrives.
+int RunServe(const EnvSource &env) {
 	try {
-		auto config = duckdb_otlp_server::ServerConfig::FromEnv();
-		SetDefaultEnv("NEON_PGPORT", "5432");
-		SetDefaultEnv("NEON_PGSSLMODE", "require");
+		auto config = duckdb_otlp_server::ServerConfig::FromEnv(env);
 
-		std::cout << "Starting duckdb-otlp server\n\n";
+		// `validate` runs this same path with DRY_RUN set, and announcing a server it will
+		// never start made its output read like a successful launch in CI logs.
+		std::cout << (config.dry_run ? "Checking duckdb-otlp configuration\n\n" : "Starting duckdb-otlp server\n\n");
 		std::cout << "Mode: " << config.mode << "\n";
-		std::cout << "Database: " << config.database << "\n\n";
-		for (const auto &listener : config.listeners) {
-			std::cout << (listener.otap ? "OTAP " : "OTLP ") << listener.transport << ": " << listener.uri << '\n';
+		if (!config.data_location.empty()) {
+			// Where telemetry actually lands. The control database below is a small
+			// bookkeeping file, so naming only that sent people looking in the wrong place.
+			std::cout << "Data: " << config.data_location << "\n";
 		}
-		if (config.using_default_token) {
-			std::cout << "\nWARNING: using the built-in development OTLP token. Anyone who can reach a listener "
-			             "can ingest with a token that is public in this repo. Set DUCKDB_OTLP_TOKEN "
-			             "(or OTEL_AUTH_TOKEN) to a private value before exposing this server.\n\n";
+		std::cout << "Database: " << config.database << " (control)\n\n";
+		for (const auto &listener : config.listeners) {
+			std::cout << ListenerLabel(listener) << ": " << listener.uri << '\n';
+		}
+		// Say WHICH setting chose the listener set. Without this a narrowed set (for example a
+		// stray OTEL_EXPORTER_OTLP_PROTOCOL in the shell turning off the gRPC listener) looks
+		// like the server simply ignored a flag.
+		if (!config.transport_selection.empty()) {
+			std::cout << "Listeners selected by: " << config.transport_selection << '\n';
+		}
+		if (config.auth_disabled_for_loopback) {
+			std::cout << "\nAuthentication is DISABLED: no token was configured and every listener is bound to "
+			             "loopback, so only this machine can reach them. Set DUCKDB_OTLP_TOKEN (or --token) to "
+			             "require a bearer token.\n";
+		} else if (config.disable_auth) {
+			std::cout << "\nWARNING: authentication is DISABLED by request (--no-auth). Anyone who can reach a "
+			             "listener can write to this catalog.\n";
 		}
 		if (config.quack_enabled) {
 			std::cout << "Quack: " << config.quack_listen_uri << "\n\n";
@@ -433,10 +419,7 @@ int main(int argc, char **argv) {
 		// generated getvariable('env_<NAME>') resolves it at execution time. getenv() is a
 		// CLI-only function (absent in the embedded library), and this keeps secret values out
 		// of the generated SQL text.
-		for (auto &name : config.env_variables) {
-			auto value = std::getenv(name.c_str());
-			con.context->config.SetUserVariable("env_" + name, duckdb::Value(value ? value : ""));
-		}
+		BindConfigEnvVariables(con, config, env);
 
 		InstallSignalHandlers();
 
@@ -470,6 +453,9 @@ int main(int argc, char **argv) {
 			}
 		} watcher_guard {startup_complete, interrupt_watcher};
 
+		// Mode setup installs extensions and attaches the catalog, which on a cold cache means
+		// downloads: the longest silence in a cold start, and the one most likely to look hung.
+		std::cout << "Setting up " << config.mode << " (installing extensions, attaching catalog)...\n";
 		Execute(con, config.mode_setup_sql, "mode setup");
 		// Make the mode's telemetry catalog the instance-wide default database. The Quack
 		// server handles each external client on a *fresh* Connection spun up from the
@@ -500,8 +486,11 @@ int main(int argc, char **argv) {
 			return TryExecuteOtlpShutdown(con, config.StopOtlpSql(), "otlp shutdown");
 		};
 		try {
-			Execute(con, config.StartOtlpSql(), "otlp startup", true);
-			Execute(con, config.StartQuackSql(), "quack startup", true);
+			// Not printed: otlp_serve returns a listener table, which the banner above has
+			// already said in prose. Dumping it made the one thing visible in a redirected
+			// log a bare SQL result with no context.
+			Execute(con, config.StartOtlpSql(), "otlp startup");
+			Execute(con, config.StartQuackSql(), "quack startup");
 			if (!WaitForReady(con, config) && !shutdown_requested) {
 				throw std::runtime_error("Timed out waiting for OTLP listener readiness");
 			}
@@ -509,6 +498,18 @@ int main(int argc, char **argv) {
 
 			std::cout << "DuckDB initialization complete\n";
 			std::cout << "Starting server..." << '\n';
+			// "It is running" is only half of what a first run needs to know; without this the
+			// next step (send something, then read it back) was not discoverable from here.
+			for (const auto &listener : config.listeners) {
+				if (listener.transport == "http" && !listener.otap) {
+					duckdb::OtlpUri uri(listener.uri);
+					auto host = ReachableHost(uri.Host());
+					std::cout << "\nSend OTLP/HTTP to http://" << host << ":" << uri.Port()
+					          << "/v1/{logs,traces,metrics}\n";
+					break;
+				}
+			}
+			std::cout << "Read it back with: duckdb-otlp query \"SELECT * FROM otlp_logs LIMIT 10\"\n";
 			auto listener_ok = WaitForShutdownOrListenerFailure(con, config);
 
 			std::cout << "Stopping duckdb-otlp..." << '\n';
@@ -534,9 +535,90 @@ int main(int argc, char **argv) {
 			std::cerr << "Shutdown requested during startup; exiting before the server became ready." << '\n';
 			return 0;
 		}
-		// DuckDB exceptions stringify as a JSON blob; RawMessage() gives the plain text a
-		// Docker user actually wants to read.
-		std::cerr << "ERROR: " << duckdb::ErrorData(ex).RawMessage() << '\n';
+		// DuckDB exceptions stringify as a JSON blob, and the mode setup SQL is generated
+		// here, so neither the blob nor the echoed statement helps the reader.
+		std::cerr << "ERROR: " << CliErrorMessage(ex) << '\n';
 		return 1;
+	}
+}
+
+// convert/export/query differ only in which function runs; they share one error rendering,
+// so the dispatch names each command exactly once. `convert` is stateless and takes no
+// EnvSource, hence a callable rather than a uniform function pointer.
+//
+// `keep_sql_context` is true only for `query`, the one command whose failing statement the
+// user actually wrote: there DuckDB's "LINE 1: ... ^" echo points at their own typo. For
+// convert and export the statement is generated, so the echo showed the reader a COPY(...)
+// they never asked for instead of the missing file or table.
+template <typename Fn>
+int RunDataCommand(Fn &&run, bool keep_sql_context = false) {
+	try {
+		return run();
+	} catch (std::exception &ex) {
+		// DuckDB exceptions stringify as a JSON blob; both helpers give the plain text.
+		std::cerr << "ERROR: " << (keep_sql_context ? duckdb::ErrorData(ex).RawMessage() : CliErrorMessage(ex)) << '\n';
+		return 1;
+	}
+}
+
+} // namespace
+
+int main(int argc, char **argv) {
+	// std::cout is FULLY buffered when stdout is not a terminal, so a redirected or captured
+	// stdout held the whole startup banner until the process exited: `docker logs` on a
+	// healthy container showed a raw listener table and nothing else, and the mode, data
+	// location, listeners and auth notice only appeared once the container stopped. Flush
+	// per write — this CLI's stdout volume is banners and small result sets, and bulk data
+	// goes through DuckDB's own COPY handle rather than here.
+	std::cout << std::unitbuf;
+
+	duckdb_otlp_server::CliOptions options;
+	try {
+		options = duckdb_otlp_server::ParseCli(argc, argv);
+	} catch (std::exception &ex) {
+		auto message = CliErrorMessage(ex);
+		std::cerr << "ERROR: " << message << '\n';
+		// The unknown-command message names the right next step itself; everything else gets
+		// the generic pointer rather than two conflicting suggestions.
+		if (message.find("duckdb-otlp help") == duckdb::string::npos) {
+			std::cerr << "\nRun `duckdb-otlp help` for usage.\n";
+		}
+		// 2, not 1: a wrong command line is a different thing from work that failed, and a
+		// caller that gets 1 for everything has to parse stderr to tell them apart. This is
+		// the usual split (getopt-style tools exit 2 on usage), and it is the only one the
+		// CLI can make honestly — everything past argv parsing is genuine runtime failure.
+		return 2;
+	}
+	// Flag values are layered over the process environment rather than written into it, so
+	// every command resolves configuration from one consistent `flag > env > default` view
+	// and a --token is never published through getenv() to the rest of the process.
+	const EnvSource env(options.env_overrides);
+
+	using duckdb_otlp_server::Command;
+	switch (options.command) {
+	case Command::HELP:
+		// `help <command>` prints that command's page; a bare `help` prints the overview.
+		duckdb_otlp_server::PrintUsage(
+		    std::cout, options.inputs.empty() ? Command::HELP : duckdb_otlp_server::CommandFromName(options.inputs[0]));
+		return 0;
+	case Command::VERSION:
+		std::cout << "duckdb-otlp " << duckdb::OtlpExtension().Version() << " (DuckDB "
+		          << duckdb::DuckDB::LibraryVersion() << ")\n";
+		return 0;
+	case Command::DOCTOR:
+		return RunDoctor(env, options.json_output);
+	case Command::CONVERT:
+		return RunDataCommand([&] { return duckdb_otlp_server::RunConvert(options); });
+	case Command::EXPORT:
+		return RunDataCommand([&] { return duckdb_otlp_server::RunExport(options, env); });
+	case Command::QUERY:
+		return RunDataCommand([&] { return duckdb_otlp_server::RunQuery(options, env); }, true);
+	case Command::VALIDATE:
+	// `validate` is `serve` stopped just before anything is opened or bound (ParseCli sets
+	// DRY_RUN for it). Reusing the serve path rather than a parallel implementation is what
+	// makes it trustworthy: what it prints is exactly what serve would run.
+	case Command::SERVE:
+	default:
+		return RunServe(env);
 	}
 }
