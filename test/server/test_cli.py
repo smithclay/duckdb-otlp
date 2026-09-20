@@ -1460,3 +1460,54 @@ def test_seal_created_view_and_cli_view_share_one_definition(tmp_path):
     # year/month/day columns no catalog mode has, union_by_name lets a schema change read.
     assert "hive_partitioning" in body
     assert "union_by_name" in body
+
+
+def test_a_stray_temp_view_does_not_fool_a_catalog_mode(tmp_path):
+    """ExistingSignalTables answers "can I SELECT from catalog.schema.table". An unscoped
+    `temporary` arm matched every temp view in the session, so an --init-sql script defining one
+    named like a signal made `export --signal all` claim it existed and then fail binding it."""
+    init = tmp_path / "init.sql"
+    init.write_text("CREATE TEMP VIEW otlp_traces AS SELECT 1 AS x;\n")
+    result = run(
+        ["export", "--to", str(tmp_path / "out") + "/", "--init-sql", str(init)],
+        env={"DUCKDB_OTLP_DATA_DIR": str(tmp_path / "data")},
+        home=tmp_path,
+    )
+    # Nothing was ingested, so every signal is absent: the honest answer is "nothing to
+    # export", not a binder error about otlp_traces.
+    assert result.returncode != 0
+    assert "Nothing to export" in result.stderr
+    assert "Binder Error" not in result.stderr
+    assert "otlp_traces does not exist" not in result.stderr
+
+
+def test_registering_nothing_leaves_no_schema_behind(tmp_path):
+    """The schema was created before the probe loop, so a query against a dataset with no files
+    left a stray empty schema in the control database."""
+    env = parquet_mode_env(tmp_path)
+    run(["query", "SELECT count(*) FROM otlp_logs"], env=env, home=tmp_path)
+
+    def schema_count():
+        result = run(
+            [
+                "query",
+                "--mode",
+                "none",
+                "--database",
+                env["DUCKDB_DATABASE"],
+                f"SELECT count(*) AS n FROM duckdb_schemas() WHERE schema_name = '{env['DUCKDB_SCHEMA'] if 'DUCKDB_SCHEMA' in env else 'otlp'}'",
+                "--format",
+                "csv",
+            ],
+            env={"PATH": os.environ.get("PATH", "")},
+            home=tmp_path,
+        )
+        assert result.returncode == 0, result.stderr
+        return int(result.stdout.strip().splitlines()[1])
+
+    assert schema_count() == 0
+
+    # Once the dataset has files, the view — and only then the schema — is created.
+    seed_parquet_dataset(tmp_path, env)
+    assert run(["query", "SELECT count(*) FROM otlp_logs"], env=env, home=tmp_path).returncode == 0
+    assert schema_count() == 1

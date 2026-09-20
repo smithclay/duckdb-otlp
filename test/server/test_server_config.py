@@ -122,7 +122,12 @@ def test_aws_ducklake_uses_the_shared_credential_chain_and_local_catalog(tmp_pat
     assert "PROVIDER credential_chain" in out
     # The same chain the parquet and s3-tables modes build. Hardcoding CHAIN instance here
     # meant AWS_PROFILE worked in one AWS mode and was silently ignored in another.
-    assert "CHAIN env" in out
+    #
+    # It must stay a MULTI-source chain. Sharing the builder originally swapped this mode's
+    # `CHAIN instance` for `CHAIN env`, which took instance-role credentials away from exactly
+    # the EC2/ECS deployments that have nothing else.
+    assert "CHAIN 'env;config;instance'" in out
+    assert "instance" in out
     assert f"ATTACH 'ducklake:{catalog}'" in out
     assert "'s3://benchmark-bucket/run-123'" in out
     assert "KEY_ID" not in out
@@ -831,8 +836,14 @@ def test_the_image_primes_every_extension_some_mode_needs(tmp_path):
     runs the image without egress.
     """
     dockerfile = (REPO_ROOT / "docker" / "duckdb-otlp-server" / "Dockerfile").read_text()
-    primed = set(re.search(r"for ext in ([a-z0-9 ]+); do", dockerfile).group(1).split())
-    primed |= set(re.findall(r"INSTALL ([a-z0-9_]+) FROM community", dockerfile))
+    loop = re.search(r"for ext in ([a-z0-9_ ]+); do", dockerfile)
+    primed = set(loop.group(1).split()) if loop else set()
+    primed |= set(re.findall(r"INSTALL ([a-z0-9_]+)(?: FROM community)?", dockerfile))
+    # A parse failure must say so, rather than showing up as "every extension is missing".
+    assert primed, (
+        "could not read the extension list out of docker/duckdb-otlp-server/Dockerfile; "
+        "the priming step's shape changed and this test needs updating alongside it"
+    )
 
     needed = set()
     for mode in MODE_FIXTURES:
@@ -868,3 +879,66 @@ def test_quack_appears_in_the_banner_only_when_enabled(tmp_path):
 
     disabled = extensions_reported_by("local-ducklake", tmp_path)
     assert "quack" not in disabled
+
+
+@pytest.mark.parametrize("mode,extra", [("parquet", {"S3_BUCKET": "b"}), ("s3-tables", {}), ("aws-ducklake", {})])
+def test_every_aws_mode_keeps_the_instance_role_in_its_chain(mode, extra, tmp_path):
+    """A single-source chain is a trap: whichever source it names, the others stop working.
+
+    `CHAIN env` cannot see an EC2/ECS instance role, and `CHAIN instance` cannot see the
+    standard AWS environment variables. Every AWS mode has to accept both.
+    """
+    env = {"DUCKDB_MODE": mode, "AWS_REGION": "us-west-2", **extra}
+    if mode == "aws-ducklake":
+        env["DUCKLAKE_DATA_PATH"] = "s3://b/p"
+    if mode == "s3-tables":
+        env["S3_TABLES_BUCKET_ARN"] = "arn:aws:s3tables:us-west-2:1:bucket/b"
+    result = run(env, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "CHAIN 'env;config;instance'" in result.stdout
+
+
+def test_the_banner_names_the_chain_that_is_actually_emitted(tmp_path):
+    """The banner said "environment, then instance role" while the SQL restricted the chain to
+    `env`, which misdirects exactly the person debugging an ignored instance role."""
+    result = run({"DUCKDB_MODE": "parquet", "S3_BUCKET": "b", "AWS_REGION": "us-west-2"}, tmp_path)
+    assert result.returncode == 0, result.stderr
+    for source in ("environment", "config", "instance role"):
+        assert source in result.stdout
+
+
+def test_an_aws_profile_still_selects_that_profile(tmp_path):
+    result = run(
+        {"DUCKDB_MODE": "parquet", "S3_BUCKET": "b", "AWS_REGION": "us-west-2", "AWS_PROFILE": "dev"}, tmp_path
+    )
+    assert result.returncode == 0, result.stderr
+    assert "CHAIN config" in result.stdout
+    assert "PROFILE 'dev'" in result.stdout
+    assert 'AWS profile "dev"' in result.stdout
+
+
+def test_r2_data_path_keeps_its_trailing_slash(tmp_path):
+    """DuckLake treats DATA_PATH as a directory prefix. Dropping the trailing slash would point
+    an existing deployment at a different prefix than the one in its catalog."""
+    result = run({"DUCKDB_MODE": "r2-local-ducklake", "R2_BUCKET": "bkt", "CLOUDFLARE_ACCOUNT_ID": "acct"}, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "DATA_PATH 's3://bkt/duckdb-otlp/'" in result.stdout
+
+
+def test_a_malformed_value_is_reported_alongside_a_missing_one(tmp_path):
+    """A malformed value used to throw from inside the mode function, skipping everything after
+    it -- so this reported the path and only mentioned AWS_REGION on the next run."""
+    result = run({"DUCKDB_MODE": "aws-ducklake", "DUCKLAKE_DATA_PATH": "/local/path"}, tmp_path)
+    assert result.returncode != 0
+    assert "DUCKLAKE_DATA_PATH" in result.stderr
+    assert "s3://bucket/prefix" in result.stderr
+    assert "AWS_REGION" in result.stderr
+
+
+def test_parquet_rejects_a_remote_scheme_it_cannot_write(tmp_path):
+    """An `IsS3Path` locality test sent a gcss:// export path down the local branch, so nothing
+    was loaded to write it and `validate` reported success. The first seal was the first sign."""
+    result = run({"DUCKDB_MODE": "parquet", "PARQUET_EXPORT_PATH": "gcss://bucket/prefix"}, tmp_path)
+    assert result.returncode != 0
+    assert "PARQUET_EXPORT_PATH" in result.stderr
+    assert "s3://" in result.stderr

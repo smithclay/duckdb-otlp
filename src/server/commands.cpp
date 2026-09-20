@@ -82,9 +82,7 @@ void RegisterParquetExportViews(duckdb::Connection &con, const ServerConfig &con
 	}
 	// A read-only database cannot hold a view, so fall back to session-scoped ones.
 	const bool session_scoped = read_only || config.schema.empty();
-	if (!session_scoped) {
-		Execute(con, "CREATE SCHEMA IF NOT EXISTS " + QuoteIdentifier(config.schema) + ";", "parquet view schema");
-	}
+	bool schema_ready = session_scoped;
 	for (const auto &signal : signals) {
 		auto probe =
 		    con.Query("SELECT 1 FROM glob(" +
@@ -96,6 +94,12 @@ void RegisterParquetExportViews(duckdb::Connection &con, const ServerConfig &con
 		}
 		if (probe->Cast<duckdb::MaterializedQueryResult>().RowCount() == 0) {
 			continue;
+		}
+		if (!schema_ready) {
+			// Deferred to the first signal that actually has files: creating it up front left a
+			// stray empty schema behind whenever nothing matched.
+			Execute(con, "CREATE SCHEMA IF NOT EXISTS " + QuoteIdentifier(config.schema) + ";", "parquet view schema");
+			schema_ready = true;
 		}
 		auto target = session_scoped ? "TEMP VIEW " + QuoteIdentifier(signal.table)
 		                             : "VIEW " + QuoteIdentifier(config.schema) + "." + QuoteIdentifier(signal.table);
@@ -217,8 +221,29 @@ bool LooksLikeDirectory(const string &path) {
 
 //! Resolve where one signal's output goes, creating parent directories as needed. An empty
 //! `options.output` means stdout, which parquet cannot use (it needs a seekable file).
-string ResolveOutputPath(const CliOptions &options, const SignalDef &signal, OutputFormat format,
-                         bool multiple_outputs) {
+//! Whether `path` already holds something, for the overwrite guard.
+//!
+//! PathExists is std::filesystem, which reports false for every URI -- so the guard never fired
+//! for an `s3://` destination and a second export silently replaced the first's object, while
+//! the identical local command was refused. DuckDB's own glob() sees remote paths through the
+//! loaded filesystem, so ask it instead.
+//!
+//! A probe that errors (no filesystem extension loaded, no credentials) answers "cannot tell";
+//! that keeps a destination we cannot inspect writable rather than blocking on it, which is the
+//! same answer the filesystem check gave before.
+bool TargetExists(duckdb::Connection &con, const string &path) {
+	if (!IsRemotePath(path)) {
+		return PathExists(path);
+	}
+	auto probe = con.Query("SELECT 1 FROM glob(" + SqlQuote(path) + ") LIMIT 1;");
+	if (!probe || probe->HasError()) {
+		return false;
+	}
+	return probe->Cast<duckdb::MaterializedQueryResult>().RowCount() > 0;
+}
+
+string ResolveOutputPath(duckdb::Connection &con, const CliOptions &options, const SignalDef &signal,
+                         OutputFormat format, bool multiple_outputs) {
 	if (options.output.empty()) {
 		if (format == OutputFormat::PARQUET) {
 			throw InvalidInputException("Parquet output needs a destination file: pass --to PATH. Parquet cannot be "
@@ -242,7 +267,7 @@ string ResolveOutputPath(const CliOptions &options, const SignalDef &signal, Out
 		    "or select one signal with --signal.",
 		    options.output, options.output);
 	}
-	if (PathExists(path) && !options.overwrite) {
+	if (TargetExists(con, path) && !options.overwrite) {
 		throw InvalidInputException("Refusing to overwrite existing file \"%s\". Pass --overwrite to replace it.",
 		                            path);
 	}
@@ -282,7 +307,7 @@ string BuildPartitionedCopy(const CliOptions &options, const SignalDef &signal, 
 //! have one definition rather than drifting between the two commands.
 void WriteSignal(duckdb::Connection &con, const CliOptions &options, const SignalDef &signal, const string &select_sql,
                  OutputFormat format, bool multiple_outputs, const char *label) {
-	auto path = ResolveOutputPath(options, signal, format, multiple_outputs);
+	auto path = ResolveOutputPath(con, options, signal, format, multiple_outputs);
 	Execute(con, BuildCopyStatement(options, select_sql, path, format), string(label) + " " + signal.name);
 	if (path != STDOUT_PATH) {
 		std::cerr << "Wrote " << path << '\n';
@@ -364,11 +389,18 @@ std::optional<std::set<string>> ExistingSignalTables(duckdb::Connection &con, co
 	}
 	// Views count as present: the `parquet` mode has no tables at all, and its signals are
 	// reachable only through a view over the dataset -- created by the seal, or by
-	// RegisterParquetExportViews for a dataset this host has never sealed. Session-scoped ones
-	// (the read-only fallback) live in temp.main, so they are matched by `temporary` rather
-	// than by the schema scope.
+	// RegisterParquetExportViews for a dataset this host has never sealed.
+	auto view_scope = "(" + scope + ")";
+	if (!config.parquet_export_path.empty()) {
+		// The read-only fallback puts those views in temp.main, so they fall outside the schema
+		// scope. Admitted only for the mode that uses them: unscoped, `temporary` matched every
+		// temp view in the session, so an --init-sql script defining one named like a signal
+		// made a catalog mode's `export --signal all` believe the table existed and then fail
+		// binding it, instead of skipping it cleanly.
+		view_scope += " OR (temporary AND database_name = 'temp' AND schema_name = 'main')";
+	}
 	auto sql = "SELECT table_name FROM duckdb_tables() WHERE " + scope +
-	           " UNION SELECT view_name FROM duckdb_views() WHERE temporary OR (" + scope + ")";
+	           " UNION SELECT view_name FROM duckdb_views() WHERE " + view_scope;
 	auto result = con.Query(sql);
 	if (!result || result->HasError()) {
 		return {};

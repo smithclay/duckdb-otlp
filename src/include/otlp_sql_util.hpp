@@ -49,7 +49,10 @@ inline string ParquetDatasetDirectory(const string &root, const string &table_na
 }
 
 inline string ParquetDatasetGlob(const string &root, const string &table_name) {
-	return ParquetDatasetDirectory(root, table_name) + "/**/*.parquet";
+	auto directory = ParquetDatasetDirectory(root, table_name);
+	// An empty root must not compose into "/**/*.parquet", which would recursively glob the
+	// whole filesystem instead of matching nothing.
+	return directory.empty() ? "" : directory + "/**/*.parquet";
 }
 
 //! `SELECT * FROM read_parquet(<glob>, ...)` over one signal's files.
@@ -60,8 +63,11 @@ inline string ParquetDatasetGlob(const string &root, const string &table_name) {
 //! union_by_name=true so a schema that gained a column between seals still reads as one
 //! relation instead of failing on the first mismatched file.
 inline string ParquetDatasetSelect(const string &root, const string &table_name) {
-	return "SELECT * FROM read_parquet(" + SqlQuote(ParquetDatasetGlob(root, table_name)) +
-	       ", hive_partitioning=false, union_by_name=true)";
+	auto glob = ParquetDatasetGlob(root, table_name);
+	if (glob.empty()) {
+		return "";
+	}
+	return "SELECT * FROM read_parquet(" + SqlQuote(glob) + ", hive_partitioning=false, union_by_name=true)";
 }
 
 } // namespace duckdb

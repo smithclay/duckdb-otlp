@@ -118,52 +118,83 @@ void RejectUnsupportedOtelEnv(const EnvSource &env) {
 	}
 }
 
-//! Collects every missing required setting for one mode instead of throwing on the first.
+//! Collects every problem with one mode's configuration instead of throwing on the first.
 //!
 //! Configuring a remote lakehouse takes several settings, and reporting them one per run made
 //! `validate` a guessing game: the R2 Data Catalog mode took six runs to satisfy because each
-//! one named a single variable. Configure* functions record misses here and keep going with
+//! one named a single variable. Configure* functions record problems here and keep going with
 //! empty values (every consumer only interpolates them into SQL text, which is never executed
 //! when a setting is missing), and ConfigureMode raises one error naming all of them.
-class MissingSettings {
+//!
+//! Both kinds are collected. A malformed value used to throw from inside the Configure
+//! function, which skipped everything after it -- so `DUCKLAKE_DATA_PATH=/local/path` with no
+//! AWS_REGION reported only the path, and the region only on the next run.
+class ConfigProblems {
 public:
 	//! Record `name` as missing, with an optional note explaining what it is. A name already
 	//! recorded is ignored: several settings can depend on the same variable (the R2 endpoint
 	//! and the warehouse are both derived from CLOUDFLARE_ACCOUNT_ID), and listing it twice
 	//! would read as two separate problems.
 	void Add(const string &name, const string &note = "") {
-		for (const auto &entry : entries) {
-			if (entry.first == name) {
-				return;
-			}
-		}
-		entries.emplace_back(name, note);
+		Record(name, note, /*invalid=*/false);
 	}
 
-	//! Throw one error listing every missing setting, or return if nothing is missing.
+	//! Record `name` as set but unusable. `expected` completes the sentence "expected ...".
+	void Invalid(const string &name, const string &expected) {
+		Record(name, "expected " + expected, /*invalid=*/true);
+	}
+
+	//! Throw one error naming every problem, or return if there are none.
 	void ThrowIfAny(const string &mode) const {
 		if (entries.empty()) {
 			return;
 		}
 		std::ostringstream msg;
-		msg << "Missing " << entries.size() << " required setting" << (entries.size() == 1 ? "" : "s")
-		    << " for DUCKDB_MODE=" << mode << ":";
+		// Keep the all-missing wording, which is both the common case and what tells an
+		// operator that nothing is wrong with what they did set.
+		if (any_invalid) {
+			msg << "Cannot use DUCKDB_MODE=" << mode << ": " << entries.size()
+			    << (entries.size() == 1 ? " setting needs attention:" : " settings need attention:");
+		} else {
+			msg << "Missing " << entries.size() << " required setting" << (entries.size() == 1 ? "" : "s")
+			    << " for DUCKDB_MODE=" << mode << ":";
+		}
 		for (const auto &entry : entries) {
-			msg << "\n  " << entry.first;
-			if (!entry.second.empty()) {
-				msg << "  (" << entry.second << ")";
+			msg << "\n  " << entry.name;
+			if (entry.invalid) {
+				msg << " is set but unusable";
+			}
+			if (!entry.note.empty()) {
+				msg << "  (" << entry.note << ")";
 			}
 		}
 		throw InvalidInputException(msg.str());
 	}
 
 private:
-	std::vector<std::pair<string, string>> entries;
+	struct Entry {
+		string name;
+		string note;
+		bool invalid;
+	};
+
+	void Record(const string &name, const string &note, bool invalid) {
+		for (const auto &entry : entries) {
+			if (entry.name == name) {
+				return;
+			}
+		}
+		entries.push_back({name, note, invalid});
+		any_invalid = any_invalid || invalid;
+	}
+
+	std::vector<Entry> entries;
+	bool any_invalid = false;
 };
 
 //! Read `name`, recording it as missing when unset. Returns "" in that case: the caller keeps
 //! building so the rest of its settings are checked in the same pass.
-string RequireEnv(const EnvSource &env, MissingSettings &missing, const char *name, const string &note = "") {
+string RequireEnv(const EnvSource &env, ConfigProblems &missing, const char *name, const string &note = "") {
 	auto value = env.Get(name);
 	if (value.empty()) {
 		missing.Add(name, note);
@@ -197,7 +228,7 @@ string TrimSlashes(string value) {
 }
 
 //! R2's S3-compatible endpoint. Derived from the account ID unless named outright.
-string R2EndpointDefault(const EnvSource &env, MissingSettings &missing) {
+string R2EndpointDefault(const EnvSource &env, ConfigProblems &missing) {
 	if (env.Has("R2_ENDPOINT")) {
 		return EndpointHost(env.Get("R2_ENDPOINT"));
 	}
@@ -207,14 +238,20 @@ string R2EndpointDefault(const EnvSource &env, MissingSettings &missing) {
 
 //! `s3://<bucket>/<prefix>` from a bucket and prefix variable pair. R2 speaks the S3 API, so
 //! both clouds compose their data path the same way and differ only in which names carry it.
-string ObjectStorePath(const EnvSource &env, MissingSettings &missing, const char *bucket_var, const char *prefix_var) {
+string ObjectStorePath(const EnvSource &env, ConfigProblems &missing, const char *bucket_var, const char *prefix_var) {
 	auto bucket = RequireEnv(env, missing, bucket_var);
 	auto prefix = TrimSlashes(env.Get(prefix_var, "duckdb-otlp"));
 	return prefix.empty() ? "s3://" + bucket : "s3://" + bucket + "/" + prefix;
 }
 
-string R2DataPath(const EnvSource &env, MissingSettings &missing) {
-	return ObjectStorePath(env, missing, "R2_BUCKET", "R2_PREFIX");
+//! The default DuckLake DATA_PATH for the R2 modes, which ends in "/".
+//!
+//! DuckLake treats DATA_PATH as a directory prefix and the trailing slash is the convention
+//! (the gcp mode's own fixture uses one). Consolidating this with the parquet export root --
+//! which is a path, not a prefix, and carries no trailing slash -- silently dropped it, which
+//! would have moved every existing R2 deployment's files to a different prefix on upgrade.
+string R2DataPath(const EnvSource &env, ConfigProblems &missing) {
+	return ObjectStorePath(env, missing, "R2_BUCKET", "R2_PREFIX") + "/";
 }
 
 bool IsS3Path(const string &path) {
@@ -397,7 +434,7 @@ CREATE OR REPLACE SECRET %s (
 //! Half a pair is rejected rather than silently ignored: setting only R2_ACCESS_KEY_ID looks
 //! like it configured something, and falling through to the secret store would hide the typo
 //! until the first seal failed against R2.
-bool ResolveR2Credentials(const EnvSource &env, ServerConfig &config, MissingSettings &missing) {
+bool ResolveR2Credentials(const EnvSource &env, ServerConfig &config, ConfigProblems &missing) {
 	bool has_key = env.Has("R2_ACCESS_KEY_ID");
 	bool has_secret = env.Has("R2_SECRET_ACCESS_KEY");
 	if (has_key != has_secret) {
@@ -425,7 +462,11 @@ CREATE OR REPLACE SECRET %s (
 	if (!profile.empty()) {
 		secret_sql += StringUtil::Format("  CHAIN config,\n  PROFILE %s,\n", SqlQuote(profile));
 	} else {
-		secret_sql += "  CHAIN env,\n";
+		// Every source, in the order the AWS SDKs use. A single-source chain is a trap: this
+		// was `CHAIN env`, and aws-ducklake (which had its own `CHAIN instance`) lost instance
+		// role support when it moved onto this builder -- the exact credentials an EC2 or ECS
+		// deployment has and the only ones it has.
+		secret_sql += "  CHAIN 'env;config;instance',\n";
 	}
 	secret_sql += StringUtil::Format("  REGION %s", SqlQuote(region));
 	if (!endpoint.empty()) {
@@ -482,7 +523,7 @@ string ExtensionSetupSql(const std::vector<ModeExtension> &extensions) {
 
 //! AWS region, from the standard SDK variables. Both spellings are genuine AWS conventions
 //! rather than aliases this project invented, so both stay.
-string AwsRegion(const EnvSource &env, MissingSettings &missing) {
+string AwsRegion(const EnvSource &env, ConfigProblems &missing) {
 	auto region = env.Get("AWS_REGION", env.Get("AWS_DEFAULT_REGION"));
 	if (region.empty()) {
 		missing.Add("AWS_REGION", "or AWS_DEFAULT_REGION");
@@ -492,7 +533,10 @@ string AwsRegion(const EnvSource &env, MissingSettings &missing) {
 
 //! What BuildCredentialChainSecret's chain will actually consult, for the startup banner.
 string AwsCredentialsSource(const string &profile) {
-	return profile.empty() ? "AWS credential chain (environment, then instance role)"
+	// Must name what BuildCredentialChainSecret actually emits. It said "environment, then
+	// instance role" while the SQL restricted the chain to `env`, so the banner misdirected
+	// anyone debugging why an instance role was ignored.
+	return profile.empty() ? "AWS credential chain (environment, shared config, then instance role)"
 	                       : "AWS profile \"" + profile + "\"";
 }
 
@@ -500,7 +544,7 @@ string AwsCredentialsSource(const string &profile) {
 //! standard PG* variables) for every mode that uses one: this was previously spelled NEON_PG*
 //! for r2-neon-ducklake and PG* for gcp-ducklake, which made the same six settings mode-specific
 //! for no reason other than which guide you had followed.
-void RequirePostgresCatalog(const EnvSource &env, MissingSettings &missing) {
+void RequirePostgresCatalog(const EnvSource &env, ConfigProblems &missing) {
 	for (auto name : {"PGHOST", "PGDATABASE", "PGUSER", "PGPASSWORD"}) {
 		RequireEnv(env, missing, name, "Postgres catalog connection");
 	}
@@ -531,7 +575,7 @@ CREATE OR REPLACE SECRET ducklake_secret (
 	                          SqlQuote(data_path));
 }
 
-void ConfigureNone(const EnvSource &env, ServerConfig &config, MissingSettings &) {
+void ConfigureNone(const EnvSource &env, ServerConfig &config, ConfigProblems &) {
 	// The escape hatch mode: attach nothing, install nothing, and let --init-sql do the work.
 	//
 	// Every other mode contributes exactly two things -- some setup SQL and a catalog name --
@@ -549,7 +593,7 @@ void ConfigureNone(const EnvSource &env, ServerConfig &config, MissingSettings &
 	config.data_location = config.catalog.empty() ? config.database : "catalog " + config.catalog;
 }
 
-void ConfigureLocalDuckLake(const EnvSource &env, ServerConfig &config, MissingSettings &) {
+void ConfigureLocalDuckLake(const EnvSource &env, ServerConfig &config, ConfigProblems &) {
 	config.mode_extensions = {Core("ducklake"), BUILT_IN_OTLP};
 	config.catalog = CatalogDefault(env, "otel");
 	config.schema = SchemaDefault(env, "main");
@@ -569,7 +613,7 @@ ATTACH %s AS %s (
 	                                           SqlQuote(data_path), DuckLakePathAttachOptions(env));
 }
 
-void ConfigureAwsDuckLake(const EnvSource &env, ServerConfig &config, MissingSettings &missing) {
+void ConfigureAwsDuckLake(const EnvSource &env, ServerConfig &config, ConfigProblems &missing) {
 	config.mode_extensions = {Core("ducklake"), Core("aws"), Core("httpfs"), BUILT_IN_OTLP};
 	config.catalog = CatalogDefault(env, "lake");
 	config.schema = SchemaDefault(env, "otlp");
@@ -577,7 +621,7 @@ void ConfigureAwsDuckLake(const EnvSource &env, ServerConfig &config, MissingSet
 	auto data_path = RequireEnv(env, missing, "DUCKLAKE_DATA_PATH", "s3://bucket/prefix for the data files");
 	config.data_location = data_path;
 	if (!data_path.empty() && !IsS3Path(data_path)) {
-		throw InvalidInputException("DUCKDB_MODE=%s requires DUCKLAKE_DATA_PATH=s3://bucket/prefix", config.mode);
+		missing.Invalid("DUCKLAKE_DATA_PATH", "s3://bucket/prefix");
 	}
 	auto region = AwsRegion(env, missing);
 	auto profile = env.Get("AWS_PROFILE", env.Get("AWS_DEFAULT_PROFILE"));
@@ -600,7 +644,7 @@ void ConfigureAwsDuckLake(const EnvSource &env, ServerConfig &config, MissingSet
 	                       SqlQuote(data_path), DuckLakePathAttachOptions(env));
 }
 
-void ConfigureR2DataCatalog(const EnvSource &env, ServerConfig &config, MissingSettings &missing) {
+void ConfigureR2DataCatalog(const EnvSource &env, ServerConfig &config, ConfigProblems &missing) {
 	config.mode_extensions = {Core("iceberg"), Core("httpfs"), BUILT_IN_OTLP};
 	config.catalog = CatalogDefault(env, "r2catalog");
 	config.schema = SchemaDefault(env, "otlp");
@@ -639,7 +683,7 @@ ATTACH %s AS %s (
 	                            QuoteIdentifier(config.catalog), SqlQuote(catalog_uri));
 }
 
-void ConfigureParquet(const EnvSource &env, ServerConfig &config, MissingSettings &missing) {
+void ConfigureParquet(const EnvSource &env, ServerConfig &config, ConfigProblems &missing) {
 	config.mode_extensions = {BUILT_IN_OTLP};
 	config.catalog = "";
 	config.schema = SchemaDefault(env, "otlp");
@@ -650,8 +694,18 @@ void ConfigureParquet(const EnvSource &env, ServerConfig &config, MissingSetting
 	}
 
 	config.data_location = config.parquet_export_path;
-	if (!IsS3Path(config.parquet_export_path)) {
+	if (!IsRemotePath(config.parquet_export_path)) {
 		CreateDirectory(config.parquet_export_path);
+		config.mode_setup_sql = "";
+		return;
+	}
+	if (!IsS3Path(config.parquet_export_path)) {
+		// Remote but not S3. Loading the S3 filesystem for it would fail at the first seal with
+		// an error about the path rather than about the configuration, and taking the local
+		// branch (which is what an IsS3Path locality test did) silently loaded no filesystem at
+		// all -- `validate` reported success and only the first seal failed.
+		missing.Invalid("PARQUET_EXPORT_PATH",
+		                "a local path or s3:// (this mode writes Parquet through the S3 filesystem)");
 		config.mode_setup_sql = "";
 		return;
 	}
@@ -666,7 +720,7 @@ void ConfigureParquet(const EnvSource &env, ServerConfig &config, MissingSetting
 	config.mode_setup_sql = ExtensionSetupSql(config.mode_extensions) + secret_sql;
 }
 
-void ConfigureR2LocalDuckLake(const EnvSource &env, ServerConfig &config, MissingSettings &missing) {
+void ConfigureR2LocalDuckLake(const EnvSource &env, ServerConfig &config, ConfigProblems &missing) {
 	config.mode_extensions = {Core("ducklake"), Core("httpfs"), BUILT_IN_OTLP};
 	config.catalog = CatalogDefault(env, "lake");
 	config.schema = SchemaDefault(env, "otlp");
@@ -692,7 +746,7 @@ void ConfigureR2LocalDuckLake(const EnvSource &env, ServerConfig &config, Missin
 	                       SqlQuote(data_path), DuckLakePathAttachOptions(env));
 }
 
-void ConfigureR2NeonDuckLake(const EnvSource &env, ServerConfig &config, MissingSettings &missing) {
+void ConfigureR2NeonDuckLake(const EnvSource &env, ServerConfig &config, ConfigProblems &missing) {
 	config.mode_extensions = {Core("ducklake"), Core("postgres"), Core("httpfs"), BUILT_IN_OTLP};
 	config.catalog = CatalogDefault(env, "lake");
 	config.schema = SchemaDefault(env, "otlp");
@@ -715,7 +769,7 @@ void ConfigureR2NeonDuckLake(const EnvSource &env, ServerConfig &config, Missing
 	                            QuoteIdentifier(config.catalog), DuckLakeSecretAttachOptions(env));
 }
 
-void ConfigureGcpDuckLake(const EnvSource &env, ServerConfig &config, MissingSettings &missing) {
+void ConfigureGcpDuckLake(const EnvSource &env, ServerConfig &config, ConfigProblems &missing) {
 	config.mode_extensions = {Core("ducklake"), Core("postgres"), Community("gcs"), BUILT_IN_OTLP};
 	config.catalog = CatalogDefault(env, "lake");
 	config.schema = SchemaDefault(env, "otlp");
@@ -724,7 +778,8 @@ void ConfigureGcpDuckLake(const EnvSource &env, ServerConfig &config, MissingSet
 	// Force the native GCS filesystem even if httpfs is loaded by another extension.
 	if (!data_path.empty() &&
 	    (!StringUtil::StartsWith(data_path, "gcss://") || data_path.size() <= 7 || data_path[7] == '/')) {
-		throw InvalidInputException("DUCKDB_MODE=gcp-ducklake requires DUCKLAKE_DATA_PATH=gcss://bucket/prefix");
+		// gcss:// selects the native GCS filesystem even when httpfs is also loaded.
+		missing.Invalid("DUCKLAKE_DATA_PATH", "gcss://bucket/prefix");
 	}
 	RequirePostgresCatalog(env, missing);
 	config.credentials_source = "Google application default credentials";
@@ -742,7 +797,7 @@ CREATE OR REPLACE SECRET gcp_storage (
 	                            DuckLakeSecretAttachOptions(env));
 }
 
-void ConfigureS3Tables(const EnvSource &env, ServerConfig &config, MissingSettings &missing) {
+void ConfigureS3Tables(const EnvSource &env, ServerConfig &config, ConfigProblems &missing) {
 	config.mode_extensions = {Core("iceberg"), Core("aws"), Core("httpfs"), BUILT_IN_OTLP};
 	config.catalog = CatalogDefault(env, "s3tables");
 	config.schema = SchemaDefault(env, "otlp");
@@ -783,7 +838,7 @@ void ConfigureS3Tables(const EnvSource &env, ServerConfig &config, MissingSettin
 //! supported-mode list in an error message cannot drift from the set that is actually handled.
 struct ModeDef {
 	const char *name;
-	void (*configure)(const EnvSource &, ServerConfig &, MissingSettings &);
+	void (*configure)(const EnvSource &, ServerConfig &, ConfigProblems &);
 };
 
 const ModeDef MODES[] = {
@@ -812,7 +867,7 @@ string SupportedModeList() {
 void ConfigureMode(const EnvSource &env, ServerConfig &config) {
 	for (const auto &entry : MODES) {
 		if (config.mode == entry.name) {
-			MissingSettings missing;
+			ConfigProblems missing;
 			entry.configure(env, config, missing);
 			// One error naming every missing setting, rather than one run per variable.
 			missing.ThrowIfAny(config.mode);
