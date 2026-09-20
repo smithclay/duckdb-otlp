@@ -43,6 +43,11 @@ void BindConfigEnvVariables(duckdb::Connection &con, const ServerConfig &config,
 //! with our own COPY(...) text instead of saying the file was missing.
 duckdb::string CliErrorMessage(const std::exception &ex);
 
+//! True when `path` exists, including as a directory. Lives here with the other filesystem
+//! helpers because two callers want it: the output-overwrite check and the CLI's "that word
+//! names a file, did you mean convert?" hint.
+bool PathExists(const duckdb::string &path);
+
 //! Create `path` and any missing parents, throwing an actionable error on failure.
 void CreateDirectory(const duckdb::string &path);
 

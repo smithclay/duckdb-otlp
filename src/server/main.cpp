@@ -13,6 +13,7 @@
 #include "duckdb/main/database_manager.hpp"
 #include "duckdb/main/query_result.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -246,16 +247,32 @@ duckdb::string HostFromAddr(const duckdb::string &addr) {
 	return addr.substr(0, colon);
 }
 
-// The host `doctor` should probe for a server bound to `addr`. A wildcard/unspecified bind
-// (0.0.0.0, ::, empty) is reachable on loopback, so probe loopback (the previous behavior). An
-// explicit interface (e.g. 192.168.1.5) is NOT reachable on loopback, so probe it directly —
-// otherwise the container HEALTHCHECK fails forever on a healthy server (review finding M5).
-duckdb::string HealthCheckHost(const duckdb::string &addr) {
-	auto host = HostFromAddr(addr);
-	if (host.empty() || host == "0.0.0.0" || host == "::" || host == "[::]") {
+// The host to reach a server bound to `host` on. A wildcard/unspecified bind is reachable on
+// the loopback of its own family; an explicit interface (192.168.1.5) is NOT reachable on
+// loopback and must be used directly, or the container HEALTHCHECK fails forever on a healthy
+// server (review finding M5).
+//
+// One definition on purpose: this rule had grown three spellings in this file — the listener
+// probe, the Quack probe and the startup banner's endpoint hint — which disagreed about `::`
+// and about the empty host, so a change to the rule would have fixed one and left two.
+duckdb::string ReachableHost(const duckdb::string &host) {
+	if (host.empty() || host == "0.0.0.0") {
 		return "127.0.0.1";
 	}
+	if (host == "::" || host == "[::]") {
+		return "::1";
+	}
 	return host;
+}
+
+// The same rule for a "host:port" bind address rather than a bare host.
+duckdb::string HealthCheckHost(const duckdb::string &addr) {
+	return ReachableHost(HostFromAddr(addr));
+}
+
+// How a listener is named in the doctor report and in the startup banner.
+duckdb::string ListenerLabel(const duckdb_otlp_server::IngestListener &listener) {
+	return duckdb::string(listener.otap ? "OTAP " : "OTLP ") + listener.transport;
 }
 
 // Probe GET http://<host>:<port><path>. Loopback for a wildcard host, the configured host
@@ -306,22 +323,14 @@ void PrintDoctorReport(const std::vector<DoctorCheck> &checks, bool healthy, boo
 // whole point of the command, and Docker keeps this output in the container's health log.
 // Exits 0 only when every check passed.
 int RunDoctor(const EnvSource &env, bool as_json) {
-	bool healthy = true;
 	std::vector<DoctorCheck> checks;
 	try {
 		for (const auto &listener : duckdb_otlp_server::ListenersFromEnv(env)) {
 			duckdb::OtlpUri uri(listener.uri);
-			auto host = uri.Host();
-			if (host == "0.0.0.0") {
-				host = "127.0.0.1";
-			} else if (host == "::") {
-				host = "::1";
-			}
+			auto host = ReachableHost(uri.Host());
 			bool ok = listener.transport == "grpc" ? duckdb::OtlpTcpConnectOk(host, uri.Port())
 			                                       : duckdb::OtlpHttpStatusOk(host, uri.Port(), "/readyz");
-			checks.push_back({duckdb::string(listener.otap ? "OTAP " : "OTLP ") + listener.transport,
-			                  host + ":" + std::to_string(uri.Port()), ok});
-			healthy = healthy && ok;
+			checks.push_back({ListenerLabel(listener), host + ":" + std::to_string(uri.Port()), ok});
 		}
 	} catch (std::exception &ex) {
 		// Configuration that cannot even be resolved is not a failed check, it is a broken
@@ -333,10 +342,11 @@ int RunDoctor(const EnvSource &env, bool as_json) {
 		// Resolved by the same function startup uses, so the probe cannot target a different
 		// port than the server bound.
 		auto quack_addr = duckdb_otlp_server::QuackAddrFromEnv(env);
-		bool ok = HealthProbe(quack_addr, "/", 9494);
-		checks.push_back({"Quack", quack_addr, ok});
-		healthy = healthy && ok;
+		checks.push_back({"Quack", quack_addr, HealthProbe(quack_addr, "/", 9494)});
 	}
+	// Derived rather than tracked: a check appended without a companion `healthy &&= ok` would
+	// have printed "healthy" next to a FAIL, and nothing local showed the invariant.
+	bool healthy = std::all_of(checks.begin(), checks.end(), [](const DoctorCheck &check) { return check.ok; });
 	PrintDoctorReport(checks, healthy, as_json);
 	return healthy ? 0 : 1;
 }
@@ -358,7 +368,7 @@ int RunServe(const EnvSource &env) {
 		}
 		std::cout << "Database: " << config.database << " (control)\n\n";
 		for (const auto &listener : config.listeners) {
-			std::cout << (listener.otap ? "OTAP " : "OTLP ") << listener.transport << ": " << listener.uri << '\n';
+			std::cout << ListenerLabel(listener) << ": " << listener.uri << '\n';
 		}
 		// Say WHICH setting chose the listener set. Without this a narrowed set (for example a
 		// stray OTEL_EXPORTER_OTLP_PROTOCOL in the shell turning off the gRPC listener) looks
@@ -493,7 +503,7 @@ int RunServe(const EnvSource &env) {
 			for (const auto &listener : config.listeners) {
 				if (listener.transport == "http" && !listener.otap) {
 					duckdb::OtlpUri uri(listener.uri);
-					auto host = uri.Host() == "0.0.0.0" ? duckdb::string("127.0.0.1") : uri.Host();
+					auto host = ReachableHost(uri.Host());
 					std::cout << "\nSend OTLP/HTTP to http://" << host << ":" << uri.Port()
 					          << "/v1/{logs,traces,metrics}\n";
 					break;

@@ -133,7 +133,11 @@ VOLUME ["/data"]
 # Quack when enabled, printing a line per check that Docker keeps in the container's
 # health log. `healthcheck` remains an accepted spelling for existing probes.
 # The daemon also logs a WARNING if seals stop committing.
-HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=3 \
+# timeout must exceed the worst case: `doctor` now probes EVERY listener rather than
+# returning at the first failure, and an unresponsive (as opposed to closed) port costs 2s
+# each, so up to four checks can take ~8s. At the old 3s Docker killed the probe before it
+# printed, losing the per-check report that is the reason for not short-circuiting.
+HEALTHCHECK --interval=15s --timeout=10s --start-period=15s --retries=3 \
     CMD ["/usr/local/bin/duckdb-otlp", "doctor"]
 
 ENTRYPOINT ["/usr/local/bin/duckdb-otlp"]

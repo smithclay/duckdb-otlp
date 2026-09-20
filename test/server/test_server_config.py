@@ -369,6 +369,13 @@ def test_missing_required_var_names_the_var(tmp_path):
     assert "CLOUDFLARE" in result.stderr
 
 
+def free_port():
+    """Shared by the test modules so a fix for the bind-then-reuse race lands in one place."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
 def _healthcheck(env: dict) -> int:
     """Run the daemon's `doctor` subcommand with a clean env; return its exit code."""
     full_env = {"PATH": os.environ.get("PATH", "")}

@@ -1,10 +1,11 @@
 #include "cli.hpp"
 
+#include "server_util.hpp"
+
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 
 #include <cstdlib>
-#include <fstream>
 #include <iostream>
 #include <iterator>
 #include <ostream>
@@ -170,21 +171,31 @@ const SignalDef SIGNALS[] = {
     {"metrics_exp_histogram", "otlp_metrics_exp_histogram", "time_unix_nano", true},
 };
 
+//! The one table of accepted format spellings. `ParseFormat` adds the error text and
+//! `FormatFromExtension` reuses it, so an added format or alias (the ndjson/jsonl pair, say)
+//! cannot be honoured by the flag and ignored by `--to out.<ext>`, which is exactly the class
+//! of mismatch extension inference was added to fix.
+bool TryParseFormat(const string &value, OutputFormat &result) {
+	if (value == "parquet" || value == "pq") {
+		result = OutputFormat::PARQUET;
+	} else if (value == "csv") {
+		result = OutputFormat::CSV;
+	} else if (value == "json") {
+		result = OutputFormat::JSON;
+	} else if (value == "ndjson" || value == "jsonl") {
+		result = OutputFormat::NDJSON;
+	} else if (value == "box" || value == "table") {
+		result = OutputFormat::BOX;
+	} else {
+		return false;
+	}
+	return true;
+}
+
 OutputFormat ParseFormat(const string &value) {
-	if (value == "parquet") {
-		return OutputFormat::PARQUET;
-	}
-	if (value == "csv") {
-		return OutputFormat::CSV;
-	}
-	if (value == "json") {
-		return OutputFormat::JSON;
-	}
-	if (value == "ndjson" || value == "jsonl") {
-		return OutputFormat::NDJSON;
-	}
-	if (value == "box" || value == "table") {
-		return OutputFormat::BOX;
+	OutputFormat format = OutputFormat::UNSET;
+	if (TryParseFormat(value, format)) {
+		return format;
 	}
 	// `-f` is --format, but it is also the obvious shorthand for --file, so a value that
 	// looks like a SQL script says which flag was meant instead of only what was wrong.
@@ -198,28 +209,26 @@ OutputFormat ParseFormat(const string &value) {
 
 Command ParseCommand(const string &arg, bool &recognized) {
 	recognized = true;
-	if (arg == "serve") {
-		return Command::SERVE;
+	// Driven by the same two tables that name commands in errors and feed the typo suggester,
+	// so a new subcommand or spelling is one row rather than three edits in two idioms. A name
+	// added only here used to parse fine but have no name for error messages and be
+	// unsuggestable, all silently.
+	for (const auto &entry : COMMAND_NAMES) {
+		if (arg == entry.name) {
+			return entry.command;
+		}
 	}
-	if (arg == "convert") {
-		return Command::CONVERT;
+	for (const auto &entry : COMMAND_ALIASES) {
+		if (arg == entry.alias) {
+			return ParseCommand(entry.canonical, recognized);
+		}
 	}
-	if (arg == "export") {
-		return Command::EXPORT;
-	}
-	if (arg == "query" || arg == "sql") {
-		return Command::QUERY;
-	}
-	if (arg == "validate") {
-		return Command::VALIDATE;
-	}
-	if (arg == "doctor" || arg == "healthcheck") {
-		return Command::DOCTOR;
-	}
-	if (arg == "version" || arg == "--version" || arg == "-V") {
+	// The dash spellings are the only hand-written cases: they are flag syntax, not names, so
+	// they do not belong in a table of subcommands.
+	if (arg == "--version" || arg == "-V") {
 		return Command::VERSION;
 	}
-	if (arg == "help" || arg == "--help" || arg == "-h") {
+	if (arg == "--help" || arg == "-h") {
 		return Command::HELP;
 	}
 	recognized = false;
@@ -329,6 +338,10 @@ std::vector<SignalDef> ResolveSignals(const string &spec) {
 	                            spec, SignalNameList());
 }
 
+bool IsSignalGroup(const string &spec) {
+	return spec == "all" || spec == "metrics";
+}
+
 string SignalNameList() {
 	string names;
 	for (const auto &signal : AllSignals()) {
@@ -355,28 +368,15 @@ const char *FormatExtension(OutputFormat format) {
 }
 
 OutputFormat FormatFromExtension(const string &path) {
-	if (path.empty() || path[path.size() - 1] == '/') {
+	// StringUtil::GetFileExtension already strips the directory, ignores a dotfile's leading
+	// dot, and returns "" for a trailing slash, which is every case this needs.
+	auto extension = StringUtil::Lower(StringUtil::GetFileExtension(path));
+	OutputFormat format = OutputFormat::UNSET;
+	if (extension.empty() || !TryParseFormat(extension, format) || format == OutputFormat::BOX) {
+		// `box` is a rendering, not a file format: a file named "x.box" is not a request for it.
 		return OutputFormat::UNSET;
 	}
-	auto dot = path.rfind('.');
-	auto slash = path.find_last_of('/');
-	if (dot == string::npos || (slash != string::npos && dot < slash)) {
-		return OutputFormat::UNSET;
-	}
-	auto extension = StringUtil::Lower(path.substr(dot + 1));
-	if (extension == "parquet" || extension == "pq") {
-		return OutputFormat::PARQUET;
-	}
-	if (extension == "csv") {
-		return OutputFormat::CSV;
-	}
-	if (extension == "json") {
-		return OutputFormat::JSON;
-	}
-	if (extension == "ndjson" || extension == "jsonl") {
-		return OutputFormat::NDJSON;
-	}
-	return OutputFormat::UNSET;
+	return format;
 }
 
 string CopyFormatOptions(OutputFormat format) {
@@ -420,10 +420,12 @@ CliOptions ParseCli(int argc, char **argv) {
 			// start a listener and a DuckLake for `duckdb-otlp covert traces.pb`.
 			string word(argv[1]);
 			string hint;
-			if (std::ifstream(word).good()) {
+			if (PathExists(word)) {
 				// The likeliest version of this mistake is naming a file and forgetting the
 				// verb, so say the whole command back rather than guessing at a near-miss.
-				hint = "\n\"" + word + "\" is a file — did you mean `duckdb-otlp convert " + word + "`?";
+				// "exists", not "is a file": PathExists sees directories too, and a glob-less
+				// directory of OTLP files is a perfectly ordinary thing to hand to convert.
+				hint = "\n\"" + word + "\" exists — did you mean `duckdb-otlp convert " + word + "`?";
 			} else {
 				duckdb::vector<string> known;
 				for (const auto &entry : COMMAND_NAMES) {
@@ -460,10 +462,6 @@ CliOptions ParseCli(int argc, char **argv) {
 			    word, hint);
 		}
 	}
-	// `--quack PORT` has to also flip the enable switch; recorded here and applied at the end
-	// so an explicit --quack=0 (or a later flag) still wins.
-	bool quack_port_set = false;
-
 	for (; index < argc; index++) {
 		string arg(argv[index]);
 		if (arg == "--") {
@@ -508,9 +506,6 @@ CliOptions ParseCli(int argc, char **argv) {
 		switch (flag->target) {
 		case FlagTarget::ENV:
 			options.env_overrides.emplace_back(flag->env_name, flag->is_switch ? "1" : value);
-			// A NON-ZERO --quack port implies enabling Quack. `--quack 0` means "off", the
-			// same as --http 0 / --grpc 0, so it must not switch Quack on instead.
-			quack_port_set = quack_port_set || (string(flag->env_name) == "DUCKDB_QUACK_PORT" && value != "0");
 			break;
 		case FlagTarget::SIGNAL:
 			options.signal = value;
@@ -551,11 +546,6 @@ CliOptions ParseCli(int argc, char **argv) {
 		}
 	}
 
-	if (quack_port_set) {
-		// --quack PORT implies enabling Quack; an explicit DUCKDB_QUACK_ENABLED=0 in the
-		// environment is overridden because the flag is the more specific signal.
-		options.env_overrides.emplace_back("DUCKDB_QUACK_ENABLED", "1");
-	}
 	if (options.command == Command::VALIDATE) {
 		// `validate` IS `serve` with DRY_RUN set: it resolves the same configuration and prints
 		// the same generated SQL, then stops before opening a database or binding a socket.
@@ -592,6 +582,17 @@ CliOptions ParseCli(int argc, char **argv) {
 	}
 	return options;
 }
+
+//! Shared by the `export` and `query` help, which take the same catalog flags via the
+//! CATALOG_CMDS mask. Written once so "one row plus one line of help text" stays true.
+constexpr const char *CATALOG_FLAGS_HELP =
+    R"HELP(Catalog selection (the same flags `serve` uses to choose what it writes to):
+  -m, --mode MODE       DUCKDB_MODE (default: local-ducklake)
+      --data-dir DIR    data directory
+      --database PATH   control database file
+      --catalog NAME    target catalog
+      --schema NAME     target schema
+)HELP";
 
 void PrintUsage(std::ostream &out, Command command) {
 	switch (command) {
@@ -639,13 +640,8 @@ Flags:
                         the serve-side Parquet export writes) | none (default)
       --overwrite       replace existing output files
 
-Catalog selection (the same flags `serve` uses to choose what it writes to):
-  -m, --mode MODE       DUCKDB_MODE (default: local-ducklake)
-      --data-dir DIR    data directory
-      --database PATH   control database file
-      --catalog NAME    target catalog
-      --schema NAME     target schema
-
+)HELP" << CATALOG_FLAGS_HELP
+		    << R"HELP(
 Examples:
   duckdb-otlp export --signal logs --since -24h --to out/
   duckdb-otlp export --mode local-ducklake --partition-by day --to s3://bucket/dump/
@@ -668,13 +664,8 @@ Flags:
       --readonly        open the database read-only
       --overwrite       replace an existing output file
 
-Catalog selection (the same flags `serve` uses to choose what it writes to):
-  -m, --mode MODE       DUCKDB_MODE (default: local-ducklake)
-      --data-dir DIR    data directory
-      --database PATH   control database file
-      --catalog NAME    target catalog
-      --schema NAME     target schema
-
+)HELP" << CATALOG_FLAGS_HELP
+		    << R"HELP(
 Examples:
   duckdb-otlp query "SELECT service_name, count(*) FROM otlp_logs GROUP BY 1"
   duckdb-otlp query "FROM otlp_traces LIMIT 10" --format json

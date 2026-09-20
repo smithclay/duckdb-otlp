@@ -5,6 +5,17 @@
 
 namespace duckdb {
 
+//! `host` as it must appear inside a URI or a host:port string: an IPv6 literal bracketed,
+//! anything else unchanged. One definition, because two callers build such strings from a
+//! bare host — the listener URI and the Quack bind address — and only one of them used to
+//! bracket, so `--host ::1 --quack 9494` produced "::1:9494", which nothing can parse back.
+inline string UriHost(const string &host) {
+	if (host.find(':') == string::npos || (!host.empty() && host[0] == '[')) {
+		return host;
+	}
+	return "[" + host + "]";
+}
+
 class OtlpUri {
 public:
 	OtlpUri() : OtlpUri("otlp:localhost:4318") {
@@ -20,7 +31,7 @@ public:
 	string CanonicalUri() const {
 		// Scheme-aware so otap:host:4317 and otlp:host:4318 are distinct registry
 		// keys (and otlp_stop/otlp_flush target the right server).
-		return scheme + ":" + (ipv6 ? "[" + host + "]" : host) + ":" + std::to_string(port);
+		return scheme + ":" + UriHost(host) + ":" + std::to_string(port);
 	}
 	string Host() const {
 		return host;

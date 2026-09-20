@@ -850,13 +850,8 @@ IngestListener MakeListener(const char *scheme, const ResolvedListener &resolved
 	// An IPv6 literal has to be bracketed before the port is appended, or "::1" + ":4318"
 	// reads as one colon-separated string and the port parse fails. Both sources of a host
 	// hand one over unbracketed — OtlpUri::Host() strips the brackets it parsed, and
-	// DUCKDB_OTLP_HOST/--host take a bare literal — so this is the one place that knows how
-	// to spell a host inside a URI.
-	auto host = resolved.host;
-	if (host.find(':') != string::npos && host[0] != '[') {
-		host = "[" + host + "]";
-	}
-	auto uri = string(scheme) + ":" + host + ":" + std::to_string(resolved.port);
+	// DUCKDB_OTLP_HOST/--host take a bare literal.
+	auto uri = string(scheme) + ":" + duckdb::UriHost(resolved.host) + ":" + std::to_string(resolved.port);
 	return {duckdb::OtlpUri(uri).Uri(), transport, otap};
 }
 
@@ -1040,7 +1035,15 @@ std::vector<IngestListener> ListenersFromEnv(const EnvSource &env, string *selec
 }
 
 bool QuackEnabledFromEnv(const EnvSource &env) {
-	return IsTruthy(env.Get("DUCKDB_QUACK_ENABLED", env.Get("QUACK_ENABLED", "0")));
+	if (IsTruthy(env.Get("DUCKDB_QUACK_ENABLED", env.Get("QUACK_ENABLED", "0")))) {
+		return true;
+	}
+	// A non-zero `--quack PORT` also enables it: the flag is the more specific signal, so it
+	// wins over DUCKDB_QUACK_ENABLED=0 in the environment. Stated here, beside the setting it
+	// is about, rather than as a name comparison inside the otherwise setting-agnostic flag
+	// loop — and IsOverride is exactly the flag-versus-variable distinction it appealed to.
+	// A bare DUCKDB_QUACK_PORT in the environment still does not enable Quack.
+	return env.IsOverride("DUCKDB_QUACK_PORT") && ParsePortEnv(env, "DUCKDB_QUACK_PORT") != 0;
 }
 
 string QuackAddrFromEnv(const EnvSource &env) {
@@ -1049,7 +1052,7 @@ string QuackAddrFromEnv(const EnvSource &env) {
 	// does for --http/--grpc, so it does not select a (zero, i.e. ephemeral) bind port.
 	auto port = env.Has("DUCKDB_QUACK_PORT") ? ParsePortEnv(env, "DUCKDB_QUACK_PORT") : 0;
 	if (port != 0) {
-		return env.Get("DUCKDB_OTLP_HOST", DEFAULT_HOST) + ":" + std::to_string(port);
+		return duckdb::UriHost(env.Get("DUCKDB_OTLP_HOST", DEFAULT_HOST)) + ":" + std::to_string(port);
 	}
 	return env.Get("DUCKDB_QUACK_ADDR", env.Get("QUACK_HTTP_ADDR", string(DEFAULT_HOST) + ":9494"));
 }

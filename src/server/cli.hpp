@@ -112,6 +112,12 @@ CliOptions ParseCli(int argc, char **argv);
 //! `duckdb-otlp help nonsense` prints the overview instead of failing.
 Command CommandFromName(const duckdb::string &name);
 
+//! True when `spec` names a GROUP of signals ("all", "metrics") rather than one signal.
+//! Both `convert` and `export` treat a group as best effort — a signal the input or the
+//! catalog does not hold is skipped and named — so the vocabulary lives here beside
+//! ResolveSignals, which is what knows which words are groups.
+bool IsSignalGroup(const duckdb::string &spec);
+
 //! Space-prefixed list of every signal name, for "use one of:" error messages.
 duckdb::string SignalNameList();
 

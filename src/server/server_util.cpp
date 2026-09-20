@@ -58,6 +58,11 @@ string CliErrorMessage(const std::exception &ex) {
 	return message;
 }
 
+bool PathExists(const string &path) {
+	std::error_code ec;
+	return std::filesystem::exists(path, ec);
+}
+
 void CreateDirectory(const string &path) {
 	if (path.empty()) {
 		return;

@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <optional>
 #include <set>
 #include <cstdlib>
 #include <filesystem>
@@ -129,11 +130,6 @@ string BuildPredicate(const CliOptions &options, const SignalDef &signal) {
 	return " WHERE " + StringUtil::Join(predicates, " AND ");
 }
 
-bool PathExists(const string &path) {
-	std::error_code ec;
-	return std::filesystem::exists(path, ec);
-}
-
 //! True when `path` names a directory: it ends in a separator, or it already exists as one.
 //!
 //! Deliberately not "…or we happen to be writing several files": that made the shape of the
@@ -173,9 +169,9 @@ string ResolveOutputPath(const CliOptions &options, const SignalDef &signal, Out
 		path += string(signal.name) + "." + FormatExtension(format);
 	} else if (multiple_outputs) {
 		throw InvalidInputException(
-		    "Writing %s needs a directory, but --to \"%s\" names a file. Pass a directory (--to %s/) or select one "
-		    "signal with --signal.",
-		    "several signals", options.output, options.output);
+		    "Writing several signals needs a directory, but --to \"%s\" names a file. Pass a directory (--to %s/) "
+		    "or select one signal with --signal.",
+		    options.output, options.output);
 	}
 	if (PathExists(path) && !options.overwrite) {
 		throw InvalidInputException("Refusing to overwrite existing file \"%s\". Pass --overwrite to replace it.",
@@ -290,24 +286,22 @@ std::vector<SignalDef> DetectSignals(duckdb::Connection &con, const CliOptions &
 	return detected;
 }
 
-//! The signal tables that actually exist in the configured catalog and schema.
+//! The signal tables that actually exist in the configured catalog and schema, or nothing
+//! when the catalog cannot be listed — which means "do not filter", not "nothing is there".
 //!
 //! `export` defaults to every signal, but a catalog normally holds only the signals that have
-//! been ingested — a logs-only deployment is the common case. Without this, the default
-//! export died on `otlp_traces` and wrote nothing at all. Returns an empty optional if the
-//! catalog cannot be listed, which means "do not filter" rather than "nothing is there".
-std::set<string> ExistingSignalTables(duckdb::Connection &con, const ServerConfig &config, bool &listed) {
-	std::set<string> tables;
+//! been ingested — a logs-only catalog is the common case. Without this, the default export
+//! died on `otlp_traces` and wrote nothing at all.
+std::optional<std::set<string>> ExistingSignalTables(duckdb::Connection &con, const ServerConfig &config) {
 	auto sql = "SELECT table_name FROM duckdb_tables() WHERE schema_name = " + SqlQuote(config.schema);
 	if (!config.catalog.empty()) {
 		sql += " AND database_name = " + SqlQuote(config.catalog);
 	}
 	auto result = con.Query(sql);
 	if (!result || result->HasError()) {
-		listed = false;
-		return tables;
+		return {};
 	}
-	listed = true;
+	std::set<string> tables;
 	while (auto chunk = result->Fetch()) {
 		for (duckdb::idx_t row = 0; row < chunk->size(); row++) {
 			tables.insert(chunk->GetValue(0, row).GetValue<string>());
@@ -349,13 +343,9 @@ int RunConvert(const CliOptions &options) {
 	// failure — the same meaning those words have for `export`. Before this, `convert x.pb
 	// --signal all` wrote traces.parquet and then died on the logs reader, leaving partial
 	// output and a non-zero exit. A signal named on its own is still an error.
-	bool fanned_out = options.signal == "all" || options.signal == "metrics";
+	bool fanned_out = IsSignalGroup(options.signal);
 	duckdb::vector<string> skipped;
 	for (const auto &signal : signals) {
-		if (!fanned_out) {
-			WriteSignal(con, options, signal, BuildReadSelect(options, signal), format, signals.size() > 1, "convert");
-			continue;
-		}
 		try {
 			WriteSignal(con, options, signal, BuildReadSelect(options, signal), format, signals.size() > 1, "convert");
 		} catch (const duckdb::InvalidInputException &) {
@@ -363,6 +353,10 @@ int RunConvert(const CliOptions &options) {
 			// mistake for every signal, not a property of this one, so they stay fatal.
 			throw;
 		} catch (const std::exception &) {
+			if (!fanned_out) {
+				// A signal named on its own is an error, not a miss.
+				throw;
+			}
 			skipped.push_back(signal.name);
 		}
 	}
@@ -382,11 +376,13 @@ int RunExport(const CliOptions &options, const EnvSource &env) {
 	if (format == OutputFormat::BOX) {
 		throw InvalidInputException("`export` writes files; --format box is only valid for `duckdb-otlp query`.");
 	}
-	// "auto" is the convert-side default and has no meaning against a catalog.
-	auto signals = ResolveSignals(options.signal == "auto" ? "all" : options.signal);
+	// Normalized once so the selection and the fan-out test cannot disagree about what "auto"
+	// means. "auto" is the convert-side default and has no meaning against a catalog.
+	auto spec = options.signal == "auto" ? string("all") : options.signal;
+	auto signals = ResolveSignals(spec);
 	// A fanned-out selection is a convenience, so a signal that was never ingested is skipped
 	// rather than fatal. A signal the user named explicitly is still an error if it is absent.
-	bool fanned_out = options.signal == "auto" || options.signal == "all" || options.signal == "metrics";
+	bool fanned_out = IsSignalGroup(spec);
 	bool partitioned = !options.partition_by.empty() && options.partition_by != "none";
 	if (partitioned) {
 		if (options.partition_by != "day") {
@@ -401,12 +397,16 @@ int RunExport(const CliOptions &options, const EnvSource &env) {
 	duckdb::unique_ptr<duckdb::Connection> con;
 	auto db = OpenConfiguredDatabase(config, env, options.read_only, con);
 
-	bool listed = false;
-	auto existing = ExistingSignalTables(*con, config, listed);
+	// Only listed when it can change the outcome: against a remote DuckLake/Iceberg catalog
+	// this is a metadata round trip, and `export --signal logs` never consults it.
+	std::optional<std::set<string>> existing;
+	if (fanned_out) {
+		existing = ExistingSignalTables(*con, config);
+	}
 	duckdb::vector<string> skipped;
 	duckdb::vector<SignalDef> present;
 	for (const auto &signal : signals) {
-		if (fanned_out && listed && existing.find(signal.table) == existing.end()) {
+		if (existing && existing->find(signal.table) == existing->end()) {
 			skipped.push_back(signal.name);
 			continue;
 		}

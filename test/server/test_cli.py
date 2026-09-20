@@ -21,18 +21,10 @@ from pathlib import Path
 
 import pytest
 
-from test_server_config import REPO_ROOT, SERVER_BIN, pytestmark  # noqa: F401  (pytestmark re-export)
+from test_server_config import REPO_ROOT, SERVER_BIN, free_port, pytestmark  # noqa: F401  (pytestmark re-export)
 
 DATA_DIR = REPO_ROOT / "test" / "data"
 TOKEN = "a-private-token-123456"
-
-
-def _free_port():
-    import socket
-
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
 
 
 def run(args, env=None, home: Path | None = None, timeout: int = 120):
@@ -1161,7 +1153,7 @@ def test_the_startup_banner_is_visible_while_the_server_runs(tmp_path):
         "DUCKDB_DATABASE": ":memory:",
         "PARQUET_EXPORT_PATH": str(tmp_path / "pq"),
         "DUCKDB_OTLP_TRANSPORTS": "http",
-        "OTEL_HTTP_ADDR": f"127.0.0.1:{_free_port()}",
+        "OTEL_HTTP_ADDR": f"127.0.0.1:{free_port()}",
         "DUCKDB_OTLP_STARTUP_TIMEOUT": "30",
     }
     with log.open("w") as handle:
@@ -1219,3 +1211,24 @@ def test_json_is_only_a_doctor_flag(tmp_path):
     result = run(["convert", "--json", "x.pb"], home=tmp_path)
     assert result.returncode == 2
     assert "it is a flag of: doctor" in result.stderr
+
+
+def test_the_catalog_flag_help_appears_on_both_pages_that_take_those_flags(tmp_path):
+    """The block is one shared constant; a bad hoist silently dropped it from both pages."""
+    for command in ("export", "query"):
+        result = run(["help", command], home=tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.count("Catalog selection") == 1, command
+        assert "--catalog NAME" in result.stdout
+
+
+def test_an_ipv6_host_is_bracketed_in_the_quack_address_too(tmp_path):
+    """The listener path bracketed and the Quack path did not, so `--host ::1 --quack 9494`
+    produced "::1:9494", which nothing can parse back."""
+    result = run(
+        ["validate", "--host", "::1", "--quack", "9494", "--quack-token", TOKEN],
+        home=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "quack:[::1]:9494" in result.stdout
+    assert "otlp:[::1]:4318" in result.stdout
