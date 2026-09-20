@@ -373,6 +373,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # A job-level permissions block replaces the workflow defaults outright, so every scope
+      # not named here is none. Dispatching pages.yml needs actions: write -- without it the
+      # dispatch below fails with "HTTP 403: Resource not accessible by integration".
+      actions: write
     needs:
       - duckdb-stable-build
       - code-quality-check
