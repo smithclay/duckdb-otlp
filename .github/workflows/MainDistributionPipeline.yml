@@ -414,6 +414,9 @@ jobs:
       - name: Upload to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The job never checks out the repo (it only needs the downloaded artifacts), so gh
+          # has no git remote to infer the target from and fails with "not a git repository".
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           # The tag may have been pushed on its own or created by publishing a release in the
