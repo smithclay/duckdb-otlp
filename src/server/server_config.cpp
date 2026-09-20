@@ -447,6 +447,14 @@ ModeExtension Community(const char *name) {
 	return {name, ExtensionSource::COMMUNITY};
 }
 
+//! Quack, the SQL/admin endpoint. Declared once here and consumed twice -- by the serve-path
+//! SQL that loads it and by the startup banner -- rather than living only as a hand-written
+//! LOAD, which is why the banner used to omit it even when Quack was running.
+//!
+//! CORE, not COMMUNITY: `INSTALL quack FROM community` 404s, while a bare `INSTALL quack`
+//! resolves from the core repository (which is also how the image primes it).
+const ModeExtension QUACK_EXTENSION = {"quack", ExtensionSource::CORE};
+
 //! The otlp extension, statically embedded in the daemon. Declared so the banner reports it,
 //! never emitted as SQL -- INSTALLing it would reach for a published build that is not the one
 //! running.
@@ -1265,12 +1273,19 @@ FROM %s(
 	                          auth_sql, thread_sql, limits_sql, export_sql, promote_sql);
 }
 
+std::vector<ModeExtension> ServerConfig::AllExtensions() const {
+	auto extensions = mode_extensions;
+	if (quack_enabled) {
+		extensions.push_back(QUACK_EXTENSION);
+	}
+	return extensions;
+}
+
 string ServerConfig::StartQuackSql() const {
 	if (!quack_enabled) {
 		return "";
 	}
-	return StringUtil::Format(R"SQL(
-LOAD quack;
+	return ExtensionSetupSql({QUACK_EXTENSION}) + StringUtil::Format(R"SQL(
 SELECT listen_uri
 FROM quack_serve(
     %s,
@@ -1278,7 +1293,7 @@ FROM quack_serve(
     allow_other_hostname := true
 );
 )SQL",
-	                          SqlQuote(quack_listen_uri));
+	                                                                 SqlQuote(quack_listen_uri));
 }
 
 string ServerConfig::StopOtlpSql() const {

@@ -765,6 +765,13 @@ MODE_FIXTURES = {
     },
     "r2-data-catalog": {"R2_BUCKET": "b", "CLOUDFLARE_ACCOUNT_ID": "a", "CLOUDFLARE_API_TOKEN": SECRET},
     "s3-tables": {"S3_TABLES_BUCKET_ARN": "arn:aws:s3tables:us-west-2:1:bucket/b"},
+    # Quack is not a mode extension, but it is one the process ends up running, so the image
+    # has to prime it too.
+    "local-ducklake+quack": {
+        "DUCKDB_MODE": "local-ducklake",
+        "DUCKDB_QUACK_ENABLED": "1",
+        "DUCKDB_QUACK_TOKEN": "a-quack-token-123456",
+    },
 }
 
 
@@ -837,3 +844,27 @@ def test_the_image_primes_every_extension_some_mode_needs(tmp_path):
         f"(docker/duckdb-otlp-server/Dockerfile). Add it there, or the container will reach the "
         f"network on startup."
     )
+
+
+def test_quack_is_installed_before_it_is_loaded(tmp_path):
+    """`LOAD quack` carried no INSTALL, so enabling Quack on any host without a pre-primed
+    extension cache died with `Extension "quack" not found. Install it first`. Only the
+    container worked, because its image primes the cache."""
+    env = dict(MODE_FIXTURES["local-ducklake+quack"])
+    result = run(env, tmp_path)
+    assert result.returncode == 0, result.stderr
+    sql = result.stdout[result.stdout.index("Generated initialization SQL:") :]
+    assert "INSTALL quack;" in sql
+    assert sql.index("INSTALL quack;") < sql.index("LOAD quack;")
+    # Core, not community: `INSTALL quack FROM community` 404s.
+    assert "INSTALL quack FROM community" not in sql
+
+
+def test_quack_appears_in_the_banner_only_when_enabled(tmp_path):
+    """The banner listed the mode's extensions only, so a running Quack endpoint -- an
+    administrative one granting full SQL access -- was absent from the startup report."""
+    enabled = extensions_reported_by("local-ducklake+quack", tmp_path)
+    assert "quack" in enabled
+
+    disabled = extensions_reported_by("local-ducklake", tmp_path)
+    assert "quack" not in disabled

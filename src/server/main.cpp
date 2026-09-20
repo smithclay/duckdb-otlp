@@ -404,12 +404,13 @@ int RunServe(const EnvSource &env) {
 		if (!config.init_sql_path.empty()) {
 			std::cout << "Init SQL: " << config.init_sql_path << "\n";
 		}
-		if (!config.mode_extensions.empty()) {
+		auto extensions = config.AllExtensions();
+		if (!extensions.empty()) {
 			// Derived from the same list the setup SQL is generated from, and it says WHERE each
 			// one comes from: "built in" is why otlp never appears in an INSTALL, and
 			// "community" is why that one needs a different repository to be reachable offline.
 			std::cout << "\nExtensions:\n";
-			for (auto &extension : config.mode_extensions) {
+			for (auto &extension : extensions) {
 				std::cout << "  " << extension.name;
 				switch (extension.source) {
 				case duckdb_otlp_server::ExtensionSource::BUILT_IN:

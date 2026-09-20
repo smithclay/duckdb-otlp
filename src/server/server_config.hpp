@@ -133,6 +133,12 @@ struct ServerConfig {
 	duckdb::string StopOtlpSql() const;
 	duckdb::string StopQuackSql() const;
 	duckdb::string BootSql() const;
+
+	//! Every extension this configuration will make available, for the startup banner: the
+	//! mode's own, plus Quack when it is enabled. Quack is not a mode extension -- it is loaded
+	//! by the serve path only, so `query`/`export` must not pull it in -- but it is still an
+	//! extension the process ends up running, and the banner omitted it entirely.
+	std::vector<ModeExtension> AllExtensions() const;
 };
 
 } // namespace duckdb_otlp_server
