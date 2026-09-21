@@ -44,9 +44,25 @@ fi
 
 # A fresh workspace every take, so the reel never shows a previous run's data and
 # the row counts on screen are always the ones this run produced.
+# The reel binds the default ports. If something is already on them the server in
+# the tape never comes up, `Wait /Send OTLP/` sits there until it times out, and
+# the only symptom is "recording failed" a minute later -- so check up front and
+# say so. Checking first also makes the cleanup below safe to be broad: nothing
+# was listening when we started, so any server running at exit is one we started.
+for port in 4318 4317; do
+  if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "record.sh: port $port is already in use; the demo server cannot bind it." >&2
+    echo "record.sh: stop whatever is listening (lsof -nP -iTCP:$port -sTCP:LISTEN) and retry." >&2
+    exit 1
+  fi
+done
+
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/duckdb-otlp-demo.XXXXXX")"
 cleanup() {
-  pkill -f "$BIN serve" 2>/dev/null || true
+  # Match how the process actually appears in `ps`: the tape runs `duckdb-otlp serve`
+  # off PATH, so argv[0] is the bare name -- a pattern built from $BIN's absolute
+  # path matches nothing, and the server survives to hold the port for the next run.
+  pkill -f 'duckdb-otlp serve' 2>/dev/null || true
   rm -rf "$WORKDIR"
 }
 trap cleanup EXIT

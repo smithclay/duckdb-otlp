@@ -15,7 +15,9 @@ Three beats, deliberately: **receive → ingest → query**.
 
 1. `duckdb-otlp serve` with no flags at all — OTLP/HTTP on 4318, OTLP/gRPC on
    4317, a local DuckLake, no configuration file.
-2. `demo/seed.py` sends a synthetic checkout flow across five services.
+2. `demo/seed.py` stands in for your own apps or agents, sending synthetic
+   traffic across five services over OTLP/HTTP. Point the real OpenTelemetry
+   Demo, an SDK, or a collector at the same port and nothing else changes.
 3. Plain `duckdb` runs a p95-by-service query straight over the Parquet the
    server has already written — *while the server keeps receiving*.
 
@@ -30,8 +32,10 @@ live option and the better story — the data is open the moment it lands.
 
 ## The data is synthetic
 
-`demo/seed.py` generates every span, log, and metric locally; nothing is
-recorded traffic. `payment-service` is deliberately the slow, failing one, so
+`demo/seed.py` generates every span, log, and metric locally; nothing on screen
+is recorded traffic, and the reel never claims otherwise -- the caption points
+viewers at the OpenTelemetry Demo as something they could send, not as the
+source of what is being shown. `payment-service` is deliberately the slow, failing one, so
 the p95 query has something to find. Pass `--seed N` to fix the RNG.
 
 ## Requirements

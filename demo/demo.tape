@@ -23,12 +23,19 @@ Output demo/duckdb-otlp.mp4
 Require duckdb
 Require python3
 
+# 900x600 is not arbitrary: GitHub renders README images into a ~900px column, so
+# anything wider is scaled down and every glyph softens. Recording at the display
+# width keeps the terminal text pixel-crisp where it is actually read. The height is
+# set by the tallest beat: the startup banner runs ~24 lines, and a terminal too short
+# to hold it plus the two typed lines above scrolls it away before `Wait /Send OTLP/`
+# can match -- the recording then fails a minute later with the server up and happily
+# listening, which is a confusing way to discover the window is two rows short.
 Set Shell bash
 Set FontFamily "JetBrains Mono"
-Set FontSize 16
-Set Width 1200
-Set Height 640
-Set Padding 25
+Set FontSize 14
+Set Width 900
+Set Height 600
+Set Padding 20
 Set Theme "Catppuccin Mocha"
 Set TypingSpeed 28ms
 Set Framerate 10
@@ -58,7 +65,7 @@ Type "clear" Enter
 Show
 
 # --- 2. INGEST: real OTLP over the wire ------------------------------------
-Type "# Point any OTLP exporter at :4318. Here, a checkout flow."
+Type "# Configure your apps or agents to send OTLP to :4318 (try the OTel demo)."
 Sleep 900ms
 Enter
 Type "python3 seed.py --traces 2000"
@@ -82,7 +89,7 @@ Sleep 1500ms
 
 Type@18ms "SELECT service_name, count(*) AS spans,"
 Enter
-Type@18ms "       round(quantile_cont(duration_time_unix_nano, 0.95)/1e6, 1) AS p95_ms,"
+Type@18ms "       round(quantile_cont(duration_time_unix_nano, .95)/1e6, 1) AS p95_ms,"
 Enter
 Type@18ms "       sum(status_code = 2) AS errors"
 Enter

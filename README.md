@@ -9,7 +9,7 @@ DuckDB extension for querying and storing OpenTelemetry traces, logs, and metric
 
 ![duckdb-otlp: receive OpenTelemetry over OTLP, query it with SQL](demo/duckdb-otlp.gif)
 
-<sub>Receive → ingest → query, in 35 seconds. [How this is recorded](demo/README.md).</sub>
+<sub>Receive → ingest → query. [How this is recorded](demo/README.md).</sub>
 
 As of v0.6, the extension has an embedded HTTP/gRPC server that lets you stream live telemetry using the OpenTelemetry Protocol (including the [new OTel-Arrow protocol](https://github.com/open-telemetry/otel-arrow#what-is-otap)) into [parquet files](https://smithclay.github.io/duckdb-otlp/guides/stream-to-parquet/), [DuckLake](https://smithclay.github.io/duckdb-otlp/guides/stream-to-ducklake/), or Iceberg catalogs like [Amazon S3 Tables](https://smithclay.github.io/duckdb-otlp/guides/stream-to-s3-tables/) and [Cloudflare R2 Data Catalog](https://smithclay.github.io/duckdb-otlp/guides/stream-to-r2-data-catalog/).
 

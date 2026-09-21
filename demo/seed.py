@@ -236,7 +236,7 @@ def post(endpoint: str, payload: dict, token: str | None) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--endpoint", default=os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318"))
-    parser.add_argument("--traces", type=int, default=2000, help="checkout requests to synthesize")
+    parser.add_argument("--traces", type=int, default=2000, help="requests to synthesize")
     parser.add_argument("--batch", type=int, default=250, help="requests per OTLP export")
     parser.add_argument("--token", default=os.environ.get("DUCKDB_OTLP_TOKEN"))
     parser.add_argument("--seed", type=int, default=None, help="fix the RNG for a reproducible run")
@@ -268,7 +268,7 @@ def main() -> int:
                 result = post(f"{endpoint}/v1/logs", {"resourceLogs": log_batch}, args.token)
                 sent["logs"] += result.get("rows", 0)
             if not args.quiet:
-                print(f"  sent {start + count}/{args.traces} checkout requests", file=sys.stderr)
+                print(f"  sent {start + count}/{args.traces} requests", file=sys.stderr)
 
         result = post(f"{endpoint}/v1/metrics", {"resourceMetrics": build_metrics(now_ns, args.traces)}, args.token)
         sent["metrics"] += result.get("rows", 0)
