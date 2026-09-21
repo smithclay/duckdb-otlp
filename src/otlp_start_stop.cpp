@@ -513,7 +513,7 @@ static void OtlpStop(ClientContext &context, TableFunctionInput &data_p, DataChu
 		bind_data.offset = 1;
 		output.SetValue(0, 0, Value("No OTLP servers are running"));
 		output.SetValue(1, 0, Value::UBIGINT(0));
-		output.SetCardinality(1);
+		output.SetChildCardinality(1);
 		return;
 	}
 	idx_t row = 0;
@@ -527,7 +527,7 @@ static void OtlpStop(ClientContext &context, TableFunctionInput &data_p, DataChu
 		bind_data.offset++;
 		row++;
 	}
-	output.SetCardinality(row);
+	output.SetChildCardinality(row);
 }
 
 CreateTableFunctionInfo OtlpStopFunction::GetFunction() {
