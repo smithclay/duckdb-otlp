@@ -1,13 +1,17 @@
-# DuckDB OpenTelemetry Extension
+# duckdb-otlp
 
 [![Build](https://github.com/smithclay/duckdb-otlp/actions/workflows/MainDistributionPipeline.yml/badge.svg)](https://github.com/smithclay/duckdb-otlp/actions/workflows/MainDistributionPipeline.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![DuckDB](https://img.shields.io/badge/DuckDB-%E2%89%A5%201.5.5-FFF000?logo=duckdb&logoColor=black)](https://duckdb.org)
 [![Docs](https://img.shields.io/badge/docs-online-4c9aff)](https://smithclay.github.io/duckdb-otlp/)
 
-DuckDB extension for querying and storing OpenTelemetry traces, logs, and metrics with SQL.
+**Your telemetry, in your own storage, answerable in SQL.**
 
-As of v0.6, the extension has an embedded HTTP/gRPC server that lets you stream live telemetry using the OpenTelemetry Protocol (including the [new OTel-Arrow protocol](https://github.com/open-telemetry/otel-arrow#what-is-otap)) into [parquet files](https://smithclay.github.io/duckdb-otlp/guides/stream-to-parquet/), [DuckLake](https://smithclay.github.io/duckdb-otlp/guides/stream-to-ducklake/), or Iceberg catalogs like [Amazon S3 Tables](https://smithclay.github.io/duckdb-otlp/guides/stream-to-s3-tables/) and [Cloudflare R2 Data Catalog](https://smithclay.github.io/duckdb-otlp/guides/stream-to-r2-data-catalog/).
+Receives OpenTelemetry over OTLP and OTAP and streams it into [Parquet files](https://smithclay.github.io/duckdb-otlp/guides/stream-to-parquet/), [DuckLake](https://smithclay.github.io/duckdb-otlp/guides/stream-to-ducklake/), or Iceberg catalogs like [Amazon S3 Tables](https://smithclay.github.io/duckdb-otlp/guides/stream-to-s3-tables/) and [Cloudflare R2 Data Catalog](https://smithclay.github.io/duckdb-otlp/guides/stream-to-r2-data-catalog/) — no collector to run, no cluster to size, no vendor to pay. Query it with DuckDB, or anything else that reads Parquet.
+
+![duckdb-otlp: receive OpenTelemetry over OTLP, query it with SQL](demo/duckdb-otlp.gif)
+
+It ships two ways. As a **DuckDB extension**, it adds `read_otlp_*` / `read_otap_*` table functions and an embedded HTTP/gRPC ingest server to any DuckDB session. As a **single binary** (`duckdb-otlp`), it runs that same server standalone or in Docker, and doubles as a CLI for one-off conversion, export, and queries. Both speak OTLP and the [OpenTelemetry Arrow protocol](https://github.com/open-telemetry/otel-arrow#what-is-otap) (OTAP).
 
 ## Quickstart: Read OpenTelemetry data
 

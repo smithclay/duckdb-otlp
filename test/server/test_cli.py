@@ -836,6 +836,26 @@ def test_query_preserves_ordering_through_the_output_view(tmp_path):
     assert result.stdout.strip().splitlines()[1:] == ["1", "2", "3"]
 
 
+def test_query_format_box_renders_an_actual_box(tmp_path):
+    """`--format box` must go through DuckDB's BoxRenderer, not MaterializedQueryResult::ToString().
+
+    ToString() is a debug rendering: it emits a column-types row and a "[ Rows: N]" line
+    *ahead* of the data and draws no box at all, so `--format box` silently produced
+    something that was neither a box nor the `duckdb` CLI's output.
+    """
+    result = run(
+        ["query", "SELECT 'cart-service' AS service_name, 19 AS p95_ms", "--format", "box"],
+        env=parquet_mode_env(tmp_path),
+        home=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "┌" in result.stdout and "└" in result.stdout, result.stdout
+    assert "│ service_name │" in result.stdout.replace("  ", " "), result.stdout
+    assert "cart-service" in result.stdout
+    # The ToString() debug form's tell-tale footer must be gone.
+    assert "[ Rows:" not in result.stdout, result.stdout
+
+
 # --------------------------------------------------------------------------------------
 # Ergonomics: a mistake must not start a server
 #
