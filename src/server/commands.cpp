@@ -92,7 +92,7 @@ void RegisterParquetExportViews(duckdb::Connection &con, const ServerConfig &con
 			// error to raise: the user's own query reports it with far better context.
 			continue;
 		}
-		if (probe->Cast<duckdb::MaterializedQueryResult>().RowCount() == 0) {
+		if (probe->RowCount() == 0) {
 			continue;
 		}
 		if (!schema_ready) {
@@ -239,7 +239,7 @@ bool TargetExists(duckdb::Connection &con, const string &path) {
 	if (!probe || probe->HasError()) {
 		return false;
 	}
-	return probe->Cast<duckdb::MaterializedQueryResult>().RowCount() > 0;
+	return probe->RowCount() > 0;
 }
 
 string ResolveOutputPath(duckdb::Connection &con, const CliOptions &options, const SignalDef &signal,
@@ -425,7 +425,7 @@ OutputFormat ResolveFormat(const CliOptions &options, OutputFormat fallback) {
 }
 
 //! Print a result set as a human-readable box table.
-void PrintBox(duckdb::MaterializedQueryResult &result) {
+void PrintBox(duckdb::QueryResult &result) {
 	std::cout << result.ToString();
 }
 
@@ -598,7 +598,17 @@ int RunQuery(const CliOptions &options, const EnvSource &env) {
 	// Split the input so a script can set things up and then select. Only a trailing SELECT
 	// is redirected into a file/format; wrapping DDL (or a multi-statement script) in
 	// COPY (...) would be a syntax error, which is exactly what an earlier version did.
-	auto statements = con->ExtractStatements(sql);
+	// DuckDB 2.0 reimplemented Connection::ExtractStatements on top of the lazy statement
+	// iterator, which -- unlike ClientContext::ParseStatements, still private -- does not run
+	// ProcessError, so a parser error now arrives stripped of the "LINE n: ... ^" echo the
+	// 1.5.5 path attached. `query` is the one command whose failing statement the user wrote
+	// themselves, so put it back rather than reporting a bare "syntax error at or near ...".
+	duckdb::vector<duckdb::unique_ptr<duckdb::SQLStatement>> statements;
+	try {
+		statements = con->ExtractStatements(sql);
+	} catch (const std::exception &ex) {
+		throw InvalidInputException("%s\nin: %s", duckdb::ErrorData(ex).RawMessage(), sql);
+	}
 	if (statements.empty()) {
 		throw InvalidInputException("`query` needs SQL: pass it as an argument or use --file PATH.");
 	}
@@ -624,8 +634,8 @@ int RunQuery(const CliOptions &options, const EnvSource &env) {
 		}
 		auto result = con->Query(final_sql);
 		CheckResult(*result, "query");
-		if (result->type == duckdb::QueryResultType::MATERIALIZED_RESULT) {
-			PrintBox(result->Cast<duckdb::MaterializedQueryResult>());
+		if (result->GetResultType() == duckdb::QueryResultType::MATERIALIZED_RESULT) {
+			PrintBox(*result);
 		}
 		return 0;
 	}
