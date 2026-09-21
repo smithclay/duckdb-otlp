@@ -6,6 +6,7 @@
 #include "otlp_sql_util.hpp"
 
 #include "duckdb.hpp"
+#include "duckdb/common/box_renderer.hpp"
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/query_result.hpp"
@@ -424,9 +425,15 @@ OutputFormat ResolveFormat(const CliOptions &options, OutputFormat fallback) {
 	return inferred != OutputFormat::UNSET ? inferred : fallback;
 }
 
-//! Print a result set as a human-readable box table.
-void PrintBox(duckdb::MaterializedQueryResult &result) {
-	std::cout << result.ToString();
+//! Print a result set as a human-readable box table -- the same BoxRenderer the duckdb CLI
+//! uses, so `duckdb-otlp query` and `duckdb` render a result set identically. Going through
+//! MaterializedQueryResult::ToString() instead emits DuckDB's debug form (a types row and a
+//! "[ Rows: N]" line ahead of the data), which is not a box and is not what --format box asks for.
+void PrintBox(duckdb::ClientContext &context, duckdb::MaterializedQueryResult &result) {
+	duckdb::BoxRenderer renderer;
+	// ToString rather than Print: BoxRenderer::Print goes through duckdb::Printer, which writes to
+	// stderr, and this is the command's result -- it belongs on stdout like every other format.
+	std::cout << renderer.ToString(context, result.names, result.Collection()) << '\n';
 }
 
 } // namespace
@@ -625,7 +632,7 @@ int RunQuery(const CliOptions &options, const EnvSource &env) {
 		auto result = con->Query(final_sql);
 		CheckResult(*result, "query");
 		if (result->type == duckdb::QueryResultType::MATERIALIZED_RESULT) {
-			PrintBox(result->Cast<duckdb::MaterializedQueryResult>());
+			PrintBox(*con->context, result->Cast<duckdb::MaterializedQueryResult>());
 		}
 		return 0;
 	}
