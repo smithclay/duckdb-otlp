@@ -26,17 +26,21 @@ ORDER BY function_name;
 read_otlp_metrics
 read_otlp_metrics_summary
 
-# Placeholder parameter names are what this metadata exists to remove. The serve functions are
-# the exception: duckdb_functions() renders their positional argument and their named
-# parameters as one list, and naming the positional one turns every named parameter into
-# colN -- so there, col0 is the better trade. See ServeDescriptions in otlp_start_stop.cpp.
-query II
-SELECT function_name, parameters FROM duckdb_functions()
-WHERE (function_name LIKE 'read_ot%' OR function_name LIKE 'otlp\_%' ESCAPE '\'
-       OR function_name LIKE 'otap\_%' ESCAPE '\')
-  AND function_name NOT IN ('otlp_serve', 'otap_serve')
-  AND len(list_filter(parameters, lambda p: p SIMILAR TO 'col\d+')) > 0
-ORDER BY function_name;
+# Placeholder parameter names are what this metadata exists to remove, but as of DuckDB 2.0
+# only a scalar function can carry them: duckdb_functions() now takes parameter names off the
+# function's own signature whenever their count matches the parameter list, and only falls
+# back to the FunctionDescription when it does not (GetParameterNames in
+# duckdb_functions.cpp -- in v1.5.5 the description won outright). A ScalarFunction can name
+# its parameters, via a FunctionSignature of named FunctionParameters, and otlp_uri_parser
+# does. A TableFunction cannot -- it is constructed from a bare vector<LogicalType> and its
+# extractor emits col0, col1, ... unconditionally -- so every read_ot* reader and every
+# control-plane table function reports colN on 2.0 no matter what its description says. Their
+# descriptions keep real parameter_names anyway, both to document the argument and so they
+# take effect if upstream restores the override.
+query I
+SELECT function_name FROM duckdb_functions()
+WHERE function_name = 'otlp_uri_parser'
+  AND len(list_filter(parameters, lambda p: p SIMILAR TO 'col\d+')) > 0;
 ----
 
 # Each overload of a function set gets its own description, matched on its positional
