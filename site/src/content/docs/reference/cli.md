@@ -42,7 +42,7 @@ A flag always wins over its variable. Re-running the script upgrades in place: t
 brew install smithclay/tap/duckdb-otlp
 ```
 
-`brew services start duckdb-otlp` keeps it running in the background.
+`brew services start duckdb-otlp` runs `duckdb-otlp serve` with its defaults: OTLP/HTTP on `127.0.0.1:4318`, OTLP/gRPC on `127.0.0.1:4317`, and a local DuckLake under `$XDG_DATA_HOME/duckdb-otlp` (`~/.local/share/duckdb-otlp` when unset). The service can only run those defaults, because `duckdb-otlp` has no configuration file; to change the mode, ports, bind host, or token, run `duckdb-otlp serve` yourself instead.
 
 ### Release tarballs
 
