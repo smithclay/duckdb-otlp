@@ -93,7 +93,7 @@ void RegisterParquetExportViews(duckdb::Connection &con, const ServerConfig &con
 			// error to raise: the user's own query reports it with far better context.
 			continue;
 		}
-		if (probe->Cast<duckdb::MaterializedQueryResult>().RowCount() == 0) {
+		if (probe->RowCount() == 0) {
 			continue;
 		}
 		if (!schema_ready) {
@@ -240,7 +240,7 @@ bool TargetExists(duckdb::Connection &con, const string &path) {
 	if (!probe || probe->HasError()) {
 		return false;
 	}
-	return probe->Cast<duckdb::MaterializedQueryResult>().RowCount() > 0;
+	return probe->RowCount() > 0;
 }
 
 string ResolveOutputPath(duckdb::Connection &con, const CliOptions &options, const SignalDef &signal,
@@ -425,15 +425,9 @@ OutputFormat ResolveFormat(const CliOptions &options, OutputFormat fallback) {
 	return inferred != OutputFormat::UNSET ? inferred : fallback;
 }
 
-//! Print a result set as a human-readable box table -- the same BoxRenderer the duckdb CLI
-//! uses, so `duckdb-otlp query` and `duckdb` render a result set identically. Going through
-//! MaterializedQueryResult::ToString() instead emits DuckDB's debug form (a types row and a
-//! "[ Rows: N]" line ahead of the data), which is not a box and is not what --format box asks for.
-void PrintBox(duckdb::ClientContext &context, duckdb::MaterializedQueryResult &result) {
-	duckdb::BoxRenderer renderer;
-	// ToString rather than Print: BoxRenderer::Print goes through duckdb::Printer, which writes to
-	// stderr, and this is the command's result -- it belongs on stdout like every other format.
-	std::cout << renderer.ToString(context, result.names, result.Collection()) << '\n';
+//! Print a result set as a human-readable box table.
+void PrintBox(duckdb::QueryResult &result) {
+	std::cout << result.ToString();
 }
 
 } // namespace
@@ -631,8 +625,8 @@ int RunQuery(const CliOptions &options, const EnvSource &env) {
 		}
 		auto result = con->Query(final_sql);
 		CheckResult(*result, "query");
-		if (result->type == duckdb::QueryResultType::MATERIALIZED_RESULT) {
-			PrintBox(*con->context, result->Cast<duckdb::MaterializedQueryResult>());
+		if (result->GetResultType() == duckdb::QueryResultType::MATERIALIZED_RESULT) {
+			PrintBox(*result);
 		}
 		return 0;
 	}
