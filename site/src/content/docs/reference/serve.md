@@ -378,7 +378,16 @@ SELECT * FROM otlp_serve('otlp:0.0.0.0:4318', catalog := 'lake', attributes_as_v
 
   Reading the same data back from files (200k records) costs +16% in the scan and −49% on disk. `scripts/benchmark_catalog_ingest.py --attributes-as-variant` runs the daemon e2e benchmark with the flag on.
 
-- **Queries are slower today, not faster.** This is the part worth knowing before turning it on: on DuckDB 1.5, shredding happens on *write*, but a read reconstructs the whole `VARIANT` per row. Extracting a key from a `VARIANT` bag measured ~2.4 µs/row against ~0.25 µs/row for `json_extract_string` over the same data — and far worse when the bags repeat, because a JSON bag is a string column that DuckDB evaluates once per dictionary entry while a `VARIANT` bag is evaluated per row. Shredded execution straight from storage, and extraction pushdown into scans, are [DuckDB 2.0](https://duckdb.org/2026/08/17/duckdb-20-highlights) features. Until then, `attributes_as_variant` buys smaller files and typed values, not faster queries: prefer it where storage dominates, and use [attribute promotion](#attribute-promotion) for the keys you actually filter on.
+- **Query speed depends on your DuckDB version, and the difference is large.** On DuckDB 1.5, shredding happens on *write* but a read reconstructs the whole `VARIANT` per row, so extracting a key is several times slower than `json_extract_string` over the same data. DuckDB 2.0 adds shredded execution straight from storage and extraction pushdown into scans, which turns that around: the same query reads one shredded subcolumn instead of rebuilding a bag. Measured on the same Parquet files, 200k log records, by the same query on both engines:
+
+  | Query | 1.5: JSON → VARIANT | 2.0: JSON → VARIANT |
+  |---|---|---|
+  | String key, repeated resource bags | 3 ms → 445 ms | 28 ms → **3 ms** |
+  | String key, per-record bags | 45 ms → 256 ms | 52 ms → **3 ms** |
+  | `GROUP BY` an attribute | 34 ms → 483 ms | 30 ms → **4 ms** |
+  | Numeric key (`>= 500`) | 59 ms → 317 ms | 53 ms → 124 ms |
+
+  So on 1.5 the flag buys smaller files and typed values but costs query speed; on 2.0 it is a large win on string keys and `GROUP BY`, while numeric extraction stays somewhat behind. [Attribute promotion](#attribute-promotion) remains the answer for the handful of keys you filter on constantly, on either version.
 
 ## URI scheme
 
