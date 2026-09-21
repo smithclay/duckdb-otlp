@@ -84,7 +84,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=daemon-amd64
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v10.1.0
+        uses: astral-sh/setup-uv@v10.2.0
 
       - name: Run daemon configuration and transport tests
         run: |
