@@ -365,10 +365,20 @@ SELECT * FROM otlp_serve('otlp:0.0.0.0:4318', catalog := 'lake', attributes_as_v
   ```
 
 - **A DuckDB file catalog needs storage version 1.5.0.** `VARIANT` columns cannot be stored in a DuckDB database file written at an older storage version, and new files default to a backwards-compatible one — so a plain `--database`/`ATTACH` catalog fails at table creation with *"VARIANT columns are not supported in storage versions prior to v1.5.0"*. Create that database with `ATTACH 'x.duckdb' (STORAGE_VERSION 'v1.5.0')` (an `--init-sql` script is the place for it). DuckLake and `parquet_export_path` write Parquet and are unaffected.
-- **DuckLake and Parquet.** `VARIANT` columns are written to Parquet in the [Parquet variant encoding](https://duckdb.org/docs/stable/sql/data_types/variant) and shredded into typed subcolumns, which is where the storage and scan win comes from. DuckLake stores them natively from DuckLake 0.4; a catalog older than that cannot hold the column type.
+- **DuckLake and Parquet.** `VARIANT` columns are written to Parquet in the [Parquet variant encoding](https://duckdb.org/docs/stable/sql/data_types/variant) and shredded into typed subcolumns, which is where the storage win comes from. DuckLake stores them natively from DuckLake 0.4; a catalog older than that cannot hold the column type.
 - **Text output casts back to JSON.** `duckdb-otlp export --format json` (and `--to x.json`) casts `VARIANT` columns to `JSON` for you, so the file holds real JSON values. In your own SQL — `duckdb-otlp query --format json`, or any `COPY ... TO '*.json'` you write — cast the bag yourself with `CAST(resource_attributes AS JSON)`: DuckDB's json writer otherwise emits a `VARIANT` through its display form, as the string `"{'k': 1}"`. Parquet stores `VARIANT` natively and needs no cast.
 - **Attribute promotion still works.** With `VARIANT` bags the promoted column is filled by `CAST(variant_extract(bag, 'key') AS VARCHAR)` rather than `json_extract_string`, and stays `VARCHAR` either way.
-- **Cost.** The Rust backend has no VARIANT encoder: it emits each bag as JSON either way, and the extension converts that text to `VARIANT` once per chunk on the way in. So this trades a parse at ingest for typed, shreddable storage — measure it against your ingest rate before turning it on at volume (`scripts/benchmark_catalog_ingest.py --attributes-as-variant` runs the daemon e2e benchmark with it on).
+- **What it costs, measured.** The Rust backend has no VARIANT encoder: it emits each bag as JSON either way, and the extension converts that text to `VARIANT` once per chunk on the way in. On a 4-core machine, 80k log records with 8 resource + 5 record attributes each, ingested over OTLP/HTTP into `parquet` mode:
+
+  | | JSON text | VARIANT | change |
+  |---|---|---|---|
+  | POST throughput | 31.8k rec/s | 29.9k rec/s | −6% |
+  | Ingest incl. the final seal | 3.1 s | 4.4 s | +42% |
+  | Parquet on disk | 1.90 MB | 1.15 MB | **−40%** |
+
+  Reading the same data back from files (200k records) costs +16% in the scan and −49% on disk. `scripts/benchmark_catalog_ingest.py --attributes-as-variant` runs the daemon e2e benchmark with the flag on.
+
+- **Queries are slower today, not faster.** This is the part worth knowing before turning it on: on DuckDB 1.5, shredding happens on *write*, but a read reconstructs the whole `VARIANT` per row. Extracting a key from a `VARIANT` bag measured ~2.4 µs/row against ~0.25 µs/row for `json_extract_string` over the same data — and far worse when the bags repeat, because a JSON bag is a string column that DuckDB evaluates once per dictionary entry while a `VARIANT` bag is evaluated per row. Shredded execution straight from storage, and extraction pushdown into scans, are [DuckDB 2.0](https://duckdb.org/2026/08/17/duckdb-20-highlights) features. Until then, `attributes_as_variant` buys smaller files and typed values, not faster queries: prefer it where storage dominates, and use [attribute promotion](#attribute-promotion) for the keys you actually filter on.
 
 ## URI scheme
 
