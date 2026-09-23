@@ -356,6 +356,16 @@ int RunDoctor(const EnvSource &env, bool as_json) {
 int RunServe(const EnvSource &env) {
 	try {
 		auto config = duckdb_otlp_server::ServerConfig::FromEnv(env);
+		// The same rule OtlpServer's constructor enforces, checked here so `validate` reports it
+		// rather than exiting 0 over a call that would fail at startup. It lives on the serve path
+		// and not in FromEnv because FromEnv is shared with `export` and `query`, which read
+		// whatever shape they find and have no business failing over an ingest-shape setting.
+		if (config.PromotionRequested() && !config.parquet_export_path.empty()) {
+			throw duckdb::InvalidInputException(
+			    "Attribute promotion needs a catalog to add columns to, and mode \"%s\" writes Parquet files (%s). "
+			    "Drop --promote-resource-attributes/--promote-scope-attributes, or pick a catalog mode.",
+			    config.mode, config.parquet_export_path);
+		}
 
 		// `validate` runs this same path with DRY_RUN set, and announcing a server it will
 		// never start made its output read like a successful launch in CI logs.

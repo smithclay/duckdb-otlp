@@ -1545,6 +1545,11 @@ def run_scenario(
         dry_run=args.dry_run,
         quack_port=free_port(),
     )
+    if getattr(args, "attributes_as_variant", False):
+        # Per-scenario setup only *updates* docker_env, so seeding it here applies to every
+        # scenario. This is the knob for measuring what the JSON -> VARIANT conversion costs
+        # at ingest before turning it on at volume.
+        ctx.docker_env["DUCKDB_OTLP_ATTRIBUTES_AS_VARIANT"] = "1"
     started = False
     drop = False
     result: dict[str, Any] = {
@@ -1874,6 +1879,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--startup-timeout", type=float, default=300)
     parser.add_argument("--port", type=int, default=0, help="Host port. Defaults to an available local port.")
     parser.add_argument("--token", default=DEFAULT_TOKEN)
+    parser.add_argument(
+        "--attributes-as-variant",
+        action="store_true",
+        help="Run the daemon with DUCKDB_OTLP_ATTRIBUTES_AS_VARIANT=1 (attribute bags stored as VARIANT).",
+    )
     parser.add_argument("--output-dir", type=Path, default=Path("output/catalog-benchmarks"))
     parser.add_argument("--keep", action="store_true", help="Keep containers and cloud resources for debugging.")
     parser.add_argument(
@@ -1986,6 +1996,7 @@ def main() -> int:
         "random_seed": random_seed,
         "image": args.image,
         "platform": args.platform,
+        "attributes_as_variant": args.attributes_as_variant,
     }
     write_report(results, output_dir, source, run_config)
     eprint(f"wrote {output_dir / 'results.json'}")

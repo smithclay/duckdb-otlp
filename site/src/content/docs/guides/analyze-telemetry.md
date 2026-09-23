@@ -127,4 +127,14 @@ FROM read_otlp_logs('logs/*.jsonl')
 WHERE json_extract_string(resource_attributes, '$."deployment.environment"') = 'prod';
 ```
 
+Pass `attributes_as_variant := true` to read the same bags as `VARIANT`, where values keep their OTLP type and the key is looked up directly instead of through a JSON path:
+
+```sql
+SELECT time_unix_nano, service_name, body
+FROM read_otlp_logs('logs/*.jsonl', attributes_as_variant := true)
+WHERE CAST(variant_extract(resource_attributes, 'deployment.environment') AS VARCHAR) = 'prod';
+```
+
+See [Attributes as VARIANT](../../reference/schemas/#attributes-as-variant) for what it covers.
+
 For malformed files or unexpected parse errors, see the [Error Reference](../../reference/error-handling/).

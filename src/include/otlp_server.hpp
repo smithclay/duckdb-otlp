@@ -96,6 +96,10 @@ struct OtlpServerConfig {
 	//! Opt-in attribute promotion: extract these resource/scope attribute keys into first-class
 	//! columns at ingest. Off when both lists are empty. Catalog (non-Parquet-export) mode only.
 	OtlpPromoteConfig promote;
+	//! Opt-in: create and fill the attribute-bag columns as VARIANT instead of VARCHAR-holding-JSON
+	//! (see OtlpArrowSchemaOptions). It changes the destination table's column types, so an existing
+	//! table built the other way is rejected by CreateOrValidateTable rather than written into.
+	bool attributes_as_variant = false;
 };
 
 struct OtlpIngestResult {
@@ -500,6 +504,10 @@ private:
 	                     idx_t rows_committed, idx_t admitted_bytes_committed, bool success, const string &error);
 
 	void CreateOrValidateTable(Connection &con, OtlpSignalType signal_type, const string &table_name);
+	//! Parquet-export mode's half of CreateOrValidateTable: the dataset root has no table to
+	//! create, but it does have a shape the next seal has to match. Best effort -- a root with no
+	//! files yet is not a mismatch.
+	void ValidateParquetDatasetShape(Connection &con, const string &table_name);
 	void GetSignalColumns(OtlpSignalType signal_type, vector<LogicalType> &types, vector<string> &names);
 	//! Create a TEMP table with columns `names`/`types` on the writer connection and append
 	//! `collection` into it. Returns the appended batch count. Shared staging step for the seal

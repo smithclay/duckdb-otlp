@@ -276,12 +276,49 @@ string ResolveOutputPath(duckdb::Connection &con, const CliOptions &options, con
 	return path;
 }
 
+//! `select_sql`, with any VARIANT column cast to JSON when the output format is JSON/NDJSON.
+//!
+//! DuckDB's json writer renders a VARIANT through its display form, so a bag holding
+//! `{"k": 1, "s": "x"}` is written as the *string* `"{'k': 1, 's': x}"` -- not JSON, not
+//! round-trippable, and the value types the bag was stored for are gone. The VARIANT -> JSON cast
+//! is what turns it back into a JSON value, and the json writer emits a JSON-typed column raw.
+//! Parquet stores VARIANT natively and CSV is a text format either way, so neither is touched.
+//!
+//! Applied where a JSON COPY is *built* rather than at each place a select is assembled, so every
+//! json output -- export, its partitioned form, and whatever SQL `query` was handed -- is covered
+//! by one statement of the rule. `* REPLACE` keeps the relation's own column set and order, so a
+//! statement with nothing to cast is passed through untouched.
+string CastVariantsForJson(duckdb::Connection &con, const string &select_sql, OutputFormat format) {
+	if (format != OutputFormat::JSON && format != OutputFormat::NDJSON) {
+		return select_sql;
+	}
+	auto probe = con.Query(StringUtil::Format("SELECT * FROM (\n%s\n) LIMIT 0", select_sql));
+	if (!probe || probe->HasError()) {
+		// Not this function's error to report: the COPY built around this hits the same relation
+		// and says what is wrong with it.
+		return select_sql;
+	}
+	duckdb::vector<string> replacements;
+	for (idx_t i = 0; i < probe->names.size(); i++) {
+		if (probe->types[i].id() != duckdb::LogicalTypeId::VARIANT) {
+			continue;
+		}
+		auto column = QuoteIdentifier(probe->names[i]);
+		replacements.push_back(StringUtil::Format("CAST(%s AS JSON) AS %s", column, column));
+	}
+	if (replacements.empty()) {
+		return select_sql;
+	}
+	return StringUtil::Format("SELECT * REPLACE (%s) FROM (\n%s\n)", StringUtil::Join(replacements, ", "), select_sql);
+}
+
 //! `COPY (<select>) TO '<path>' (...)`, or a partitioned write when --partition-by day is set.
-string BuildCopyStatement(const CliOptions &options, const string &select_sql, const string &path,
-                          OutputFormat format) {
+string BuildCopyStatement(duckdb::Connection &con, const CliOptions &options, const string &select_sql,
+                          const string &path, OutputFormat format) {
 	auto copy_options = CopyFormatOptions(format);
 	if (options.partition_by.empty() || options.partition_by == "none") {
-		return StringUtil::Format("COPY (%s) TO %s %s;", select_sql, SqlQuote(path), copy_options);
+		return StringUtil::Format("COPY (%s) TO %s %s;", CastVariantsForJson(con, select_sql, format), SqlQuote(path),
+		                          copy_options);
 	}
 	throw InvalidInputException("Unsupported --partition-by \"%s\". Use day or none.", options.partition_by);
 }
@@ -289,12 +326,15 @@ string BuildCopyStatement(const CliOptions &options, const string &select_sql, c
 //! The partitioned variant: mirrors the <table>/year=/month=/day= layout the serve-side
 //! Parquet export writes, so a directory produced by `export` is laid out like one produced
 //! by live ingest and can be read back by the same glob.
-string BuildPartitionedCopy(const CliOptions &options, const SignalDef &signal, const string &source,
-                            const string &predicate, const string &root, OutputFormat format) {
+string BuildPartitionedCopy(duckdb::Connection &con, const CliOptions &options, const SignalDef &signal,
+                            const string &source, const string &predicate, const string &root, OutputFormat format) {
 	auto time_col = QuoteIdentifier(signal.time_column);
-	auto select_sql = StringUtil::Format("SELECT *, CAST(year(%s) AS INTEGER) AS year, CAST(month(%s) AS INTEGER) AS "
-	                                     "month, CAST(day(%s) AS INTEGER) AS day FROM %s%s",
-	                                     time_col, time_col, time_col, source, predicate);
+	auto select_sql = CastVariantsForJson(
+	    con,
+	    StringUtil::Format("SELECT *, CAST(year(%s) AS INTEGER) AS year, CAST(month(%s) AS INTEGER) AS "
+	                       "month, CAST(day(%s) AS INTEGER) AS day FROM %s%s",
+	                       time_col, time_col, time_col, source, predicate),
+	    format);
 	auto directory = duckdb::ParquetDatasetDirectory(root, signal.table);
 	auto copy_options = CopyFormatOptions(format);
 	// Splice PARTITION_BY into the format option list, which always ends in ')'.
@@ -309,7 +349,7 @@ string BuildPartitionedCopy(const CliOptions &options, const SignalDef &signal, 
 void WriteSignal(duckdb::Connection &con, const CliOptions &options, const SignalDef &signal, const string &select_sql,
                  OutputFormat format, bool multiple_outputs, const char *label) {
 	auto path = ResolveOutputPath(con, options, signal, format, multiple_outputs);
-	Execute(con, BuildCopyStatement(options, select_sql, path, format), string(label) + " " + signal.name);
+	Execute(con, BuildCopyStatement(con, options, select_sql, path, format), string(label) + " " + signal.name);
 	if (path != STDOUT_PATH) {
 		std::cerr << "Wrote " << path << '\n';
 	}
@@ -552,7 +592,7 @@ int RunExport(const CliOptions &options, const EnvSource &env) {
 			// ResolveOutputPath); this is the same guarantee for this one.
 			auto directory = duckdb::ParquetDatasetDirectory(options.output, signal.table);
 			CreateDirectory(directory);
-			Execute(*con, BuildPartitionedCopy(options, signal, source, predicate, options.output, format),
+			Execute(*con, BuildPartitionedCopy(*con, options, signal, source, predicate, options.output, format),
 			        "export " + string(signal.name));
 			std::cerr << "Wrote " << directory << "/\n";
 			continue;
@@ -667,14 +707,21 @@ int RunQuery(const CliOptions &options, const EnvSource &env) {
 	StringUtil::RTrim(trimmed, "; \t\n\r\f\v");
 	try {
 		// The closing parens go on their own line so a trailing line comment cannot eat them.
-		Execute(*con,
-		        StringUtil::Format("COPY (SELECT * FROM (\n%s\n)) TO %s %s;", trimmed, SqlQuote(path), copy_options),
-		        "query");
+		Execute(
+		    *con,
+		    StringUtil::Format("COPY (%s) TO %s %s;",
+		                       CastVariantsForJson(*con, StringUtil::Format("SELECT * FROM (\n%s\n)", trimmed), format),
+		                       SqlQuote(path), copy_options),
+		    "query");
 	} catch (const std::exception &) {
 		auto first_failure = std::current_exception();
 		try {
 			Execute(*con, StringUtil::Format("CREATE OR REPLACE TEMP VIEW %s AS %s", RESULT_VIEW, final_sql), "query");
-			Execute(*con, StringUtil::Format("COPY %s TO %s %s;", RESULT_VIEW, SqlQuote(path), copy_options), "query");
+			Execute(*con,
+			        StringUtil::Format("COPY (%s) TO %s %s;",
+			                           CastVariantsForJson(*con, "SELECT * FROM " + string(RESULT_VIEW), format),
+			                           SqlQuote(path), copy_options),
+			        "query");
 		} catch (const std::exception &) {
 			// The view spelling exists only to rescue a trailing ';'. When it fails too, the
 			// FIRST attempt's error is the informative one — the view attempt just says the

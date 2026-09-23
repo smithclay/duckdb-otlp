@@ -158,8 +158,19 @@ duckdb-otlp serve [flags]
 | `--quack PORT` | `DUCKDB_QUACK_PORT` | off (`0` disables) |
 | `--quack-token TOKEN` | `DUCKDB_QUACK_TOKEN` | *(none)* |
 | `--startup-timeout SECS` | `DUCKDB_OTLP_STARTUP_TIMEOUT` | `60` |
+| `--attributes-as-variant` | `DUCKDB_OTLP_ATTRIBUTES_AS_VARIANT` | `0` |
+| `--promote-resource-attributes KEYS` | `DUCKDB_OTLP_PROMOTE_RESOURCE_ATTRIBUTES` | *(none)* |
+| `--promote-scope-attributes KEYS` | `DUCKDB_OTLP_PROMOTE_SCOPE_ATTRIBUTES` | *(none)* |
 
 Passing a token as a flag makes it visible in the process list; prefer `DUCKDB_OTLP_TOKEN` outside of local use.
+
+The last three decide what ingest *writes*, so `serve` and `validate` take them and `doctor` — which opens no catalog — does not. `--attributes-as-variant` stores the attribute bags as [`VARIANT`](../serve/#attributes-as-variant) instead of JSON text; the two `--promote-*` flags take comma-separated attribute keys to lift into their own `resource_attr_<key>` / `scope_attr_<key>` columns ([Attribute promotion](../serve/#attribute-promotion), catalog modes only, `--promote-resource` and `--promote-scope` are accepted as shorter spellings). All three are fixed for the life of a server and are validated against the existing tables at startup:
+
+```sh
+duckdb-otlp serve --mode local-ducklake \
+  --attributes-as-variant \
+  --promote-resource-attributes 'deployment.environment,k8s.namespace.name'
+```
 
 ### Destinations (`--mode`)
 
@@ -418,6 +429,8 @@ duckdb-otlp export [flags]
 | `--until TS` | Rows strictly before this time |
 | `--where SQL` | Additional raw predicate |
 | `--partition-by day` | Write `<table>/year=/month=/day=`, matching the layout the serve-side Parquet export writes |
+
+With `--format json`/`--format ndjson`, columns stored as `VARIANT` (see [Attributes as VARIANT](../serve/#attributes-as-variant)) are cast to `JSON` so the output holds real JSON values rather than DuckDB's display form.
 | `--overwrite` | Replace existing output files |
 
 `export` also takes the catalog-selection flags `serve` uses, since it has to open the same catalog: `-m`/`--mode`, `--data-dir`, `--database`, `--catalog`, `--schema`, and `--init-sql`.

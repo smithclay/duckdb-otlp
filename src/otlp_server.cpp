@@ -262,6 +262,7 @@ void OtlpServer::GetSignalColumns(OtlpSignalType signal_type, vector<LogicalType
 	try {
 		OtlpArrowSchemaOptions options;
 		options.timestamp_ns_as_timestamp = true;
+		options.attributes_as_variant = config.attributes_as_variant;
 		GetArrowSchemaColumns(arrow_schema, types, names, options);
 	} catch (...) {
 		if (arrow_schema.release) {
@@ -420,6 +421,16 @@ OtlpServer::OtlpServer(ClientContext &context, const vector<OtlpListenerSpec> &l
 	if (!config.disable_auth) {
 		ValidateToken(config.token);
 	}
+	// Promotion adds first-class columns with ALTER TABLE, and a Parquet-export destination keeps
+	// no table to add them to. Enforced here, where both fields live, rather than at the otlp_serve
+	// bind: every construction path (the serve functions, the C++ seal harness) gets the same
+	// error, instead of one of them getting a server that reports promoted_columns_total = 0 and
+	// no reason why.
+	if (config.promote.Enabled() && !config.parquet_export_path.empty()) {
+		throw InvalidInputException(
+		    "Attribute promotion needs a catalog target: promotion adds columns with ALTER TABLE, and "
+		    "parquet_export_path keeps no table to alter. Drop the promotion settings, or target a catalog");
+	}
 	auto db = db_ptr.lock();
 	if (!db) {
 		throw InternalException("Database was closed");
@@ -434,11 +445,12 @@ OtlpServer::OtlpServer(ClientContext &context, const vector<OtlpListenerSpec> &l
 	// size + snapshot/file retention) before the sealer can fire. Best-effort; no-op for the
 	// default/non-DuckLake catalogs.
 	ConfigureCatalogMaintenanceOptions();
-	// Attribute promotion (opt-in, catalog mode only): add the operator-specified resource/scope
-	// attribute columns once, before the sealer fires. Parquet-export mode has no table to ALTER.
-	if (config.promote.Enabled() && config.parquet_export_path.empty()) {
-		promoter = make_uniq<OtlpColumnPromoter>(config.promote, config.catalog_name, config.schema_name,
-		                                         [this](const string &msg) { LogServerEvent(msg); });
+	// Attribute promotion (opt-in): add the operator-specified resource/scope attribute columns
+	// once, before the sealer fires. Catalog-only, which the constructor has already enforced.
+	if (config.promote.Enabled()) {
+		promoter =
+		    make_uniq<OtlpColumnPromoter>(config.promote, config.attributes_as_variant, config.catalog_name,
+		                                  config.schema_name, [this](const string &msg) { LogServerEvent(msg); });
 		promoter->Initialize(*writer_con);
 	}
 	StartSealer();
@@ -588,10 +600,70 @@ void OtlpServer::EnsureTargetTables() {
 	}
 }
 
+namespace {
+
+//! The `attributes_as_variant` half of a bag-column type mismatch. That flag is the one supported
+//! configuration change that moves one of these column types, so a mismatch on a bag almost always
+//! means the destination was written on the other setting -- which is worth saying, because the
+//! bare "expected X, got Y" sends the reader looking for a corrupt destination instead. `remedy`
+//! completes "... or <remedy>", and differs by destination: a table can be migrated in place, a
+//! Parquet dataset cannot.
+string AttributeBagFlagHint(bool configured_variant, const string &remedy) {
+	return StringUtil::Format(". The destination was created with attributes_as_variant := %s; either start this "
+	                          "server the same way, or %s",
+	                          configured_variant ? "false" : "true", remedy);
+}
+
+} // namespace
+
+void OtlpServer::ValidateParquetDatasetShape(Connection &con, const string &table_name) {
+	// Parquet mode keeps no destination table, but the dataset root is still a destination with a
+	// shape: a seal writes new files beside whatever is already under <root>/<table>, and every
+	// reader unions them by name. Flipping attributes_as_variant therefore lands VARIANT files next
+	// to VARCHAR ones, and union_by_name resolves that by reading the older files' JSON text as
+	// VARIANT *strings* -- so variant_extract returns NULL for every pre-flip row and nothing
+	// anywhere reports a problem. The bag columns are the only ones this server can move, and the
+	// flag gives all of them the same type, so one expected type answers the whole question; a
+	// dataset that drifted some other way is not this check's business.
+	auto glob = ParquetDatasetGlob(config.parquet_export_path, table_name);
+	if (glob.empty()) {
+		return;
+	}
+	// Deliberately NOT ParquetDatasetSelect: its union_by_name (which the readers need, and which
+	// is what makes a mixed dataset silently readable) reads every file's footer to build the union
+	// schema. Any one file answers "which encoding was this dataset written with", so this is one
+	// listing plus one footer per signal, paid once at startup. No files for this signal -- a first
+	// run, or a signal never sealed -- is not a mismatch, and neither is an unreadable root, which
+	// the first seal reports properly.
+	auto listing = con.Query("SELECT file FROM glob(" + SqlQuote(glob) + ") LIMIT 1");
+	if (!listing || listing->HasError() || listing->RowCount() == 0) {
+		return;
+	}
+	auto file = listing->GetValue(0, 0).ToString();
+	auto result = con.Query("SELECT * FROM read_parquet(" + SqlQuote(file) + ", hive_partitioning=false) LIMIT 0");
+	if (!result || result->HasError()) {
+		return;
+	}
+	const auto expected = config.attributes_as_variant ? LogicalType::VARIANT() : LogicalType::VARCHAR;
+	for (idx_t i = 0; i < result->names.size(); i++) {
+		if (!OtlpIsAttributeBagColumn(result->names[i]) || result->types[i] == expected) {
+			continue;
+		}
+		throw InvalidInputException(
+		    "Parquet dataset %s column %s has type %s, expected %s%s",
+		    ParquetDatasetDirectory(config.parquet_export_path, table_name), result->names[i],
+		    result->types[i].ToString(), expected.ToString(),
+		    AttributeBagFlagHint(config.attributes_as_variant,
+		                         "export to a parquet_export_path of its own: written files cannot be migrated in "
+		                         "place, and mixing both encodings under one root makes the older rows unreadable"));
+	}
+}
+
 void OtlpServer::CreateOrValidateTable(Connection &con, OtlpSignalType signal_type, const string &table_name) {
 	if (!config.parquet_export_path.empty()) {
 		// Parquet mode keeps no persistent destination table: the durable store is the
 		// Parquet dataset, and inspection is a lazily-created view over it (see SealOnce).
+		ValidateParquetDatasetShape(con, table_name);
 		return;
 	}
 	vector<LogicalType> expected_types;
@@ -631,8 +703,23 @@ void OtlpServer::CreateOrValidateTable(Connection &con, OtlpSignalType signal_ty
 			                            static_cast<uint64_t>(i), result->names[i], expected_names[i]);
 		}
 		if (result->types[i] != expected_types[i]) {
-			throw InvalidInputException("Target table %s column %s has type %s, expected %s", qualified,
-			                            expected_names[i], result->types[i].ToString(), expected_types[i].ToString());
+			// The USING clause in the migration is not decoration: a bare VARCHAR -> VARIANT cast
+			// would store each bag as a VARIANT *string* rather than parsing the JSON object, and
+			// VARIANT -> VARCHAR renders DuckDB's display form, not JSON.
+			string hint;
+			if (OtlpIsAttributeBagColumn(expected_names[i])) {
+				const auto column = QuoteIdentifier(expected_names[i]);
+				const auto cast = "CAST(" + column + " AS JSON)";
+				hint = AttributeBagFlagHint(
+				    config.attributes_as_variant,
+				    StringUtil::Format("migrate every signal table with ALTER TABLE %s ALTER COLUMN %s SET DATA "
+				                       "TYPE %s USING %s",
+				                       qualified, column, expected_types[i].ToString(),
+				                       config.attributes_as_variant ? cast + "::VARIANT" : cast));
+			}
+			throw InvalidInputException("Target table %s column %s has type %s, expected %s%s", qualified,
+			                            expected_names[i], result->types[i].ToString(), expected_types[i].ToString(),
+			                            hint);
 		}
 	}
 	// Recorded in EnsureTargetTables order (== signal_buffers order) so the seal can pick the

@@ -251,6 +251,12 @@ static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableF
 	};
 	parse_attr_keys("promote_resource_attributes", bind_data->config.promote.resource_keys);
 	parse_attr_keys("promote_scope_attributes", bind_data->config.promote.scope_keys);
+	// Attribute bags as VARIANT rather than VARCHAR-holding-JSON. This is part of the destination
+	// table's shape, so it is fixed for the life of the server (see CreateOrValidateTable).
+	auto variant_param = input.named_parameters.find("attributes_as_variant");
+	if (variant_param != input.named_parameters.end() && !variant_param->second.IsNull()) {
+		bind_data->config.attributes_as_variant = variant_param->second.GetValue<bool>();
+	}
 
 	names.emplace_back("listen_uri");
 	return_types.emplace_back(OtlpVarcharType());
@@ -348,6 +354,8 @@ static TableFunctionSet BuildServeFunctionSet(const string &name, table_function
 	// Attribute promotion: comma-separated resource / scope attribute keys to promote.
 	fun.named_parameters["promote_resource_attributes"] = OtlpVarcharType();
 	fun.named_parameters["promote_scope_attributes"] = OtlpVarcharType();
+	// Attribute bags as VARIANT instead of VARCHAR holding JSON text.
+	fun.named_parameters["attributes_as_variant"] = OtlpBooleanType();
 	set.AddFunction(fun);
 	// Several listeners (e.g. HTTP + gRPC) feeding one server: one buffer set, one sealer.
 	fun.arguments = {LogicalType::LIST(OtlpVarcharType())};
