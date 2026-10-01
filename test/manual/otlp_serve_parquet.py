@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.9"
 # dependencies = [
-#   "duckdb==1.5.5",
+#   "duckdb==1.5.6",
 # ]
 # ///
 """Manual coverage for `otlp_serve(parquet_export_path := ...)` (plain Parquet export).
