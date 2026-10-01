@@ -1,7 +1,7 @@
 """Real daemon transport/auth/shutdown tests, using disposable local Parquet storage.
 
 Run with uv run --with pytest --with grpcio --with opentelemetry-proto \
-    --with duckdb==1.5.5 pytest test/server
+    --with duckdb==1.5.6 pytest test/server
 """
 
 import contextlib

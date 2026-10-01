@@ -252,7 +252,7 @@ Prefer one canonical page per topic and link to it instead of duplicating exampl
 - All tests run against DuckDB with the extension statically linked (`make test`).
 - Test data in `test/data/` includes representative OTLP JSON and protobuf fixtures used by the table functions.
 - `test/pages/` holds the published-site tests (`python3 -m unittest discover -s test/pages`, run by `site-check.yml`): the extension-repository packaging, and `install.sh` driven against a fake release served over loopback.
-- The Docker benchmark harness (`scripts/benchmark_catalog_ingest.py`) starts the daemon image, sends OTLP/HTTP log batches, flushes via Quack, and queries row counts/server metrics over Quack. Because the image is distroless (no in-container shell/`duckdb`), it publishes the Quack port and runs Quack queries from a **host `duckdb` CLI** — so the harness now requires `duckdb` on `PATH` (the `docker-smoke` CI job installs the pinned v1.5.5 CLI). It intentionally avoids the old FIFO controller path.
+- The Docker benchmark harness (`scripts/benchmark_catalog_ingest.py`) starts the daemon image, sends OTLP/HTTP log batches, flushes via Quack, and queries row counts/server metrics over Quack. Because the image is distroless (no in-container shell/`duckdb`), it publishes the Quack port and runs Quack queries from a **host `duckdb` CLI** — so the harness now requires `duckdb` on `PATH` (the `docker-smoke` CI job installs the pinned v1.5.6 CLI). It intentionally avoids the old FIFO controller path.
 
 ## Known Limitations
 

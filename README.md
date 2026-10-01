@@ -2,7 +2,7 @@
 
 [![Build](https://github.com/smithclay/duckdb-otlp/actions/workflows/MainDistributionPipeline.yml/badge.svg)](https://github.com/smithclay/duckdb-otlp/actions/workflows/MainDistributionPipeline.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![DuckDB](https://img.shields.io/badge/DuckDB-%E2%89%A5%201.5.5-FFF000?logo=duckdb&logoColor=black)](https://duckdb.org)
+[![DuckDB](https://img.shields.io/badge/DuckDB-%E2%89%A5%201.5.6-FFF000?logo=duckdb&logoColor=black)](https://duckdb.org)
 [![Docs](https://img.shields.io/badge/docs-online-4c9aff)](https://smithclay.github.io/duckdb-otlp/)
 
 **Your telemetry, in your own storage, answerable in SQL.**
@@ -15,7 +15,7 @@ It ships two ways. As a **DuckDB extension**, it adds `read_otlp_*` / `read_otap
 
 ## Quickstart: Read OpenTelemetry data
 
-Install and load the extension in `duckdb` v1.5.5 or higher:
+Install and load the extension in `duckdb` v1.5.6 or higher:
 
 ```sql
 -- Run commands inside the duckdb shell, install via `curl https://install.duckdb.org | sh` or `brew install duckdb`

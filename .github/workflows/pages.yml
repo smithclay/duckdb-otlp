@@ -34,16 +34,16 @@ concurrency:
 
 env:
   EXT_NAME: otlp
-  DUCKDB_VERSION: v1.5.5
+  DUCKDB_VERSION: v1.5.6
 
 jobs:
   extension-build:
     name: build extension binaries
     if: ${{ github.event_name == 'release' || inputs.publish_extension }}
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.5
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.6
     with:
-      duckdb_version: v1.5.5
-      ci_tools_version: v1.5.5
+      duckdb_version: v1.5.6
+      ci_tools_version: v1.5.6
       extension_name: otlp
       extra_toolchains: rust
       # Kept in sync with MainDistributionPipeline.yml: a platform the release pipeline

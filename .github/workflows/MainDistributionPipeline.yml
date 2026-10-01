@@ -33,15 +33,15 @@ env:
   # DUCKDB_VERSION ARG in docker/duckdb-otlp-server/Dockerfile: the container reuses it to
   # match its pre-primed extension cache, and a standalone binary needs it so its runtime
   # INSTALL of ducklake/httpfs/... resolves to a published build.
-  DAEMON_DUCKDB_VERSION: v1.5.5
+  DAEMON_DUCKDB_VERSION: v1.5.6
 
 jobs:
   duckdb-stable-build:
     name: Build extension binaries
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.5
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.6
     with:
-      duckdb_version: v1.5.5
-      ci_tools_version: v1.5.5
+      duckdb_version: v1.5.6
+      ci_tools_version: v1.5.6
       extension_name: otlp
       extra_toolchains: rust
       # windows_amd64 (MSVC) is back on: DuckDB v1.5.5's bundled fmt no longer references
@@ -90,7 +90,7 @@ jobs:
         run: |
           chmod +x daemon-bin/duckdb-otlp-server
           DUCKDB_OTLP_SERVER_BIN="$PWD/daemon-bin/duckdb-otlp-server" \
-            uv run --with pytest --with grpcio --with opentelemetry-proto --with duckdb==1.5.5 pytest test/server -q
+            uv run --with pytest --with grpcio --with opentelemetry-proto --with duckdb==1.5.6 pytest test/server -q
 
       - name: Prepare Docker build context
         shell: bash
@@ -114,7 +114,7 @@ jobs:
       - name: Install duckdb CLI (host, for Quack queries)
         run: |
           set -euo pipefail
-          curl -fsSL "https://github.com/duckdb/duckdb/releases/download/v1.5.5/duckdb_cli-linux-amd64.zip" -o /tmp/duckdb.zip
+          curl -fsSL "https://github.com/duckdb/duckdb/releases/download/v1.5.6/duckdb_cli-linux-amd64.zip" -o /tmp/duckdb.zip
           sudo unzip -o /tmp/duckdb.zip -d /usr/local/bin
           duckdb --version
 
@@ -213,7 +213,7 @@ jobs:
       - name: Install duckdb CLI (host, for Quack queries)
         run: |
           set -euo pipefail
-          curl -fsSL "https://github.com/duckdb/duckdb/releases/download/v1.5.5/duckdb_cli-linux-amd64.zip" -o /tmp/duckdb.zip
+          curl -fsSL "https://github.com/duckdb/duckdb/releases/download/v1.5.6/duckdb_cli-linux-amd64.zip" -o /tmp/duckdb.zip
           sudo unzip -o /tmp/duckdb.zip -d /usr/local/bin
           duckdb --version
 
@@ -358,10 +358,10 @@ jobs:
 
   code-quality-check:
     name: Code Quality Check
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v1.5.5
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v1.5.6
     with:
-      duckdb_version: v1.5.5
-      ci_tools_version: v1.5.5
+      duckdb_version: v1.5.6
+      ci_tools_version: v1.5.6
       extension_name: otlp
 
   # Attach the daemon binaries to the GitHub release for a v* tag. Nothing is compiled here:
