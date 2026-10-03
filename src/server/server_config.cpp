@@ -3,6 +3,7 @@
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/main/extension/linked_extension_registry.hpp"
 #include "env_source.hpp"
 #include "otlp_sql_util.hpp"
 #include "otlp_uri.hpp"
@@ -479,9 +480,24 @@ CREATE OR REPLACE SECRET %s (
 	return secret_sql;
 }
 
-//! Shorthands for declaring a mode's extension list.
+//! Whether an extension is compiled into this binary (`DUCKDB_OTLP_BUILT_IN_EXTENSIONS` at build
+//! time). Asked of the binary itself rather than of a build flag, so the answer cannot drift
+//! from what was actually linked.
+bool IsLinkedIntoBinary(const string &name) {
+	for (auto &linked : duckdb::LinkedExtensionRegistry::Get()) {
+		if (StringUtil::CIEquals(linked.name, name)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+//! Shorthands for declaring a mode's extension list. A core extension linked into the binary
+//! is built in: DuckDB loads every linked extension when the database opens, and INSTALLing it
+//! would fetch a published build that is not the one running -- for a DuckDB development build,
+//! one with a different ABI, if it exists at all.
 ModeExtension Core(const char *name) {
-	return {name, ExtensionSource::CORE};
+	return {name, IsLinkedIntoBinary(name) ? ExtensionSource::BUILT_IN : ExtensionSource::CORE};
 }
 
 ModeExtension Community(const char *name) {
@@ -493,8 +509,11 @@ ModeExtension Community(const char *name) {
 //! LOAD, which is why the banner used to omit it even when Quack was running.
 //!
 //! CORE, not COMMUNITY: `INSTALL quack FROM community` 404s, while a bare `INSTALL quack`
-//! resolves from the core repository (which is also how the image primes it).
-const ModeExtension QUACK_EXTENSION = {"quack", ExtensionSource::CORE};
+//! resolves from the core repository. A function, not a constant: whether it is built in is read
+//! from the linked-extension registry, which is filled during static initialization.
+ModeExtension QuackExtension() {
+	return Core("quack");
+}
 
 //! The otlp extension, statically embedded in the daemon. Declared so the banner reports it,
 //! never emitted as SQL -- INSTALLing it would reach for a published build that is not the one
@@ -1331,7 +1350,7 @@ FROM %s(
 std::vector<ModeExtension> ServerConfig::AllExtensions() const {
 	auto extensions = mode_extensions;
 	if (quack_enabled) {
-		extensions.push_back(QUACK_EXTENSION);
+		extensions.push_back(QuackExtension());
 	}
 	return extensions;
 }
@@ -1340,7 +1359,7 @@ string ServerConfig::StartQuackSql() const {
 	if (!quack_enabled) {
 		return "";
 	}
-	return ExtensionSetupSql({QUACK_EXTENSION}) + StringUtil::Format(R"SQL(
+	return ExtensionSetupSql({QuackExtension()}) + StringUtil::Format(R"SQL(
 SELECT listen_uri
 FROM quack_serve(
     %s,
