@@ -12,5 +12,8 @@ if(EMSCRIPTEN)
 else()
   duckdb_extension_load(otlp SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR} LOAD_TESTS)
 endif()
+# DuckDB 2.0 links an extension into its own binaries (the shell, unittest) only
+# when a config asks for it; loading it no longer implies linking it.
+duckdb_extension_statically_link(otlp)
 
 # Any extra extensions that should be built e.g.: duckdb_extension_load(json)
