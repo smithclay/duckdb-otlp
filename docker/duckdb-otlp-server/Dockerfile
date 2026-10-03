@@ -1,8 +1,9 @@
 # Single source of truth for the duckdb-otlp server image. Stages:
 #   builder         - compiles the static daemon from source (Rust + DuckDB).
 #   daemon-export   - exports just the binary (CI uploads this as an artifact).
-#   deps            - throwaway: primes the DuckDB extension cache and stages the one
-#                     shared lib distroless lacks (libz). The DuckDB CLI lives ONLY here.
+#   deps            - throwaway: primes the DuckDB extension cache. The DuckDB CLI lives
+#                     ONLY here.
+#   zlib            - throwaway: stages Wolfi's libz, the one shared lib the base lacks.
 #   runtime-base    - distroless final minus the daemon binary (extensions, libz, health).
 #   runtime-source  - runtime-base + binary from `builder` (local build-from-source).
 #   runtime-prebuilt- runtime-base + binary from `docker-bin/` (CI, no recompile).
@@ -11,10 +12,12 @@
 # per arch, then packages with `--target runtime-prebuilt`, so packaging never compiles
 # DuckDB (runtime-prebuilt does not depend on `builder`).
 #
-# The final image is gcr.io/distroless/cc-debian12 (nonroot): glibc + NSS (DNS) + libstdc++
-# + openssl + CA certs, ~48MB, no shell, no package manager, no bundled DuckDB CLI. The
-# daemon and the runtime extensions link only glibc/libstdc++/libgcc/libz, so this is
-# all they need. See AGENTS.md.
+# The final image is cgr.dev/chainguard/glibc-dynamic (Wolfi, uid 65532 nonroot): glibc +
+# libstdc++ + libgcc + CA certs, no shell, no package manager, no bundled DuckDB CLI. The
+# daemon and the runtime extensions link only glibc/libstdc++/libgcc/libz (the extensions
+# carry their own TLS statically), so this is all they need. It replaced
+# gcr.io/distroless/cc-debian12, whose CVE reports were dominated by Debian 12's libssl3 —
+# a library nothing in this image loads. See AGENTS.md.
 
 FROM rust:1-bookworm AS builder
 
@@ -75,15 +78,8 @@ RUN set -eux; mkdir -p "${HOME}"; \
     /tmp/duckdb-cli/duckdb -c "INSTALL gcs FROM community; LOAD gcs;"; \
     chown -R "${RUN_UID}:${RUN_GID}" "${HOME}"
 
-# Stage libz from the apt-installed zlib1g (the only shared lib the daemon needs that
-# distroless/cc lacks) and a runtime-user-owned empty data dir (so fresh named volumes
-# inherit good ownership).
-RUN set -eux; \
-    mkdir -p /staging/lib; \
-    libz="$(find /usr/lib /lib -name 'libz.so.1' 2>/dev/null | head -n1)"; \
-    test -n "${libz}"; \
-    cp -L "${libz}" /staging/lib/libz.so.1; \
-    install -d -o "${RUN_UID}" -g "${RUN_GID}" /staging/data
+# A runtime-user-owned empty data dir (so fresh named volumes inherit good ownership).
+RUN install -d -o "${RUN_UID}" -g "${RUN_GID}" /staging/data
 
 # Compatibility alias: the binary is `duckdb-otlp` (it is a general CLI now), but the
 # historical entry point was `duckdb-otlp-server`. Distroless has no shell, so the symlink
@@ -91,19 +87,24 @@ RUN set -eux; \
 RUN mkdir -p /staging/bin && ln -s duckdb-otlp /staging/bin/duckdb-otlp-server
 
 # The GCS extension's bundled libcurl looks for a Red Hat-style CA path during
-# ADC token refresh. Link it to the final Debian image's maintained trust store.
+# ADC token refresh. Link it to the runtime base's maintained trust store.
 # Copy the directory below to preserve the symlink rather than dereferencing it.
 RUN mkdir -p /staging/certs \
     && ln -s /etc/ssl/certs/ca-certificates.crt /staging/certs/ca-bundle.crt
 
-FROM gcr.io/distroless/cc-debian12:nonroot AS runtime-base
+# libz is the one shared lib the daemon links that glibc-dynamic lacks. Take it from Wolfi,
+# the same distribution as the runtime base, so it tracks the same security updates.
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:9c2092b053779e14c82fb50f77b37bcc38b7d2c83972352d5813280f9d035b03 AS zlib
+RUN apk add --no-cache zlib && mkdir -p /staging && cp -L /usr/lib/libz.so.1 /staging/libz.so.1
+
+# Pinned by digest: Chainguard's free tier only publishes `latest`, and Renovate bumps the
+# digest so the image picks up rebuilt (CVE-fixed) bases without floating silently.
+FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:82edc253a57efee78d0fb504e11a93b7c74687b1b736110ad3a2a4f3edf632ab AS runtime-base
 
 COPY --from=deps /staging/certs/ /etc/pki/tls/certs/
 
-# The one shared lib distroless/cc lacks. LD_LIBRARY_PATH makes it resolvable regardless of
-# the multiarch triplet layout.
-COPY --from=deps /staging/lib/libz.so.1 /opt/duckdb-otlp/lib/libz.so.1
-ENV LD_LIBRARY_PATH=/opt/duckdb-otlp/lib
+# Wolfi's library directory is /usr/lib, already on the loader's default search path.
+COPY --from=zlib /staging/libz.so.1 /usr/lib/libz.so.1
 # Pre-primed extension cache and a writable data dir, both owned by the nonroot user.
 COPY --from=deps --chown=65532:65532 /duckdb-home /duckdb-home
 COPY --from=deps --chown=65532:65532 /staging/data /data
@@ -128,7 +129,7 @@ LABEL org.opencontainers.image.title="duckdb-otlp server" \
 
 EXPOSE 4317 4318 9494
 VOLUME ["/data"]
-# The daemon health-checks itself (distroless has no shell/curl): the `doctor`
+# The daemon health-checks itself (the base has no shell/curl): the `doctor`
 # subcommand probes every enabled listener: HTTP /readyz, gRPC TCP connect, and
 # Quack when enabled, printing a line per check that Docker keeps in the container's
 # health log. `healthcheck` remains an accepted spelling for existing probes.
