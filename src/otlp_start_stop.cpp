@@ -323,37 +323,42 @@ static void OtlpServe(ClientContext &context, TableFunctionInput &data_p, DataCh
 }
 
 static TableFunctionSet BuildServeFunctionSet(const string &name, table_function_bind_t bind) {
+	// DuckDB 2.0 declares optional named parameters as a typed "**kwargs" schema: an option the call
+	// leaves out is not passed, so the bind keeps its own defaults exactly as with named_parameters.
+	auto make_overload = [&](const vector<LogicalType> &arguments) {
+		auto fun = TableFunction(Identifier(name), arguments, OtlpServe, bind);
+		fun.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
+			options.Add("token", OtlpVarcharType())
+			    // Opt-in anonymous ingest (no bearer/x-api-key check). Off by default.
+			    .Add("disable_auth", OtlpBooleanType())
+			    .Add("catalog", OtlpVarcharType())
+			    .Add("schema", OtlpVarcharType())
+			    .Add("parquet_export_path", OtlpVarcharType())
+			    .Add("create_tables", OtlpBooleanType())
+			    .Add("allow_other_hostname", OtlpBooleanType())
+			    // otlp_serve: 'http' (default) or 'grpc' (OTLP/gRPC unary), as one value or a list parallel
+			    // to a list of listen URIs. otap_serve is gRPC-only (OTAP/Arrow): only 'grpc' or omission.
+			    .Add("transport", LogicalType::ANY)
+			    .Add("max_body_bytes", OtlpUBigIntType())
+			    // http_threads sizes the HTTP worker pool; ignored by the gRPC transport (the
+			    // tonic server sizes its own runtime), but accepted on both for a uniform surface.
+			    .Add("http_threads", OtlpUBigIntType())
+			    .Add("max_buffered_bytes", OtlpUBigIntType())
+			    .Add("seal_target_bytes", OtlpUBigIntType())
+			    .Add("seal_max_age_ms", OtlpBigIntType())
+			    .Add("target_file_size", OtlpUBigIntType())
+			    .Add("maintenance_retention_ms", OtlpBigIntType())
+			    // Attribute promotion: comma-separated resource / scope attribute keys to promote.
+			    .Add("promote_resource_attributes", OtlpVarcharType())
+			    .Add("promote_scope_attributes", OtlpVarcharType());
+		});
+		return fun;
+	};
 	TableFunctionSet set {Identifier(name)};
-	auto fun = TableFunction(Identifier(name), {OtlpVarcharType()}, OtlpServe, bind);
-	fun.named_parameters["token"] = OtlpVarcharType();
-	// Opt-in anonymous ingest (no bearer/x-api-key check). Off by default.
-	fun.named_parameters["disable_auth"] = OtlpBooleanType();
-	fun.named_parameters["catalog"] = OtlpVarcharType();
-	fun.named_parameters["schema"] = OtlpVarcharType();
-	fun.named_parameters["parquet_export_path"] = OtlpVarcharType();
-	fun.named_parameters["create_tables"] = OtlpBooleanType();
-	fun.named_parameters["allow_other_hostname"] = OtlpBooleanType();
-	// otlp_serve: 'http' (default) or 'grpc' (OTLP/gRPC unary), as one value or a list parallel
-	// to a list of listen URIs. otap_serve is gRPC-only (OTAP/Arrow): only 'grpc' or omission.
-	fun.named_parameters["transport"] = LogicalType::ANY;
-	fun.named_parameters["max_body_bytes"] = OtlpUBigIntType();
-	// http_threads sizes the HTTP worker pool; ignored by the gRPC transport (the
-	// tonic server sizes its own runtime), but accepted on both for a uniform surface.
-	fun.named_parameters["http_threads"] = OtlpUBigIntType();
-	fun.named_parameters["max_buffered_bytes"] = OtlpUBigIntType();
-	fun.named_parameters["seal_target_bytes"] = OtlpUBigIntType();
-	fun.named_parameters["seal_max_age_ms"] = OtlpBigIntType();
-	fun.named_parameters["target_file_size"] = OtlpUBigIntType();
-	fun.named_parameters["maintenance_retention_ms"] = OtlpBigIntType();
-	// Attribute promotion: comma-separated resource / scope attribute keys to promote.
-	fun.named_parameters["promote_resource_attributes"] = OtlpVarcharType();
-	fun.named_parameters["promote_scope_attributes"] = OtlpVarcharType();
-	set.AddFunction(fun);
+	set.AddFunction(make_overload({OtlpVarcharType()}));
 	// Several listeners (e.g. HTTP + gRPC) feeding one server: one buffer set, one sealer.
-	fun.arguments = {LogicalType::LIST(OtlpVarcharType())};
-	set.AddFunction(fun);
-	fun.arguments.clear();
-	set.AddFunction(fun);
+	set.AddFunction(make_overload({LogicalType::LIST(OtlpVarcharType())}));
+	set.AddFunction(make_overload({}));
 	return set;
 }
 
