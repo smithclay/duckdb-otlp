@@ -86,9 +86,34 @@ wasm_relink: wasm_link
 
 .PHONY: server-release docker-image docker-image-local docker-image-multiarch
 
-server-release: ${EXTENSION_CONFIG_STEP}
+# Runtime extensions the daemon links instead of INSTALLing at startup (see
+# extension_config.cmake). ducklake is the default mode's catalog. quack is not
+# here: on DuckDB 2.0 it draws its tokens from the writable crypto module httpfs
+# (OpenSSL) provides, so building it in means building httpfs in too.
+DAEMON_BUILT_IN_EXTENSIONS ?= ducklake
+
+# ducklake needs CRoaring. The extension builds take it from vcpkg, but the daemon
+# builds (Docker, macOS CI) run without vcpkg, so build it into a private prefix,
+# for the same architecture as the daemon. v4.7.2 rather than vcpkg's 4.4.2: the
+# 4.4.2 package config declares cmake_minimum_required(2.8), which CMake 4 rejects.
+CROARING_VERSION := v4.7.2
+CROARING_PREFIX := $(PROJ_DIR)build/deps/croaring
+CROARING_ARCH_FLAG := $(if $(OSX_BUILD_ARCH),-DCMAKE_OSX_ARCHITECTURES=$(OSX_BUILD_ARCH),)
+
+$(CROARING_PREFIX)/.built-$(CROARING_VERSION):
+	rm -rf build/deps/croaring-src $(CROARING_PREFIX)
+	git clone --quiet --depth 1 --branch $(CROARING_VERSION) https://github.com/RoaringBitmap/CRoaring build/deps/croaring-src
+	cmake $(GENERATOR) -S build/deps/croaring-src -B build/deps/croaring-build -DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_INSTALL_PREFIX=$(CROARING_PREFIX) -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_SHARED_LIBS=OFF \
+		-DENABLE_ROARING_TESTS=OFF -DROARING_USE_CPM=OFF $(CROARING_ARCH_FLAG)
+	cmake --build build/deps/croaring-build --target install
+	touch $@
+
+server-release: ${EXTENSION_CONFIG_STEP} $(CROARING_PREFIX)/.built-$(CROARING_VERSION)
 	mkdir -p build/release
-	cmake $(GENERATOR) $(BUILD_FLAGS) $(EXT_RELEASE_FLAGS) $(VCPKG_MANIFEST_FLAGS) -DCMAKE_BUILD_TYPE=Release -S $(DUCKDB_SRCDIR) -B build/release
+	cmake $(GENERATOR) $(BUILD_FLAGS) $(EXT_RELEASE_FLAGS) $(VCPKG_MANIFEST_FLAGS) -DCMAKE_BUILD_TYPE=Release \
+		-DDUCKDB_OTLP_BUILT_IN_EXTENSIONS="$(DAEMON_BUILT_IN_EXTENSIONS)" -DCMAKE_PREFIX_PATH=$(CROARING_PREFIX) \
+		-S $(DUCKDB_SRCDIR) -B build/release
 	cmake --build build/release --config Release --target duckdb_otlp_server
 
 docker-image: docker-image-local

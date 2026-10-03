@@ -181,7 +181,8 @@ def test_init_sql_adds_a_parquet_destination_next_to_the_ducklake_catalog(tmp_pa
     )
     env = {
         'PATH': os.environ.get('PATH', ''),
-        # Unlike the parquet mode, this one INSTALLs ducklake, which needs the extension cache.
+        # Unlike the parquet mode, this one INSTALLs ducklake (unless the daemon has it built
+        # in), which needs the extension cache.
         'HOME': os.environ.get('HOME', ''),
         'DUCKDB_MODE': 'local-ducklake',
         'DUCKDB_OTLP_DATA_DIR': str(lake_dir),
@@ -215,11 +216,15 @@ def test_init_sql_adds_a_parquet_destination_next_to_the_ducklake_catalog(tmp_pa
             ('transport-2',)
         ]
 
-    # Destination 2: the mode's DuckLake catalog, read back through DuckLake itself.
-    with duckdb.connect() as connection:
-        connection.execute('INSTALL ducklake; LOAD ducklake')
-        connection.execute(
-            f"ATTACH 'ducklake:{lake_dir / 'ducklake' / 'catalog.duckdb'}' AS lake "
-            f"(DATA_PATH '{lake_dir / 'ducklake' / 'storage'}', READ_ONLY)"
-        )
-        assert connection.execute('SELECT name FROM lake.otlp_traces').fetchall() == [('transport-1',)]
+    # Destination 2: the mode's DuckLake catalog, read back through DuckLake by the binary under
+    # test. Not through this interpreter's duckdb: the catalog is a DuckDB database written in the
+    # daemon's storage format, which a host DuckDB older than the daemon's cannot open.
+    query = subprocess.run(
+        [str(SERVER_BIN), 'query', 'SELECT name FROM otlp_traces', '--format', 'csv'],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert query.returncode == 0, query.stderr
+    assert query.stdout.split() == ['name', 'transport-1'], query.stdout
