@@ -438,7 +438,8 @@ int RunServe(const EnvSource &env) {
 		}
 
 		duckdb::DBConfig db_config;
-		db_config.SetOptionByName("allow_unsigned_extensions", duckdb::Value::BOOLEAN(config.NeedsUnsignedExtensions()));
+		db_config.SetOptionByName("allow_unsigned_extensions",
+		                          duckdb::Value::BOOLEAN(config.NeedsUnsignedExtensions()));
 		duckdb::DuckDB db(config.database, &db_config);
 		db.LoadStaticExtension<duckdb::OtlpExtension>();
 		duckdb::Connection con(db);
