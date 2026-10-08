@@ -421,6 +421,9 @@ int RunServe(const EnvSource &env) {
 					break;
 				case duckdb_otlp_server::ExtensionSource::CORE:
 					break;
+				case duckdb_otlp_server::ExtensionSource::LOCAL_FILE:
+					std::cout << " (local file " << extension.path << ")";
+					break;
 				}
 				std::cout << "\n";
 			}
@@ -434,7 +437,9 @@ int RunServe(const EnvSource &env) {
 			return 0;
 		}
 
-		duckdb::DuckDB db(config.database);
+		duckdb::DBConfig db_config;
+		db_config.SetOptionByName("allow_unsigned_extensions", duckdb::Value::BOOLEAN(config.NeedsUnsignedExtensions()));
+		duckdb::DuckDB db(config.database, &db_config);
 		db.LoadStaticExtension<duckdb::OtlpExtension>();
 		duckdb::Connection con(db);
 		// Bind the tokens as session variables rather than interpolating them into the

@@ -140,6 +140,7 @@ duckdb::unique_ptr<duckdb::DuckDB> OpenConfiguredDatabase(const ServerConfig &co
 	if (read_only) {
 		db_config.options.access_mode = duckdb::AccessMode::READ_ONLY;
 	}
+	db_config.SetOptionByName("allow_unsigned_extensions", duckdb::Value::BOOLEAN(config.NeedsUnsignedExtensions()));
 	auto db = duckdb::make_uniq<duckdb::DuckDB>(config.database, &db_config);
 	db->LoadStaticExtension<duckdb::OtlpExtension>();
 	auto con = duckdb::make_uniq<duckdb::Connection>(*db);

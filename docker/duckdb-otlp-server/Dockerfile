@@ -78,6 +78,25 @@ RUN set -eux; mkdir -p "${HOME}"; \
     /tmp/duckdb-cli/duckdb -c "INSTALL gcs FROM community; LOAD gcs;"; \
     chown -R "${RUN_UID}:${RUN_GID}" "${HOME}"
 
+# gcp-ducklake loads a fixed gcs build instead of the community one, which prints a failed
+# upload finalize rather than raising it, so DuckLake commits data files that were never
+# written. The fixed build is unsigned; DUCKDB_OTLP_GCS_EXTENSION_PATH (set in runtime-base)
+# makes the daemon LOAD it by path with allow_unsigned_extensions. Pinned by checksum.
+ARG GCS_EXTENSION_URL=https://github.com/smithclay/duckdb-gcs/releases/download/v0.0.8-finalize.1
+ARG GCS_EXTENSION_SHA256_AMD64=e18ba20e47aebc658bff728e5d65caf79f766835cf5e8491b11baa5aede137f7
+ARG GCS_EXTENSION_SHA256_ARM64=557080ec2d39a716baa552d44c5209ec0afd1eb5a2a8d92cb2520dedf7de87ad
+RUN set -eux; \
+    case "${TARGETARCH:-amd64}" in \
+        amd64) arch="amd64"; sha="${GCS_EXTENSION_SHA256_AMD64}" ;; \
+        arm64) arch="arm64"; sha="${GCS_EXTENSION_SHA256_ARM64}" ;; \
+        *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    mkdir -p /staging/extensions; \
+    curl -fsSL "${GCS_EXTENSION_URL}/gcs.${DUCKDB_VERSION}.linux_${arch}.duckdb_extension" \
+        -o /staging/extensions/gcs.duckdb_extension; \
+    echo "${sha}  /staging/extensions/gcs.duckdb_extension" | sha256sum -c -; \
+    /tmp/duckdb-cli/duckdb -unsigned -c "LOAD '/staging/extensions/gcs.duckdb_extension';"
+
 # A runtime-user-owned empty data dir (so fresh named volumes inherit good ownership).
 RUN install -d -o "${RUN_UID}" -g "${RUN_GID}" /staging/data
 
@@ -108,7 +127,9 @@ COPY --from=zlib /staging/libz.so.1 /usr/lib/libz.so.1
 # Pre-primed extension cache and a writable data dir, both owned by the nonroot user.
 COPY --from=deps --chown=65532:65532 /duckdb-home /duckdb-home
 COPY --from=deps --chown=65532:65532 /staging/data /data
-ENV HOME=/duckdb-home
+COPY --from=deps /staging/extensions/gcs.duckdb_extension /usr/local/lib/duckdb-otlp/gcs.duckdb_extension
+ENV HOME=/duckdb-home \
+    DUCKDB_OTLP_GCS_EXTENSION_PATH=/usr/local/lib/duckdb-otlp/gcs.duckdb_extension
 # Copy the directory, not the file: a direct COPY of a symlink dereferences it (the same
 # reason the CA bundle above is copied as a directory), and this link's target only lands in
 # the leaf stage below.
