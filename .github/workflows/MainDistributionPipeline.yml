@@ -118,19 +118,17 @@ jobs:
           tags: duckdb-otlp:smoke
           cache-from: type=gha,scope=docker-runtime
 
-      - name: Install duckdb CLI (host, for Quack queries)
-        run: |
-          set -euo pipefail
-          curl -fsSL "https://github.com/duckdb/duckdb/releases/download/v1.5.6/duckdb_cli-linux-amd64.zip" -o /tmp/duckdb.zip
-          sudo unzip -o /tmp/duckdb.zip -d /usr/local/bin
-          duckdb --version
-
+      # DuckDB 2.0 has no published extensions yet, so Quack cannot load in the daemon (the
+      # image's v1.5.6 cache is ABI-incompatible). `--verify restart` seals via SIGTERM and
+      # reads back with the image's own `query` subcommand instead. Restore the Quack path
+      # (and the host duckdb CLI install) once 2.0 extensions are published.
       - name: Run e2e smoke
         run: |
           python3 scripts/smoke_test.py \
             --image duckdb-otlp:smoke \
             --platform linux/amd64 \
-            --startup-timeout 120
+            --startup-timeout 120 \
+            --verify restart
 
   daemon-linux:
     name: Build server daemon (${{ matrix.arch }})
@@ -177,7 +175,7 @@ jobs:
   # End-to-end smoke before publishing: package the amd64 daemon into the runtime image
   # (reusing the compiled artifact, no recompile) and run a minimal local-ducklake e2e
   # (scripts/smoke_test.py): boot the distroless image, POST one fixed OTLP/JSON log
-  # batch, flush, and assert the committed row count over Quack. A distroless-boot,
+  # batch, seal, and assert the committed row count. A distroless-boot,
   # ingest, seal, or DuckLake-commit regression fails here and blocks the publish.
   docker-smoke:
     name: Docker e2e smoke (local-ducklake)
@@ -217,19 +215,17 @@ jobs:
           tags: duckdb-otlp:smoke
           cache-from: type=gha,scope=docker-runtime
 
-      - name: Install duckdb CLI (host, for Quack queries)
-        run: |
-          set -euo pipefail
-          curl -fsSL "https://github.com/duckdb/duckdb/releases/download/v1.5.6/duckdb_cli-linux-amd64.zip" -o /tmp/duckdb.zip
-          sudo unzip -o /tmp/duckdb.zip -d /usr/local/bin
-          duckdb --version
-
+      # DuckDB 2.0 has no published extensions yet, so Quack cannot load in the daemon (the
+      # image's v1.5.6 cache is ABI-incompatible). `--verify restart` seals via SIGTERM and
+      # reads back with the image's own `query` subcommand instead. Restore the Quack path
+      # (and the host duckdb CLI install) once 2.0 extensions are published.
       - name: Run e2e smoke
         run: |
           python3 scripts/smoke_test.py \
             --image duckdb-otlp:smoke \
             --platform linux/amd64 \
-            --startup-timeout 120
+            --startup-timeout 120 \
+            --verify restart
 
   # Native macOS daemon builds. The Linux daemon comes out of a Docker stage, which cannot
   # produce a Darwin binary, so this is a separate job rather than two more matrix entries.

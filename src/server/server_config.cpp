@@ -1392,7 +1392,7 @@ FROM quack_serve(
     allow_other_hostname := true
 );
 )SQL",
-	                                                                 SqlQuote(quack_listen_uri));
+	                                                                  SqlQuote(quack_listen_uri));
 }
 
 string ServerConfig::StopOtlpSql() const {

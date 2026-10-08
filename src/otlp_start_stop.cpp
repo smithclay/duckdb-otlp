@@ -328,7 +328,8 @@ static TableFunctionSet BuildServeFunctionSet(const string &name, table_function
 	auto make_overload = [&](const vector<LogicalType> &arguments) {
 		auto fun = TableFunction(Identifier(name), arguments, OtlpServe, bind);
 		fun.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
-			options.Add("token", OtlpVarcharType())
+			options
+			    .Add("token", OtlpVarcharType())
 			    // Opt-in anonymous ingest (no bearer/x-api-key check). Off by default.
 			    .Add("disable_auth", OtlpBooleanType())
 			    .Add("catalog", OtlpVarcharType())
