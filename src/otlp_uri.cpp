@@ -131,9 +131,15 @@ CreateScalarFunctionInfo OtlpUriParserFunction::GetFunction() {
 	struct_children.emplace_back("ipv6", boolean_type);
 	struct_children.emplace_back("url", varchar_type);
 
+	// Named FunctionParameter rather than a bare LogicalType: DuckDB 2.0 reads a scalar
+	// function's parameter names off its own signature, and the vector<LogicalType> overload
+	// auto-names them col0, col1, ... A FunctionDescription no longer overrides that (see
+	// GetParameterNames in duckdb_functions.cpp), so the name has to be on the signature.
+	auto function = ScalarFunction("otlp_uri_parser", {FunctionParameter(Identifier("listen_uri"), varchar_type)},
+	                               LogicalType::STRUCT(std::move(struct_children)), OtlpUriParser);
+	function.SetFallible();
 	return OtlpDocumented(
-	    ScalarFunction("otlp_uri_parser", {varchar_type}, LogicalType::STRUCT(std::move(struct_children)),
-	                   OtlpUriParser),
+	    std::move(function),
 	    {OtlpDoc({varchar_type}, {"listen_uri"},
 	             "Parse an OTLP/OTAP listen URI into a struct of host, port, ipv6 and the http:// URL a "
 	             "listener would bind. The otlp: or otap: scheme is required; the host defaults to localhost "

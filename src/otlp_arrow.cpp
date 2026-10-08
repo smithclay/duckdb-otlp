@@ -1,6 +1,7 @@
 #include "otlp_arrow.hpp"
 
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/vector/list_vector.hpp"
 
 #include <cstdlib>
 #include <cstring>
@@ -103,7 +104,7 @@ static LogicalType ArrowFormatToDuckDBType(const ArrowSchema &schema, const Otlp
 	return LogicalType::VARCHAR;
 }
 
-void GetArrowSchemaColumns(const ArrowSchema &schema, vector<LogicalType> &return_types, vector<string> &names,
+void GetArrowSchemaColumns(const ArrowSchema &schema, vector<LogicalType> &return_types, vector<Identifier> &names,
                            const OtlpArrowSchemaOptions &options) {
 	if (schema.n_children > 0 && !schema.children) {
 		throw IOException("Invalid Arrow schema: children array is null");
@@ -116,7 +117,7 @@ void GetArrowSchemaColumns(const ArrowSchema &schema, vector<LogicalType> &retur
 		if (!child->name) {
 			throw IOException("Invalid Arrow schema: child %lld has null name", static_cast<int64_t>(i));
 		}
-		names.push_back(child->name);
+		names.emplace_back(child->name);
 		return_types.push_back(ArrowFormatToDuckDBType(*child, options));
 	}
 }
@@ -126,12 +127,12 @@ void GetArrowSchemaColumns(const ArrowSchema &schema, vector<LogicalType> &retur
 template <class T>
 static void CopyFixedWidth(const ArrowArray &array, const uint8_t *null_bitmap, Vector &output, idx_t count) {
 	const T *values = static_cast<const T *>(array.buffers[1]);
-	T *output_data = FlatVector::GetData<T>(output);
+	T *output_data = FlatVector::GetDataMutable<T>(output);
 	if (!null_bitmap) {
 		memcpy(output_data, values + array.offset, count * sizeof(T));
 		return;
 	}
-	auto &mask = FlatVector::Validity(output);
+	auto &mask = FlatVector::ValidityMutable(output);
 	for (idx_t i = 0; i < count; i++) {
 		idx_t array_idx = i + array.offset;
 		if (!(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
@@ -146,8 +147,8 @@ template <class SOURCE, class TARGET>
 static void CopyUnsignedToSigned(const ArrowArray &array, const uint8_t *null_bitmap, Vector &output, idx_t count,
                                  const char *fmt) {
 	const SOURCE *values = static_cast<const SOURCE *>(array.buffers[1]);
-	TARGET *output_data = FlatVector::GetData<TARGET>(output);
-	auto &mask = FlatVector::Validity(output);
+	TARGET *output_data = FlatVector::GetDataMutable<TARGET>(output);
+	auto &mask = FlatVector::ValidityMutable(output);
 	const auto max_value = static_cast<SOURCE>(std::numeric_limits<TARGET>::max());
 	for (idx_t i = 0; i < count; i++) {
 		idx_t array_idx = i + array.offset;
@@ -172,8 +173,8 @@ static void CopyTimestampNs(const ArrowArray &array, const uint8_t *null_bitmap,
 		throw IOException("Arrow timestamp_ns cannot be copied into DuckDB type %s", output.GetType().ToString());
 	}
 	const int64_t *values = static_cast<const int64_t *>(array.buffers[1]);
-	auto *output_data = FlatVector::GetData<timestamp_t>(output);
-	auto &mask = FlatVector::Validity(output);
+	auto *output_data = FlatVector::GetDataMutable<timestamp_t>(output);
+	auto &mask = FlatVector::ValidityMutable(output);
 	for (idx_t i = 0; i < count; i++) {
 		idx_t array_idx = i + array.offset;
 		if (null_bitmap && !(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
@@ -192,7 +193,7 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 		null_bitmap = static_cast<const uint8_t *>(array.buffers[0]);
 	}
 
-	auto &mask = FlatVector::Validity(output);
+	auto &mask = FlatVector::ValidityMutable(output);
 	mask.Reset(count);
 
 	if (fmt == "u") {
@@ -204,7 +205,7 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 		const int32_t *offsets = static_cast<const int32_t *>(array.buffers[1]);
 		const char *data = static_cast<const char *>(array.buffers[2]);
 
-		auto *string_data = FlatVector::GetData<string_t>(output);
+		auto *string_data = FlatVector::GetDataMutable<string_t>(output);
 
 		for (idx_t i = 0; i < count; i++) {
 			idx_t array_idx = i + array.offset;
@@ -230,7 +231,7 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 		const int64_t *offsets = static_cast<const int64_t *>(array.buffers[1]);
 		const char *data = static_cast<const char *>(array.buffers[2]);
 
-		auto *string_data = FlatVector::GetData<string_t>(output);
+		auto *string_data = FlatVector::GetDataMutable<string_t>(output);
 
 		for (idx_t i = 0; i < count; i++) {
 			idx_t array_idx = i + array.offset;
@@ -318,7 +319,7 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 			                  static_cast<int64_t>(array.n_buffers));
 		}
 		const char *data = static_cast<const char *>(array.buffers[2]);
-		auto *string_data = FlatVector::GetData<string_t>(output);
+		auto *string_data = FlatVector::GetDataMutable<string_t>(output);
 		const bool large = (fmt == "Z");
 		auto offset_at = [&](idx_t idx) -> int64_t {
 			if (large) {
@@ -345,7 +346,7 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 			                  static_cast<int64_t>(array.n_buffers));
 		}
 		const uint8_t *values = static_cast<const uint8_t *>(array.buffers[1]);
-		auto *output_data = FlatVector::GetData<bool>(output);
+		auto *output_data = FlatVector::GetDataMutable<bool>(output);
 
 		for (idx_t i = 0; i < count; i++) {
 			idx_t array_idx = i + array.offset;
@@ -377,7 +378,7 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 			                  static_cast<int64_t>(array.n_buffers));
 		}
 		const uint8_t *bytes = static_cast<const uint8_t *>(array.buffers[1]);
-		auto *string_data = FlatVector::GetData<string_t>(output);
+		auto *string_data = FlatVector::GetDataMutable<string_t>(output);
 		static const char hex[] = "0123456789abcdef";
 		std::string buf(static_cast<size_t>(width) * 2, '\0');
 		for (idx_t i = 0; i < count; i++) {
@@ -427,7 +428,7 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 		}
 		const idx_t child_count = static_cast<idx_t>(last_child - first_child);
 
-		auto *entries = FlatVector::GetData<list_entry_t>(output);
+		auto *entries = FlatVector::GetDataMutable<list_entry_t>(output);
 		for (idx_t i = 0; i < count; i++) {
 			idx_t array_idx = i + array.offset;
 			if (null_bitmap && !(null_bitmap[array_idx / 8] & (1 << (array_idx % 8)))) {
@@ -446,7 +447,7 @@ void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vecto
 		}
 
 		ListVector::Reserve(output, child_count);
-		auto &child_vec = ListVector::GetEntry(output);
+		auto &child_vec = ListVector::GetChildMutable(output);
 		if (child_count > 0) {
 			ArrowArray child_view = *array.children[0];
 			// Producer invariant: child array offset must be 0. The list path adds first_child
@@ -475,7 +476,7 @@ void CopyProjectedArrowStructToDataChunk(const ArrowArray &array, const ArrowSch
 		                  static_cast<uint64_t>(column_ids.size()), static_cast<uint64_t>(output.ColumnCount()));
 	}
 
-	output.SetCardinality(count);
+	output.SetChildCardinality(count);
 	if (column_ids.empty()) {
 		return;
 	}
