@@ -65,8 +65,15 @@ connection settings; the mode is not tied to Cloud SQL. It does not acquire or
 refresh PostgreSQL IAM tokens.
 
 The data path must use `gcss://` to select the native GCS filesystem even if
-`httpfs` is loaded. The image includes the community `gcs` extension. GCS auth
-uses ADC independently of the PostgreSQL password.
+`httpfs` is loaded. GCS auth uses ADC independently of the PostgreSQL password.
+
+The image loads a patched `gcs` extension
+([smithclay/duckdb-gcs](https://github.com/smithclay/duckdb-gcs)) through
+`DUCKDB_OTLP_GCS_EXTENSION_PATH`. The community build prints a failed upload
+finalize instead of raising it, so DuckLake commits data files that were never
+written ([#90](https://github.com/smithclay/duckdb-otlp/issues/90)). Outside the
+image, unset that variable to use the community build, or point it at your own
+`gcs.duckdb_extension`.
 
 ## Run and verify
 

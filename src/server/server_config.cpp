@@ -505,8 +505,9 @@ const ModeExtension BUILT_IN_OTLP = {"otlp", ExtensionSource::BUILT_IN};
 //!
 //! All the INSTALLs precede all the LOADs, which is the order these blocks were written by
 //! hand and the order DuckDB wants when one extension's load depends on another being present.
-//! Built-in extensions contribute nothing. Returns "" when nothing needs installing, so a mode
-//! whose only extension is otlp emits no setup SQL at all.
+//! Built-in extensions contribute nothing, and a local file is LOADed by path without an
+//! INSTALL. Returns "" when nothing needs loading, so a mode whose only extension is otlp emits
+//! no setup SQL at all.
 string ExtensionSetupSql(const std::vector<ModeExtension> &extensions) {
 	string installs;
 	string loads;
@@ -514,11 +515,26 @@ string ExtensionSetupSql(const std::vector<ModeExtension> &extensions) {
 		if (extension.source == ExtensionSource::BUILT_IN) {
 			continue;
 		}
+		if (extension.source == ExtensionSource::LOCAL_FILE) {
+			loads += "\nLOAD " + SqlQuote(extension.path) + ";";
+			continue;
+		}
 		installs += "\nINSTALL " + extension.name;
 		installs += extension.source == ExtensionSource::COMMUNITY ? " FROM community;" : ";";
 		loads += "\nLOAD " + extension.name + ";";
 	}
-	return installs.empty() ? string() : installs + loads;
+	return installs + loads;
+}
+
+//! The gcs extension, from the community repository unless DUCKDB_OTLP_GCS_EXTENSION_PATH names
+//! a local build. The community build swallows a failed upload finalize, so a deployment can
+//! ship a build that raises it instead.
+ModeExtension GcsExtension(const EnvSource &env) {
+	auto path = env.Get("DUCKDB_OTLP_GCS_EXTENSION_PATH");
+	if (path.empty()) {
+		return Community("gcs");
+	}
+	return {"gcs", ExtensionSource::LOCAL_FILE, path};
 }
 
 //! AWS region, from the standard SDK variables. Both spellings are genuine AWS conventions
@@ -770,7 +786,7 @@ void ConfigureR2NeonDuckLake(const EnvSource &env, ServerConfig &config, ConfigP
 }
 
 void ConfigureGcpDuckLake(const EnvSource &env, ServerConfig &config, ConfigProblems &missing) {
-	config.mode_extensions = {Core("ducklake"), Core("postgres"), Community("gcs"), BUILT_IN_OTLP};
+	config.mode_extensions = {Core("ducklake"), Core("postgres"), GcsExtension(env), BUILT_IN_OTLP};
 	config.catalog = CatalogDefault(env, "lake");
 	config.schema = SchemaDefault(env, "otlp");
 	auto data_path = RequireEnv(env, missing, "DUCKLAKE_DATA_PATH", "gcss://bucket/prefix for the data files");
@@ -1334,6 +1350,15 @@ std::vector<ModeExtension> ServerConfig::AllExtensions() const {
 		extensions.push_back(QUACK_EXTENSION);
 	}
 	return extensions;
+}
+
+bool ServerConfig::NeedsUnsignedExtensions() const {
+	for (const auto &extension : AllExtensions()) {
+		if (extension.source == ExtensionSource::LOCAL_FILE) {
+			return true;
+		}
+	}
+	return false;
 }
 
 string ServerConfig::StartQuackSql() const {

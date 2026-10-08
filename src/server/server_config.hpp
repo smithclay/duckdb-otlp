@@ -24,11 +24,16 @@ enum class ExtensionSource {
 	CORE,
 	//! The community repository, which `INSTALL` needs told about explicitly.
 	COMMUNITY,
+	//! A build on local disk, LOADed by path with no INSTALL. Such a build is unsigned, so
+	//! choosing one also turns on allow_unsigned_extensions for the process.
+	LOCAL_FILE,
 };
 
 struct ModeExtension {
 	duckdb::string name;
 	ExtensionSource source = ExtensionSource::CORE;
+	//! The extension file, for LOCAL_FILE only.
+	duckdb::string path;
 };
 
 struct IngestListener {
@@ -139,6 +144,10 @@ struct ServerConfig {
 	//! by the serve path only, so `query`/`export` must not pull it in -- but it is still an
 	//! extension the process ends up running, and the banner omitted it entirely.
 	std::vector<ModeExtension> AllExtensions() const;
+
+	//! Whether the database must be opened with allow_unsigned_extensions, because an extension
+	//! is LOADed from a local file. DuckDB only accepts that setting before the database starts.
+	bool NeedsUnsignedExtensions() const;
 };
 
 } // namespace duckdb_otlp_server

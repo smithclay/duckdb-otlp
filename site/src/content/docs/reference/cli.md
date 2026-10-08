@@ -207,6 +207,7 @@ One name per concept, across every mode that uses it.
 | `CLOUDFLARE_API_TOKEN` | `r2-data-catalog` | R2 Data Catalog read/write token |
 | `CLOUDFLARE_CATALOG_URI`, `CLOUDFLARE_WAREHOUSE` | `r2-data-catalog` | both derived from the account and bucket; set only to override |
 | `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, `PGSSLMODE` | Postgres-catalog modes | the standard libpq names |
+| `DUCKDB_OTLP_GCS_EXTENSION_PATH` | `gcp-ducklake` | a local `gcs.duckdb_extension` to `LOAD` instead of the community build; turns on `allow_unsigned_extensions`. The image sets it to its bundled build |
 
 Credential values are never interpolated into the generated SQL. They are bound as session variables and referenced with `getvariable()`, so `validate` can print the full boot SQL without disclosing them.
 

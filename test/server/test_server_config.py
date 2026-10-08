@@ -287,6 +287,25 @@ def gcp_env():
     }
 
 
+def test_gcp_ducklake_loads_a_local_gcs_build_by_path(tmp_path):
+    """DUCKDB_OTLP_GCS_EXTENSION_PATH swaps the community gcs build for one on disk.
+
+    The community build prints a failed upload finalize instead of raising it, so DuckLake
+    commits data files that were never written. A deployment ships a fixed build instead; it is
+    LOADed by path and never INSTALLed, since an INSTALL would fetch the community build again.
+    """
+    env = gcp_env()
+    env["DUCKDB_OTLP_GCS_EXTENSION_PATH"] = "/opt/extensions/gcs.duckdb_extension"
+    result = run(env, tmp_path)
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert "LOAD '/opt/extensions/gcs.duckdb_extension';" in out
+    assert "INSTALL gcs" not in out
+    assert "LOAD gcs;" not in out
+    assert "INSTALL ducklake;" in out
+    assert "gcs (local file /opt/extensions/gcs.duckdb_extension)" in out
+
+
 def test_gcp_ducklake_uses_adc_and_remote_postgres(tmp_path):
     result = run(gcp_env(), tmp_path)
     assert result.returncode == 0, result.stderr
