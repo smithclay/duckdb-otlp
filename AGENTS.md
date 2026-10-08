@@ -13,6 +13,11 @@ This file provides guidance to coding agents when working with code in this repo
 - **DuckDB tracks the 2.0 release branch.** The `duckdb` and `extension-ci-tools` submodules follow
   `v2.0-cyanoptera` (no `v2.0.0` tag exists yet), as do the reusable-workflow refs in
   `MainDistributionPipeline.yml`. Pin all of them to the tag once it lands.
+  No extensions are published for a 2.0 development build, and the image's offline cache still
+  holds v1.5.6 builds that crash on load (`quack_duckdb_cpp_init ... dereference shared_ptr that
+  is NULL`), so the CI smoke runs `scripts/smoke_test.py --verify restart` (SIGTERM seal, then
+  the image's own `query`) instead of reading back over Quack. Restore the Quack path when 2.0
+  extensions are published.
 - **Statically linked extensions must be rooted explicitly (DuckDB 2.0).** A linked extension
   registers itself only when the program calls `link_extension_libraries`, and that function reads
   the link set DuckDB resolves *after* its extension loop, which is where this `CMakeLists.txt` runs.
@@ -275,7 +280,7 @@ Prefer one canonical page per topic and link to it instead of duplicating exampl
 - All tests run against DuckDB with the extension statically linked (`make test`).
 - Test data in `test/data/` includes representative OTLP JSON and protobuf fixtures used by the table functions.
 - `test/pages/` holds the published-site tests (`python3 -m unittest discover -s test/pages`, run by `site-check.yml`): the extension-repository packaging, and `install.sh` driven against a fake release served over loopback.
-- The Docker benchmark harness (`scripts/benchmark_catalog_ingest.py`) starts the daemon image, sends OTLP/HTTP log batches, flushes via Quack, and queries row counts/server metrics over Quack. Because the image is distroless (no in-container shell/`duckdb`), it publishes the Quack port and runs Quack queries from a **host `duckdb` CLI** — so the harness now requires `duckdb` on `PATH` (the `docker-smoke` CI job installs the pinned v1.5.6 CLI). It intentionally avoids the old FIFO controller path.
+- The Docker benchmark harness (`scripts/benchmark_catalog_ingest.py`) starts the daemon image, sends OTLP/HTTP log batches, flushes via Quack, and queries row counts/server metrics over Quack. Because the image is distroless (no in-container shell/`duckdb`), it publishes the Quack port and runs Quack queries from a **host `duckdb` CLI** — so the harness now requires `duckdb` on `PATH` (on main the `docker-smoke` CI job installs the pinned v1.5.6 CLI). It intentionally avoids the old FIFO controller path.
 
 ## Known Limitations
 
