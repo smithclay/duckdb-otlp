@@ -128,7 +128,15 @@ static unique_ptr<FunctionData> ReadOTLPRustBind(ClientContext &context, TableFu
 	}
 	result->schema_initialized = true;
 
-	GetArrowSchemaColumns(result->arrow_schema, return_types, names);
+	// attributes_as_variant := true promotes the JSON attribute bags to DuckDB VARIANT. The
+	// scan needs no flag of its own: the bound return types are what CopyArrowToDuckDB
+	// dispatches on, so a VARIANT column converts and every other column is untouched.
+	OtlpArrowSchemaOptions options;
+	auto variant_param = input.named_parameters.find("attributes_as_variant");
+	if (variant_param != input.named_parameters.end() && !variant_param->second.IsNull()) {
+		options.attributes_as_variant = variant_param->second.GetValue<bool>();
+	}
+	GetArrowSchemaColumns(result->arrow_schema, return_types, names, options);
 
 	result->return_types = return_types;
 	result->names = names;
@@ -536,6 +544,7 @@ void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
 		                   ReadOTLPRustInitLocal);
 		func.projection_pushdown = true;
 		func.filter_pushdown = false;
+		func.named_parameters["attributes_as_variant"] = LogicalType::BOOLEAN;
 		// The two protocols are the axis a caller has to choose along, so they are the second
 		// category; it is read off the name rather than carried in the table above.
 		const string protocol = StringUtil::StartsWith(reg.name, "read_otap_") ? "otap" : "otlp";
@@ -547,10 +556,17 @@ void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
 			               "rest, so the four metric readers all read the same file.";
 		}
 		description += " `path` is a single file or a glob, resolved through DuckDB's file systems (local, S3, "
-		               "HTTP(S), Azure, GCS).";
-		loader.RegisterFunction(
-		    OtlpDocumented(std::move(func), {OtlpDoc({LogicalType::VARCHAR}, {"path"}, std::move(description),
-		                                             {reg.example}, {"opentelemetry", protocol})}));
+		               "HTTP(S), Azure, GCS). Set attributes_as_variant := true to read the attribute bags "
+		               "(resource_attributes, scope_attributes and the signal's own) as VARIANT instead of JSON "
+		               "text.";
+		// Naming the named parameter here is what keeps the rendered `parameters` list free of a
+		// colN placeholder: duckdb_functions() renders positional arguments and named parameters as
+		// one list and fills it from parameter_names in order. That works because these readers have
+		// exactly one named parameter -- the serve functions, with many, cannot do this (their order
+		// comes from an unordered_map). See ServeDescriptions in otlp_start_stop.cpp.
+		loader.RegisterFunction(OtlpDocumented(
+		    std::move(func), {OtlpDoc({LogicalType::VARCHAR}, {"path", "attributes_as_variant"}, std::move(description),
+		                              {reg.example}, {"opentelemetry", protocol})}));
 	}
 
 	// read_otlp_metrics: registered solely to throw a not-implemented error at bind time. Documented

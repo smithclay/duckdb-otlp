@@ -54,6 +54,12 @@ constexpr unsigned CATALOG_CMDS = LISTENER_CMDS | Bit(Command::EXPORT) | Bit(Com
 //! write path. `convert` is absent for the same reason it takes no --mode: it opens no catalog.
 constexpr unsigned INIT_SQL_CMDS = CATALOG_CMDS & ~Bit(Command::DOCTOR);
 
+//! Commands that decide the shape of what ingest writes -- the destination tables' columns and
+//! column types. `serve` and its dry run only: `doctor` opens no catalog and creates no table
+//! (it never calls ServerConfig::FromEnv), so accepting these there would be the silent no-op
+//! this table exists to prevent, and `export`/`query` read whatever shape they find.
+constexpr unsigned INGEST_SHAPE_CMDS = Bit(Command::SERVE) | Bit(Command::VALIDATE);
+
 //! Commands that write a result set somewhere.
 constexpr unsigned OUTPUT_CMDS = Bit(Command::CONVERT) | Bit(Command::EXPORT) | Bit(Command::QUERY);
 
@@ -99,7 +105,16 @@ const FlagDef FLAGS[] = {
     {"quack", nullptr, '\0', LISTENER_CMDS, FlagTarget::ENV, "DUCKDB_QUACK_PORT", false},
     {"quack-token", nullptr, '\0', LISTENER_CMDS, FlagTarget::ENV, "DUCKDB_QUACK_TOKEN", false},
     {"startup-timeout", nullptr, '\0', LISTENER_CMDS, FlagTarget::ENV, "DUCKDB_OTLP_STARTUP_TIMEOUT", false},
-    {"dry-run", nullptr, '\0', Bit(Command::SERVE) | Bit(Command::VALIDATE), FlagTarget::ENV, "DRY_RUN", true},
+    {"dry-run", nullptr, '\0', INGEST_SHAPE_CMDS, FlagTarget::ENV, "DRY_RUN", true},
+    // What ingest writes: the attribute-bag column type, and which attribute keys get their own
+    // column. Both are fixed for the life of a server and are validated against the existing
+    // tables at startup, so they belong to the deployment rather than to a query.
+    {"attributes-as-variant", nullptr, '\0', INGEST_SHAPE_CMDS, FlagTarget::ENV, "DUCKDB_OTLP_ATTRIBUTES_AS_VARIANT",
+     true},
+    {"promote-resource-attributes", "promote-resource", '\0', INGEST_SHAPE_CMDS, FlagTarget::ENV,
+     "DUCKDB_OTLP_PROMOTE_RESOURCE_ATTRIBUTES", false},
+    {"promote-scope-attributes", "promote-scope", '\0', INGEST_SHAPE_CMDS, FlagTarget::ENV,
+     "DUCKDB_OTLP_PROMOTE_SCOPE_ATTRIBUTES", false},
     // Reading, writing, and filtering data.
     {"otap", nullptr, '\0', Bit(Command::CONVERT), FlagTarget::OTAP_INPUT, nullptr, true},
     {"signal", nullptr, 's', Bit(Command::CONVERT) | Bit(Command::EXPORT), FlagTarget::SIGNAL, nullptr, false},
@@ -697,7 +712,8 @@ Opens no database and starts no listener. Exits 0 when the configuration is vali
 
 Prints a line per check and exits 0 only when every one passed. With --json, prints
 one object instead, for a caller that should not be parsing prose. Accepts the same
-flags as `serve`, so it probes exactly what those settings would bind. Also
+listener and catalog flags as `serve`, so it probes exactly what those settings
+would bind (not the ones that shape what ingest writes: it creates nothing). Also
 accepted as `duckdb-otlp healthcheck`, which is the spelling the container image's
 HEALTHCHECK and existing compose probes use.
 
@@ -750,6 +766,19 @@ Serve flags (each overrides the matching environment variable):
       --quack PORT            enable the Quack SQL endpoint on PORT
       --quack-token TOKEN     Quack bearer token (required with --quack)
       --startup-timeout SECS  listener readiness timeout (default: 60)
+      --attributes-as-variant store the attribute bags as VARIANT instead of VARCHAR
+                              holding JSON text. Decides the destination tables'
+                              column types, so a catalog whose tables were created
+                              the other way is rejected at startup with the ALTER
+                              that migrates it.
+      --promote-resource-attributes KEYS
+                              comma-separated resource attribute keys to lift into
+                              their own resource_attr_<key> columns at ingest, for
+                              row-group pruning on the keys you filter by. Catalog
+                              modes only. (--promote-resource is accepted too.)
+      --promote-scope-attributes KEYS
+                              the same for scope attributes, as scope_attr_<key>.
+                              (--promote-scope is accepted too.)
       --dry-run               alias for `validate`
 
 With no token and a loopback bind, authentication is disabled automatically and a

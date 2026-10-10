@@ -1,6 +1,8 @@
 #include "otlp_arrow.hpp"
 
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/string_util.hpp"
+#include "duckdb/common/vector_operations/vector_operations.hpp"
 
 #include <cstdlib>
 #include <cstring>
@@ -103,6 +105,10 @@ static LogicalType ArrowFormatToDuckDBType(const ArrowSchema &schema, const Otlp
 	return LogicalType::VARCHAR;
 }
 
+bool OtlpIsAttributeBagColumn(const string &name) {
+	return StringUtil::EndsWith(name, "_attributes");
+}
+
 void GetArrowSchemaColumns(const ArrowSchema &schema, vector<LogicalType> &return_types, vector<string> &names,
                            const OtlpArrowSchemaOptions &options) {
 	if (schema.n_children > 0 && !schema.children) {
@@ -117,7 +123,14 @@ void GetArrowSchemaColumns(const ArrowSchema &schema, vector<LogicalType> &retur
 			throw IOException("Invalid Arrow schema: child %lld has null name", static_cast<int64_t>(i));
 		}
 		names.push_back(child->name);
-		return_types.push_back(ArrowFormatToDuckDBType(*child, options));
+		auto type = ArrowFormatToDuckDBType(*child, options);
+		// The bags are the only columns this promotes: they are VARCHAR holding a JSON object,
+		// and CopyArrowToDuckDB turns that text into a VARIANT when the output vector says so.
+		if (options.attributes_as_variant && type.id() == LogicalTypeId::VARCHAR &&
+		    OtlpIsAttributeBagColumn(names.back())) {
+			type = LogicalType::VARIANT();
+		}
+		return_types.push_back(std::move(type));
 	}
 }
 
@@ -185,6 +198,18 @@ static void CopyTimestampNs(const ArrowArray &array, const uint8_t *null_bitmap,
 }
 
 void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vector &output, idx_t count) {
+	// VARIANT output (the opt-in attributes_as_variant path) is the one target type the Rust
+	// backend cannot produce: it emits the bag as JSON text. Copy that text into a JSON-typed
+	// vector and let DuckDB's JSON->VARIANT cast build the binary VARIANT once per chunk. The
+	// cast is a *default* cast over a VARCHAR alias, so this needs no ClientContext and no json
+	// extension. Both the read scan and the ingest server reach the VARIANT path through here.
+	if (output.GetType().id() == LogicalTypeId::VARIANT) {
+		Vector json_vector(LogicalType::JSON(), MaxValue<idx_t>(count, 1));
+		CopyArrowToDuckDB(array, schema, json_vector, count);
+		VectorOperations::DefaultCast(json_vector, output, count);
+		return;
+	}
+
 	std::string fmt(schema.format ? schema.format : "");
 
 	const uint8_t *null_bitmap = nullptr;

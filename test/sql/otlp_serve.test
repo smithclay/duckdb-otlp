@@ -423,3 +423,14 @@ SELECT count(*) FROM otlp_stop();
 # CASCADE: serve created the six ingest tables in this schema.
 statement ok
 DROP SCHEMA stop_all_other CASCADE;
+
+# Promotion adds columns with ALTER TABLE, and a Parquet-export destination has no table to add
+# them to: the pair is refused rather than accepted and then skipped at seal time. The rejection
+# lives in OtlpServer's constructor, beside the other configuration invariants, so every path that
+# builds a server gets it.
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55474', token := 'dev-token-123456',
+                parquet_export_path := '__TEST_DIR__/promote_parquet',
+                promote_resource_attributes := 'service.name');
+----
+Attribute promotion needs a catalog target

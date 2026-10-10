@@ -65,3 +65,11 @@ ORDER BY function_name;
 ----
 read_otap_logs	[opentelemetry, otap]
 read_otlp_logs	[opentelemetry, otlp]
+
+# The readers' one named parameter is named in the description too, so duckdb_functions()
+# renders it by name instead of the colN placeholder the fallback would produce.
+query II
+SELECT parameters, parameter_types FROM duckdb_functions()
+WHERE function_name = 'read_otlp_logs';
+----
+[path, attributes_as_variant]	[VARCHAR, BOOLEAN]
