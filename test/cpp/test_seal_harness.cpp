@@ -101,7 +101,10 @@ idx_t TableCount(Connection &con, const std::string &table) {
 	auto result = con.Query("SELECT count(*) FROM " + table);
 	REQUIRE(result);
 	REQUIRE_FALSE(result->HasError());
-	return result->GetValue(0, 0).GetValue<int64_t>();
+	auto chunk = result->Fetch();
+	REQUIRE(chunk);
+	REQUIRE(chunk->size() == 1);
+	return chunk->GetValue(0, 0).GetValue<int64_t>();
 }
 
 // Construct an OtlpServer bound to a free loopback port. The constructor binds the socket

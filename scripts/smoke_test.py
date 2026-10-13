@@ -11,6 +11,13 @@ zlib-enabled cpp-httplib link order (see CMakeLists.txt).
 The image is distroless (no shell/duckdb inside), so the Quack queries run
 from a host `duckdb` CLI against the published Quack port. Requires `docker`
 and `duckdb` on PATH.
+
+`--verify restart` drops Quack and the host CLI: it stops the daemon with
+SIGTERM (whose graceful `otlp_stop()` seals every buffered row), requires a
+clean exit, and reads the count back with the image's own `duckdb-otlp query`
+in a second container over the same /data volume. It needs no runtime
+extension at all, which is what a DuckDB build with no published extensions
+(a 2.0 development build, for one) can offer.
 """
 
 from __future__ import annotations
@@ -143,6 +150,19 @@ def quack_rows(quack_port: int, token: str, sql: str) -> list[dict]:
     return payload if isinstance(payload, list) else [payload]
 
 
+def query_rows(image: str, platform: str, container: str, env: dict[str, str], sql: str) -> list[dict]:
+    """Run SQL with the image's own `duckdb-otlp query` over the stopped daemon's /data volume."""
+    docker_args = ["docker", "run", "--rm", "--platform", platform, "--volumes-from", container]
+    for key, value in sorted(env.items()):
+        docker_args += ["-e", f"{key}={value}"]
+    docker_args += [image, "query", "--format", "json", sql]
+    raw = run(docker_args, timeout=120).stdout.strip()
+    if not raw:
+        return []
+    payload = json.loads(raw)
+    return payload if isinstance(payload, list) else [payload]
+
+
 def container_logs(container: str) -> str:
     proc = subprocess.run(["docker", "logs", "--tail", "200", container], text=True, capture_output=True)
     return (proc.stdout + proc.stderr).strip()
@@ -153,10 +173,18 @@ def main() -> int:
     parser.add_argument("--image", required=True)
     parser.add_argument("--platform", default=host_platform())
     parser.add_argument("--startup-timeout", type=float, default=120)
+    parser.add_argument(
+        "--verify",
+        choices=("quack", "restart"),
+        default="quack",
+        help="How to seal and read back: over Quack from a host duckdb (default), or by stopping the "
+        "daemon and running the image's `query` subcommand (no runtime extensions needed).",
+    )
     parser.add_argument("--keep", action="store_true", help="Leave the container running for debugging.")
     args = parser.parse_args()
+    use_quack = args.verify == "quack"
 
-    for program in ("docker", "duckdb"):
+    for program in ("docker", "duckdb") if use_quack else ("docker",):
         if subprocess.run(["which", program], capture_output=True).returncode != 0:
             raise SystemExit(f"required executable not found on PATH: {program}")
 
@@ -168,16 +196,17 @@ def main() -> int:
     env = {
         "DUCKDB_MODE": "local-ducklake",
         "DUCKDB_CATALOG": CATALOG,
-        "DUCKLAKE_CATALOG_PATH": "/tmp/duckdb-otlp-smoke.ducklake",
-        "DUCKLAKE_DATA_PATH": "/tmp/duckdb-otlp-smoke-files/",
-        "DUCKDB_CATALOG": CATALOG,
+        # Under the image's /data volume, so a second container can read what the first sealed.
+        "DUCKLAKE_CATALOG_PATH": "/data/duckdb-otlp-smoke.ducklake",
+        "DUCKLAKE_DATA_PATH": "/data/duckdb-otlp-smoke-files/",
         "DUCKDB_SCHEMA": SCHEMA,
-        "DUCKDB_DATABASE": "/tmp/duckdb-otlp-smoke-control.duckdb",
+        "DUCKDB_DATABASE": "/data/duckdb-otlp-smoke-control.duckdb",
         "DUCKDB_OTLP_TOKEN": token,
-        "DUCKDB_QUACK_ENABLED": "1",
-        "DUCKDB_QUACK_TOKEN": quack_token,
         "OTEL_HTTP_ADDR": "0.0.0.0:4318",
     }
+    if use_quack:
+        env["DUCKDB_QUACK_ENABLED"] = "1"
+        env["DUCKDB_QUACK_TOKEN"] = quack_token
 
     docker_args = [
         "docker",
@@ -189,9 +218,9 @@ def main() -> int:
         args.platform,
         "-p",
         f"127.0.0.1:{otlp_port}:4318",
-        "-p",
-        f"127.0.0.1:{quack_port}:9494",
     ]
+    if use_quack:
+        docker_args += ["-p", f"127.0.0.1:{quack_port}:9494"]
     for key, value in sorted(env.items()):
         docker_args += ["-e", f"{key}={value}"]
     docker_args.append(args.image)
@@ -224,13 +253,22 @@ def main() -> int:
             raise SystemExit(f"gzip ingest buffered {gz_accepted} rows, expected {GZIP_LOG_RECORDS}: {gz_body}")
 
         total_records = LOG_RECORDS + GZIP_LOG_RECORDS
-        eprint("[smoke] flushing (forces a synchronous seal)")
-        flush = quack_rows(quack_port, quack_token, f"SELECT * FROM otlp_flush('{SERVE_URI}')")
-        if any(row.get("status") == "error" or row.get("error") for row in flush):
-            raise SystemExit(f"flush failed: {json.dumps(flush)}")
-
-        eprint("[smoke] verifying committed row count")
-        rows = quack_rows(quack_port, quack_token, f"SELECT count(*) AS n FROM {CATALOG}.{SCHEMA}.otlp_logs")
+        count_sql = f"SELECT count(*) AS n FROM {CATALOG}.{SCHEMA}.otlp_logs"
+        if use_quack:
+            eprint("[smoke] flushing (forces a synchronous seal)")
+            flush = quack_rows(quack_port, quack_token, f"SELECT * FROM otlp_flush('{SERVE_URI}')")
+            if any(row.get("status") == "error" or row.get("error") for row in flush):
+                raise SystemExit(f"flush failed: {json.dumps(flush)}")
+            eprint("[smoke] verifying committed row count")
+            rows = quack_rows(quack_port, quack_token, count_sql)
+        else:
+            eprint("[smoke] stopping the daemon (SIGTERM seals every buffered row)")
+            run(["docker", "stop", "--time", "60", container], timeout=90)
+            exit_code = run(["docker", "inspect", "--format", "{{.State.ExitCode}}", container]).stdout.strip()
+            if exit_code != "0":
+                raise SystemExit(f"daemon exited {exit_code} on SIGTERM, expected 0")
+            eprint("[smoke] verifying committed row count with `duckdb-otlp query`")
+            rows = query_rows(args.image, args.platform, container, env, count_sql)
         committed = int(rows[0]["n"]) if rows else 0
         if committed != total_records:
             raise SystemExit(f"committed otlp_logs rows ({committed}) did not match sent records ({total_records})")
@@ -246,7 +284,7 @@ def main() -> int:
         return 1
     finally:
         if not args.keep:
-            subprocess.run(["docker", "rm", "-f", container], capture_output=True, timeout=90)
+            subprocess.run(["docker", "rm", "-f", "-v", container], capture_output=True, timeout=90)
 
 
 if __name__ == "__main__":

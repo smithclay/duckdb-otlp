@@ -62,7 +62,7 @@ static vector<string> StringOrStringList(const Value &value, const char *what) {
 }
 
 static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableFunctionBindInput &input,
-                                                  vector<LogicalType> &return_types, vector<string> &names,
+                                                  vector<LogicalType> &return_types, vector<Identifier> &names,
                                                   const string &default_uri, const string &required_scheme) {
 #ifdef __EMSCRIPTEN__
 	throw NotImplementedException("live OTLP ingest is not implemented for the wasm platform");
@@ -281,12 +281,12 @@ static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableF
 }
 
 static unique_ptr<FunctionData> OtlpServeBind(ClientContext &context, TableFunctionBindInput &input,
-                                              vector<LogicalType> &return_types, vector<string> &names) {
+                                              vector<LogicalType> &return_types, vector<Identifier> &names) {
 	return OtlpServeBindImpl(context, input, return_types, names, "otlp:localhost:4318", "otlp");
 }
 
 static unique_ptr<FunctionData> OtapServeBind(ClientContext &context, TableFunctionBindInput &input,
-                                              vector<LogicalType> &return_types, vector<string> &names) {
+                                              vector<LogicalType> &return_types, vector<Identifier> &names) {
 	return OtlpServeBindImpl(context, input, return_types, names, "otap:localhost:4317", "otap");
 }
 
@@ -319,41 +319,47 @@ static void OtlpServe(ClientContext &context, TableFunctionInput &data_p, DataCh
 		output.SetValue(11, row, OtlpTransportName(spec.transport));
 		row++;
 	}
-	output.SetCardinality(row);
+	output.SetChildCardinality(row);
 }
 
 static TableFunctionSet BuildServeFunctionSet(const string &name, table_function_bind_t bind) {
-	TableFunctionSet set(name);
-	auto fun = TableFunction(name, {OtlpVarcharType()}, OtlpServe, bind);
-	fun.named_parameters["token"] = OtlpVarcharType();
-	// Opt-in anonymous ingest (no bearer/x-api-key check). Off by default.
-	fun.named_parameters["disable_auth"] = OtlpBooleanType();
-	fun.named_parameters["catalog"] = OtlpVarcharType();
-	fun.named_parameters["schema"] = OtlpVarcharType();
-	fun.named_parameters["parquet_export_path"] = OtlpVarcharType();
-	fun.named_parameters["create_tables"] = OtlpBooleanType();
-	fun.named_parameters["allow_other_hostname"] = OtlpBooleanType();
-	// otlp_serve: 'http' (default) or 'grpc' (OTLP/gRPC unary), as one value or a list parallel
-	// to a list of listen URIs. otap_serve is gRPC-only (OTAP/Arrow): only 'grpc' or omission.
-	fun.named_parameters["transport"] = LogicalType::ANY;
-	fun.named_parameters["max_body_bytes"] = OtlpUBigIntType();
-	// http_threads sizes the HTTP worker pool; ignored by the gRPC transport (the
-	// tonic server sizes its own runtime), but accepted on both for a uniform surface.
-	fun.named_parameters["http_threads"] = OtlpUBigIntType();
-	fun.named_parameters["max_buffered_bytes"] = OtlpUBigIntType();
-	fun.named_parameters["seal_target_bytes"] = OtlpUBigIntType();
-	fun.named_parameters["seal_max_age_ms"] = OtlpBigIntType();
-	fun.named_parameters["target_file_size"] = OtlpUBigIntType();
-	fun.named_parameters["maintenance_retention_ms"] = OtlpBigIntType();
-	// Attribute promotion: comma-separated resource / scope attribute keys to promote.
-	fun.named_parameters["promote_resource_attributes"] = OtlpVarcharType();
-	fun.named_parameters["promote_scope_attributes"] = OtlpVarcharType();
-	set.AddFunction(fun);
+	// DuckDB 2.0 declares optional named parameters as a typed "**kwargs" schema: an option the call
+	// leaves out is not passed, so the bind keeps its own defaults exactly as with named_parameters.
+	auto make_overload = [&](const vector<LogicalType> &arguments) {
+		auto fun = TableFunction(Identifier(name), arguments, OtlpServe, bind);
+		fun.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
+			options
+			    .Add("token", OtlpVarcharType())
+			    // Opt-in anonymous ingest (no bearer/x-api-key check). Off by default.
+			    .Add("disable_auth", OtlpBooleanType())
+			    .Add("catalog", OtlpVarcharType())
+			    .Add("schema", OtlpVarcharType())
+			    .Add("parquet_export_path", OtlpVarcharType())
+			    .Add("create_tables", OtlpBooleanType())
+			    .Add("allow_other_hostname", OtlpBooleanType())
+			    // otlp_serve: 'http' (default) or 'grpc' (OTLP/gRPC unary), as one value or a list parallel
+			    // to a list of listen URIs. otap_serve is gRPC-only (OTAP/Arrow): only 'grpc' or omission.
+			    .Add("transport", LogicalType::ANY)
+			    .Add("max_body_bytes", OtlpUBigIntType())
+			    // http_threads sizes the HTTP worker pool; ignored by the gRPC transport (the
+			    // tonic server sizes its own runtime), but accepted on both for a uniform surface.
+			    .Add("http_threads", OtlpUBigIntType())
+			    .Add("max_buffered_bytes", OtlpUBigIntType())
+			    .Add("seal_target_bytes", OtlpUBigIntType())
+			    .Add("seal_max_age_ms", OtlpBigIntType())
+			    .Add("target_file_size", OtlpUBigIntType())
+			    .Add("maintenance_retention_ms", OtlpBigIntType())
+			    // Attribute promotion: comma-separated resource / scope attribute keys to promote.
+			    .Add("promote_resource_attributes", OtlpVarcharType())
+			    .Add("promote_scope_attributes", OtlpVarcharType());
+		});
+		return fun;
+	};
+	TableFunctionSet set {Identifier(name)};
+	set.AddFunction(make_overload({OtlpVarcharType()}));
 	// Several listeners (e.g. HTTP + gRPC) feeding one server: one buffer set, one sealer.
-	fun.arguments = {LogicalType::LIST(OtlpVarcharType())};
-	set.AddFunction(fun);
-	fun.arguments.clear();
-	set.AddFunction(fun);
+	set.AddFunction(make_overload({LogicalType::LIST(OtlpVarcharType())}));
+	set.AddFunction(make_overload({}));
 	return set;
 }
 
@@ -457,7 +463,7 @@ struct OtlpStopFunctionData : public TableFunctionData {
 };
 
 static unique_ptr<FunctionData> OtlpStopBind(ClientContext &context, TableFunctionBindInput &input,
-                                             vector<LogicalType> &return_types, vector<string> &names) {
+                                             vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto bind_data = make_uniq<OtlpStopFunctionData>();
 	if (input.inputs.empty()) {
 		bind_data->stop_all = true;
@@ -513,7 +519,7 @@ static void OtlpStop(ClientContext &context, TableFunctionInput &data_p, DataChu
 		bind_data.offset = 1;
 		output.SetValue(0, 0, Value("No OTLP servers are running"));
 		output.SetValue(1, 0, Value::UBIGINT(0));
-		output.SetCardinality(1);
+		output.SetChildCardinality(1);
 		return;
 	}
 	idx_t row = 0;
@@ -527,7 +533,7 @@ static void OtlpStop(ClientContext &context, TableFunctionInput &data_p, DataChu
 		bind_data.offset++;
 		row++;
 	}
-	output.SetCardinality(row);
+	output.SetChildCardinality(row);
 }
 
 CreateTableFunctionInfo OtlpStopFunction::GetFunction() {
@@ -557,7 +563,7 @@ struct OtlpServerListFunctionData : public TableFunctionData {
 };
 
 static unique_ptr<FunctionData> OtlpServerListBind(ClientContext &context, TableFunctionBindInput &input,
-                                                   vector<LogicalType> &return_types, vector<string> &names) {
+                                                   vector<LogicalType> &return_types, vector<Identifier> &names) {
 	names.emplace_back("listen_uri");
 	return_types.emplace_back(OtlpVarcharType());
 	names.emplace_back("listen_url");
@@ -669,7 +675,7 @@ static void OtlpServerList(ClientContext &context, TableFunctionInput &data_p, D
 		row++;
 		bind_data.offset++;
 	}
-	output.SetCardinality(row);
+	output.SetChildCardinality(row);
 }
 
 CreateTableFunctionInfo OtlpServerListFunction::GetFunction() {
@@ -690,14 +696,14 @@ struct OtlpSealListFunctionData : public TableFunctionData {
 };
 
 static unique_ptr<FunctionData> OtlpSealListBind(ClientContext &context, TableFunctionBindInput &input,
-                                                 vector<LogicalType> &return_types, vector<string> &names) {
-	names = {"listen_uri",           "seal_sequence",
-	         "started_unix_ms",      "completed_unix_ms",
-	         "duration_ms",          "append_duration_ms",
-	         "commit_duration_ms",   "rows_committed",
-	         "admitted_bytes",       "success",
-	         "seals_total",          "seal_failures_total",
-	         "committed_rows_total", "error"};
+                                                 vector<LogicalType> &return_types, vector<Identifier> &names) {
+	names = {Identifier("listen_uri"),           Identifier("seal_sequence"),
+	         Identifier("started_unix_ms"),      Identifier("completed_unix_ms"),
+	         Identifier("duration_ms"),          Identifier("append_duration_ms"),
+	         Identifier("commit_duration_ms"),   Identifier("rows_committed"),
+	         Identifier("admitted_bytes"),       Identifier("success"),
+	         Identifier("seals_total"),          Identifier("seal_failures_total"),
+	         Identifier("committed_rows_total"), Identifier("error")};
 	return_types = {OtlpVarcharType(), OtlpUBigIntType(), OtlpBigIntType(),  OtlpBigIntType(),  OtlpBigIntType(),
 	                OtlpBigIntType(),  OtlpBigIntType(),  OtlpUBigIntType(), OtlpUBigIntType(), OtlpBooleanType(),
 	                OtlpUBigIntType(), OtlpUBigIntType(), OtlpUBigIntType(), OtlpVarcharType()};
@@ -731,7 +737,7 @@ static void OtlpSealList(ClientContext &context, TableFunctionInput &data_p, Dat
 		row++;
 		bind_data.offset++;
 	}
-	output.SetCardinality(row);
+	output.SetChildCardinality(row);
 }
 
 CreateTableFunctionInfo OtlpSealListFunction::GetFunction() {
@@ -752,7 +758,7 @@ struct OtlpFlushFunctionData : public TableFunctionData {
 };
 
 static unique_ptr<FunctionData> OtlpFlushBind(ClientContext &context, TableFunctionBindInput &input,
-                                              vector<LogicalType> &return_types, vector<string> &names) {
+                                              vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto bind_data = make_uniq<OtlpFlushFunctionData>();
 	auto &uri_value = input.inputs[0];
 	if (uri_value.IsNull() || uri_value.GetValue<string>().empty()) {
@@ -788,7 +794,7 @@ static void OtlpFlush(ClientContext &context, TableFunctionInput &data_p, DataCh
 		output.SetValue(2, 0, Value::UBIGINT(result.seals_total));
 		output.SetValue(3, 0, result.error.empty() ? Value(LogicalType::VARCHAR) : Value(result.error));
 	}
-	output.SetCardinality(1);
+	output.SetChildCardinality(1);
 	bind_data.finished = true;
 }
 

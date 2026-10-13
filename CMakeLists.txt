@@ -69,6 +69,22 @@ if(NOT EMSCRIPTEN)
   target_link_libraries(${LOADABLE_EXTENSION_NAME} ZLIB::ZLIB)
 endif()
 
+# Link the extensions DuckDB statically links (parquet, json, core_functions,
+# ...) into an executable that embeds DuckDB. Since DuckDB 2.0 a linked
+# extension only registers itself when the program roots it, and
+# link_extension_libraries reads the set DuckDB resolves *after* its extension
+# loop -- which is where this file runs. Calling it here would link nothing,
+# leaving the daemon without the parquet COPY function, so the call is deferred
+# to the end of the top-level configure, once the set is known. A deferred call
+# expands its arguments when it runs, after ${target} has gone out of scope, so
+# the target name is baked in with EVAL CODE.
+function(otlp_link_duckdb_extensions target)
+  set(deferred_link "link_extension_libraries(${target} \"\")")
+  cmake_language(
+    EVAL CODE "cmake_language(DEFER DIRECTORY [[${CMAKE_SOURCE_DIR}]]
+                 CALL cmake_language EVAL CODE [[${deferred_link}]])")
+endfunction()
+
 # The native daemon and the C++ test harnesses below are built on native
 # non-Windows targets only. `make release` builds the default ALL target, so
 # without the NOT WIN32 guard the Windows extension build would compile and link
@@ -104,7 +120,7 @@ if(NOT EMSCRIPTEN AND NOT WIN32)
   target_link_libraries(duckdb_otlp_server ${EXTENSION_NAME} duckdb_static
                         ${DUCKDB_EXTRA_LINK_FLAGS})
   link_threads(duckdb_otlp_server "")
-  link_extension_libraries(duckdb_otlp_server "")
+  otlp_link_duckdb_extensions(duckdb_otlp_server)
 
   # Direct C++ ingest/seal harness (test/cpp/test_seal_harness.cpp). It needs
   # the test-only OtlpServer seam (DUCKDB_OTLP_ENABLE_TEST_SEAM), so it links a
@@ -138,7 +154,7 @@ if(NOT EMSCRIPTEN AND NOT WIN32)
     target_link_libraries(otlp_seal_harness otlp_test_seam duckdb_static
                           ${DUCKDB_EXTRA_LINK_FLAGS})
     link_threads(otlp_seal_harness "")
-    link_extension_libraries(otlp_seal_harness "")
+    otlp_link_duckdb_extensions(otlp_seal_harness)
 
     # Direct C++ harness for the Arrow list-conversion guard
     # (test/cpp/test_arrow_harness.cpp). It reuses the same otlp_test_seam
@@ -160,7 +176,7 @@ if(NOT EMSCRIPTEN AND NOT WIN32)
       target_link_libraries(otlp_arrow_harness otlp_test_seam duckdb_static
                             ${DUCKDB_EXTRA_LINK_FLAGS})
       link_threads(otlp_arrow_harness "")
-      link_extension_libraries(otlp_arrow_harness "")
+      otlp_link_duckdb_extensions(otlp_arrow_harness)
     endif()
   endif()
 endif()

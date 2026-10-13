@@ -70,9 +70,12 @@ RUN set -eux; \
     rm -f /tmp/duckdb.zip
 
 # Prime every mode's extensions into HOME=/duckdb-home so the daemon's startup INSTALL/LOAD
-# is offline. The daemon (otlp) is statically embedded and is intentionally not installed.
+# is offline. Extensions statically linked into the daemon are intentionally not installed:
+# otlp, plus ducklake (`make server-release` builds it from DuckDB's pinned config, so the
+# default local-ducklake mode downloads nothing and does not depend on a published build
+# matching the daemon's DuckDB ABI).
 RUN set -eux; mkdir -p "${HOME}"; \
-    for ext in ducklake iceberg httpfs aws postgres quack; do \
+    for ext in iceberg httpfs aws postgres quack; do \
         /tmp/duckdb-cli/duckdb -unsigned -c "INSTALL ${ext};"; \
     done; \
     /tmp/duckdb-cli/duckdb -c "INSTALL gcs FROM community; LOAD gcs;"; \
