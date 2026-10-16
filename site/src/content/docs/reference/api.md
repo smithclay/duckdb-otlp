@@ -16,6 +16,7 @@ Streams trace spans with identifiers, attributes, events, and links. See the [sc
 
 **Parameters:**
 - `path` (VARCHAR): File path or glob pattern. DuckDB file systems provide local, S3, HTTP(S), Azure, and GCS access.
+- `attributes_as_variant` (BOOLEAN, default `false`): Read the `*_attributes` bags as `VARIANT` instead of JSON text. See [Attributes as VARIANT](../schemas/#attributes-as-variant).
 
 ### Logs
 

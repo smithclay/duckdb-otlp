@@ -178,9 +178,24 @@ All gauge columns are included, plus the two sum-specific columns above.
 ## Type system notes
 
 - `trace_id` and `span_id` are VARCHAR hex strings. Use `unhex()` to convert to binary if needed.
-- Attribute columns store JSON strings. Parse with DuckDB's JSON functions: `json_extract(resource_attributes, '$.key')`. For attributes you filter on often, the live server can promote resource/scope keys into dedicated columns at ingest — see [Attribute promotion](../serve/#attribute-promotion).
+- Attribute columns store JSON strings by default. Parse with DuckDB's JSON functions: `json_extract(resource_attributes, '$.key')`. They can also be read as `VARIANT` — see [Attributes as VARIANT](#attributes-as-variant). For attributes you filter on often, the live server can promote resource/scope keys into dedicated columns at ingest — see [Attribute promotion](../serve/#attribute-promotion).
 - Timestamps: file readers expose nanosecond timestamp columns such as `time_unix_nano` and `start_time_unix_nano` as `TIMESTAMP_NS`. Live ingest tables keep the same column names but store those values as DuckDB `TIMESTAMP` for catalog compatibility.
 - Events and links are stored as JSON arrays in `events_json` and `links_json`.
+
+## Attributes as VARIANT
+
+`attributes_as_variant := true` reads the attribute bags as DuckDB's [`VARIANT`](https://duckdb.org/docs/stable/sql/data_types/variant) type instead of JSON text. It applies to every `*_attributes` column — `resource_attributes`, `scope_attributes`, and the signal's own (`log_attributes`, `span_attributes`, `metric_attributes`). Every other column is unchanged, including `body` and the JSON *array* columns `events_json`, `links_json` and `exemplars_json`.
+
+```sql
+SELECT variant_typeof(variant_extract(log_attributes, 'http.status_code')) AS type,
+       CAST(variant_extract(log_attributes, 'http.status_code') AS BIGINT)  AS status
+FROM read_otlp_logs('logs.pb', attributes_as_variant := true);
+```
+
+- **Extraction takes a literal key, not a path.** `variant_extract(resource_attributes, 'service.name')` reads the member named `service.name`, which is what OTLP's dotted keys need. The `bag.key` and `bag['key']` shorthands work the same way. An absent key is `NULL`.
+- **Values keep their OTLP type.** An `intValue` reads back as an integer and a `boolValue` as a boolean, instead of every value being text that has to be cast. `variant_typeof()` reports what a value actually is.
+- **Off by default.** The flag is accepted by every `read_otlp_*` and `read_otap_*` reader, and by `otlp_serve`/`otap_serve` — where it also decides the destination tables' column types, so it is part of a deployment's shape rather than a per-query choice. See [Attributes as VARIANT](../serve/#attributes-as-variant) on the server side.
+- **Requires DuckDB 1.5 or newer**, which is where `VARIANT` landed in core.
 
 ---
 
