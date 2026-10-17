@@ -34,16 +34,24 @@ concurrency:
 
 env:
   EXT_NAME: otlp
-  DUCKDB_VERSION: v1.5.6
+  # The DuckDB release the repository serves (its path segment, and what users must run).
+  # Until v2.0.0 ships that is the alpha DuckDB deploys 2.0 extensions for.
+  DUCKDB_VERSION: v2.0.0-alpha46057
+  # The commit it is built from: the duckdb submodule's pin, the one the community-extensions
+  # CI builds. The reusable workflow names its artifacts after `duckdb_version`, so this,
+  # not the tag, is what the artifact download matches.
+  DUCKDB_COMMIT: b15358c371daf10dad799a43b6167f6ccdce84d8
 
 jobs:
   extension-build:
     name: build extension binaries
     if: ${{ github.event_name == 'release' || inputs.publish_extension }}
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.6
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v2.0-cyanoptera
     with:
-      duckdb_version: v1.5.6
-      ci_tools_version: v1.5.6
+      # Same build as MainDistributionPipeline.yml (env cannot be referenced here).
+      duckdb_version: b15358c371daf10dad799a43b6167f6ccdce84d8
+      duckdb_tag: v2.0.0-alpha46057
+      ci_tools_version: v2.0-cyanoptera
       extension_name: otlp
       extra_toolchains: rust
       # Kept in sync with MainDistributionPipeline.yml: a platform the release pipeline
@@ -67,14 +75,14 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           path: artifacts
-          pattern: ${{ env.EXT_NAME }}-${{ env.DUCKDB_VERSION }}-extension-*
+          pattern: ${{ env.EXT_NAME }}-${{ env.DUCKDB_COMMIT }}-extension-*
 
       - name: Assemble extension repository
         shell: bash
         run: |
           set -euo pipefail
           shopt -s nullglob
-          prefix="${EXT_NAME}-${DUCKDB_VERSION}-extension-"
+          prefix="${EXT_NAME}-${DUCKDB_COMMIT}-extension-"
           found=0
           mkdir -p _extension_repository
           for dir in artifacts/${prefix}*/; do

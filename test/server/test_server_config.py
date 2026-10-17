@@ -855,9 +855,7 @@ def test_the_image_primes_every_extension_some_mode_needs(tmp_path):
     runs the image without egress.
     """
     dockerfile = (REPO_ROOT / "docker" / "duckdb-otlp-server" / "Dockerfile").read_text()
-    loop = re.search(r"for ext in ([a-z0-9_ ]+); do", dockerfile)
-    primed = set(loop.group(1).split()) if loop else set()
-    primed |= set(re.findall(r"INSTALL ([a-z0-9_]+)(?: FROM community)?", dockerfile))
+    primed = {ext for loop in re.findall(r"for ext in ([a-z0-9_ ]+); do", dockerfile) for ext in loop.split()}
     # A parse failure must say so, rather than showing up as "every extension is missing".
     assert primed, (
         "could not read the extension list out of docker/duckdb-otlp-server/Dockerfile; "

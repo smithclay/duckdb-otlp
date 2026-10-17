@@ -10,7 +10,7 @@ Run the `duckdb-otlp` Docker image in `local-ducklake` mode, enable the image's 
 
 Use this setup when you want the container to handle ingestion and DuckLake writes while a local DuckDB shell, notebook, or script queries telemetry through Quack.
 
-Quack is experimental in DuckDB v1.5.6 and becomes stable in DuckDB 2.0. These examples use DuckDB 2.0's `CONNECT` statement. Run Quack on trusted local networks; for remote access, put it behind a TLS-terminating reverse proxy.
+Quack is stable as of DuckDB 2.0. These examples use its `CONNECT` statement. Run Quack on trusted local networks; for remote access, put it behind a TLS-terminating reverse proxy.
 
 ## Configure
 
@@ -148,7 +148,7 @@ DISCONNECT;
 
 ## Run manually
 
-To run this configuration in a DuckDB 1.5.6+ shell instead of the daemon, execute the SQL below. Replace bracketed values with the corresponding values from this guide. Keep the shell open while clients send telemetry.
+To run this configuration in a DuckDB 2.0+ shell instead of the daemon, execute the SQL below. Replace bracketed values with the corresponding values from this guide. Keep the shell open while clients send telemetry.
 
 ```bash
 mkdir -p data/ducklake/storage

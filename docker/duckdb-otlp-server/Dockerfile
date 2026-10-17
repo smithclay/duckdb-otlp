@@ -1,8 +1,7 @@
 # Single source of truth for the duckdb-otlp server image. Stages:
 #   builder         - compiles the static daemon from source (Rust + DuckDB).
 #   daemon-export   - exports just the binary (CI uploads this as an artifact).
-#   deps            - throwaway: primes the DuckDB extension cache. The DuckDB CLI lives
-#                     ONLY here.
+#   deps            - throwaway: primes the DuckDB extension cache.
 #   zlib            - throwaway: stages Wolfi's libz, the one shared lib the base lacks.
 #   runtime-base    - distroless final minus the daemon binary (extensions, libz, health).
 #   runtime-source  - runtime-base + binary from `builder` (local build-from-source).
@@ -21,7 +20,7 @@
 
 FROM rust:1-bookworm AS builder
 
-ARG DUCKDB_VERSION=v1.5.6
+ARG DUCKDB_VERSION=v2.0.0-alpha46057
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -45,7 +44,7 @@ COPY --from=builder /src/build/release/extension/otlp/duckdb-otlp /duckdb-otlp-s
 
 FROM debian:bookworm-slim AS deps
 
-ARG DUCKDB_VERSION=v1.5.6
+ARG DUCKDB_VERSION=v2.0.0-alpha46057
 ARG TARGETARCH
 # Runtime user in the distroless nonroot image.
 ARG RUN_UID=65532
@@ -53,32 +52,47 @@ ARG RUN_GID=65532
 ENV HOME=/duckdb-home
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl unzip zlib1g \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
-
-# DuckDB CLI is used only to prime the extension cache; it is NOT copied into the final image.
-RUN set -eux; \
-    case "${TARGETARCH:-amd64}" in \
-        amd64) duckdb_arch="amd64" ;; \
-        arm64) duckdb_arch="arm64" ;; \
-        *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
-    esac; \
-    curl -fsSL \
-        "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_VERSION}/duckdb_cli-linux-${duckdb_arch}.zip" \
-        -o /tmp/duckdb.zip; \
-    unzip /tmp/duckdb.zip -d /tmp/duckdb-cli; \
-    rm -f /tmp/duckdb.zip
 
 # Prime every mode's extensions into HOME=/duckdb-home so the daemon's startup INSTALL/LOAD
 # is offline. Extensions statically linked into the daemon are intentionally not installed:
 # otlp, plus ducklake (`make server-release` builds it from DuckDB's pinned config, so the
 # default local-ducklake mode downloads nothing and does not depend on a published build
 # matching the daemon's DuckDB ABI).
-RUN set -eux; mkdir -p "${HOME}"; \
-    for ext in iceberg httpfs aws postgres quack; do \
-        /tmp/duckdb-cli/duckdb -unsigned -c "INSTALL ${ext};"; \
+#
+# The signed binaries are fetched straight from the extension repositories into the path
+# DuckDB's INSTALL writes (<version>/<platform>/), rather than by running INSTALL in a
+# throwaway CLI: DuckDB publishes no CLI binary for a 2.0 alpha, and the daemon's INSTALL is
+# a no-op for a file already in place. LOAD still verifies each signature. `postgres` is
+# installed as postgres_scanner, its file name. avro is no mode's extension but iceberg
+# autoloads it, so it is primed too or the iceberg modes reach the network on first LOAD.
+#
+# gcs is a community extension and is best effort: it has no build for DuckDB 2.0 yet, so a
+# missing binary is reported and skipped instead of failing the image. Until it is
+# published, the gcs-* modes fetch it at startup (and fail there, naming it).
+RUN set -eux; \
+    case "${TARGETARCH:-amd64}" in \
+        amd64) platform="linux_amd64" ;; \
+        arm64) platform="linux_arm64" ;; \
+        *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    dir="${HOME}/.duckdb/extensions/${DUCKDB_VERSION}/${platform}"; \
+    mkdir -p "${dir}"; \
+    fetch() { \
+        curl -fsSL "$1/${DUCKDB_VERSION}/${platform}/$2.duckdb_extension.gz" \
+            | gunzip > "${dir}/$2.duckdb_extension.tmp" \
+            && mv "${dir}/$2.duckdb_extension.tmp" "${dir}/$2.duckdb_extension"; \
+    }; \
+    for ext in iceberg avro httpfs aws postgres quack; do \
+        [ "${ext}" = postgres ] && file=postgres_scanner || file="${ext}"; \
+        fetch https://extensions.duckdb.org "${file}"; \
     done; \
-    /tmp/duckdb-cli/duckdb -c "INSTALL gcs FROM community; LOAD gcs;"; \
+    for ext in gcs; do \
+        fetch https://community-extensions.duckdb.org "${ext}" \
+            || { rm -f "${dir}/${ext}.duckdb_extension.tmp"; \
+                 echo "WARNING: community extension ${ext} not published for ${DUCKDB_VERSION}; skipped" >&2; }; \
+    done; \
     chown -R "${RUN_UID}:${RUN_GID}" "${HOME}"
 
 # gcp-ducklake loads a fixed gcs build instead of the community one, which prints a failed

@@ -29,25 +29,24 @@ concurrency:
 
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository }}
-  # The DuckDB version the daemon reports, pinned to a released one. Keep in sync with the
-  # DUCKDB_VERSION ARG in docker/duckdb-otlp-server/Dockerfile: the container reuses it to
-  # match its pre-primed extension cache, and a standalone binary needs it so its runtime
-  # INSTALL of ducklake/httpfs/... resolves to a published build.
-  DAEMON_DUCKDB_VERSION: v1.5.6
+  # The DuckDB version the daemon reports, pinned to one with published extensions. Keep in
+  # sync with the DUCKDB_VERSION ARG in docker/duckdb-otlp-server/Dockerfile: the container
+  # reuses it to match its pre-primed extension cache, and a standalone binary needs it so its
+  # runtime INSTALL of httpfs/iceberg/... resolves to a published build. DuckDB deploys 2.0
+  # extensions for this alpha (built from the duckdb submodule's commit) until v2.0.0 ships.
+  DAEMON_DUCKDB_VERSION: v2.0.0-alpha46057
 
 jobs:
   duckdb-stable-build:
     name: Build extension binaries
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v2.0-cyanoptera
     with:
-      # DuckDB 2.0 ("cyanoptera") is still on its release branch; no v2.0.0 tag exists yet,
-      # so track the feature-frozen branch until the tag lands, then pin to it. Note this
-      # string is both the git ref and the version stamped into the artifacts: a branch name
-      # is not a semver, so the resulting binaries resolve extensions under
-      # extensions.duckdb.org/v2.0-cyanoptera/ (which does not exist) and will not load into
-      # the published v2.0.0-alpha CLI. Fine here -- no test INSTALLs an extension -- but the
-      # Docker/daemon path still needs a version with published extension binaries.
-      duckdb_version: v2.0-cyanoptera
+      # DuckDB 2.0 has no v2.0.0 tag yet. Build the commit the community-extensions CI builds
+      # against (the duckdb submodule's pin) and stamp it with the alpha version DuckDB
+      # deploys extensions for, so these binaries load into that alpha and resolve its
+      # published extensions. Move both to v2.0.0 once the release lands (2026-10-21).
+      duckdb_version: b15358c371daf10dad799a43b6167f6ccdce84d8
+      duckdb_tag: v2.0.0-alpha46057
       ci_tools_version: v2.0-cyanoptera
       extension_name: otlp
       extra_toolchains: rust
@@ -118,10 +117,10 @@ jobs:
           tags: duckdb-otlp:smoke
           cache-from: type=gha,scope=docker-runtime
 
-      # DuckDB 2.0 has no published extensions yet, so Quack cannot load in the daemon (the
-      # image's v1.5.6 cache is ABI-incompatible). `--verify restart` seals via SIGTERM and
+      # The Quack read-back needs a host duckdb CLI of the daemon's exact version, and DuckDB
+      # publishes no CLI binary for a 2.0 alpha. `--verify restart` seals via SIGTERM and
       # reads back with the image's own `query` subcommand instead. Restore the Quack path
-      # (and the host duckdb CLI install) once 2.0 extensions are published.
+      # (and the host duckdb CLI install) once v2.0.0 is released.
       - name: Run e2e smoke
         run: |
           python3 scripts/smoke_test.py \
@@ -215,10 +214,10 @@ jobs:
           tags: duckdb-otlp:smoke
           cache-from: type=gha,scope=docker-runtime
 
-      # DuckDB 2.0 has no published extensions yet, so Quack cannot load in the daemon (the
-      # image's v1.5.6 cache is ABI-incompatible). `--verify restart` seals via SIGTERM and
+      # The Quack read-back needs a host duckdb CLI of the daemon's exact version, and DuckDB
+      # publishes no CLI binary for a 2.0 alpha. `--verify restart` seals via SIGTERM and
       # reads back with the image's own `query` subcommand instead. Restore the Quack path
-      # (and the host duckdb CLI install) once 2.0 extensions are published.
+      # (and the host duckdb CLI install) once v2.0.0 is released.
       - name: Run e2e smoke
         run: |
           python3 scripts/smoke_test.py \
@@ -363,14 +362,9 @@ jobs:
     name: Code Quality Check
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v2.0-cyanoptera
     with:
-      # DuckDB 2.0 ("cyanoptera") is still on its release branch; no v2.0.0 tag exists yet,
-      # so track the feature-frozen branch until the tag lands, then pin to it. Note this
-      # string is both the git ref and the version stamped into the artifacts: a branch name
-      # is not a semver, so the resulting binaries resolve extensions under
-      # extensions.duckdb.org/v2.0-cyanoptera/ (which does not exist) and will not load into
-      # the published v2.0.0-alpha CLI. Fine here -- no test INSTALLs an extension -- but the
-      # Docker/daemon path still needs a version with published extension binaries.
-      duckdb_version: v2.0-cyanoptera
+      # The commit the community-extensions CI builds against (the duckdb submodule's pin).
+      # Move to v2.0.0 once the release lands (2026-10-21).
+      duckdb_version: b15358c371daf10dad799a43b6167f6ccdce84d8
       ci_tools_version: v2.0-cyanoptera
       extension_name: otlp
 
