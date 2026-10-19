@@ -184,6 +184,30 @@ def test_promotion_off_by_default(tmp_path):
     assert "promote_scope_attributes" not in result.stdout
 
 
+def test_attributes_as_variant_emitted_when_set(tmp_path):
+    result = run(
+        {
+            "DUCKDB_MODE": "local-ducklake",
+            "DUCKDB_OTLP_TOKEN": "a-private-token-123456",
+            "DUCKDB_OTLP_ATTRIBUTES_AS_VARIANT": "1",
+        },
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "attributes_as_variant := true" in result.stdout
+
+
+def test_attributes_as_variant_off_by_default(tmp_path):
+    result = run(
+        {"DUCKDB_MODE": "local-ducklake", "DUCKDB_OTLP_TOKEN": "a-private-token-123456"},
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    # Match the named parameter, not the bare word: pytest names the temp data directory after
+    # the test, so the plain string appears in the printed paths.
+    assert "attributes_as_variant :=" not in result.stdout
+
+
 def test_no_token_on_loopback_disables_auth(tmp_path):
     """There is no built-in default token any more.
 

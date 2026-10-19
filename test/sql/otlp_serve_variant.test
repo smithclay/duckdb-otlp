@@ -1,0 +1,117 @@
+# name: test/sql/otlp_serve_variant.test
+# description: attributes_as_variant shapes the ingest server's destination tables
+# group: [sql]
+
+require otlp
+
+# Same reason as otlp_serve.test: the ingest server is native-only.
+require 64bit
+
+# The Parquet-export dataset check below builds its fixture with a parquet COPY.
+require parquet
+
+query T
+SELECT listen_uri FROM otlp_serve('otlp:127.0.0.1:55471', token := 'dev-token-123456',
+                                  attributes_as_variant := true);
+----
+otlp:127.0.0.1:55471
+
+# The server creates its destination tables with VARIANT bags; every other column is untouched.
+query II
+SELECT column_name, data_type FROM duckdb_columns()
+WHERE table_name = 'otlp_logs'
+  AND column_name IN ('resource_attributes', 'scope_attributes', 'log_attributes', 'body')
+ORDER BY column_name;
+----
+body	VARCHAR
+log_attributes	VARIANT
+resource_attributes	VARIANT
+scope_attributes	VARIANT
+
+query II
+SELECT column_name, data_type FROM duckdb_columns()
+WHERE table_name = 'otlp_traces' AND column_name IN ('span_attributes', 'events_json')
+ORDER BY column_name;
+----
+events_json	VARCHAR
+span_attributes	VARIANT
+
+query T
+SELECT status FROM otlp_stop('otlp:127.0.0.1:55471');
+----
+Stopped listening on otlp:127.0.0.1:55471
+
+# Restarting against those tables without the flag is a startup error naming the migration,
+# not a silent write of JSON text into a VARIANT column.
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55471', token := 'dev-token-123456');
+----
+was created with attributes_as_variant := true
+
+# The flag is what reconciles them.
+query T
+SELECT listen_uri FROM otlp_serve('otlp:127.0.0.1:55471', token := 'dev-token-123456',
+                                  attributes_as_variant := true);
+----
+otlp:127.0.0.1:55471
+
+query T
+SELECT status FROM otlp_stop('otlp:127.0.0.1:55471');
+----
+Stopped listening on otlp:127.0.0.1:55471
+
+# Promotion rides on the VARIANT bags too: the promoted columns stay VARCHAR. (A server does
+# not create its schema -- only the daemon's generated boot SQL does -- so create it here.)
+statement ok
+CREATE SCHEMA promoted;
+
+query T
+SELECT listen_uri FROM otlp_serve('otlp:127.0.0.1:55472', token := 'dev-token-123456',
+                                  schema := 'promoted', attributes_as_variant := true,
+                                  promote_resource_attributes := 'service.name');
+----
+otlp:127.0.0.1:55472
+
+query II
+SELECT column_name, data_type FROM duckdb_columns()
+WHERE table_name = 'otlp_logs' AND schema_name = 'promoted'
+  AND column_name IN ('resource_attributes', 'resource_attr_service_name')
+ORDER BY column_name;
+----
+resource_attr_service_name	VARCHAR
+resource_attributes	VARIANT
+
+query T
+SELECT status FROM otlp_stop('otlp:127.0.0.1:55472');
+----
+Stopped listening on otlp:127.0.0.1:55472
+
+# Parquet export keeps no destination table, but the dataset root still has a shape: a seal
+# writes files beside the ones already there and every reader unions them by name, so flipping
+# the flag over an existing dataset would make the older rows read back as VARIANT *strings*.
+# Build a dataset with a JSON-text bag (the server creates the root; the COPY fills it)...
+statement ok
+SELECT listen_uri FROM otlp_serve('otlp:127.0.0.1:55473', token := 'dev-token-123456',
+                                  parquet_export_path := '__TEST_DIR__/variant_dataset');
+
+statement ok
+SELECT status FROM otlp_stop('otlp:127.0.0.1:55473');
+
+statement ok
+COPY (SELECT '{"service.name":"x"}' AS resource_attributes, 2026 AS year)
+TO '__TEST_DIR__/variant_dataset/otlp_logs' (FORMAT parquet, PARTITION_BY (year));
+
+# ... and a VARIANT server pointed at it is refused, rather than writing a second encoding in.
+statement error
+CALL otlp_serve('otlp:127.0.0.1:55473', token := 'dev-token-123456',
+                parquet_export_path := '__TEST_DIR__/variant_dataset', attributes_as_variant := true);
+----
+was created with attributes_as_variant := false
+
+# The same dataset with the setting it was written on is fine.
+statement ok
+SELECT listen_uri FROM otlp_serve('otlp:127.0.0.1:55473', token := 'dev-token-123456',
+                                  parquet_export_path := '__TEST_DIR__/variant_dataset');
+
+statement ok
+SELECT status FROM otlp_stop('otlp:127.0.0.1:55473');
