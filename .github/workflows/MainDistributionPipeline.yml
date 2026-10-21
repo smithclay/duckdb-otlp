@@ -32,21 +32,15 @@ env:
   # The DuckDB version the daemon reports, pinned to one with published extensions. Keep in
   # sync with the DUCKDB_VERSION ARG in docker/duckdb-otlp-server/Dockerfile: the container
   # reuses it to match its pre-primed extension cache, and a standalone binary needs it so its
-  # runtime INSTALL of httpfs/iceberg/... resolves to a published build. DuckDB deploys 2.0
-  # extensions for this alpha (built from the duckdb submodule's commit) until v2.0.0 ships.
-  DAEMON_DUCKDB_VERSION: v2.0.0-alpha46057
+  # runtime INSTALL of httpfs/iceberg/... resolves to a published build.
+  DAEMON_DUCKDB_VERSION: v2.0.0
 
 jobs:
   duckdb-stable-build:
     name: Build extension binaries
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v2.0-cyanoptera
     with:
-      # DuckDB 2.0 has no v2.0.0 tag yet. Build the commit the community-extensions CI builds
-      # against (the duckdb submodule's pin) and stamp it with the alpha version DuckDB
-      # deploys extensions for, so these binaries load into that alpha and resolve its
-      # published extensions. Move both to v2.0.0 once the release lands (2026-10-21).
-      duckdb_version: b15358c371daf10dad799a43b6167f6ccdce84d8
-      duckdb_tag: v2.0.0-alpha46057
+      duckdb_version: v2.0.0
       ci_tools_version: v2.0-cyanoptera
       extension_name: otlp
       extra_toolchains: rust
@@ -96,7 +90,7 @@ jobs:
         run: |
           chmod +x daemon-bin/duckdb-otlp-server
           DUCKDB_OTLP_SERVER_BIN="$PWD/daemon-bin/duckdb-otlp-server" \
-            uv run --with pytest --with grpcio --with opentelemetry-proto --with duckdb==1.5.6 pytest test/server -q
+            uv run --with pytest --with grpcio --with opentelemetry-proto --with duckdb==2.0.0 pytest test/server -q
 
       - name: Prepare Docker build context
         shell: bash
@@ -117,17 +111,19 @@ jobs:
           tags: duckdb-otlp:smoke
           cache-from: type=gha,scope=docker-runtime
 
-      # The Quack read-back needs a host duckdb CLI of the daemon's exact version, and DuckDB
-      # publishes no CLI binary for a 2.0 alpha. `--verify restart` seals via SIGTERM and
-      # reads back with the image's own `query` subcommand instead. Restore the Quack path
-      # (and the host duckdb CLI install) once v2.0.0 is released.
+      - name: Install duckdb CLI (host, for Quack queries)
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/duckdb/duckdb/releases/download/${DAEMON_DUCKDB_VERSION}/duckdb-cli-linux-amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin duckdb
+          duckdb --version
+
       - name: Run e2e smoke
         run: |
           python3 scripts/smoke_test.py \
             --image duckdb-otlp:smoke \
             --platform linux/amd64 \
-            --startup-timeout 120 \
-            --verify restart
+            --startup-timeout 120
 
   daemon-linux:
     name: Build server daemon (${{ matrix.arch }})
@@ -214,17 +210,19 @@ jobs:
           tags: duckdb-otlp:smoke
           cache-from: type=gha,scope=docker-runtime
 
-      # The Quack read-back needs a host duckdb CLI of the daemon's exact version, and DuckDB
-      # publishes no CLI binary for a 2.0 alpha. `--verify restart` seals via SIGTERM and
-      # reads back with the image's own `query` subcommand instead. Restore the Quack path
-      # (and the host duckdb CLI install) once v2.0.0 is released.
+      - name: Install duckdb CLI (host, for Quack queries)
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/duckdb/duckdb/releases/download/${DAEMON_DUCKDB_VERSION}/duckdb-cli-linux-amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin duckdb
+          duckdb --version
+
       - name: Run e2e smoke
         run: |
           python3 scripts/smoke_test.py \
             --image duckdb-otlp:smoke \
             --platform linux/amd64 \
-            --startup-timeout 120 \
-            --verify restart
+            --startup-timeout 120
 
   # Native macOS daemon builds. The Linux daemon comes out of a Docker stage, which cannot
   # produce a Darwin binary, so this is a separate job rather than two more matrix entries.
@@ -362,9 +360,6 @@ jobs:
     name: Code Quality Check
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v2.0-cyanoptera
     with:
-      # The commit the community-extensions CI builds against (the duckdb submodule's pin).
-      # Move to v2.0.0 once the release lands (2026-10-21).
-      duckdb_version: b15358c371daf10dad799a43b6167f6ccdce84d8
       ci_tools_version: v2.0-cyanoptera
       extension_name: otlp
 

@@ -10,21 +10,15 @@ This file provides guidance to coding agents when working with code in this repo
   export VCPKG_TOOLCHAIN_PATH=`pwd`/vcpkg/scripts/buildsystems/vcpkg.cmake
   ```
 - Use `uv` for Python tooling (formatting, testing, dependency management)
-- **DuckDB is pinned to the 2.0 alpha the community build uses.** No `v2.0.0` tag exists yet
-  (release: 2026-10-21). DuckDB deploys extensions for `v2.0.0-alpha46057`, built from commit
-  `b15358c371`, and the community-extensions CI builds every PR against that same pair. So the
-  `duckdb` submodule is checked out at `b15358c371`, the extension CI passes
-  `duckdb_version: <that sha>` + `duckdb_tag: v2.0.0-alpha46057` (the community build's own
-  inputs; `pages.yml` too), and the daemon/Docker version (`DAEMON_DUCKDB_VERSION`, the
-  Dockerfile's `DUCKDB_VERSION` ARG, the Makefile's WASM `VERSION_FIELD`) is
-  `v2.0.0-alpha46057`, so runtime `INSTALL`s resolve to published binaries. Move all of them to
-  `v2.0.0` together when the release lands. `extension-ci-tools` and the reusable-workflow refs
-  stay on `v2.0-cyanoptera`. Two gaps remain until then: DuckDB publishes no CLI binary for the
-  alpha, so the CI smoke runs `scripts/smoke_test.py --verify restart` (SIGTERM seal, then the
-  image's own `query`) instead of reading back over Quack from a host CLI; and the community
-  `gcs` extension has no 2.0 build, so the image skips it (see the offline-cache note below).
-  `description.yml` carries `variegata:` (the last v1.5.6-compatible commit) for the v1.5 line;
-  `ref_next` no longer triggers community builds.
+- **DuckDB is pinned to `v2.0.0`.** The `duckdb` submodule is checked out at the tag, the
+  extension CI (and `pages.yml`) passes `duckdb_version: v2.0.0`, and the daemon/Docker version
+  (`DAEMON_DUCKDB_VERSION`, the Dockerfile's `DUCKDB_VERSION` ARG, the Makefile's WASM
+  `VERSION_FIELD`) is `v2.0.0`, so runtime `INSTALL`s resolve to published binaries. Move them
+  together. `extension-ci-tools` and the reusable-workflow refs stay on `v2.0-cyanoptera`, the
+  community build's own. One gap remains: neither the community `gcs` extension nor the patched
+  build (`smithclay/duckdb-gcs`) has a 2.0 build, so the image skips both (see the offline-cache
+  note below) and `gcp-ducklake` fails at startup. `description.yml` carries `variegata:` (the
+  last v1.5.6-compatible commit) for the v1.5 line; `ref_next` no longer triggers community builds.
 - **Statically linked extensions must be rooted explicitly (DuckDB 2.0).** A linked extension
   registers itself only when the program calls `link_extension_libraries`, and that function reads
   the link set DuckDB resolves *after* its extension loop, which is where this `CMakeLists.txt` runs.
@@ -112,7 +106,7 @@ CI in `.github/workflows/MainDistributionPipeline.yml`: `daemon-compile` is a ch
 
 On a `v*` tag, `daemon-release` attaches those four binaries to the GitHub release as `duckdb-otlp-<tag>-<platform>.tar.gz` plus `SHA256SUMS`. It recompiles nothing (it downloads the artifacts the build jobs uploaded) and gates on `docker-smoke`, so a binary that failed the e2e never reaches a release. The Darwin artifacts are deliberately named `duckdb-otlp-darwin-*` rather than `duckdb-otlp-server-*`: the latter is the glob `docker-image` downloads, which must only match the Linux binaries. `daemon-release` creates the release when the tag was pushed without one, which in turn triggers `pages.yml` to attach the extension repository.
 
-Extension offline-cache coupling: the `deps` stage downloads the signed iceberg/avro/httpfs/aws/postgres_scanner/quack binaries (and community gcs, best effort: skipped with a warning while it has no build for the pinned version) straight into `HOME=/duckdb-home/.duckdb/extensions/<version>/<platform>/`, the path `INSTALL` writes, and that directory is copied into the final image, owned by the nonroot user. No CLI runs: there is none for a 2.0 alpha, and the daemon's `INSTALL` is a no-op for a file already present. avro is primed because iceberg autoloads it. The daemon reuses that cache only because it runs with the same `HOME` and is pinned to the same `DUCKDB_VERSION`. If those diverge, the daemon's startup `INSTALL`/`LOAD` re-downloads (or fails when offline). The `otlp` extension is statically embedded in the daemon and is intentionally not installed, and so is `ducklake` (see *Built-in runtime extensions* below), which is what lets the default `local-ducklake` mode run on a DuckDB build that has no published extensions — a 2.0 development build, for one. Bind-mounted `/data` must be writable by uid 65532; named/anonymous volumes inherit the image's nonroot ownership automatically.
+Extension offline-cache coupling: the `deps` stage runs `INSTALL` for iceberg/avro/httpfs/aws/postgres/quack (and community gcs, best effort: skipped with a warning while it has no build for the pinned version) in a throwaway DuckDB CLI with `HOME=/duckdb-home`, and that directory is copied into the final image, owned by the nonroot user. avro is primed because iceberg autoloads it. The daemon reuses that cache only because it runs with the same `HOME` and is pinned to the same `DUCKDB_VERSION`. If those diverge, the daemon's startup `INSTALL`/`LOAD` re-downloads (or fails when offline). The `otlp` extension is statically embedded in the daemon and is intentionally not installed, and so is `ducklake` (see *Built-in runtime extensions* below), which is what lets the default `local-ducklake` mode run on a DuckDB build that has no published extensions — a 2.0 development build, for one. Bind-mounted `/data` must be writable by uid 65532; named/anonymous volumes inherit the image's nonroot ownership automatically.
 
 ### Building for WebAssembly
 ```bash
@@ -287,7 +281,7 @@ Prefer one canonical page per topic and link to it instead of duplicating exampl
 - All tests run against DuckDB with the extension statically linked (`make test`).
 - Test data in `test/data/` includes representative OTLP JSON and protobuf fixtures used by the table functions.
 - `test/pages/` holds the published-site tests (`python3 -m unittest discover -s test/pages`, run by `site-check.yml`): the extension-repository packaging, and `install.sh` driven against a fake release served over loopback.
-- The Docker benchmark harness (`scripts/benchmark_catalog_ingest.py`) starts the daemon image, sends OTLP/HTTP log batches, flushes via Quack, and queries row counts/server metrics over Quack. Because the image is distroless (no in-container shell/`duckdb`), it publishes the Quack port and runs Quack queries from a **host `duckdb` CLI** — so the harness now requires `duckdb` on `PATH` (the `docker-smoke` CI job uses `--verify restart` instead until a 2.0 CLI is published). It intentionally avoids the old FIFO controller path.
+- The Docker benchmark harness (`scripts/benchmark_catalog_ingest.py`) starts the daemon image, sends OTLP/HTTP log batches, flushes via Quack, and queries row counts/server metrics over Quack. Because the image is distroless (no in-container shell/`duckdb`), it publishes the Quack port and runs Quack queries from a **host `duckdb` CLI** — so the harness now requires `duckdb` on `PATH`. It intentionally avoids the old FIFO controller path.
 
 ## Known Limitations
 

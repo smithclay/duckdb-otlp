@@ -13,7 +13,7 @@ extension:
 repo:
   github: smithclay/duckdb-otlp
   # DuckDB 2.0 build. Set to the main commit that merges the 2.0 port (PR #38); the
-  # community-extensions CI builds it against v2.0.0 (v2.0.0-alpha46057 until the release).
+  # community-extensions CI builds it against v2.0.0.
   ref: TODO-main-commit-after-pr-38
   # DuckDB v1.5 build: the last commit that builds against v1.5.6. Community CI no longer
   # builds v1.5 automatically, so this only matters for a requested v1.5.6 rebuild.

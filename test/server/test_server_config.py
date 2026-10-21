@@ -302,7 +302,8 @@ def test_gcp_ducklake_loads_a_local_gcs_build_by_path(tmp_path):
     assert "LOAD '/opt/extensions/gcs.duckdb_extension';" in out
     assert "INSTALL gcs" not in out
     assert "LOAD gcs;" not in out
-    assert "INSTALL ducklake;" in out
+    # The mode's other extensions are unaffected. Not ducklake: a daemon may link it in.
+    assert "INSTALL postgres;" in out
     assert "gcs (local file /opt/extensions/gcs.duckdb_extension)" in out
 
 
