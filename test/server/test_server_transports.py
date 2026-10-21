@@ -181,8 +181,7 @@ def test_init_sql_adds_a_parquet_destination_next_to_the_ducklake_catalog(tmp_pa
     )
     env = {
         'PATH': os.environ.get('PATH', ''),
-        # Unlike the parquet mode, this one INSTALLs ducklake (unless the daemon has it built
-        # in), which needs the extension cache.
+        # Unlike the parquet mode, this one INSTALLs ducklake, which needs the extension cache.
         'HOME': os.environ.get('HOME', ''),
         'DUCKDB_MODE': 'local-ducklake',
         'DUCKDB_OTLP_DATA_DIR': str(lake_dir),

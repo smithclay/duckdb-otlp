@@ -69,16 +69,14 @@ RUN set -eux; \
         | tar -xz -C /tmp/duckdb-cli duckdb
 
 # Prime every mode's extensions into HOME=/duckdb-home so the daemon's startup INSTALL/LOAD
-# is offline. Extensions statically linked into the daemon are intentionally not installed:
-# otlp, plus ducklake (`make server-release` builds it from DuckDB's pinned config, so the
-# default local-ducklake mode downloads nothing and does not depend on a published build
-# matching the daemon's DuckDB ABI). avro is no mode's extension but iceberg autoloads it,
-# so it is primed too or the iceberg modes reach the network on first LOAD.
+# is offline. The daemon (otlp) is statically embedded and is intentionally not installed.
+# avro is no mode's extension but iceberg autoloads it, so it is primed too or the iceberg
+# modes reach the network on first LOAD.
 #
 # gcs is a community extension and is best effort: it has no build for DuckDB 2.0 yet, so a
 # missing build is reported and skipped instead of failing the image.
 RUN set -eux; mkdir -p "${HOME}"; \
-    for ext in iceberg avro httpfs aws postgres quack; do \
+    for ext in ducklake iceberg avro httpfs aws postgres quack; do \
         /tmp/duckdb-cli/duckdb -c "INSTALL ${ext};"; \
     done; \
     for ext in gcs; do \
