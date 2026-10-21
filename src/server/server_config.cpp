@@ -1252,6 +1252,13 @@ ServerConfig ServerConfig::FromEnv(const EnvSource &env) {
 	if (config.quack_enabled && config.quack_token.empty()) {
 		throw InvalidInputException("DUCKDB_QUACK_ENABLED=1 requires a dedicated Quack token. Set DUCKDB_QUACK_TOKEN.");
 	}
+	config.quack_ssl_cert_file = env.Get("DUCKDB_QUACK_SSL_CERT_FILE");
+	config.quack_ssl_key_file = env.Get("DUCKDB_QUACK_SSL_KEY_FILE");
+	// Half a pair is a hard error rather than a fall-through to the self-signed certificate,
+	// which would hide the typo until a client's fingerprint pin stopped matching.
+	if (config.quack_ssl_cert_file.empty() != config.quack_ssl_key_file.empty()) {
+		throw InvalidInputException("DUCKDB_QUACK_SSL_CERT_FILE and DUCKDB_QUACK_SSL_KEY_FILE must be set together.");
+	}
 
 	// Authentication. There is deliberately no built-in default token: a token published in
 	// this repository authenticates nothing, and silently falling back to one gave servers the
@@ -1384,15 +1391,29 @@ string ServerConfig::StartQuackSql() const {
 	if (!quack_enabled) {
 		return "";
 	}
+	// No disable_ssl: as of DuckDB 2.0 Quack serves TLS on every non-loopback bind, with a
+	// self-signed certificate unless one is supplied. Clients pin its fingerprint, which the
+	// startup banner prints (QuackEndpointSql).
+	string ssl_sql;
+	if (!quack_ssl_cert_file.empty()) {
+		ssl_sql = StringUtil::Format(",\n    ssl_cert_file := %s,\n    ssl_key_file := %s",
+		                             SqlQuote(quack_ssl_cert_file), SqlQuote(quack_ssl_key_file));
+	}
 	return ExtensionSetupSql({QuackExtension()}) + StringUtil::Format(R"SQL(
 SELECT listen_uri
 FROM quack_serve(
     %s,
     token := getvariable('duckdb_quack_effective_token'),
-    allow_other_hostname := true
+    allow_other_hostname := true%s
 );
 )SQL",
-	                                                                  SqlQuote(quack_listen_uri));
+	                                                                  SqlQuote(quack_listen_uri), ssl_sql);
+}
+
+string ServerConfig::QuackEndpointSql() const {
+	return StringUtil::Format("SELECT listen_url, coalesce(info['ssl_fingerprint'], '') FROM quack_server_list() "
+	                          "WHERE listen_uri = %s LIMIT 1",
+	                          SqlQuote(quack_listen_uri));
 }
 
 string ServerConfig::StopOtlpSql() const {

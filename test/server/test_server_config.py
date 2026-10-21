@@ -889,6 +889,31 @@ def test_quack_is_installed_before_it_is_loaded(tmp_path):
     assert "INSTALL quack FROM community" not in sql
 
 
+def test_quack_serves_the_operators_certificate(tmp_path):
+    """Without a certificate Quack generates a self-signed one under $HOME, which a fresh
+    container regenerates, so a client's fingerprint pin breaks on every redeploy."""
+    env = dict(MODE_FIXTURES["local-ducklake+quack"])
+    default = run(env, tmp_path)
+    assert default.returncode == 0, default.stderr
+    assert "ssl_cert_file" not in default.stdout
+    assert "disable_ssl" not in default.stdout
+
+    env.update({"DUCKDB_QUACK_SSL_CERT_FILE": "/certs/quack.pem", "DUCKDB_QUACK_SSL_KEY_FILE": "/certs/quack.key"})
+    result = run(env, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "ssl_cert_file := '/certs/quack.pem'" in result.stdout
+    assert "ssl_key_file := '/certs/quack.key'" in result.stdout
+
+
+@pytest.mark.parametrize("name", ["DUCKDB_QUACK_SSL_CERT_FILE", "DUCKDB_QUACK_SSL_KEY_FILE"])
+def test_half_a_quack_certificate_pair_is_an_error(name, tmp_path):
+    env = dict(MODE_FIXTURES["local-ducklake+quack"])
+    env[name] = "/certs/quack.pem"
+    result = run(env, tmp_path)
+    assert result.returncode != 0
+    assert "DUCKDB_QUACK_SSL_CERT_FILE and DUCKDB_QUACK_SSL_KEY_FILE must be set together" in result.stderr
+
+
 def test_quack_appears_in_the_banner_only_when_enabled(tmp_path):
     """The banner listed the mode's extensions only, so a running Quack endpoint -- an
     administrative one granting full SQL access -- was absent from the startup report."""

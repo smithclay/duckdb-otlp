@@ -93,15 +93,17 @@ CALL quack_serve(
     token := 'dev-quack-token-123456',
     allow_other_hostname := true
 );
+
+SELECT info['ssl_fingerprint'] FROM quack_server_list();
 ```
 
-Quack now serves this DuckDB instance — including `otlp_logs` and the other signal tables — on port `9494`. Use a token separate from the ingest token: `dev-token-123456` protects OTLP ingest on `4318`, and `dev-quack-token-123456` protects query access on `9494`. To accept only same-host connections, bind to `quack:localhost:9494` and drop `allow_other_hostname`.
+Quack now serves this DuckDB instance — including `otlp_logs` and the other signal tables — on port `9494`. Use a token separate from the ingest token: `dev-token-123456` protects OTLP ingest on `4318`, and `dev-quack-token-123456` protects query access on `9494`. On a non-loopback bind Quack serves TLS with a self-signed certificate, and the last query prints the fingerprint clients pin. To accept only same-host connections, bind to `quack:localhost:9494` and drop `allow_other_hostname`. That serves plain HTTP, and clients omit the fingerprint.
 
-Quack grants full SQL read/write access to this DuckDB connection, so treat the token as an administrative credential. Quack is experimental in DuckDB 1.5 and stable in DuckDB 2.0. Run it on trusted networks, and put it behind a TLS-terminating reverse proxy for remote access.
+Quack grants full SQL read/write access to this DuckDB connection, so treat the token as an administrative credential. Quack is stable in DuckDB 2.0. Run it on trusted networks.
 
 ## 6. Query with Quack from Another Host
 
-On another machine, install Quack, create a secret with the token, attach the remote server, and connect the session to it. Replace `SERVER_HOST` with the hostname or IP of the machine running the ingest server:
+On another machine, install Quack, create a secret with the token, attach the remote server, and connect the session to it. Replace `SERVER_HOST` with the hostname or IP of the machine running the ingest server, and `<fingerprint>` with the value printed above:
 
 ```sql
 INSTALL quack;
@@ -113,7 +115,7 @@ CREATE SECRET otlp_quack (
   TOKEN 'dev-quack-token-123456'
 );
 
-ATTACH 'quack:SERVER_HOST:9494' AS otel (TYPE quack);
+ATTACH 'quack:SERVER_HOST:9494' AS otel (TYPE quack, SSL_FINGERPRINT '<fingerprint>');
 CONNECT otel;
 ```
 

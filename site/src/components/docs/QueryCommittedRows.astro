@@ -35,7 +35,7 @@ CREATE SECRET duckdb_otlp_quack (
   TOKEN '${token}'
 );
 
-ATTACH 'quack:localhost:9494' AS otel (TYPE quack);
+ATTACH 'quack:localhost:9494' AS otel (TYPE quack, SSL_FINGERPRINT '<fingerprint>');
 CONNECT otel;
 
 SELECT * FROM otlp_flush('otlp:0.0.0.0:4318');
@@ -58,7 +58,9 @@ SQL`;
   The server image is distroless and has no shell or DuckDB CLI, so do not use
   <code>docker exec ... sh -c</code> for inspection SQL. The examples in this
   guide enable Quack, publish port <code>9494</code>, and use DuckDB 2.0's
-  <code>CONNECT</code> statement for ordinary server-side SQL.
+  <code>CONNECT</code> statement for ordinary server-side SQL. Replace
+  <code>&lt;fingerprint&gt;</code> with the TLS certificate fingerprint the
+  container prints at startup (see <a href="../query-with-quack/">Query with Quack</a>).
 </p>
 
 <Code code={queryCommand} lang="bash" />

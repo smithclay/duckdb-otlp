@@ -274,12 +274,38 @@ duckdb::string ListenerLabel(const duckdb_otlp_server::IngestListener &listener)
 	return duckdb::string(listener.otap ? "OTAP " : "OTLP ") + listener.transport;
 }
 
-// Probe GET http://<host>:<port><path>. Loopback for a wildcard host, the configured host
-// otherwise (review finding M5).
-bool HealthProbe(const duckdb::string &addr, const duckdb::string &path, int port_fallback) {
-	auto host = HealthCheckHost(addr);
-	auto port = PortFromAddr(addr, port_fallback);
-	return duckdb::OtlpHttpStatusOk(host, port, path);
+// How to reach the running Quack server. Since DuckDB 2.0 Quack serves TLS on every non-loopback
+// bind, with a self-signed certificate unless DUCKDB_QUACK_SSL_CERT_FILE supplies one, so a
+// client cannot connect without pinning a fingerprint it can only learn from here (or from
+// quack_server_list() on a connection it does not have yet).
+void PrintQuackEndpoint(duckdb::Connection &con, const duckdb_otlp_server::ServerConfig &config) {
+	auto result = con.Query(config.QuackEndpointSql());
+	CheckResult(*result, "quack endpoint");
+	auto chunk = result->Fetch();
+	if (!chunk || chunk->size() == 0) {
+		return;
+	}
+	auto fingerprint = chunk->GetValue(1, 0).GetValue<duckdb::string>();
+	auto host = ReachableHost(HostFromAddr(config.quack_http_addr));
+	if (host.find(':') != duckdb::string::npos) {
+		host = "[" + host + "]";
+	}
+	auto uri = "quack:" + host + ":" + std::to_string(PortFromAddr(config.quack_http_addr, 9494));
+	std::cout << "\nQuery over Quack at " << chunk->GetValue(0, 0).GetValue<duckdb::string>() << '\n';
+	if (fingerprint.empty()) {
+		std::cout << "  ATTACH '" << uri << "' AS otel (TYPE quack);\n";
+		return;
+	}
+	std::cout << "TLS certificate SHA-256 fingerprint: " << fingerprint << '\n'
+	          << "  ATTACH '" << uri << "' AS otel (TYPE quack, SSL_FINGERPRINT '" << fingerprint << "');\n";
+}
+
+// Probe a Quack bind address by TCP connect, on loopback for a wildcard host and the configured
+// host otherwise (review finding M5). Not an HTTP GET: Quack serves TLS on a non-loopback bind,
+// and this binary carries no TLS client (no OpenSSL), so the request it could send would be
+// answered with a TLS alert -- the probe read every healthy TLS Quack as down.
+bool QuackProbe(const duckdb::string &addr) {
+	return duckdb::OtlpTcpConnectOk(HealthCheckHost(addr), PortFromAddr(addr, 9494));
 }
 
 // One check's result. Collected rather than printed as it is found, so --json can emit one
@@ -315,8 +341,7 @@ void PrintDoctorReport(const std::vector<DoctorCheck> &checks, bool healthy, boo
 // images ship no shell/curl, so the daemon probes itself. It probes the CONFIGURED bind host
 // (loopback for a 0.0.0.0/:: wildcard bind, the explicit interface otherwise — see
 // HealthCheckHost), so a non-loopback bind is supported without a forever-failing loopback
-// probe. HTTP listeners use /readyz, gRPC listeners use TCP connect, and Quack is checked
-// when enabled.
+// probe. HTTP listeners use /readyz; gRPC listeners and Quack (when enabled) use TCP connect.
 //
 // Every check runs even after one fails: a partial answer ("http is up, grpc is not") is the
 // whole point of the command, and Docker keeps this output in the container's health log.
@@ -341,7 +366,7 @@ int RunDoctor(const EnvSource &env, bool as_json) {
 		// Resolved by the same function startup uses, so the probe cannot target a different
 		// port than the server bound.
 		auto quack_addr = duckdb_otlp_server::QuackAddrFromEnv(env);
-		checks.push_back({"Quack", quack_addr, HealthProbe(quack_addr, "/", 9494)});
+		checks.push_back({"Quack", quack_addr, QuackProbe(quack_addr)});
 	}
 	// Derived rather than tracked: a check appended without a companion `healthy &&= ok` would
 	// have printed "healthy" next to a FAIL, and nothing local showed the invariant.
@@ -395,8 +420,7 @@ int RunServe(const EnvSource &env) {
 		}
 		if (config.quack_enabled) {
 			std::cout << "Quack: " << config.quack_listen_uri << "\n\n";
-			std::cout << "WARNING: Quack grants full SQL read/write access to every attached catalog over an "
-			             "unencrypted connection.\n";
+			std::cout << "WARNING: Quack grants full SQL read/write access to every attached catalog.\n";
 		} else {
 			std::cout << "Quack: disabled\n";
 		}
@@ -540,6 +564,9 @@ int RunServe(const EnvSource &env) {
 				}
 			}
 			std::cout << "Read it back with: duckdb-otlp query \"SELECT * FROM otlp_logs LIMIT 10\"\n";
+			if (config.quack_enabled) {
+				PrintQuackEndpoint(con, config);
+			}
 			auto listener_ok = WaitForShutdownOrListenerFailure(con, config);
 
 			std::cout << "Stopping duckdb-otlp..." << '\n';
