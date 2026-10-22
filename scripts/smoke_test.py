@@ -20,6 +20,7 @@ import gzip
 import http.client
 import json
 import platform
+import re
 import secrets
 import socket
 import subprocess
@@ -120,12 +121,28 @@ def post_logs(port: int, token: str, body: bytes, content_encoding: str | None =
     return resp.status, text
 
 
-def quack_rows(quack_port: int, token: str, sql: str) -> list[dict]:
+FINGERPRINT_LINE = re.compile(r"^TLS certificate SHA-256 fingerprint: (\S+)$", re.MULTILINE)
+
+
+def quack_fingerprint(container: str, timeout: float = 30) -> str:
+    """The TLS fingerprint the daemon prints once Quack is up. Quack serves TLS with a
+    self-signed certificate on the container's wildcard bind, so a client must pin it."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        match = FINGERPRINT_LINE.search(container_logs(container))
+        if match:
+            return match.group(1)
+        time.sleep(0.5)
+    raise SystemExit("daemon never printed its Quack TLS fingerprint")
+
+
+def quack_rows(quack_port: int, token: str, fingerprint: str, sql: str) -> list[dict]:
     """Run a single SQL statement on the daemon's connection over Quack from a host duckdb."""
     remote = sql_quote(f"quack:127.0.0.1:{quack_port}")
     control = (
         "INSTALL quack;\nLOAD quack;\n"
-        f"SELECT * FROM quack_query({remote}, {sql_quote(sql)}, token = {sql_quote(token)});\n"
+        f"SELECT * FROM quack_query({remote}, {sql_quote(sql)}, token := {sql_quote(token)}, "
+        f"ssl_fingerprint := {sql_quote(fingerprint)});\n"
     )
     proc = subprocess.run(
         ["duckdb", "-unsigned", "-json", ":memory:"],
@@ -170,7 +187,6 @@ def main() -> int:
         "DUCKDB_CATALOG": CATALOG,
         "DUCKLAKE_CATALOG_PATH": "/tmp/duckdb-otlp-smoke.ducklake",
         "DUCKLAKE_DATA_PATH": "/tmp/duckdb-otlp-smoke-files/",
-        "DUCKDB_CATALOG": CATALOG,
         "DUCKDB_SCHEMA": SCHEMA,
         "DUCKDB_DATABASE": "/tmp/duckdb-otlp-smoke-control.duckdb",
         "DUCKDB_OTLP_TOKEN": token,
@@ -224,13 +240,16 @@ def main() -> int:
             raise SystemExit(f"gzip ingest buffered {gz_accepted} rows, expected {GZIP_LOG_RECORDS}: {gz_body}")
 
         total_records = LOG_RECORDS + GZIP_LOG_RECORDS
+        fingerprint = quack_fingerprint(container)
         eprint("[smoke] flushing (forces a synchronous seal)")
-        flush = quack_rows(quack_port, quack_token, f"SELECT * FROM otlp_flush('{SERVE_URI}')")
+        flush = quack_rows(quack_port, quack_token, fingerprint, f"SELECT * FROM otlp_flush('{SERVE_URI}')")
         if any(row.get("status") == "error" or row.get("error") for row in flush):
             raise SystemExit(f"flush failed: {json.dumps(flush)}")
 
         eprint("[smoke] verifying committed row count")
-        rows = quack_rows(quack_port, quack_token, f"SELECT count(*) AS n FROM {CATALOG}.{SCHEMA}.otlp_logs")
+        rows = quack_rows(
+            quack_port, quack_token, fingerprint, f"SELECT count(*) AS n FROM {CATALOG}.{SCHEMA}.otlp_logs"
+        )
         committed = int(rows[0]["n"]) if rows else 0
         if committed != total_records:
             raise SystemExit(f"committed otlp_logs rows ({committed}) did not match sent records ({total_records})")

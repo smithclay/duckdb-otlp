@@ -157,6 +157,7 @@ duckdb-otlp serve [flags]
 | `--no-auth` | `DUCKDB_OTLP_DISABLE_AUTH` | `0` |
 | `--quack PORT` | `DUCKDB_QUACK_PORT` | off (`0` disables) |
 | `--quack-token TOKEN` | `DUCKDB_QUACK_TOKEN` | *(none)* |
+| — | `DUCKDB_QUACK_SSL_CERT_FILE`, `DUCKDB_QUACK_SSL_KEY_FILE` | self-signed (generated under `<data dir>/.duckdb/extension_data/quack`, so it survives a redeploy with the data) |
 | `--startup-timeout SECS` | `DUCKDB_OTLP_STARTUP_TIMEOUT` | `60` |
 
 Passing a token as a flag makes it visible in the process list; prefer `DUCKDB_OTLP_TOKEN` outside of local use.

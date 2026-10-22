@@ -75,6 +75,11 @@ written ([#90](https://github.com/smithclay/duckdb-otlp/issues/90)). Outside the
 image, unset that variable to use the community build, or point it at your own
 `gcs.duckdb_extension`.
 
+:::caution
+Neither the patched nor the community `gcs` extension has a DuckDB 2.0 build yet, so
+`gcp-ducklake` fails at startup on the current image, naming the missing extension.
+:::
+
 ## Run and verify
 
 On a GCP VM with its service account attached and a running proxy writing sockets

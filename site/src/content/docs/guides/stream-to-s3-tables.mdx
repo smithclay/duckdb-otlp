@@ -170,20 +170,25 @@ duckdb <<'SQL'
 INSTALL quack;
 LOAD quack;
 
-FROM quack_query(
-  'quack:localhost:9494',
-  $$
-  SELECT status FROM otlp_stop('otlp:0.0.0.0:4318');
-  DROP TABLE IF EXISTS s3tables.otlp.otlp_logs;
-  DROP TABLE IF EXISTS s3tables.otlp.otlp_traces;
-  DROP TABLE IF EXISTS s3tables.otlp.otlp_metrics_gauge;
-  DROP TABLE IF EXISTS s3tables.otlp.otlp_metrics_sum;
-  DROP TABLE IF EXISTS s3tables.otlp.otlp_metrics_histogram;
-  DROP TABLE IF EXISTS s3tables.otlp.otlp_metrics_exp_histogram;
-  DETACH s3tables;
-  $$,
-  token = 'dev-quack-token-123456'
+CREATE SECRET duckdb_otlp_quack (
+  TYPE quack,
+  SCOPE 'quack:localhost:9494',
+  TOKEN 'dev-quack-token-123456'
 );
+
+ATTACH 'quack:localhost:9494' AS otel (TYPE quack, SSL_FINGERPRINT '<fingerprint>'); -- printed by the container at startup
+CONNECT otel;
+
+SELECT status FROM otlp_stop('otlp:0.0.0.0:4318');
+DROP TABLE IF EXISTS s3tables.otlp.otlp_logs;
+DROP TABLE IF EXISTS s3tables.otlp.otlp_traces;
+DROP TABLE IF EXISTS s3tables.otlp.otlp_metrics_gauge;
+DROP TABLE IF EXISTS s3tables.otlp.otlp_metrics_sum;
+DROP TABLE IF EXISTS s3tables.otlp.otlp_metrics_histogram;
+DROP TABLE IF EXISTS s3tables.otlp.otlp_metrics_exp_histogram;
+DETACH s3tables;
+
+DISCONNECT;
 SQL
 
 docker stop duckdb-otlp
@@ -205,7 +210,7 @@ aws cloudformation wait stack-delete-complete \
 
 ## Run manually
 
-To run this configuration in a DuckDB 1.5.6+ shell instead of the daemon, execute the SQL below. Replace bracketed values with the corresponding values from this guide. Keep the shell open while clients send telemetry.
+To run this configuration in a DuckDB 2.0+ shell instead of the daemon, execute the SQL below. Replace bracketed values with the corresponding values from this guide. Keep the shell open while clients send telemetry.
 
 ```bash
 duckdb duckdb-otlp-control.duckdb

@@ -104,11 +104,17 @@ Flush through Quack from a local DuckDB process:
 duckdb -unsigned -c "
 INSTALL quack;
 LOAD quack;
-FROM quack_query(
-  'quack:localhost:9494',
-  'SELECT * FROM otlp_flush(''otlp:0.0.0.0:4318'')',
-  token = 'dev-quack-token-123456'
+
+CREATE SECRET duckdb_otlp_quack (
+  TYPE quack,
+  SCOPE 'quack:localhost:9494',
+  TOKEN 'dev-quack-token-123456'
 );
+
+ATTACH 'quack:localhost:9494' AS otel (TYPE quack, SSL_FINGERPRINT '<fingerprint>'); -- printed by the container at startup
+CONNECT otel;
+SELECT * FROM otlp_flush('otlp:0.0.0.0:4318');
+DISCONNECT;
 "
 ```
 
@@ -134,17 +140,23 @@ To query the exported rows through the inspection view inside the running daemon
 duckdb -unsigned -c "
 INSTALL quack;
 LOAD quack;
-FROM quack_query(
-  'quack:localhost:9494',
-  \$\$
-  SELECT time_unix_nano, service_name, severity_text, body
-  FROM otlp.otlp_logs
-  WHERE service_name = 'parquet-demo'
-  ORDER BY time_unix_nano DESC
-  LIMIT 5
-  \$\$,
-  token = 'dev-quack-token-123456'
+
+CREATE SECRET duckdb_otlp_quack (
+  TYPE quack,
+  SCOPE 'quack:localhost:9494',
+  TOKEN 'dev-quack-token-123456'
 );
+
+ATTACH 'quack:localhost:9494' AS otel (TYPE quack, SSL_FINGERPRINT '<fingerprint>'); -- printed by the container at startup
+CONNECT otel;
+
+SELECT time_unix_nano, service_name, severity_text, body
+FROM otlp.otlp_logs
+WHERE service_name = 'parquet-demo'
+ORDER BY time_unix_nano DESC
+LIMIT 5;
+
+DISCONNECT;
 "
 ```
 
@@ -202,7 +214,7 @@ aws s3 rm "s3://duckdb-otlp-telemetry/otlp/" \
 
 ## Run manually
 
-To run this configuration in a DuckDB 1.5.6+ shell instead of the daemon, execute the SQL below. Replace bracketed values with the corresponding values from this guide. Keep the shell open while clients send telemetry.
+To run this configuration in a DuckDB 2.0+ shell instead of the daemon, execute the SQL below. Replace bracketed values with the corresponding values from this guide. Keep the shell open while clients send telemetry.
 
 ```bash
 duckdb duckdb-otlp-control.duckdb

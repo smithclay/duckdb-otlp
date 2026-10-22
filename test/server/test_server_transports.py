@@ -153,6 +153,58 @@ def test_second_listener_bind_failure_cleans_up_first_listener(tmp_path):
             assert probe.connect_ex(('127.0.0.1', int(env['OTEL_HTTP_ADDR'].split(':')[1]))) != 0
 
 
+def test_quack_clients_reach_the_signal_tables_unqualified(tmp_path):
+    """Quack serves each client on a fresh Connection, which copies the instance's default
+    database when it is created. The daemon makes the mode's catalog that default, so a client
+    reads `otlp_traces` with no `lake.main.` prefix. A connection-local `SET schema` reached
+    only the startup connection, and Quack clients got "Table otlp_traces does not exist".
+
+    The listen URI is set on its own, without the Quack address. That is what quack_serve
+    binds, and the doctor probe (wait_ready) and the banner's ATTACH line must follow it rather
+    than fall back to the default port.
+    """
+    http_port, quack_port = free_port(), free_port()
+    while quack_port == http_port:
+        quack_port = free_port()
+    quack_token = 'quack-transport-token-0123456789'
+    env = {
+        'PATH': os.environ.get('PATH', ''),
+        # local-ducklake INSTALLs ducklake and quack, which needs the extension cache.
+        'HOME': os.environ.get('HOME', ''),
+        'DUCKDB_MODE': 'local-ducklake',
+        'DUCKDB_OTLP_DATA_DIR': str(tmp_path / 'lake'),
+        'DUCKDB_DATABASE': str(tmp_path / 'control.duckdb'),
+        'DUCKDB_OTLP_TRANSPORTS': 'http',
+        'OTEL_HTTP_ADDR': f'127.0.0.1:{http_port}',
+        'DUCKDB_OTLP_TOKEN': TOKEN,
+        'DUCKDB_QUACK_ENABLED': '1',
+        'DUCKDB_QUACK_TOKEN': quack_token,
+        # Loopback, so Quack serves plain HTTP and the client needs no fingerprint.
+        'DUCKDB_QUACK_LISTEN_URI': f'quack:127.0.0.1:{quack_port}',
+        'DUCKDB_OTLP_STARTUP_TIMEOUT': '15',
+    }
+
+    with daemon(tmp_path, env) as (process, log_path):
+        wait_ready(process, env, log_path)
+        assert post_http(env, trace_request(3), TOKEN) == 202
+        deadline = time.monotonic() + 15
+        while 'ATTACH' not in log_path.read_text() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert f"ATTACH 'quack:127.0.0.1:{quack_port}' AS otel (TYPE quack);" in log_path.read_text()
+
+        uri = f'quack:127.0.0.1:{quack_port}'
+        with duckdb.connect() as connection:
+            connection.execute('INSTALL quack; LOAD quack;')
+            connection.execute(f"CREATE SECRET q (TYPE quack, SCOPE '{uri}', TOKEN '{quack_token}')")
+            connection.execute(f"ATTACH '{uri}' AS otel (TYPE quack)")
+            connection.execute('CONNECT otel')
+            connection.execute(f"SELECT * FROM otlp_flush('otlp:127.0.0.1:{http_port}')").fetchall()
+            assert connection.execute('SELECT name FROM otlp_traces').fetchall() == [('transport-3',)]
+            connection.execute('DISCONNECT')
+
+    assert process.returncode == 0, log_path.read_text()
+
+
 def test_init_sql_adds_a_parquet_destination_next_to_the_ducklake_catalog(tmp_path):
     """One process, two destinations: the mode's DuckLake catalog and a plain Parquet dir.
 
@@ -215,11 +267,15 @@ def test_init_sql_adds_a_parquet_destination_next_to_the_ducklake_catalog(tmp_pa
             ('transport-2',)
         ]
 
-    # Destination 2: the mode's DuckLake catalog, read back through DuckLake itself.
-    with duckdb.connect() as connection:
-        connection.execute('INSTALL ducklake; LOAD ducklake')
-        connection.execute(
-            f"ATTACH 'ducklake:{lake_dir / 'ducklake' / 'catalog.duckdb'}' AS lake "
-            f"(DATA_PATH '{lake_dir / 'ducklake' / 'storage'}', READ_ONLY)"
-        )
-        assert connection.execute('SELECT name FROM lake.otlp_traces').fetchall() == [('transport-1',)]
+    # Destination 2: the mode's DuckLake catalog, read back through DuckLake by the binary under
+    # test. Not through this interpreter's duckdb: the catalog is a DuckDB database written in the
+    # daemon's storage format, which a host DuckDB older than the daemon's cannot open.
+    query = subprocess.run(
+        [str(SERVER_BIN), 'query', 'SELECT name FROM otlp_traces', '--format', 'csv'],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert query.returncode == 0, query.stderr
+    assert query.stdout.split() == ['name', 'transport-1'], query.stdout

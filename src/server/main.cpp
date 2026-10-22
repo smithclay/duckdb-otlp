@@ -275,12 +275,44 @@ duckdb::string ListenerLabel(const duckdb_otlp_server::IngestListener &listener)
 	return duckdb::string(listener.otap ? "OTAP " : "OTLP ") + listener.transport;
 }
 
-// Probe GET http://<host>:<port><path>. Loopback for a wildcard host, the configured host
-// otherwise (review finding M5).
-bool HealthProbe(const duckdb::string &addr, const duckdb::string &path, int port_fallback) {
-	auto host = HealthCheckHost(addr);
-	auto port = PortFromAddr(addr, port_fallback);
-	return duckdb::OtlpHttpStatusOk(host, port, path);
+// How to reach the running Quack server. Since DuckDB 2.0 Quack serves TLS on every non-loopback
+// bind, with a self-signed certificate unless DUCKDB_QUACK_SSL_CERT_FILE supplies one, so a
+// client cannot connect without pinning a fingerprint it can only learn from here (or from
+// quack_server_list() on a connection it does not have yet).
+// Advisory only: it runs after every listener is up, so a failure here (quack_server_list()
+// changing shape in a newer quack build, say) is a warning, never a reason to stop serving.
+void PrintQuackEndpoint(duckdb::Connection &con, const duckdb_otlp_server::ServerConfig &config) {
+	auto result = con.Query(config.QuackEndpointSql());
+	if (result->HasError()) {
+		std::cerr << "WARNING: could not read the Quack endpoint from quack_server_list(): " << result->GetError()
+		          << '\n';
+		return;
+	}
+	auto chunk = result->Fetch();
+	if (!chunk || chunk->size() == 0) {
+		return;
+	}
+	auto fingerprint = chunk->GetValue(1, 0).GetValue<duckdb::string>();
+	auto host = ReachableHost(HostFromAddr(config.quack_http_addr));
+	if (host.find(':') != duckdb::string::npos) {
+		host = "[" + host + "]";
+	}
+	auto uri = "quack:" + host + ":" + std::to_string(PortFromAddr(config.quack_http_addr, 9494));
+	std::cout << "\nQuery over Quack at " << chunk->GetValue(0, 0).GetValue<duckdb::string>() << '\n';
+	if (fingerprint.empty()) {
+		std::cout << "  ATTACH '" << uri << "' AS otel (TYPE quack);\n";
+		return;
+	}
+	std::cout << "TLS certificate SHA-256 fingerprint: " << fingerprint << '\n'
+	          << "  ATTACH '" << uri << "' AS otel (TYPE quack, SSL_FINGERPRINT '" << fingerprint << "');\n";
+}
+
+// Probe a Quack bind address by TCP connect, on loopback for a wildcard host and the configured
+// host otherwise (review finding M5). Not an HTTP GET: Quack serves TLS on a non-loopback bind,
+// and this binary carries no TLS client (no OpenSSL), so the request it could send would be
+// answered with a TLS alert -- the probe read every healthy TLS Quack as down.
+bool QuackProbe(const duckdb::string &addr) {
+	return duckdb::OtlpTcpConnectOk(HealthCheckHost(addr), PortFromAddr(addr, 9494));
 }
 
 // One check's result. Collected rather than printed as it is found, so --json can emit one
@@ -316,8 +348,7 @@ void PrintDoctorReport(const std::vector<DoctorCheck> &checks, bool healthy, boo
 // images ship no shell/curl, so the daemon probes itself. It probes the CONFIGURED bind host
 // (loopback for a 0.0.0.0/:: wildcard bind, the explicit interface otherwise — see
 // HealthCheckHost), so a non-loopback bind is supported without a forever-failing loopback
-// probe. HTTP listeners use /readyz, gRPC listeners use TCP connect, and Quack is checked
-// when enabled.
+// probe. HTTP listeners use /readyz; gRPC listeners and Quack (when enabled) use TCP connect.
 //
 // Every check runs even after one fails: a partial answer ("http is up, grpc is not") is the
 // whole point of the command, and Docker keeps this output in the container's health log.
@@ -342,7 +373,7 @@ int RunDoctor(const EnvSource &env, bool as_json) {
 		// Resolved by the same function startup uses, so the probe cannot target a different
 		// port than the server bound.
 		auto quack_addr = duckdb_otlp_server::QuackAddrFromEnv(env);
-		checks.push_back({"Quack", quack_addr, HealthProbe(quack_addr, "/", 9494)});
+		checks.push_back({"Quack", quack_addr, QuackProbe(quack_addr)});
 	}
 	// Derived rather than tracked: a check appended without a companion `healthy &&= ok` would
 	// have printed "healthy" next to a FAIL, and nothing local showed the invariant.
@@ -396,8 +427,7 @@ int RunServe(const EnvSource &env) {
 		}
 		if (config.quack_enabled) {
 			std::cout << "Quack: " << config.quack_listen_uri << "\n\n";
-			std::cout << "WARNING: Quack grants full SQL read/write access to every attached catalog over an "
-			             "unencrypted connection.\n";
+			std::cout << "WARNING: Quack grants full SQL read/write access to every attached catalog.\n";
 		} else {
 			std::cout << "Quack: disabled\n";
 		}
@@ -492,9 +522,9 @@ int RunServe(const EnvSource &env) {
 		std::cout << "Setting up " << config.mode << " (installing extensions, attaching catalog)...\n";
 		Execute(con, config.mode_setup_sql, "mode setup");
 		// Operator SQL, after the mode's ATTACH so it can build on the telemetry catalog, and
-		// before SetDefaultDatabase so a catalog the script itself attaches can still be named
-		// by --catalog. Failures are fatal: a script that was meant to attach a second catalog
-		// or widen a memory limit has no safe "carry on without it" reading.
+		// before the default-catalog switch below so a catalog the script itself attaches can
+		// still be named by --catalog. Failures are fatal: a script that was meant to attach a
+		// second catalog or widen a memory limit has no safe "carry on without it" reading.
 		if (!config.init_sql.empty()) {
 			std::cout << "Running init SQL from " << config.init_sql_path << "...\n";
 			Execute(con, config.init_sql, "init SQL");
@@ -503,23 +533,13 @@ int RunServe(const EnvSource &env) {
 		// server handles each external client on a *fresh* Connection spun up from the
 		// DatabaseInstance (quack_server.cpp: make_uniq<Connection>(*db)), not on this
 		// startup connection, and `USE`/`SET schema` only mutate the connection they run
-		// on. Setting the DatabaseManager default lets those client connections resolve the
-		// telemetry catalog by default, so callers can scan tables transparently
-		// (ATTACH 'quack:...' AS x; FROM x.otlp_logs) instead of wrapping every statement in
-		// x.query('...'). otlp_serve targets the catalog explicitly, so changing the default
-		// is safe. Parquet mode has no catalog (its inspection views already live in the
-		// default catalog) and is skipped.
+		// on. A new connection copies the DatabaseManager default when it is created, so
+		// setting it lets Quack clients resolve the signal tables unqualified
+		// (ATTACH 'quack:...' AS x; CONNECT x; FROM otlp_logs). otlp_serve targets the
+		// catalog explicitly, so changing the default is safe. Parquet mode has no catalog
+		// (its inspection views already live in the default catalog) and is skipped.
 		if (!config.catalog.empty()) {
-			// SetDefaultDatabase resolves the catalog through the meta-transaction, so it must run
-			// inside an explicit transaction on this connection.
-			con.BeginTransaction();
-			try {
-				duckdb::DatabaseManager::Get(*con.context).SetDefaultDatabase(*con.context, config.catalog);
-				con.Commit();
-			} catch (...) {
-				con.Rollback();
-				throw;
-			}
+			duckdb::DatabaseManager::Get(*con.context).SetDefaultDatabase(duckdb::Identifier(config.catalog));
 		}
 		// One otlp_serve call starts every listener against one server. If any listener fails to
 		// bind, that call closes the listeners it already started and registers nothing; the stop
@@ -552,6 +572,9 @@ int RunServe(const EnvSource &env) {
 				}
 			}
 			std::cout << "Read it back with: duckdb-otlp query \"SELECT * FROM otlp_logs LIMIT 10\"\n";
+			if (config.quack_enabled) {
+				PrintQuackEndpoint(con, config);
+			}
 			auto listener_ok = WaitForShutdownOrListenerFailure(con, config);
 
 			std::cout << "Stopping duckdb-otlp..." << '\n';

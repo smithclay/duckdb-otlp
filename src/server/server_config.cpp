@@ -8,7 +8,9 @@
 #include "otlp_uri.hpp"
 #include "server_util.hpp"
 
+#include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <limits>
 #include <sstream>
@@ -1165,6 +1167,18 @@ bool QuackEnabledFromEnv(const EnvSource &env) {
 }
 
 string QuackAddrFromEnv(const EnvSource &env) {
+	// DUCKDB_QUACK_LISTEN_URI is what quack_serve binds whenever it is set (FromEnv), so it
+	// wins here too: the banner's ATTACH line and the doctor probe derive from this address,
+	// and they pointed at the default port while the server listened elsewhere.
+	if (env.Has("DUCKDB_QUACK_LISTEN_URI")) {
+		auto uri = env.Get("DUCKDB_QUACK_LISTEN_URI");
+		for (auto prefix : {"quack://", "quack:"}) {
+			if (StringUtil::StartsWith(uri, prefix)) {
+				return uri.substr(strlen(prefix));
+			}
+		}
+		return uri;
+	}
 	// --quack PORT sets DUCKDB_QUACK_PORT; the legacy DUCKDB_QUACK_ADDR / QUACK_HTTP_ADDR
 	// host:port form still wins when no port was given explicitly. Port 0 means "off", as it
 	// does for --http/--grpc, so it does not select a (zero, i.e. ephemeral) bind port.
@@ -1232,6 +1246,13 @@ ServerConfig ServerConfig::FromEnv(const EnvSource &env) {
 	config.quack_token = env.Get("DUCKDB_QUACK_TOKEN");
 	if (config.quack_enabled && config.quack_token.empty()) {
 		throw InvalidInputException("DUCKDB_QUACK_ENABLED=1 requires a dedicated Quack token. Set DUCKDB_QUACK_TOKEN.");
+	}
+	config.quack_ssl_cert_file = env.Get("DUCKDB_QUACK_SSL_CERT_FILE");
+	config.quack_ssl_key_file = env.Get("DUCKDB_QUACK_SSL_KEY_FILE");
+	// Half a pair is a hard error rather than a fall-through to the self-signed certificate,
+	// which would hide the typo until a client's fingerprint pin stopped matching.
+	if (config.quack_ssl_cert_file.empty() != config.quack_ssl_key_file.empty()) {
+		throw InvalidInputException("DUCKDB_QUACK_SSL_CERT_FILE and DUCKDB_QUACK_SSL_KEY_FILE must be set together.");
 	}
 
 	// Authentication. There is deliberately no built-in default token: a token published in
@@ -1346,9 +1367,33 @@ FROM %s(
 
 std::vector<ModeExtension> ServerConfig::AllExtensions() const {
 	auto extensions = mode_extensions;
-	if (quack_enabled) {
-		extensions.push_back(QUACK_EXTENSION);
+	for (auto &extension : QuackExtensions()) {
+		extensions.push_back(extension);
 	}
+	return extensions;
+}
+
+std::vector<ModeExtension> ServerConfig::QuackExtensions() const {
+	if (!quack_enabled) {
+		return {};
+	}
+	// Every Quack server draws a random HMAC key from DuckDB's encryption module
+	// (QuackRandomToken in duckdb-quack), and its TLS server needs it too. That module is
+	// writable only once httpfs is loaded; without it quack_serve fails on any bind, plain HTTP
+	// included, with "DuckDB currently has a read-only crypto module loaded". The image primes
+	// httpfs and DuckDB autoloads it, so only a host without httpfs installed hit this.
+	std::vector<ModeExtension> extensions = {Core("httpfs"), QUACK_EXTENSION};
+	// The banner names each extension once, and a mode that already loads httpfs needs no second LOAD.
+	extensions.erase(std::remove_if(extensions.begin(), extensions.end(),
+	                                [&](const ModeExtension &extension) {
+		                                for (auto &loaded : mode_extensions) {
+			                                if (loaded.name == extension.name) {
+				                                return true;
+			                                }
+		                                }
+		                                return false;
+	                                }),
+	                 extensions.end());
 	return extensions;
 }
 
@@ -1365,15 +1410,43 @@ string ServerConfig::StartQuackSql() const {
 	if (!quack_enabled) {
 		return "";
 	}
-	return ExtensionSetupSql({QUACK_EXTENSION}) + StringUtil::Format(R"SQL(
+	// No disable_ssl: as of DuckDB 2.0 Quack serves TLS on every non-loopback bind, with a
+	// self-signed certificate unless one is supplied. Clients pin its fingerprint, which the
+	// startup banner prints (QuackEndpointSql).
+	string ssl_sql;
+	string home_sql;
+	string reset_sql;
+	if (!quack_ssl_cert_file.empty()) {
+		ssl_sql = StringUtil::Format(",\n    ssl_cert_file := %s,\n    ssl_key_file := %s",
+		                             SqlQuote(quack_ssl_cert_file), SqlQuote(quack_ssl_key_file));
+	} else {
+		// Quack keeps its self-signed pair under <home_directory>/.duckdb/extension_data/quack.
+		// In the container $HOME is part of the image, so every new container generated a new
+		// certificate and broke every client's fingerprint pin. The data directory (the /data
+		// volume) outlives a redeploy, so the fingerprint now lasts exactly as long as the data
+		// it guards. home_directory is connection-local by default, and it is set only after
+		// INSTALL/LOAD quack and reset right after, so the extension cache and the secret store
+		// still resolve against $HOME.
+		home_sql = StringUtil::Format("\nSET home_directory = %s;", SqlQuote(data_dir));
+		reset_sql = "RESET home_directory;\n";
+	}
+	return ExtensionSetupSql(QuackExtensions()) + home_sql +
+	       StringUtil::Format(R"SQL(
 SELECT listen_uri
 FROM quack_serve(
     %s,
     token := getvariable('duckdb_quack_effective_token'),
-    allow_other_hostname := true
+    allow_other_hostname := true%s
 );
 )SQL",
-	                                                                 SqlQuote(quack_listen_uri));
+	                          SqlQuote(quack_listen_uri), ssl_sql) +
+	       reset_sql;
+}
+
+string ServerConfig::QuackEndpointSql() const {
+	return StringUtil::Format("SELECT listen_url, coalesce(info['ssl_fingerprint'], '') FROM quack_server_list() "
+	                          "WHERE listen_uri = %s LIMIT 1",
+	                          SqlQuote(quack_listen_uri));
 }
 
 string ServerConfig::StopOtlpSql() const {

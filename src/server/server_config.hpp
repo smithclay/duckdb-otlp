@@ -65,6 +65,10 @@ struct ServerConfig {
 	duckdb::string quack_listen_uri;
 	duckdb::string quack_http_addr;
 	duckdb::string quack_token;
+	//! PEM certificate and key Quack serves TLS with. Empty: Quack generates a self-signed pair
+	//! under $HOME/.duckdb/extension_data/quack on first use.
+	duckdb::string quack_ssl_cert_file;
+	duckdb::string quack_ssl_key_file;
 	duckdb::string parquet_export_path;
 	//! Human-readable location the mode actually writes telemetry to, for the startup banner.
 	//! Distinct from `database`, which is the small control DB: in the default local-ducklake
@@ -134,6 +138,9 @@ struct ServerConfig {
 	//! One otlp_serve/otap_serve call starting every listener against one shared server.
 	duckdb::string StartOtlpSql() const;
 	duckdb::string StartQuackSql() const;
+	//! The running Quack server's URL and TLS certificate fingerprint (empty on a plain-HTTP
+	//! loopback bind), for the startup banner.
+	duckdb::string QuackEndpointSql() const;
 	//! Stops the whole server (every listener) through its first listener URI.
 	duckdb::string StopOtlpSql() const;
 	duckdb::string StopQuackSql() const;
@@ -144,6 +151,10 @@ struct ServerConfig {
 	//! by the serve path only, so `query`/`export` must not pull it in -- but it is still an
 	//! extension the process ends up running, and the banner omitted it entirely.
 	std::vector<ModeExtension> AllExtensions() const;
+
+	//! What the serve path loads for Quack beyond the mode's own extensions: httpfs, whose crypto
+	//! module every Quack server needs (its HMAC key, and TLS), then quack itself.
+	std::vector<ModeExtension> QuackExtensions() const;
 
 	//! Whether the database must be opened with allow_unsigned_extensions, because an extension
 	//! is LOADed from a local file. DuckDB only accepts that setting before the database starts.

@@ -855,9 +855,7 @@ def test_the_image_primes_every_extension_some_mode_needs(tmp_path):
     runs the image without egress.
     """
     dockerfile = (REPO_ROOT / "docker" / "duckdb-otlp-server" / "Dockerfile").read_text()
-    loop = re.search(r"for ext in ([a-z0-9_ ]+); do", dockerfile)
-    primed = set(loop.group(1).split()) if loop else set()
-    primed |= set(re.findall(r"INSTALL ([a-z0-9_]+)(?: FROM community)?", dockerfile))
+    primed = {ext for loop in re.findall(r"for ext in ([a-z0-9_ ]+); do", dockerfile) for ext in loop.split()}
     # A parse failure must say so, rather than showing up as "every extension is missing".
     assert primed, (
         "could not read the extension list out of docker/duckdb-otlp-server/Dockerfile; "
@@ -888,6 +886,57 @@ def test_quack_is_installed_before_it_is_loaded(tmp_path):
     assert sql.index("INSTALL quack;") < sql.index("LOAD quack;")
     # Core, not community: `INSTALL quack FROM community` 404s.
     assert "INSTALL quack FROM community" not in sql
+
+
+def test_quack_keeps_its_self_signed_certificate_in_the_data_dir(tmp_path):
+    """Quack generates its self-signed pair under <home_directory>/.duckdb/extension_data/quack.
+    $HOME is part of the image, so every new container generated a new certificate and broke
+    every client's fingerprint pin. The data directory (the /data volume) survives a redeploy.
+
+    home_directory is redirected only around quack_serve: after INSTALL/LOAD quack, so the
+    extension cache still resolves against $HOME, and reset right after."""
+    result = run(dict(MODE_FIXTURES["local-ducklake+quack"]), tmp_path)
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert "ssl_cert_file" not in out
+    assert "disable_ssl" not in out
+    set_home = f"SET home_directory = '{tmp_path}';"
+    assert (
+        out.index("LOAD quack;") < out.index(set_home) < out.index("quack_serve(") < out.index("RESET home_directory;")
+    )
+
+
+def test_quack_serves_the_operators_certificate(tmp_path):
+    env = dict(MODE_FIXTURES["local-ducklake+quack"])
+    env.update({"DUCKDB_QUACK_SSL_CERT_FILE": "/certs/quack.pem", "DUCKDB_QUACK_SSL_KEY_FILE": "/certs/quack.key"})
+    result = run(env, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "ssl_cert_file := '/certs/quack.pem'" in result.stdout
+    assert "ssl_key_file := '/certs/quack.key'" in result.stdout
+    assert "home_directory" not in result.stdout
+
+
+@pytest.mark.parametrize("addr", ["0.0.0.0:9494", "127.0.0.1:9494"])
+def test_quack_loads_httpfs_for_its_crypto(addr, tmp_path):
+    """Every Quack server draws a random HMAC key from DuckDB's encryption module, which is
+    writable only once httpfs is loaded, so quack_serve failed with "DuckDB currently has a
+    read-only crypto module loaded" on any bind, plain HTTP included. The image primes httpfs,
+    which DuckDB then autoloads, so only a host without httpfs installed hit this."""
+    env = dict(MODE_FIXTURES["local-ducklake+quack"], DUCKDB_QUACK_ADDR=addr)
+    result = run(env, tmp_path)
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert out.index("LOAD httpfs;") < out.index("quack_serve(")
+    assert "  httpfs\n" in out.split("Extensions:")[1].split("\n\n")[0] + "\n"
+
+
+@pytest.mark.parametrize("name", ["DUCKDB_QUACK_SSL_CERT_FILE", "DUCKDB_QUACK_SSL_KEY_FILE"])
+def test_half_a_quack_certificate_pair_is_an_error(name, tmp_path):
+    env = dict(MODE_FIXTURES["local-ducklake+quack"])
+    env[name] = "/certs/quack.pem"
+    result = run(env, tmp_path)
+    assert result.returncode != 0
+    assert "DUCKDB_QUACK_SSL_CERT_FILE and DUCKDB_QUACK_SSL_KEY_FILE must be set together" in result.stderr
 
 
 def test_quack_appears_in_the_banner_only_when_enabled(tmp_path):

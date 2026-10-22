@@ -28,7 +28,7 @@ inline void ReleaseOtlpArrowBatch(OtlpArrowBatch &batch) {
 	batch.present = 0;
 }
 
-void GetArrowSchemaColumns(const ArrowSchema &schema, vector<LogicalType> &return_types, vector<string> &names,
+void GetArrowSchemaColumns(const ArrowSchema &schema, vector<LogicalType> &return_types, vector<Identifier> &names,
                            const OtlpArrowSchemaOptions &options = OtlpArrowSchemaOptions());
 
 void CopyArrowToDuckDB(const ArrowArray &array, const ArrowSchema &schema, Vector &output, idx_t count);

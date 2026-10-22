@@ -21,7 +21,7 @@
 
 FROM rust:1-bookworm AS builder
 
-ARG DUCKDB_VERSION=v1.5.6
+ARG DUCKDB_VERSION=v2.0.0
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -45,7 +45,7 @@ COPY --from=builder /src/build/release/extension/otlp/duckdb-otlp /duckdb-otlp-s
 
 FROM debian:bookworm-slim AS deps
 
-ARG DUCKDB_VERSION=v1.5.6
+ARG DUCKDB_VERSION=v2.0.0
 ARG TARGETARCH
 # Runtime user in the distroless nonroot image.
 ARG RUN_UID=65532
@@ -53,7 +53,7 @@ ARG RUN_GID=65532
 ENV HOME=/duckdb-home
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl unzip zlib1g \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 # DuckDB CLI is used only to prime the extension cache; it is NOT copied into the final image.
@@ -63,28 +63,39 @@ RUN set -eux; \
         arm64) duckdb_arch="arm64" ;; \
         *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
+    mkdir -p /tmp/duckdb-cli; \
     curl -fsSL \
-        "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_VERSION}/duckdb_cli-linux-${duckdb_arch}.zip" \
-        -o /tmp/duckdb.zip; \
-    unzip /tmp/duckdb.zip -d /tmp/duckdb-cli; \
-    rm -f /tmp/duckdb.zip
+        "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_VERSION}/duckdb-cli-linux-${duckdb_arch}.tar.gz" \
+        | tar -xz -C /tmp/duckdb-cli duckdb
 
 # Prime every mode's extensions into HOME=/duckdb-home so the daemon's startup INSTALL/LOAD
 # is offline. The daemon (otlp) is statically embedded and is intentionally not installed.
+# avro is no mode's extension but iceberg autoloads it, so it is primed too or the iceberg
+# modes reach the network on first LOAD.
+#
+# gcs is a community extension and is best effort: it has no build for DuckDB 2.0 yet, so a
+# missing build is reported and skipped instead of failing the image.
 RUN set -eux; mkdir -p "${HOME}"; \
-    for ext in ducklake iceberg httpfs aws postgres quack; do \
-        /tmp/duckdb-cli/duckdb -unsigned -c "INSTALL ${ext};"; \
+    for ext in ducklake iceberg avro httpfs aws postgres quack; do \
+        /tmp/duckdb-cli/duckdb -c "INSTALL ${ext};"; \
     done; \
-    /tmp/duckdb-cli/duckdb -c "INSTALL gcs FROM community; LOAD gcs;"; \
+    for ext in gcs; do \
+        /tmp/duckdb-cli/duckdb -c "INSTALL ${ext} FROM community; LOAD ${ext};" \
+            || echo "WARNING: community extension ${ext} not published for ${DUCKDB_VERSION}; skipped" >&2; \
+    done; \
     chown -R "${RUN_UID}:${RUN_GID}" "${HOME}"
 
 # gcp-ducklake loads a fixed gcs build instead of the community one, which prints a failed
 # upload finalize rather than raising it, so DuckLake commits data files that were never
 # written. The fixed build is unsigned; DUCKDB_OTLP_GCS_EXTENSION_PATH (set in runtime-base)
 # makes the daemon LOAD it by path with allow_unsigned_extensions. Pinned by checksum.
+#
+# The release has no DuckDB 2.0 build yet, so the checksums are empty and the step is
+# skipped: gcp-ducklake then fails at startup, naming the missing file. Set the URL and both
+# checksums together once gcs.${DUCKDB_VERSION}.linux_*.duckdb_extension is published.
 ARG GCS_EXTENSION_URL=https://github.com/smithclay/duckdb-gcs/releases/download/v0.0.8-finalize.1
-ARG GCS_EXTENSION_SHA256_AMD64=e18ba20e47aebc658bff728e5d65caf79f766835cf5e8491b11baa5aede137f7
-ARG GCS_EXTENSION_SHA256_ARM64=557080ec2d39a716baa552d44c5209ec0afd1eb5a2a8d92cb2520dedf7de87ad
+ARG GCS_EXTENSION_SHA256_AMD64=
+ARG GCS_EXTENSION_SHA256_ARM64=
 RUN set -eux; \
     case "${TARGETARCH:-amd64}" in \
         amd64) arch="amd64"; sha="${GCS_EXTENSION_SHA256_AMD64}" ;; \
@@ -92,6 +103,10 @@ RUN set -eux; \
         *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     mkdir -p /staging/extensions; \
+    if [ -z "${sha}" ]; then \
+        echo "WARNING: no fixed gcs build pinned for ${DUCKDB_VERSION}; skipped" >&2; \
+        exit 0; \
+    fi; \
     curl -fsSL "${GCS_EXTENSION_URL}/gcs.${DUCKDB_VERSION}.linux_${arch}.duckdb_extension" \
         -o /staging/extensions/gcs.duckdb_extension; \
     echo "${sha}  /staging/extensions/gcs.duckdb_extension" | sha256sum -c -; \
@@ -127,7 +142,8 @@ COPY --from=zlib /staging/libz.so.1 /usr/lib/libz.so.1
 # Pre-primed extension cache and a writable data dir, both owned by the nonroot user.
 COPY --from=deps --chown=65532:65532 /duckdb-home /duckdb-home
 COPY --from=deps --chown=65532:65532 /staging/data /data
-COPY --from=deps /staging/extensions/gcs.duckdb_extension /usr/local/lib/duckdb-otlp/gcs.duckdb_extension
+# A directory copy, so the stage still builds while the fixed gcs build is skipped.
+COPY --from=deps /staging/extensions/ /usr/local/lib/duckdb-otlp/
 ENV HOME=/duckdb-home \
     DUCKDB_OTLP_GCS_EXTENSION_PATH=/usr/local/lib/duckdb-otlp/gcs.duckdb_extension
 # Copy the directory, not the file: a direct COPY of a symlink dereferences it (the same

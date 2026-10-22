@@ -10,7 +10,7 @@ Run the `duckdb-otlp` Docker image in `local-ducklake` mode, enable the image's 
 
 Use this setup when you want the container to handle ingestion and DuckLake writes while a local DuckDB shell, notebook, or script queries telemetry through Quack.
 
-Quack is experimental in DuckDB v1.5.6. Run it on trusted local networks. For remote access, put it behind a TLS-terminating reverse proxy.
+Quack is stable as of DuckDB 2.0. These examples use its `CONNECT` statement. The container binds Quack to `0.0.0.0`, and on any non-loopback bind Quack serves TLS, with a self-signed certificate unless you supply one. Clients pin that certificate by its fingerprint.
 
 ## Configure
 
@@ -28,6 +28,13 @@ DUCKDB_QUACK_TOKEN=dev-quack-token-123456
 ```
 
 `DUCKDB_OTLP_TOKEN` protects OTLP/HTTP ingest on port `4318`. `DUCKDB_QUACK_TOKEN` protects DuckDB query access on port `9494`.
+
+Quack generates its self-signed certificate on first start and keeps it on the data volume, under `/data/.duckdb/extension_data/quack`. A redeployed container that mounts the same `/data` volume keeps the same fingerprint, so pinned clients keep working. A fresh volume gets a new certificate. To use a certificate from your own CA instead, set:
+
+```ini
+DUCKDB_QUACK_SSL_CERT_FILE=/certs/quack.pem
+DUCKDB_QUACK_SSL_KEY_FILE=/certs/quack.key
+```
 
 Local DuckLake mode uses `DUCKLAKE_CATALOG_PATH=/data/ducklake/catalog.duckdb` and `DUCKLAKE_DATA_PATH=/data/ducklake/storage` by default. Set those variables when you want DuckLake metadata or Parquet files somewhere else inside the mounted `/data` volume.
 
@@ -48,7 +55,15 @@ docker run --rm --name duckdb-otlp \
 
 The container initializes DuckLake, starts the OTLP/HTTP ingest server, and starts Quack in the same DuckDB process. The server names the catalog `lake` and makes it the default catalog Quack exposes, so attached clients reach the signal tables (`otlp_logs`, `otlp_traces`, …) directly instead of through a fully qualified `lake.main.*` name.
 
-Leave the container running while clients send OTLP/HTTP requests and local DuckDB clients query through Quack.
+Once Quack is up, the container prints how to reach it, including the certificate fingerprint:
+
+```text
+Query over Quack at https://0.0.0.0:9494
+TLS certificate SHA-256 fingerprint: 3D:2C:B0:...:4F:8F
+  ATTACH 'quack:127.0.0.1:9494' AS otel (TYPE quack, SSL_FINGERPRINT '3D:2C:B0:...:4F:8F');
+```
+
+Run `docker logs duckdb-otlp` to see it again. Leave the container running while clients send OTLP/HTTP requests and local DuckDB clients query through Quack.
 
 <PostLogRecord
   serviceName="quack-local-ducklake-demo"
@@ -71,7 +86,7 @@ INSTALL quack;
 LOAD quack;
 ```
 
-Create a Quack secret scoped to the container endpoint, then attach the remote DuckDB process:
+Create a Quack secret scoped to the container endpoint, attach the remote DuckDB process with the fingerprint the container printed, then connect the session to it:
 
 ```sql
 CREATE SECRET duckdb_otlp_quack (
@@ -80,27 +95,22 @@ CREATE SECRET duckdb_otlp_quack (
   TOKEN 'dev-quack-token-123456'
 );
 
-ATTACH 'quack:localhost:9494' AS otel (TYPE quack);
+ATTACH 'quack:localhost:9494' AS otel (TYPE quack, SSL_FINGERPRINT '<fingerprint>');
+CONNECT otel;
 ```
 
-For `localhost`, Quack uses plain HTTP by default. The Docker port mapping forwards local port `9494` to `quack:0.0.0.0:9494` inside the container.
+`SSL_FINGERPRINT` makes the client use TLS and accept only that certificate. Without it, a `localhost` client tries plain HTTP and fails with `Unsupported protocol error`. The Docker port mapping forwards local port `9494` to `quack:0.0.0.0:9494` inside the container.
 
-If you connect to Quack on a remote host, protect the transport with TLS termination. A tunneling extension such as [Query-farm/quackscale](https://github.com/Query-farm/quackscale) keeps the Quack listener off the public network.
+The same `ATTACH` works from a remote host. With a certificate from a CA your clients trust, drop `SSL_FINGERPRINT`. A tunneling extension such as [Query-farm/quackscale](https://github.com/Query-farm/quackscale) keeps the Quack listener off the public network.
 
-## Query telemetry like local tables
+## Query telemetry with CONNECT
 
-Point the whole session at the attached server, then query the telemetry tables directly — no SQL-in-a-string wrapping:
+After `CONNECT otel`, DuckDB routes ordinary SQL to the container's DuckDB process and streams results back. The daemon makes its telemetry catalog (named `lake` here) the default, so the signal tables — `otlp_logs`, `otlp_traces`, `otlp_metrics_gauge`, `otlp_metrics_sum`, `otlp_metrics_histogram`, `otlp_metrics_exp_histogram` — are reachable by their plain names.
 
-```sql
-USE otel;
-```
-
-The daemon makes its telemetry catalog (named `lake` here) the default catalog that Quack exposes, so the signal tables — `otlp_logs`, `otlp_traces`, `otlp_metrics_gauge`, `otlp_metrics_sum`, `otlp_metrics_histogram`, `otlp_metrics_exp_histogram` — are reachable by their plain names. Quack runs each scan inside the container's DuckDB process and streams the result back, pushing the selected columns down to the server.
-
-The server accepts rows before it makes them durable. For a short local test, flush the ingest buffer first. `otlp_flush` is a server-side function rather than a table, so run it through the attached catalog's `query` macro:
+The server accepts rows before it makes them durable. For a short local test, flush the ingest buffer first:
 
 ```sql
-FROM query('SELECT * FROM otlp_flush(''otlp:0.0.0.0:4318'')');
+SELECT * FROM otlp_flush('otlp:0.0.0.0:4318');
 ```
 
 Then query the signal tables directly:
@@ -124,36 +134,37 @@ LIMIT 20;
 
 ## Run server-side SQL
 
-Transparent scans stream rows to the client and project columns server-side, but they do not push down filters or aggregations. For heavy aggregations — or anything that is not a plain table scan, such as `otlp_flush` or DDL — run the SQL inside the server session so only the result crosses the wire. Use the attached catalog's `query` macro:
+While connected, aggregations, DDL, and table functions run in the server session without SQL-in-a-string wrapping:
 
 ```sql
-FROM otel.query(
-  $$
-  SELECT service_name, count(*) AS rows
-  FROM otlp_logs
-  GROUP BY ALL
-  ORDER BY rows DESC
-  $$
-);
+SELECT service_name, count(*) AS rows
+FROM otlp_logs
+GROUP BY ALL
+ORDER BY rows DESC;
 ```
 
-Or `quack_query` for a one-shot call without attaching:
+Use `quack_query` for a one-shot call without a connected session, for example in small automation scripts:
 
 ```sql
 FROM quack_query(
   'quack:localhost:9494',
   'SELECT service_name, count(*) AS rows FROM otlp_logs GROUP BY ALL ORDER BY rows DESC',
-  token = 'dev-quack-token-123456'
+  token := 'dev-quack-token-123456',
+  ssl_fingerprint := '<fingerprint>'
 );
 ```
 
-Use `USE otel` plus plain table names for interactive exploration; push aggregations into `query` / `quack_query` when you do not want to stream every row to the client.
+When you are done with the interactive remote session, disconnect it:
+
+```sql
+DISCONNECT;
+```
 
 <StopCleanly />
 
 ## Run manually
 
-To run this configuration in a DuckDB 1.5.6+ shell instead of the daemon, execute the SQL below. Replace bracketed values with the corresponding values from this guide. Keep the shell open while clients send telemetry.
+To run this configuration in a DuckDB 2.0+ shell instead of the daemon, execute the SQL below. Replace bracketed values with the corresponding values from this guide. Keep the shell open while clients send telemetry.
 
 ```bash
 mkdir -p data/ducklake/storage
@@ -199,6 +210,9 @@ FROM quack_serve(
   token := 'dev-quack-token-123456',
   allow_other_hostname := true
 );
+
+-- The fingerprint clients pin: Quack serves TLS on this non-loopback bind.
+SELECT info['ssl_fingerprint'] FROM quack_server_list();
 ```
 
 Before closing DuckDB, stop both listeners cleanly:

@@ -91,6 +91,9 @@ class ScenarioContext:
     producer_bin: Path
     dry_run: bool = False
     quack_port: int = 0
+    # Pinned by every Quack query: Quack serves TLS with a self-signed certificate on the
+    # container's wildcard bind. Read from the daemon's startup banner.
+    quack_fingerprint: str = ""
     catalog: str = "lake"
     schema: str = "otlp"
     docker_env: dict[str, str] = field(default_factory=dict)
@@ -1199,10 +1202,25 @@ def quack_query_expr(ctx: ScenarioContext, sql: str) -> str:
             "FROM quack_query(",
             f"  {sql_quote(f'quack:127.0.0.1:{ctx.quack_port}')},",
             f"  {sql_quote(sql)},",
-            f"  token = {sql_quote(ctx.token + '-quack')}",
+            f"  token := {sql_quote(ctx.token + '-quack')},",
+            f"  ssl_fingerprint := {sql_quote(ctx.quack_fingerprint)}",
             ")",
         ]
     )
+
+
+FINGERPRINT_LINE = re.compile(r"^TLS certificate SHA-256 fingerprint: (\S+)$", re.MULTILINE)
+
+
+def read_quack_fingerprint(ctx: ScenarioContext, timeout: float = 30) -> str:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        logs = run_cmd(["docker", "logs", ctx.container_name], check=False)
+        match = FINGERPRINT_LINE.search(logs.stdout + logs.stderr)
+        if match:
+            return match.group(1)
+        time.sleep(0.5)
+    raise BenchError("daemon never printed its Quack TLS fingerprint")
 
 
 def run_host_duckdb(control: str, timeout: float = 60) -> str:
@@ -1573,6 +1591,7 @@ def run_scenario(
         start_container(ctx)
         started = True
         wait_for_health(ctx.port, timeout=args.startup_timeout)
+        ctx.quack_fingerprint = read_quack_fingerprint(ctx)
         eprint(f"[{name} t{run.trial} r{run.rate:,}] sending records for {args.duration}s")
         measured_start = time.monotonic()
         with DockerStatsSampler(ctx.container_name) as docker_sampler, ServerStatsSampler(
