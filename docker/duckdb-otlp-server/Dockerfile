@@ -128,7 +128,7 @@ RUN mkdir -p /staging/certs \
 
 # libz is the one shared lib the daemon links that glibc-dynamic lacks. Take it from Wolfi,
 # the same distribution as the runtime base, so it tracks the same security updates.
-FROM cgr.dev/chainguard/wolfi-base:latest@sha256:bc76fa39ddd1482dd56a761b3331e03ba8f0e093ebb525618a56d014b480da88 AS zlib
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:f15fea2f49cb14dceaea491fcbde0d35e0c190126a744ac05a9838440d47d994 AS zlib
 RUN apk add --no-cache zlib && mkdir -p /staging && cp -L /usr/lib/libz.so.1 /staging/libz.so.1
 
 # Pinned by digest: Chainguard's free tier only publishes `latest`, and Renovate bumps the
