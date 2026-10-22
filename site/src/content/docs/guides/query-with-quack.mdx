@@ -29,7 +29,7 @@ DUCKDB_QUACK_TOKEN=dev-quack-token-123456
 
 `DUCKDB_OTLP_TOKEN` protects OTLP/HTTP ingest on port `4318`. `DUCKDB_QUACK_TOKEN` protects DuckDB query access on port `9494`.
 
-Quack generates its self-signed certificate under `/duckdb-home/.duckdb/extension_data/quack` on first start, so a new container gets a new fingerprint. To keep one across redeploys, mount a volume there, or serve your own certificate:
+Quack generates its self-signed certificate on first start and keeps it on the data volume, under `/data/.duckdb/extension_data/quack`. A redeployed container that mounts the same `/data` volume keeps the same fingerprint, so pinned clients keep working. A fresh volume gets a new certificate. To use a certificate from your own CA instead, set:
 
 ```ini
 DUCKDB_QUACK_SSL_CERT_FILE=/certs/quack.pem

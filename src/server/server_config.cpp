@@ -8,6 +8,7 @@
 #include "otlp_uri.hpp"
 #include "server_util.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -1366,9 +1367,38 @@ FROM %s(
 
 std::vector<ModeExtension> ServerConfig::AllExtensions() const {
 	auto extensions = mode_extensions;
-	if (quack_enabled) {
-		extensions.push_back(QUACK_EXTENSION);
+	for (auto &extension : QuackExtensions()) {
+		extensions.push_back(extension);
 	}
+	return extensions;
+}
+
+std::vector<ModeExtension> ServerConfig::QuackExtensions() const {
+	std::vector<ModeExtension> extensions;
+	if (!quack_enabled) {
+		return extensions;
+	}
+	// Quack serves plain HTTP on exactly these hosts and TLS everywhere else (QuackUri::IsLocal
+	// in duckdb-quack, narrower than OtlpUri::IsLocal, which accepts all of 127/8). Its TLS
+	// server takes its crypto from httpfs; without it quack_serve fails with "DuckDB currently
+	// has a read-only crypto module loaded". The image primes httpfs and DuckDB autoloads it,
+	// so only a non-loopback bind outside the container hit this.
+	auto host = StringUtil::Lower(duckdb::OtlpUri("otlp:" + quack_http_addr).Host());
+	if (host != "localhost" && host != "127.0.0.1" && host != "::1") {
+		extensions.push_back(Core("httpfs"));
+	}
+	extensions.push_back(QUACK_EXTENSION);
+	// The banner names each extension once, and a mode that already loads httpfs needs no second LOAD.
+	extensions.erase(std::remove_if(extensions.begin(), extensions.end(),
+	                                [&](const ModeExtension &extension) {
+		                                for (auto &loaded : mode_extensions) {
+			                                if (loaded.name == extension.name) {
+				                                return true;
+			                                }
+		                                }
+		                                return false;
+	                                }),
+	                 extensions.end());
 	return extensions;
 }
 
@@ -1389,11 +1419,24 @@ string ServerConfig::StartQuackSql() const {
 	// self-signed certificate unless one is supplied. Clients pin its fingerprint, which the
 	// startup banner prints (QuackEndpointSql).
 	string ssl_sql;
+	string home_sql;
+	string reset_sql;
 	if (!quack_ssl_cert_file.empty()) {
 		ssl_sql = StringUtil::Format(",\n    ssl_cert_file := %s,\n    ssl_key_file := %s",
 		                             SqlQuote(quack_ssl_cert_file), SqlQuote(quack_ssl_key_file));
+	} else {
+		// Quack keeps its self-signed pair under <home_directory>/.duckdb/extension_data/quack.
+		// In the container $HOME is part of the image, so every new container generated a new
+		// certificate and broke every client's fingerprint pin. The data directory (the /data
+		// volume) outlives a redeploy, so the fingerprint now lasts exactly as long as the data
+		// it guards. home_directory is connection-local by default, and it is set only after
+		// INSTALL/LOAD quack and reset right after, so the extension cache and the secret store
+		// still resolve against $HOME.
+		home_sql = StringUtil::Format("\nSET home_directory = %s;", SqlQuote(data_dir));
+		reset_sql = "RESET home_directory;\n";
 	}
-	return ExtensionSetupSql({QUACK_EXTENSION}) + StringUtil::Format(R"SQL(
+	return ExtensionSetupSql(QuackExtensions()) + home_sql +
+	       StringUtil::Format(R"SQL(
 SELECT listen_uri
 FROM quack_serve(
     %s,
@@ -1401,7 +1444,8 @@ FROM quack_serve(
     allow_other_hostname := true%s
 );
 )SQL",
-	                                                                 SqlQuote(quack_listen_uri), ssl_sql);
+	                          SqlQuote(quack_listen_uri), ssl_sql) +
+	       reset_sql;
 }
 
 string ServerConfig::QuackEndpointSql() const {

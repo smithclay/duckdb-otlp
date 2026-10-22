@@ -152,6 +152,10 @@ struct ServerConfig {
 	//! extension the process ends up running, and the banner omitted it entirely.
 	std::vector<ModeExtension> AllExtensions() const;
 
+	//! What the serve path loads for Quack beyond the mode's own extensions: quack, preceded by
+	//! httpfs when Quack serves TLS, because its TLS server takes its crypto from httpfs.
+	std::vector<ModeExtension> QuackExtensions() const;
+
 	//! Whether the database must be opened with allow_unsigned_extensions, because an extension
 	//! is LOADed from a local file. DuckDB only accepts that setting before the database starts.
 	bool NeedsUnsignedExtensions() const;

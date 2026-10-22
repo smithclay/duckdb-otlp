@@ -888,20 +888,49 @@ def test_quack_is_installed_before_it_is_loaded(tmp_path):
     assert "INSTALL quack FROM community" not in sql
 
 
-def test_quack_serves_the_operators_certificate(tmp_path):
-    """Without a certificate Quack generates a self-signed one under $HOME, which a fresh
-    container regenerates, so a client's fingerprint pin breaks on every redeploy."""
-    env = dict(MODE_FIXTURES["local-ducklake+quack"])
-    default = run(env, tmp_path)
-    assert default.returncode == 0, default.stderr
-    assert "ssl_cert_file" not in default.stdout
-    assert "disable_ssl" not in default.stdout
+def test_quack_keeps_its_self_signed_certificate_in_the_data_dir(tmp_path):
+    """Quack generates its self-signed pair under <home_directory>/.duckdb/extension_data/quack.
+    $HOME is part of the image, so every new container generated a new certificate and broke
+    every client's fingerprint pin. The data directory (the /data volume) survives a redeploy.
 
+    home_directory is redirected only around quack_serve: after INSTALL/LOAD quack, so the
+    extension cache still resolves against $HOME, and reset right after."""
+    result = run(dict(MODE_FIXTURES["local-ducklake+quack"]), tmp_path)
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert "ssl_cert_file" not in out
+    assert "disable_ssl" not in out
+    set_home = f"SET home_directory = '{tmp_path}';"
+    assert (
+        out.index("LOAD quack;") < out.index(set_home) < out.index("quack_serve(") < out.index("RESET home_directory;")
+    )
+
+
+def test_quack_serves_the_operators_certificate(tmp_path):
+    env = dict(MODE_FIXTURES["local-ducklake+quack"])
     env.update({"DUCKDB_QUACK_SSL_CERT_FILE": "/certs/quack.pem", "DUCKDB_QUACK_SSL_KEY_FILE": "/certs/quack.key"})
     result = run(env, tmp_path)
     assert result.returncode == 0, result.stderr
     assert "ssl_cert_file := '/certs/quack.pem'" in result.stdout
     assert "ssl_key_file := '/certs/quack.key'" in result.stdout
+    assert "home_directory" not in result.stdout
+
+
+@pytest.mark.parametrize(("addr", "tls"), [("0.0.0.0:9494", True), ("127.0.0.1:9494", False)])
+def test_a_tls_quack_loads_httpfs_for_its_crypto(addr, tls, tmp_path):
+    """Quack's TLS server takes its crypto from httpfs, and quack_serve failed with "DuckDB
+    currently has a read-only crypto module loaded" without it. The image primes httpfs, which
+    DuckDB then autoloads, so only a non-loopback bind outside the container hit this. A
+    loopback bind serves plain HTTP and needs nothing extra."""
+    env = dict(MODE_FIXTURES["local-ducklake+quack"], DUCKDB_QUACK_ADDR=addr)
+    result = run(env, tmp_path)
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    if tls:
+        assert out.index("LOAD httpfs;") < out.index("quack_serve(")
+        assert "  httpfs\n" in out.split("Extensions:")[1].split("\n\n")[0] + "\n"
+    else:
+        assert "LOAD httpfs;" not in out
 
 
 @pytest.mark.parametrize("name", ["DUCKDB_QUACK_SSL_CERT_FILE", "DUCKDB_QUACK_SSL_KEY_FILE"])
