@@ -916,21 +916,18 @@ def test_quack_serves_the_operators_certificate(tmp_path):
     assert "home_directory" not in result.stdout
 
 
-@pytest.mark.parametrize(("addr", "tls"), [("0.0.0.0:9494", True), ("127.0.0.1:9494", False)])
-def test_a_tls_quack_loads_httpfs_for_its_crypto(addr, tls, tmp_path):
-    """Quack's TLS server takes its crypto from httpfs, and quack_serve failed with "DuckDB
-    currently has a read-only crypto module loaded" without it. The image primes httpfs, which
-    DuckDB then autoloads, so only a non-loopback bind outside the container hit this. A
-    loopback bind serves plain HTTP and needs nothing extra."""
+@pytest.mark.parametrize("addr", ["0.0.0.0:9494", "127.0.0.1:9494"])
+def test_quack_loads_httpfs_for_its_crypto(addr, tmp_path):
+    """Every Quack server draws a random HMAC key from DuckDB's encryption module, which is
+    writable only once httpfs is loaded, so quack_serve failed with "DuckDB currently has a
+    read-only crypto module loaded" on any bind, plain HTTP included. The image primes httpfs,
+    which DuckDB then autoloads, so only a host without httpfs installed hit this."""
     env = dict(MODE_FIXTURES["local-ducklake+quack"], DUCKDB_QUACK_ADDR=addr)
     result = run(env, tmp_path)
     assert result.returncode == 0, result.stderr
     out = result.stdout
-    if tls:
-        assert out.index("LOAD httpfs;") < out.index("quack_serve(")
-        assert "  httpfs\n" in out.split("Extensions:")[1].split("\n\n")[0] + "\n"
-    else:
-        assert "LOAD httpfs;" not in out
+    assert out.index("LOAD httpfs;") < out.index("quack_serve(")
+    assert "  httpfs\n" in out.split("Extensions:")[1].split("\n\n")[0] + "\n"
 
 
 @pytest.mark.parametrize("name", ["DUCKDB_QUACK_SSL_CERT_FILE", "DUCKDB_QUACK_SSL_KEY_FILE"])

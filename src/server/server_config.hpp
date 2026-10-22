@@ -152,8 +152,8 @@ struct ServerConfig {
 	//! extension the process ends up running, and the banner omitted it entirely.
 	std::vector<ModeExtension> AllExtensions() const;
 
-	//! What the serve path loads for Quack beyond the mode's own extensions: quack, preceded by
-	//! httpfs when Quack serves TLS, because its TLS server takes its crypto from httpfs.
+	//! What the serve path loads for Quack beyond the mode's own extensions: httpfs, whose crypto
+	//! module every Quack server needs (its HMAC key, and TLS), then quack itself.
 	std::vector<ModeExtension> QuackExtensions() const;
 
 	//! Whether the database must be opened with allow_unsigned_extensions, because an extension

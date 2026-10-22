@@ -1374,20 +1374,15 @@ std::vector<ModeExtension> ServerConfig::AllExtensions() const {
 }
 
 std::vector<ModeExtension> ServerConfig::QuackExtensions() const {
-	std::vector<ModeExtension> extensions;
 	if (!quack_enabled) {
-		return extensions;
+		return {};
 	}
-	// Quack serves plain HTTP on exactly these hosts and TLS everywhere else (QuackUri::IsLocal
-	// in duckdb-quack, narrower than OtlpUri::IsLocal, which accepts all of 127/8). Its TLS
-	// server takes its crypto from httpfs; without it quack_serve fails with "DuckDB currently
-	// has a read-only crypto module loaded". The image primes httpfs and DuckDB autoloads it,
-	// so only a non-loopback bind outside the container hit this.
-	auto host = StringUtil::Lower(duckdb::OtlpUri("otlp:" + quack_http_addr).Host());
-	if (host != "localhost" && host != "127.0.0.1" && host != "::1") {
-		extensions.push_back(Core("httpfs"));
-	}
-	extensions.push_back(QUACK_EXTENSION);
+	// Every Quack server draws a random HMAC key from DuckDB's encryption module
+	// (QuackRandomToken in duckdb-quack), and its TLS server needs it too. That module is
+	// writable only once httpfs is loaded; without it quack_serve fails on any bind, plain HTTP
+	// included, with "DuckDB currently has a read-only crypto module loaded". The image primes
+	// httpfs and DuckDB autoloads it, so only a host without httpfs installed hit this.
+	std::vector<ModeExtension> extensions = {Core("httpfs"), QUACK_EXTENSION};
 	// The banner names each extension once, and a mode that already loads httpfs needs no second LOAD.
 	extensions.erase(std::remove_if(extensions.begin(), extensions.end(),
 	                                [&](const ModeExtension &extension) {
