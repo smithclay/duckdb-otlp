@@ -96,7 +96,7 @@ CREATE SECRET duckdb_otlp_quack (
   TOKEN 'dev-quack-token-123456'
 );
 
-ATTACH 'quack:localhost:9494' AS otel (TYPE quack);
+ATTACH 'quack:localhost:9494' AS otel (TYPE quack, SSL_FINGERPRINT '<fingerprint>'); -- printed by the container at startup
 CONNECT otel;
 
 SELECT * FROM otlp_flush('otlp:0.0.0.0:4318');

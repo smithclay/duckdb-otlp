@@ -9,6 +9,7 @@
 #include "server_util.hpp"
 
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <limits>
 #include <sstream>
@@ -1165,6 +1166,18 @@ bool QuackEnabledFromEnv(const EnvSource &env) {
 }
 
 string QuackAddrFromEnv(const EnvSource &env) {
+	// DUCKDB_QUACK_LISTEN_URI is what quack_serve binds whenever it is set (FromEnv), so it
+	// wins here too: the banner's ATTACH line and the doctor probe derive from this address,
+	// and they pointed at the default port while the server listened elsewhere.
+	if (env.Has("DUCKDB_QUACK_LISTEN_URI")) {
+		auto uri = env.Get("DUCKDB_QUACK_LISTEN_URI");
+		for (auto prefix : {"quack://", "quack:"}) {
+			if (StringUtil::StartsWith(uri, prefix)) {
+				return uri.substr(strlen(prefix));
+			}
+		}
+		return uri;
+	}
 	// --quack PORT sets DUCKDB_QUACK_PORT; the legacy DUCKDB_QUACK_ADDR / QUACK_HTTP_ADDR
 	// host:port form still wins when no port was given explicitly. Port 0 means "off", as it
 	// does for --http/--grpc, so it does not select a (zero, i.e. ephemeral) bind port.

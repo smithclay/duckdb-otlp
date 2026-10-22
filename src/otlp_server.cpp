@@ -633,7 +633,9 @@ void OtlpServer::CreateOrValidateTable(Connection &con, OtlpSignalType signal_ty
 		                            static_cast<uint64_t>(expected_names.size()));
 	}
 	for (idx_t i = 0; i < expected_names.size(); i++) {
-		if (result_names[i] != expected_names[i]) {
+		// Compared as strings: Identifier equality is case-insensitive, and a column spelled
+		// "Trace_ID" is not the documented schema.
+		if (result_names[i].GetIdentifierName() != expected_names[i]) {
 			throw InvalidInputException("Target table %s column %llu is %s, expected %s", qualified,
 			                            static_cast<uint64_t>(i), result_names[i].GetIdentifierName(),
 			                            expected_names[i]);
