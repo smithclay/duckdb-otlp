@@ -230,6 +230,23 @@ def test_parquet_local_path(tmp_path):
     assert str(export) in out
 
 
+def test_parquet_views_follow_quack(tmp_path):
+    """The seal-time inspection view exists for Quack, and binding it reads every archived
+    file's footer (issue #106), so the daemon asks for it only when Quack is on."""
+    base = {
+        "DUCKDB_MODE": "parquet",
+        "DUCKDB_OTLP_TOKEN": "a-private-token-123456",
+        "PARQUET_EXPORT_PATH": str(tmp_path / "pq"),
+    }
+    without_quack = run(base, tmp_path)
+    assert without_quack.returncode == 0, without_quack.stderr
+    assert "parquet_views := false" in without_quack.stdout
+
+    with_quack = run({**base, "DUCKDB_QUACK_ENABLED": "1", "DUCKDB_QUACK_TOKEN": "a-quack-token-123456"}, tmp_path)
+    assert with_quack.returncode == 0, with_quack.stderr
+    assert "parquet_views :=" not in with_quack.stdout
+
+
 def test_r2_data_catalog_secrets_use_getvariable(tmp_path):
     """The R2 catalog mode wires several secrets — none may appear as literals, and they
     must be read via getvariable() (getenv() is a CLI-only function the daemon lacks)."""
