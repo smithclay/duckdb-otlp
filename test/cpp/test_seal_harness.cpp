@@ -26,6 +26,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -276,6 +277,106 @@ TEST_CASE("seal harness: parquet happy-path seal exports all rows and drains buf
 		REQUIRE(server->CommittedRowsTotal() == kTotal);
 		REQUIRE(server->SealLastError().empty());
 
+		server->Close();
+	}
+	std::filesystem::remove_all(export_dir);
+}
+
+namespace {
+
+idx_t ScalarCount(Connection &con, const std::string &sql) {
+	auto result = con.Query(sql);
+	REQUIRE(result);
+	REQUIRE_FALSE(result->HasError());
+	auto chunk = result->Fetch();
+	REQUIRE(chunk);
+	return chunk->GetValue(0, 0).GetValue<int64_t>();
+}
+
+bool ViewExists(Connection &con, const std::string &name) {
+	return ScalarCount(con, "SELECT count(*) FROM duckdb_views() WHERE view_name = '" + name + "'") > 0;
+}
+
+// How many times the seal tried, and failed, to bind the inspection view.
+idx_t ViewBindFailures(Connection &con) {
+	return ScalarCount(con, "SELECT count(*) FROM duckdb_logs WHERE type = 'OTLP' AND message LIKE "
+	                        "'%parquet inspection view%not created%'");
+}
+
+// A file read_parquet cannot open, under the signal's dataset glob. Binding the view reads every
+// footer (union_by_name), so it fails on this file: a bind is observable as a logged failure.
+void PlantCorruptParquet(const std::filesystem::path &export_dir, const std::string &table) {
+	auto dir = export_dir / table / "year=2020" / "month=01" / "day=01";
+	std::filesystem::create_directories(dir);
+	std::ofstream(dir / "corrupt.parquet") << "not a parquet file";
+}
+
+} // namespace
+
+// Issue #106: DuckDB binds a CREATE VIEW's query before it checks IF NOT EXISTS, and binding
+// read_parquet(union_by_name) reads every archived footer. A view the catalog already has must
+// never be re-bound, however large (or broken) the archive under it.
+TEST_CASE("seal harness: parquet seal does not re-bind an existing inspection view", "[seal_harness]") {
+	auto export_dir = UniqueExportDir();
+	{
+		DuckDB db(nullptr);
+		Connection con(db);
+		REQUIRE_FALSE(con.Query("CALL enable_logging('OTLP')")->HasError());
+		REQUIRE_FALSE(con.Query("CREATE VIEW otlp_logs AS SELECT 42 AS kept")->HasError());
+		PlantCorruptParquet(export_dir, "otlp_logs");
+		auto server = MakeServer(*con.context, ParquetHarnessConfig(export_dir.string()));
+
+		server->IngestForTest(OtlpRequestKind::LOGS, "application/json", "", MakeLogsJson(3));
+		REQUIRE(server->FlushNow().rows == 3);
+
+		REQUIRE(ViewBindFailures(con) == 0);
+		REQUIRE(ScalarCount(con, "SELECT kept FROM otlp_logs") == 42);
+		REQUIRE(server->SealFailuresTotal() == 0);
+		server->Close();
+	}
+	std::filesystem::remove_all(export_dir);
+}
+
+// A view that cannot be created is attempted once per server and logged, not retried on every
+// seal: each retry would rescan an archive that only grows.
+TEST_CASE("seal harness: parquet inspection view is attempted once per server", "[seal_harness]") {
+	auto export_dir = UniqueExportDir();
+	{
+		DuckDB db(nullptr);
+		Connection con(db);
+		REQUIRE_FALSE(con.Query("CALL enable_logging('OTLP')")->HasError());
+		PlantCorruptParquet(export_dir, "otlp_logs");
+		auto server = MakeServer(*con.context, ParquetHarnessConfig(export_dir.string()));
+
+		for (int seal = 0; seal < 3; seal++) {
+			server->IngestForTest(OtlpRequestKind::LOGS, "application/json", "", MakeLogsJson(2));
+			REQUIRE(server->FlushNow().rows == 2);
+		}
+
+		REQUIRE(ViewBindFailures(con) == 1);
+		REQUIRE_FALSE(ViewExists(con, "otlp_logs"));
+		REQUIRE(server->SealsTotal() == 3);
+		REQUIRE(server->SealFailuresTotal() == 0);
+		server->Close();
+	}
+	std::filesystem::remove_all(export_dir);
+}
+
+TEST_CASE("seal harness: parquet_views=false exports without creating a view", "[seal_harness]") {
+	auto export_dir = UniqueExportDir();
+	{
+		DuckDB db(nullptr);
+		Connection con(db);
+		auto config = ParquetHarnessConfig(export_dir.string());
+		config.parquet_views = false;
+		auto server = MakeServer(*con.context, config);
+
+		server->IngestForTest(OtlpRequestKind::LOGS, "application/json", "", MakeLogsJson(4));
+		REQUIRE(server->FlushNow().rows == 4);
+
+		REQUIRE_FALSE(ViewExists(con, "otlp_logs"));
+		auto glob = (export_dir / "otlp_logs" / "**" / "*.parquet").string();
+		REQUIRE(ScalarCount(con, "SELECT count(*) FROM read_parquet('" + glob + "')") == 4);
 		server->Close();
 	}
 	std::filesystem::remove_all(export_dir);
