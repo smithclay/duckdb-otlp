@@ -134,7 +134,7 @@ aws s3 ls \
   --recursive
 ```
 
-To query the exported rows through the inspection view inside the running daemon (this reads the Parquet files, not a local copy):
+To query the exported rows through the inspection view inside the running daemon (this reads the Parquet files, not a local copy). The daemon creates these views only when Quack is enabled, because creating one reads the footer of every file already exported:
 
 ```bash
 duckdb -unsigned -c "

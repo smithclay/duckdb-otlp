@@ -62,6 +62,10 @@ struct OtlpServerConfig {
 	//! read-only view over those files is created lazily for inspection. Export is
 	//! at-least-once (a COPY cannot be rolled back), so downstream readers must dedupe.
 	string parquet_export_path;
+	//! Parquet mode only: create that inspection view. Binding it lists the whole dataset and
+	//! reads every file's footer (union_by_name), so a caller that never reads the view (the
+	//! daemon with Quack off) turns it off rather than pay a full-archive scan per server.
+	bool parquet_views = true;
 	bool create_tables = true;
 	idx_t max_body_bytes = otlp_limits::DEFAULT_MAX_BODY_BYTES;
 	//! Worker threads for each HTTP listener. Zero means choose a conservative host-based default.
@@ -468,6 +472,9 @@ private:
 	idx_t RestoreUnsealed(SealingPlan &plan, const std::vector<bool> &restore);
 	//! Plain Parquet export protocol (no shared transaction; at-least-once per signal).
 	OtlpIngestResult SealParquet(SealingPlan &plan, int64_t seal_started_unix_ms);
+	//! Create the Parquet-mode inspection view for one signal at most once per server, and only
+	//! when the catalog has no entry by that name. Seal thread only (under writer_mutex).
+	void EnsureParquetView(idx_t signal_index, const string &table_name);
 	//! Transactional catalog commit protocol (swap-under-lock, full restore on failure). `db` is
 	//! the live DatabaseInstance (kept alive by SealOnce's shared_ptr) needed to rebuild the
 	//! writer connection if a ROLLBACK wedges the transaction.
@@ -534,6 +541,9 @@ private:
 	// (sealer thread) against FlushNow (otlp_flush) and the final drain on shutdown.
 	unique_ptr<Connection> writer_con;
 	mutex writer_mutex;
+	//! Per signal: the inspection view has been found or attempted (EnsureParquetView), so later
+	//! seals never re-bind it. Touched only by the seal path under writer_mutex.
+	std::vector<bool> parquet_view_settled;
 	//! Attribute promotion (null unless config.promote.Enabled()). Resolved at construction; the
 	//! seal thread only reads its immutable ProjectionSuffix().
 	unique_ptr<OtlpColumnPromoter> promoter;

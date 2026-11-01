@@ -293,6 +293,7 @@ void OtlpServer::InitBuffers() {
 		signal_buffers.push_back(make_uniq<OtlpSignalBuffer>(target.signal_type, target.table_name, std::move(types),
 		                                                     std::move(collection)));
 	}
+	parquet_view_settled.assign(signal_buffers.size(), false);
 }
 
 void OtlpServer::StartSealer() {
@@ -1085,6 +1086,38 @@ idx_t OtlpServer::StageCollectionToTempTable(const vector<string> &names, const 
 	return AppendCollectionToTable(*writer_con, collection, string(), string(), temp_table);
 }
 
+void OtlpServer::EnsureParquetView(idx_t signal_index, const string &table_name) {
+	// A read-only view over the exported files lets Quack inspect the data without a second
+	// local copy. It is created here, after files exist, so the view binds a resolvable schema.
+	//
+	// Binding it is the expensive part: read_parquet(union_by_name=true) lists the whole glob
+	// and reads every file's footer, and DuckDB binds a CREATE VIEW's query BEFORE it checks
+	// IF NOT EXISTS. So the catalog is consulted first, and each signal is settled at most once per server: a failure
+	// is logged rather than retried, since every retry would rescan an archive that only grows.
+	if (parquet_view_settled[signal_index]) {
+		return;
+	}
+	parquet_view_settled[signal_index] = true;
+	// information_schema.tables lists views alongside tables, which is the namespace IF NOT
+	// EXISTS checks, and reads only catalog entries.
+	auto catalog = config.catalog_name.empty() ? string("current_database()") : SqlQuote(config.catalog_name);
+	auto existing = writer_con->Query("SELECT 1 FROM information_schema.tables WHERE table_catalog = " + catalog +
+	                                  " AND table_schema = " + SqlQuote(config.schema_name) +
+	                                  " AND table_name = " + SqlQuote(table_name));
+	if (existing && !existing->HasError() && existing->RowCount() > 0) {
+		return;
+	}
+	auto view = QualifiedTable(config.catalog_name, config.schema_name, table_name);
+	try {
+		RunSQL(*writer_con, "CREATE VIEW IF NOT EXISTS " + view + " AS " +
+		                        ParquetDatasetSelect(config.parquet_export_path, table_name));
+	} catch (std::exception &ex) {
+		// The view is a convenience and the export it describes is already durable.
+		LogServerEvent(StringUtil::Format("parquet inspection view %s not created: %s", view, ex.what()),
+		               LogLevel::LOG_WARNING);
+	}
+}
+
 OtlpIngestResult OtlpServer::SealParquet(SealingPlan &plan, int64_t seal_started_unix_ms) {
 	int64_t append_duration_ms = 0;
 	int64_t commit_duration_ms = 0;
@@ -1168,15 +1201,8 @@ OtlpIngestResult OtlpServer::SealParquet(SealingPlan &plan, int64_t seal_started
 				DropTableIfExists(*writer_con, staging);
 			} catch (...) {
 			}
-			try {
-				// Lazily (re)create a read-only view over the exported files so Quack can
-				// inspect the data without keeping a second local copy. Created here, after
-				// files exist, so the view binds a resolvable schema.
-				auto view = QualifiedTable(config.catalog_name, config.schema_name, buf.table_name);
-				RunSQL(*writer_con, "CREATE VIEW IF NOT EXISTS " + view + " AS " +
-				                        ParquetDatasetSelect(config.parquet_export_path, buf.table_name));
-			} catch (...) {
-				// Inspection view is a convenience; retried on the next successful seal.
+			if (config.parquet_views) {
+				EnsureParquetView(i, buf.table_name);
 			}
 		}
 

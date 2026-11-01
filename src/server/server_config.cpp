@@ -1322,6 +1322,12 @@ string ServerConfig::StartOtlpSql() const {
 	auto export_sql = parquet_export_path.empty()
 	                      ? string("")
 	                      : StringUtil::Format(",\n    parquet_export_path := %s", SqlQuote(parquet_export_path));
+	// The seal-time inspection view exists for Quack: `query`/`export` register their own
+	// (RegisterParquetExportViews), and nothing else reaches the serving database. Binding it
+	// reads every archived file's footer, which a fresh control database pays on each restart.
+	if (!parquet_export_path.empty() && !quack_enabled) {
+		export_sql += ",\n    parquet_views := false";
+	}
 	// Attribute promotion params, emitted only when set so the common path is unchanged.
 	string promote_sql;
 	if (!promote_resource_attributes.empty()) {

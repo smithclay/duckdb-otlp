@@ -188,6 +188,9 @@ static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableF
 			    "mode for transactional ingest or parquet_export_path for plain Parquet export");
 		}
 	}
+	if (input.named_parameters.find("parquet_views") != input.named_parameters.end()) {
+		bind_data->config.parquet_views = input.named_parameters["parquet_views"].GetValue<bool>();
+	}
 	if (input.named_parameters.find("create_tables") != input.named_parameters.end()) {
 		bind_data->config.create_tables = input.named_parameters["create_tables"].GetValue<bool>();
 	}
@@ -335,6 +338,8 @@ static TableFunctionSet BuildServeFunctionSet(const string &name, table_function
 			    .Add("catalog", OtlpVarcharType())
 			    .Add("schema", OtlpVarcharType())
 			    .Add("parquet_export_path", OtlpVarcharType())
+			    // Parquet mode: create the inspection view over the exported files (default true).
+			    .Add("parquet_views", OtlpBooleanType())
 			    .Add("create_tables", OtlpBooleanType())
 			    .Add("allow_other_hostname", OtlpBooleanType())
 			    // otlp_serve: 'http' (default) or 'grpc' (OTLP/gRPC unary), as one value or a list parallel
