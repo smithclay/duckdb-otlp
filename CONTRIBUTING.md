@@ -121,7 +121,7 @@ duckdb-otlp/
 │   ├── include/          # Public headers
 │   ├── storage/          # Extension entry point
 │   ├── function/         # Table function implementations
-│   ├── otlp_arrow.cpp    # Arrow-to-DuckDB conversion bridge
+│   ├── otlp_arrow.cpp    # Arrow import (wraps DuckDB's stock importer)
 │   ├── schema/           # Column layout definitions
 │   └── generated/        # Protobuf stubs (DO NOT EDIT)
 ├── test/
@@ -140,14 +140,14 @@ OTLP File -> Rust backend -> Arrow arrays -> DuckDB DataChunks
 ```
 
 1. **Rust backend** (`external/otlp2records`) - Parses OTLP JSON/protobuf payloads and emits Arrow arrays
-2. **Arrow bridge** (`src/otlp_arrow.cpp`) - Converts Arrow arrays into DuckDB vectors
+2. **Arrow import** (`src/otlp_arrow.cpp`) - Hands the Arrow arrays to DuckDB's stock Arrow importer
 3. **Table functions** (`src/function/read_otlp.cpp`) - Bind schemas and scan DuckDB `DataChunk`s
 
 ### Key Files
 
 - `src/storage/otlp_extension.cpp` - Extension registration
 - `src/function/read_otlp.cpp` - Table function implementations
-- `src/otlp_arrow.cpp` - Arrow-to-DuckDB conversion bridge
+- `src/otlp_arrow.cpp` - Arrow import (wraps DuckDB's stock importer)
 - `external/otlp2records` - Rust OTLP parser and Arrow batch builder
 
 ### Generated Code

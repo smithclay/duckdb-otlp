@@ -1,0 +1,68 @@
+# name: test/sql/read_otlp_column_types.test
+# description: Pin every reader's column types. The readers hand otlp2records' DuckDb Arrow profile to
+#              DuckDB's stock Arrow importer, so these types are what that mapping produces; a change in
+#              either the profile or the importer shows up here first.
+# group: [sql]
+
+require otlp
+
+query T
+SELECT string_agg(column_name || ' ' || column_type, ', ') FROM (DESCRIBE SELECT * FROM read_otlp_traces('test/data/traces_simple.jsonl'))
+----
+start_time_unix_nano TIMESTAMP_NS, duration_time_unix_nano BIGINT, trace_id VARCHAR, span_id VARCHAR, parent_span_id VARCHAR, trace_state VARCHAR, service_name VARCHAR, service_namespace VARCHAR, service_instance_id VARCHAR, name VARCHAR, kind INTEGER, status_code INTEGER, status_status_message VARCHAR, resource_attributes VARCHAR, scope_name VARCHAR, scope_version VARCHAR, scope_attributes VARCHAR, span_attributes VARCHAR, events_json VARCHAR, links_json VARCHAR, dropped_attributes_count INTEGER, dropped_events_count INTEGER, dropped_links_count INTEGER, flags INTEGER
+
+query T
+SELECT string_agg(column_name || ' ' || column_type, ', ') FROM (DESCRIBE SELECT * FROM read_otap_traces('test/data/traces_simple.jsonl'))
+----
+start_time_unix_nano TIMESTAMP_NS, duration_time_unix_nano BIGINT, trace_id VARCHAR, span_id VARCHAR, parent_span_id VARCHAR, trace_state VARCHAR, service_name VARCHAR, service_namespace VARCHAR, service_instance_id VARCHAR, name VARCHAR, kind INTEGER, status_code INTEGER, status_status_message VARCHAR, resource_attributes VARCHAR, scope_name VARCHAR, scope_version VARCHAR, scope_attributes VARCHAR, span_attributes VARCHAR, events_json VARCHAR, links_json VARCHAR, dropped_attributes_count INTEGER, dropped_events_count INTEGER, dropped_links_count INTEGER, flags INTEGER
+
+query T
+SELECT string_agg(column_name || ' ' || column_type, ', ') FROM (DESCRIBE SELECT * FROM read_otlp_logs('test/data/traces_simple.jsonl'))
+----
+time_unix_nano TIMESTAMP_NS, observed_time_unix_nano TIMESTAMP_NS, trace_id VARCHAR, span_id VARCHAR, service_name VARCHAR, service_namespace VARCHAR, service_instance_id VARCHAR, severity_number INTEGER, severity_text VARCHAR, event_name VARCHAR, body VARCHAR, resource_attributes VARCHAR, scope_name VARCHAR, scope_version VARCHAR, scope_attributes VARCHAR, log_attributes VARCHAR, dropped_attributes_count INTEGER, flags INTEGER
+
+query T
+SELECT string_agg(column_name || ' ' || column_type, ', ') FROM (DESCRIBE SELECT * FROM read_otap_logs('test/data/traces_simple.jsonl'))
+----
+time_unix_nano TIMESTAMP_NS, observed_time_unix_nano TIMESTAMP_NS, trace_id VARCHAR, span_id VARCHAR, service_name VARCHAR, service_namespace VARCHAR, service_instance_id VARCHAR, severity_number INTEGER, severity_text VARCHAR, event_name VARCHAR, body VARCHAR, resource_attributes VARCHAR, scope_name VARCHAR, scope_version VARCHAR, scope_attributes VARCHAR, log_attributes VARCHAR, dropped_attributes_count INTEGER, flags INTEGER
+
+query T
+SELECT string_agg(column_name || ' ' || column_type, ', ') FROM (DESCRIBE SELECT * FROM read_otlp_metrics_gauge('test/data/traces_simple.jsonl'))
+----
+time_unix_nano TIMESTAMP_NS, start_time_unix_nano TIMESTAMP_NS, name VARCHAR, description VARCHAR, unit VARCHAR, int_value BIGINT, double_value DOUBLE, service_name VARCHAR, service_namespace VARCHAR, service_instance_id VARCHAR, resource_attributes VARCHAR, scope_name VARCHAR, scope_version VARCHAR, scope_attributes VARCHAR, metric_attributes VARCHAR, flags INTEGER, exemplars_json VARCHAR
+
+query T
+SELECT string_agg(column_name || ' ' || column_type, ', ') FROM (DESCRIBE SELECT * FROM read_otap_metrics_gauge('test/data/traces_simple.jsonl'))
+----
+time_unix_nano TIMESTAMP_NS, start_time_unix_nano TIMESTAMP_NS, name VARCHAR, description VARCHAR, unit VARCHAR, int_value BIGINT, double_value DOUBLE, service_name VARCHAR, service_namespace VARCHAR, service_instance_id VARCHAR, resource_attributes VARCHAR, scope_name VARCHAR, scope_version VARCHAR, scope_attributes VARCHAR, metric_attributes VARCHAR, flags INTEGER, exemplars_json VARCHAR
+
+query T
+SELECT string_agg(column_name || ' ' || column_type, ', ') FROM (DESCRIBE SELECT * FROM read_otlp_metrics_sum('test/data/traces_simple.jsonl'))
+----
+time_unix_nano TIMESTAMP_NS, start_time_unix_nano TIMESTAMP_NS, name VARCHAR, description VARCHAR, unit VARCHAR, int_value BIGINT, double_value DOUBLE, service_name VARCHAR, service_namespace VARCHAR, service_instance_id VARCHAR, resource_attributes VARCHAR, scope_name VARCHAR, scope_version VARCHAR, scope_attributes VARCHAR, metric_attributes VARCHAR, flags INTEGER, exemplars_json VARCHAR, aggregation_temporality INTEGER, is_monotonic BOOLEAN
+
+query T
+SELECT string_agg(column_name || ' ' || column_type, ', ') FROM (DESCRIBE SELECT * FROM read_otap_metrics_sum('test/data/traces_simple.jsonl'))
+----
+time_unix_nano TIMESTAMP_NS, start_time_unix_nano TIMESTAMP_NS, name VARCHAR, description VARCHAR, unit VARCHAR, int_value BIGINT, double_value DOUBLE, service_name VARCHAR, service_namespace VARCHAR, service_instance_id VARCHAR, resource_attributes VARCHAR, scope_name VARCHAR, scope_version VARCHAR, scope_attributes VARCHAR, metric_attributes VARCHAR, flags INTEGER, exemplars_json VARCHAR, aggregation_temporality INTEGER, is_monotonic BOOLEAN
+
+query T
+SELECT string_agg(column_name || ' ' || column_type, ', ') FROM (DESCRIBE SELECT * FROM read_otlp_metrics_histogram('test/data/traces_simple.jsonl'))
+----
+time_unix_nano TIMESTAMP_NS, start_time_unix_nano TIMESTAMP_NS, name VARCHAR, description VARCHAR, unit VARCHAR, count BIGINT, sum DOUBLE, min DOUBLE, max DOUBLE, bucket_counts BIGINT[], explicit_bounds DOUBLE[], service_name VARCHAR, service_namespace VARCHAR, service_instance_id VARCHAR, resource_attributes VARCHAR, scope_name VARCHAR, scope_version VARCHAR, scope_attributes VARCHAR, metric_attributes VARCHAR, flags INTEGER, exemplars_json VARCHAR, aggregation_temporality INTEGER
+
+query T
+SELECT string_agg(column_name || ' ' || column_type, ', ') FROM (DESCRIBE SELECT * FROM read_otap_metrics_histogram('test/data/traces_simple.jsonl'))
+----
+time_unix_nano TIMESTAMP_NS, start_time_unix_nano TIMESTAMP_NS, name VARCHAR, description VARCHAR, unit VARCHAR, count BIGINT, sum DOUBLE, min DOUBLE, max DOUBLE, bucket_counts BIGINT[], explicit_bounds DOUBLE[], service_name VARCHAR, service_namespace VARCHAR, service_instance_id VARCHAR, resource_attributes VARCHAR, scope_name VARCHAR, scope_version VARCHAR, scope_attributes VARCHAR, metric_attributes VARCHAR, flags INTEGER, exemplars_json VARCHAR, aggregation_temporality INTEGER
+
+query T
+SELECT string_agg(column_name || ' ' || column_type, ', ') FROM (DESCRIBE SELECT * FROM read_otlp_metrics_exp_histogram('test/data/traces_simple.jsonl'))
+----
+time_unix_nano TIMESTAMP_NS, start_time_unix_nano TIMESTAMP_NS, name VARCHAR, description VARCHAR, unit VARCHAR, count BIGINT, sum DOUBLE, min DOUBLE, max DOUBLE, scale INTEGER, zero_count BIGINT, zero_threshold DOUBLE, positive_offset INTEGER, positive_bucket_counts BIGINT[], negative_offset INTEGER, negative_bucket_counts BIGINT[], service_name VARCHAR, service_namespace VARCHAR, service_instance_id VARCHAR, resource_attributes VARCHAR, scope_name VARCHAR, scope_version VARCHAR, scope_attributes VARCHAR, metric_attributes VARCHAR, flags INTEGER, exemplars_json VARCHAR, aggregation_temporality INTEGER
+
+query T
+SELECT string_agg(column_name || ' ' || column_type, ', ') FROM (DESCRIBE SELECT * FROM read_otap_metrics_exp_histogram('test/data/traces_simple.jsonl'))
+----
+time_unix_nano TIMESTAMP_NS, start_time_unix_nano TIMESTAMP_NS, name VARCHAR, description VARCHAR, unit VARCHAR, count BIGINT, sum DOUBLE, min DOUBLE, max DOUBLE, scale INTEGER, zero_count BIGINT, zero_threshold DOUBLE, positive_offset INTEGER, positive_bucket_counts BIGINT[], negative_offset INTEGER, negative_bucket_counts BIGINT[], service_name VARCHAR, service_namespace VARCHAR, service_instance_id VARCHAR, resource_attributes VARCHAR, scope_name VARCHAR, scope_version VARCHAR, scope_attributes VARCHAR, metric_attributes VARCHAR, flags INTEGER, exemplars_json VARCHAR, aggregation_temporality INTEGER
+

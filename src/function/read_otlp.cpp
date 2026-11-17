@@ -43,17 +43,8 @@ struct ReadOTLPRustBindData : public TableFunctionData {
 	// identical (OTAP normalizes to the same flattened records).
 	bool is_otap = false;
 
-	// Schema from Rust (cached at bind time)
-	ArrowSchema arrow_schema;
-	vector<LogicalType> return_types;
-	vector<Identifier> names;
-	bool schema_initialized = false;
-
-	~ReadOTLPRustBindData() override {
-		if (schema_initialized && arrow_schema.release) {
-			arrow_schema.release(&arrow_schema);
-		}
-	}
+	// Column types resolved once at bind time; every decoded batch is converted with them.
+	unique_ptr<OtlpArrowTable> table;
 };
 
 // ============================================================================
@@ -82,17 +73,12 @@ struct ReadOTLPRustGlobalState : public GlobalTableFunctionState {
 // ============================================================================
 
 struct ReadOTLPRustLocalState : public LocalTableFunctionState {
-	ArrowArray current_batch;
-	bool batch_active = false;
+	//! The decoded file being emitted; null between files. Output vectors may reference its buffers
+	//! (zero-copy) and hold their own reference, so dropping this one never frees memory in use.
+	shared_ptr<ArrowArrayWrapper> current_batch;
 	idx_t batch_offset = 0;
 	string file_buffer;
 	vector<column_t> column_ids;
-
-	~ReadOTLPRustLocalState() override {
-		if (batch_active && current_batch.release) {
-			current_batch.release(&current_batch);
-		}
-	}
 };
 
 // ============================================================================
@@ -121,17 +107,11 @@ static unique_ptr<FunctionData> ReadOTLPRustBind(ClientContext &context, TableFu
 	result->format = OTLP_FORMAT_AUTO;
 	result->is_otap = is_otap;
 
-	// Get schema from Rust
-	OtlpStatus status = otlp_get_schema(signal_type, &result->arrow_schema);
-	if (status != OTLP_OK) {
-		throw IOException("Failed to get OTLP schema from Rust: %s", otlp_status_message(status));
+	result->table = OtlpArrowTable::ForSignal(context, signal_type);
+	return_types = result->table->types;
+	for (auto &name : result->table->names) {
+		names.emplace_back(name);
 	}
-	result->schema_initialized = true;
-
-	GetArrowSchemaColumns(result->arrow_schema, return_types, names);
-
-	result->return_types = return_types;
-	result->names = names;
 
 	return std::move(result);
 }
@@ -264,8 +244,8 @@ static unique_ptr<LocalTableFunctionState> ReadOTLPRustInitLocal(ExecutionContex
 // ============================================================================
 
 // Pick the requested metric shape's array out of a fully-populated batch set:
-// release the chosen shape's schema (conversion uses the cached bind-time
-// schema) and every other present batch, returning the chosen array (a no-op
+// release the chosen shape's schema (conversion uses the bind-time column
+// types) and every other present batch, returning the chosen array (a no-op
 // empty array if that shape had no rows). Shared by the OTLP and OTAP metric
 // paths, which both yield an OtlpMetricsArrowBatches from one parse/decode.
 static ArrowArray SelectMetricShapeArray(OtlpMetricsArrowBatches &batches, OtlpSignalType signal_type) {
@@ -287,8 +267,8 @@ static ArrowArray SelectMetricShapeArray(OtlpMetricsArrowBatches &batches, OtlpS
 
 	ArrowArray array;
 	if (chosen->present) {
-		// Keep the chosen array; release its schema (we convert via the cached
-		// bind-time schema).
+		// Keep the chosen array; release its schema (conversion uses the
+		// bind-time column types).
 		if (chosen->schema.release) {
 			chosen->schema.release(&chosen->schema);
 		}
@@ -309,9 +289,10 @@ static ArrowArray SelectMetricShapeArray(OtlpMetricsArrowBatches &batches, OtlpS
 }
 
 // Decode one fully-buffered file into a single Arrow array for the bound signal,
-// dispatching to the stateful OTAP decoder or the one-shot OTLP transform. Any
-// schema returned alongside the array is released here (conversion uses the
-// cached bind-time schema); the caller owns and must release the returned array.
+// dispatching to the stateful OTAP decoder or the one-shot OTLP transform, both in
+// the DuckDb Arrow profile. Any schema returned alongside the array is released
+// here (conversion uses the bind-time column types); the caller owns and must
+// release the returned array.
 static ArrowArray DecodeFileToArray(const ReadOTLPRustBindData &bind_data, const uint8_t *input_bytes, idx_t input_len,
                                     const string &path) {
 	const bool single_shape = bind_data.signal_type == OTLP_SIGNAL_LOGS || bind_data.signal_type == OTLP_SIGNAL_TRACES;
@@ -323,7 +304,7 @@ static ArrowArray DecodeFileToArray(const ReadOTLPRustBindData &bind_data, const
 		// message, so one decoder + one decode call per file. (A stream split
 		// across multiple files with cross-message dictionary reuse is not
 		// supported by this one-decoder-per-file model.)
-		OtapDecoderPtr decoder(otlp_otap_decoder_new());
+		OtapDecoderPtr decoder(otlp_otap_decoder_new_with_profile(OTLP_ARROW_PROFILE_DUCKDB));
 		if (!decoder) {
 			throw IOException("Failed to allocate OTAP decoder for %s", path);
 		}
@@ -352,11 +333,12 @@ static ArrowArray DecodeFileToArray(const ReadOTLPRustBindData &bind_data, const
 	if (single_shape) {
 		// Logs/Traces have a single shape; otlp_transform is the canonical verb for them.
 		OtlpStatus status =
-		    otlp_transform(bind_data.signal_type, bind_data.format, input_bytes, input_len, &array, &schema);
+		    otlp_transform_with_profile(bind_data.signal_type, bind_data.format, OTLP_ARROW_PROFILE_DUCKDB, input_bytes,
+		                                input_len, &array, &schema);
 		if (status != OTLP_OK) {
 			throw IOException("OTLP parse error on %s: %s", path, otlp_status_message(status));
 		}
-		// Schema was cached at bind time; release this copy and keep only the array.
+		// Column types were resolved at bind time; release this copy and keep only the array.
 		if (schema.release) {
 			schema.release(&schema);
 		}
@@ -366,7 +348,8 @@ static ArrowArray DecodeFileToArray(const ReadOTLPRustBindData &bind_data, const
 	// single canonical metric verb). SelectMetricShapeArray keeps the requested
 	// shape and releases the rest.
 	OtlpMetricsArrowBatches batches = {};
-	OtlpStatus status = otlp_transform_metrics_all(bind_data.format, input_bytes, input_len, &batches);
+	OtlpStatus status = otlp_transform_metrics_all_with_profile(bind_data.format, OTLP_ARROW_PROFILE_DUCKDB,
+	                                                            input_bytes, input_len, &batches);
 	if (status != OTLP_OK) {
 		// On failure no batch is present; nothing to release.
 		throw IOException("OTLP parse error on %s: %s", path, otlp_status_message(status));
@@ -385,24 +368,20 @@ static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, D
 	auto &fs = FileSystem::GetFileSystem(context);
 
 	while (true) {
-		if (lstate.batch_active) {
-			if (lstate.current_batch.length < 0) {
-				throw IOException("Invalid Arrow batch: negative row count");
-			}
-			const auto row_count = static_cast<idx_t>(lstate.current_batch.length);
+		if (lstate.current_batch) {
+			const auto row_count = static_cast<idx_t>(lstate.current_batch->arrow_array.length);
 			const auto remaining = row_count - lstate.batch_offset;
 			const auto count = MinValue<idx_t>(STANDARD_VECTOR_SIZE, remaining);
-			// Projection pushdown only prunes the Arrow->DuckDB copy here: the Rust transform
+			// Projection pushdown only prunes the Arrow->DuckDB conversion here: the Rust transform
 			// already parsed the payload and built every column of the batch (the FFI has no
 			// column mask), so unselected columns are materialized in Rust regardless. Skipping
-			// their copy is the smaller half of the per-column cost; a column-aware transform is
-			// the lever for the larger half and waits on the streaming backend.
-			CopyProjectedArrowStructToDataChunk(lstate.current_batch, bind_data.arrow_schema, output, lstate.column_ids,
-			                                    lstate.batch_offset, count);
+			// their conversion is the smaller half of the per-column cost; a column-aware transform
+			// is the lever for the larger half and waits on the streaming backend.
+			OtlpArrowScan(context, *bind_data.table, lstate.current_batch, lstate.column_ids, lstate.batch_offset,
+			              count, output);
 			lstate.batch_offset += count;
 			if (lstate.batch_offset >= row_count) {
-				lstate.current_batch.release(&lstate.current_batch);
-				lstate.batch_active = false;
+				lstate.current_batch.reset();
 				lstate.batch_offset = 0;
 			}
 			return;
@@ -454,8 +433,7 @@ static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, D
 			throw IOException("Invalid Arrow batch: negative row count");
 		}
 		if (array.release && array.length > 0) {
-			lstate.current_batch = array;
-			lstate.batch_active = true;
+			lstate.current_batch = OtlpOwnArrowBatch(array);
 			lstate.batch_offset = 0;
 			continue;
 		}

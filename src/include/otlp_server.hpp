@@ -505,7 +505,11 @@ private:
 	                     idx_t rows_committed, idx_t admitted_bytes_committed, bool success, const string &error);
 
 	void CreateOrValidateTable(Connection &con, OtlpSignalType signal_type, const string &table_name);
-	void GetSignalColumns(OtlpSignalType signal_type, vector<LogicalType> &types, vector<string> &names);
+	//! The buffer/table column types: the importer's, except that the buffers hold TIMESTAMP (us),
+	//! which is the destination tables' column type, where the importer yields TIMESTAMP_NS.
+	static LogicalType BufferColumnType(const LogicalType &imported);
+	static void GetSignalColumns(ClientContext &context, OtlpSignalType signal_type, vector<LogicalType> &types,
+	                             vector<string> &names);
 
 private:
 	weak_ptr<DatabaseInstance> db_ptr;
@@ -532,6 +536,10 @@ private:
 	// (sealer thread) against FlushNow (otlp_flush) and the final drain on shutdown.
 	unique_ptr<Connection> writer_con;
 	mutex writer_mutex;
+	//! Context handed to DuckDB's Arrow importer by every ingest thread. It runs no queries, and the
+	//! importer consults it only for Arrow extension types, which OtlpArrowTable::ForSignal rules out;
+	//! that is what makes sharing it across threads safe. Reset with writer_con, after the listeners.
+	unique_ptr<Connection> arrow_con;
 	//! Per signal: the inspection view has been found or attempted (EnsureParquetView), so later
 	//! seals never re-bind it. Touched only by the seal path under writer_mutex.
 	std::vector<bool> parquet_view_settled;
