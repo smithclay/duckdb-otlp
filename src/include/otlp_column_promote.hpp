@@ -40,17 +40,11 @@ public:
 	//! cannot add columns, json missing) it logs and disables promotion rather than blocking start.
 	void Initialize(Connection &con);
 
-	//! INSERT...SELECT projection suffix, identical for every signal (resource/scope columns are
-	//! common to all signal tables): `, json_extract_string("resource_attributes", '$."k"') AS
+	//! Sink projection suffix, identical for every signal (resource/scope columns are common to
+	//! all signal tables): `, json_extract_string("resource_attributes", '$."k"') AS
 	//! "resource_attr_k", ...`. Empty when disabled.
 	const string &ProjectionSuffix() const {
 		return suffix;
-	}
-
-	//! INSERT column-list additions parallel to ProjectionSuffix(), e.g. `, "resource_attr_k", ...`,
-	//! so the seal can name the promoted target columns explicitly. Empty when disabled.
-	const string &TargetColumnList() const {
-		return target_list;
 	}
 
 	//! Number of promoted attribute columns per table (resource + scope), 0 when disabled.
@@ -71,7 +65,6 @@ private:
 	std::function<void(const string &)> log;
 	vector<Col> columns;
 	string suffix;
-	string target_list;
 	bool enabled = false;
 };
 

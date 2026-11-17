@@ -4,13 +4,17 @@
 #include "duckdb/common/encryption_state.hpp"
 #include "duckdb/common/types/blob.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
-#include "duckdb/common/types/column/column_data_scan_states.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/main/appender.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/query_result.hpp"
+#include "duckdb/parser/expression/star_expression.hpp"
+#include "duckdb/parser/parser.hpp"
+#include "duckdb/parser/query_node/select_node.hpp"
+#include "duckdb/parser/statement/copy_statement.hpp"
+#include "duckdb/parser/statement/insert_statement.hpp"
 
 #include "otlp_arrow.hpp"
 #include "otlp_column_promote.hpp"
@@ -21,7 +25,6 @@
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
-#include <sstream>
 
 #ifndef __EMSCRIPTEN__
 // Only for the host-aware `doctor` probes (OtlpHttpStatusOk / OtlpTcpConnectOk) at the bottom
@@ -113,25 +116,6 @@ static const char *PartitionTimestampColumn(const string &table_name) {
 	return "time_unix_nano";
 }
 
-static string BuildParquetExportSql(const string &temp_table, const string &table_name, const string &root) {
-	auto timestamp_column = PartitionTimestampColumn(table_name);
-	auto quoted_temp = QuoteIdentifier(temp_table);
-	std::ostringstream sql;
-	sql << "COPY (SELECT *, "
-	    << "strftime(" << QuoteIdentifier(timestamp_column) << ", '%Y') AS year, "
-	    << "strftime(" << QuoteIdentifier(timestamp_column) << ", '%m') AS month, "
-	    << "strftime(" << QuoteIdentifier(timestamp_column) << ", '%d') AS day "
-	    << "FROM " << quoted_temp << ") TO " << SqlQuote(ParquetDatasetDirectory(root, table_name)) << " ("
-	    << "FORMAT PARQUET, "
-	    << "COMPRESSION ZSTD, "
-	    << "PARTITION_BY (year, month, day), "
-	    << "APPEND, "
-	    << "FILENAME_PATTERN 'seal_{uuidv7}', "
-	    << "WRITE_PARTITION_COLUMNS false"
-	    << ")";
-	return sql.str();
-}
-
 static bool IsUnsupportedCatalogMaintenanceError(const string &message) {
 	auto lower = StringUtil::Lower(message);
 	return (lower.find("checkpoint") != string::npos &&
@@ -183,34 +167,6 @@ static void RunSQL(Connection &connection, const string &sql) {
 		auto error = result ? result->GetError() : string("DuckDB query failed");
 		throw IOException("%s", error);
 	}
-}
-
-static void DropTableIfExists(Connection &connection, const string &table_name) {
-	RunSQL(connection, "DROP TABLE IF EXISTS " + QuoteIdentifier(table_name));
-}
-
-static idx_t AppendCollectionToTable(Connection &connection, ColumnDataCollection &collection,
-                                     const string &catalog_name, const string &schema_name, const string &table_name) {
-	unique_ptr<Appender> appender;
-	if (schema_name.empty()) {
-		appender = make_uniq<Appender>(connection, Identifier(table_name));
-	} else if (catalog_name.empty()) {
-		appender = make_uniq<Appender>(connection, Identifier(schema_name), Identifier(table_name));
-	} else {
-		appender =
-		    make_uniq<Appender>(connection, Identifier(catalog_name), Identifier(schema_name), Identifier(table_name));
-	}
-	idx_t batches = 0;
-	ColumnDataScanState scan;
-	collection.InitializeScan(scan);
-	DataChunk chunk;
-	collection.InitializeScanChunk(chunk);
-	while (collection.Scan(scan, chunk)) {
-		appender->AppendDataChunk(chunk);
-		batches++;
-	}
-	appender->Close();
-	return batches;
 }
 
 static OtlpInputFormat FormatFromContentType(const string &content_type) {
@@ -290,8 +246,9 @@ void OtlpServer::InitBuffers() {
 		vector<string> names;
 		GetSignalColumns(target.signal_type, types, names);
 		auto collection = make_uniq<ColumnDataCollection>(allocator, types);
+		vector<Identifier> identifiers(names.begin(), names.end());
 		signal_buffers.push_back(make_uniq<OtlpSignalBuffer>(target.signal_type, target.table_name, std::move(types),
-		                                                     std::move(collection)));
+		                                                     std::move(identifiers), std::move(collection)));
 	}
 	parquet_view_settled.assign(signal_buffers.size(), false);
 }
@@ -447,6 +404,9 @@ OtlpServer::OtlpServer(ClientContext &context, const vector<OtlpListenerSpec> &l
 		                                         [this](const string &msg) { LogServerEvent(msg); });
 		promoter->Initialize(*writer_con);
 	}
+	// After promotion has settled (it may disable itself), so the sinks project exactly the
+	// columns that exist.
+	BuildSinks();
 	StartSealer();
 
 	// The sealer thread is now running. If any bind fails (e.g. EADDRINUSE) this object is not
@@ -624,8 +584,8 @@ void OtlpServer::CreateOrValidateTable(Connection &con, OtlpSignalType signal_ty
 	}
 	// The signal's base columns must be present as a leading prefix (name + type, in order). Extra
 	// trailing columns are allowed: attribute promotion adds resource_attr_*/scope_attr_* columns
-	// via ALTER, and a restart against an already-promoted catalog must validate cleanly. The seal
-	// path targets columns by name so those extras are NULL-filled when not being populated.
+	// via ALTER, and a restart against an already-promoted catalog must validate cleanly. The sink
+	// inserts BY NAME, so those extras are NULL-filled when not being populated.
 	auto &result_names = result->GetNames();
 	auto &result_types = result->GetTypes();
 	if (result_names.size() < expected_names.size()) {
@@ -646,9 +606,6 @@ void OtlpServer::CreateOrValidateTable(Connection &con, OtlpSignalType signal_ty
 			                            expected_names[i], result_types[i].ToString(), expected_types[i].ToString());
 		}
 	}
-	// Recorded in EnsureTargetTables order (== signal_buffers order) so the seal can pick the
-	// column-targeting write path for a table that carries extra (promoted) columns.
-	table_has_extra_columns.push_back(result_names.size() > expected_names.size());
 }
 
 OtlpIngestResult OtlpServer::Ingest(OtlpRequestKind kind, const string &content_type, const string &content_encoding,
@@ -1049,6 +1006,82 @@ void OtlpServer::RecordSealOutcome(bool success, idx_t rows_committed, idx_t adm
 	                admitted_bytes_committed, success, error);
 }
 
+//! The relation name a sink statement reads the sealed rows from.
+static constexpr const char *SEALED_RELATION = "sealed";
+
+//! Run `sql` with `collection` bound as the relation SEALED_RELATION.
+//!
+//! The rows never leave the ColumnDataCollection: it is injected into the parsed statement as a
+//! non-materialized CTE over a ColumnDataRef, the same mechanism DuckDB's own Appender flushes
+//! through. So one helper serves every sink shape (an INSERT into any catalog, a partitioned
+//! COPY), with no temp table and no per-row copy. `names` labels the columns, so a sink can
+//! address them by name (INSERT ... BY NAME, a promotion projection, a partition expression).
+static void ExecuteOverSealed(Connection &connection, const string &sql, ColumnDataCollection &collection,
+                              const vector<Identifier> &names) {
+	Parser parser(*connection.context);
+	parser.ParseQuery(sql);
+	if (parser.statements.size() != 1) {
+		throw InternalException("OTLP sink must be exactly one statement: %s", sql);
+	}
+	auto &statement = *parser.statements[0];
+	optional_ptr<CommonTableExpressionMap> cte_map;
+	switch (statement.type) {
+	case StatementType::INSERT_STATEMENT:
+		cte_map = &statement.Cast<InsertStatement>().node->cte_map;
+		break;
+	case StatementType::COPY_STATEMENT: {
+		auto &info = *statement.Cast<CopyStatement>().info;
+		if (!info.select_statement) {
+			throw InternalException("OTLP sink COPY must read from a query: %s", sql);
+		}
+		cte_map = &info.select_statement->cte_map;
+		break;
+	}
+	default:
+		throw InternalException("OTLP sink must be an INSERT or a COPY: %s", sql);
+	}
+
+	auto select = make_uniq<SelectNode>();
+	select->select_list.push_back(make_uniq<StarExpression>());
+	select->from_table = BaseAppender::GetColumnDataTableRef(collection, Identifier(SEALED_RELATION), names);
+	auto cte = make_uniq<CommonTableExpressionInfo>();
+	cte->query_node = std::move(select);
+	cte->materialized = CTEMaterialize::CTE_MATERIALIZE_NEVER;
+	cte_map->map.insert(Identifier(SEALED_RELATION), std::move(cte));
+
+	auto result = connection.Query(std::move(parser.statements[0]));
+	if (!result || result->HasError()) {
+		throw IOException("%s", result ? result->GetError() : string("DuckDB query failed"));
+	}
+}
+
+//! The plain-Parquet sink: append the sealed rows to `<root>/<table>/year=/month=/day=/`.
+static string ParquetSinkSql(const string &table_name, const string &root) {
+	auto ts = QuoteIdentifier(PartitionTimestampColumn(table_name));
+	return StringUtil::Format("COPY (SELECT *, strftime(%s, '%%Y') AS year, strftime(%s, '%%m') AS month, "
+	                          "strftime(%s, '%%d') AS day FROM %s) TO %s (FORMAT PARQUET, COMPRESSION ZSTD, "
+	                          "PARTITION_BY (year, month, day), APPEND, FILENAME_PATTERN 'seal_{uuidv7}', "
+	                          "WRITE_PARTITION_COLUMNS false)",
+	                          ts, ts, ts, SEALED_RELATION, SqlQuote(ParquetDatasetDirectory(root, table_name)));
+}
+
+void OtlpServer::BuildSinks() {
+	sinks.clear();
+	const bool parquet = !config.parquet_export_path.empty();
+	const string promote = promoter && promoter->Enabled() ? promoter->ProjectionSuffix() : string();
+	for (auto &buf : signal_buffers) {
+		if (parquet) {
+			sinks.push_back(ParquetSinkSql(buf->table_name, config.parquet_export_path));
+			continue;
+		}
+		// BY NAME: the buffer's columns land in the same-named table columns whatever their
+		// position, and any column the table has beyond them (promoted attributes from an earlier
+		// run, operator additions) is NULL-filled. Promotion is one more projected column.
+		sinks.push_back("INSERT INTO " + QualifiedTable(config.catalog_name, config.schema_name, buf->table_name) +
+		                " BY NAME SELECT *" + promote + " FROM " + SEALED_RELATION);
+	}
+}
+
 OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 	std::lock_guard<std::mutex> writer_lock(writer_mutex);
 	if (!writer_con) {
@@ -1062,28 +1095,147 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 	auto seal_started_unix_ms = NowUnixMs();
 
 	auto plan = SwapBuffersForSeal(allocator);
-
 	if (plan.total_rows == 0) {
 		ReleaseAdmission(plan.sealed_admission_bytes);
 		last_seal_unix_ms.store(NowUnixMs());
 		return OtlpIngestResult {};
 	}
 
-	if (!config.parquet_export_path.empty()) {
-		return SealParquet(plan, seal_started_unix_ms);
+	// One protocol for every destination: run each signal's sink over its sealed rows. The only
+	// thing that differs is what a failure leaves behind.
+	//  - A catalog sink is transactional: all signals commit together (for DuckLake, one snapshot),
+	//    and a failure rolls everything back and re-buffers everything.
+	//  - A Parquet COPY is a filesystem side effect that cannot be rolled back, so export is
+	//    at-least-once per signal: a failure re-buffers only the signals that had not exported,
+	//    so an exported signal is never re-written. A COPY that throws part-way may still have
+	//    written some partition files, so downstream readers must tolerate duplicates.
+	const bool transactional = config.parquet_export_path.empty();
+	auto &sealing = plan.signals;
+	std::vector<bool> sealed(signal_buffers.size(), false);
+	OtlpIngestResult result;
+	int64_t append_duration_ms = 0;
+	int64_t commit_duration_ms = 0;
+	idx_t failed_signal = 0;
+	try {
+		if (transactional) {
+			RunSQL(*writer_con, "BEGIN TRANSACTION");
+		}
+		auto append_started = std::chrono::steady_clock::now();
+		for (idx_t i = 0; i < signal_buffers.size(); i++) {
+			failed_signal = i;
+			if (sealing[i].rows == 0) {
+				continue;
+			}
+#ifdef DUCKDB_OTLP_ENABLE_TEST_SEAM
+			if (!transactional && parquet_seal_fault_hook_for_test) {
+				parquet_seal_fault_hook_for_test(i);
+			}
+#endif
+			auto &buf = *signal_buffers[i];
+			ExecuteOverSealed(*writer_con, sinks[i], *sealing[i].collection, buf.names);
+			sealed[i] = true;
+			result.rows += sealing[i].rows;
+			result.batches += sealing[i].collection->ChunkCount();
+			if (!transactional && config.parquet_views) {
+				// The export is durable; the inspection view is best-effort and never fails it.
+				EnsureParquetView(i, buf.table_name);
+			}
+		}
+		append_duration_ms =
+		    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - append_started)
+		        .count();
+		if (transactional) {
+#ifdef DUCKDB_OTLP_ENABLE_TEST_SEAM
+			if (seal_fault_hook_for_test) {
+				seal_fault_hook_for_test();
+			}
+#endif
+			auto commit_started = std::chrono::steady_clock::now();
+			RunSQL(*writer_con, "COMMIT");
+			commit_duration_ms =
+			    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - commit_started)
+			        .count();
+		}
+	} catch (...) {
+		// catch(...) -- not just std::exception -- so a non-std throw can never escape and
+		// std::terminate the host process, and the buffers are always restored.
+		string msg;
+		try {
+			throw;
+		} catch (std::exception &ex) {
+			msg = ex.what();
+		} catch (...) {
+			msg = "unknown (non-std) exception during seal";
+		}
+		if (transactional) {
+			// Nothing committed, whatever the loop had reached.
+			std::fill(sealed.begin(), sealed.end(), false);
+			bool rollback_ok = true;
+			try {
+				RunSQL(*writer_con, "ROLLBACK");
+			} catch (...) {
+				rollback_ok = false;
+			}
+			if (!rollback_ok) {
+				// The writer connection may be wedged in an aborted transaction. Rebuild it so the
+				// next seal can recover instead of failing forever on BEGIN.
+				try {
+					writer_con = make_uniq<Connection>(*db);
+					writer_con->context->config.enable_progress_bar = false;
+				} catch (...) {
+				}
+			}
+		}
+		// Re-buffer every signal that did not seal, ahead of rows workers appended meanwhile. Each
+		// restored signal puts back exactly its own admission bytes and only the sealed signals'
+		// shares are released, so repeated partial failures cannot drift the budget (M2).
+		// RestoreUnsealed keeps the restored rows' original age (M3).
+		std::vector<bool> restore(signal_buffers.size());
+		idx_t sealed_rows = 0;
+		idx_t sealed_admission = plan.sealed_admission_bytes;
+		for (idx_t i = 0; i < signal_buffers.size(); i++) {
+			restore[i] = !sealed[i];
+			if (restore[i]) {
+				sealed_admission -= sealing[i].admission_bytes;
+			} else {
+				sealed_rows += sealing[i].rows;
+			}
+		}
+		RestoreUnsealed(plan, restore);
+		ReleaseAdmission(sealed_admission);
+		if (sealed_rows > 0) {
+			// A partial Parquet export is durable even though the seal failed overall: it advances
+			// the seal clock and counts in committed_rows_total (rows on disk, not successful seals),
+			// which is why otlp_seal_list() can show success=false with rows_committed > 0. Bumped
+			// before RecordSealOutcome so the snapshotted event total includes it.
+			last_seal_unix_ms.store(NowUnixMs());
+			committed_rows_total.fetch_add(sealed_rows);
+		}
+		LogServerEvent(StringUtil::Format("seal failed at %s (%llu/%llu rows sealed): %s",
+		                                  signal_buffers[failed_signal]->table_name, static_cast<uint64_t>(sealed_rows),
+		                                  static_cast<uint64_t>(plan.total_rows), msg),
+		               LogLevel::LOG_WARNING);
+		RecordSealOutcome(false, sealed_rows, sealed_admission, seal_started_unix_ms, append_duration_ms,
+		                  commit_duration_ms, msg);
+		throw IOException("seal failed: %s", msg);
 	}
-	return SealCatalog(plan, seal_started_unix_ms, allow_maintenance, *db);
+
+	ReleaseAdmission(plan.sealed_admission_bytes);
+	LogServerEvent(StringUtil::Format("seal: target=%s rows=%llu batches=%llu", SealTargetDescription(),
+	                                  static_cast<uint64_t>(result.rows), static_cast<uint64_t>(result.batches)));
+	RecordSealOutcome(true, result.rows, plan.sealed_admission_bytes, seal_started_unix_ms, append_duration_ms,
+	                  commit_duration_ms, "");
+	if (transactional && allow_maintenance) {
+		MaybeRunCatalogMaintenance(result.rows, plan.sealed_admission_bytes);
+	}
+	return result;
 }
 
-idx_t OtlpServer::StageCollectionToTempTable(const vector<string> &names, const vector<LogicalType> &types,
-                                             ColumnDataCollection &collection, const string &temp_table) {
-	string ddl = "CREATE TEMP TABLE " + QuoteIdentifier(temp_table) + " (";
-	for (idx_t c = 0; c < names.size(); c++) {
-		ddl += (c > 0 ? string(", ") : string()) + QuoteIdentifier(names[c]) + " " + types[c].ToString();
+string OtlpServer::SealTargetDescription() const {
+	if (!config.parquet_export_path.empty()) {
+		return config.parquet_export_path;
 	}
-	ddl += ")";
-	RunSQL(*writer_con, ddl);
-	return AppendCollectionToTable(*writer_con, collection, string(), string(), temp_table);
+	return config.catalog_name.empty() ? config.schema_name : config.catalog_name + "." + config.schema_name;
 }
 
 void OtlpServer::EnsureParquetView(idx_t signal_index, const string &table_name) {
@@ -1116,308 +1268,6 @@ void OtlpServer::EnsureParquetView(idx_t signal_index, const string &table_name)
 		LogServerEvent(StringUtil::Format("parquet inspection view %s not created: %s", view, ex.what()),
 		               LogLevel::LOG_WARNING);
 	}
-}
-
-OtlpIngestResult OtlpServer::SealParquet(SealingPlan &plan, int64_t seal_started_unix_ms) {
-	int64_t append_duration_ms = 0;
-	int64_t commit_duration_ms = 0;
-	idx_t total = plan.total_rows;
-	idx_t sealed_admission_bytes = plan.sealed_admission_bytes;
-	auto &sealing = plan.signals;
-	OtlpIngestResult result;
-	{
-		// Plain Parquet export path. Each signal is exported independently — there is no
-		// shared transaction and no local destination table, so nothing is double-written
-		// (the Parquet dataset is the only durable store). A COPY is a filesystem/object-
-		// store side effect that cannot be rolled back, so export is at-least-once: on a
-		// signal failure we re-buffer ONLY the signals that have not exported yet, so an
-		// already-exported signal is never re-written (no cross-signal duplication). A
-		// single signal whose COPY fails mid-write can still be re-exported on retry, so
-		// downstream readers must tolerate duplicate rows.
-		auto seal_id = seals_total.load() + 1;
-		auto seal_attempt_id = seal_failures_total.load() + 1;
-		std::vector<bool> exported(signal_buffers.size(), false);
-		idx_t exported_rows = 0;
-		bool failed = false;
-		string failure_msg;
-		idx_t failed_signal = 0;
-		for (idx_t i = 0; i < signal_buffers.size(); i++) {
-			if (sealing[i].rows == 0) {
-				exported[i] = true; // nothing buffered for this signal
-				continue;
-			}
-			auto &buf = *signal_buffers[i];
-			auto staging =
-			    StringUtil::Format("__otlp_seal_%s_%llu_%llu_%llu", buf.table_name, static_cast<uint64_t>(seal_id),
-			                       static_cast<uint64_t>(seal_attempt_id), static_cast<uint64_t>(i));
-			try {
-				// Stage this seal's rows in a TEMP table (schema from the signal definition), then
-				// COPY only those rows to the partitioned dataset.
-				vector<LogicalType> staging_types;
-				vector<string> staging_names;
-				GetSignalColumns(buf.signal_type, staging_types, staging_names);
-				result.batches +=
-				    StageCollectionToTempTable(staging_names, staging_types, *sealing[i].collection, staging);
-#ifdef DUCKDB_OTLP_ENABLE_TEST_SEAM
-				// Test-only fault injection: simulate a per-signal COPY failure so the harness can
-				// assert the at-least-once partial-export + proportional-admission re-buffer path.
-				// Null (and the whole branch absent) in production builds. Thrown before the COPY
-				// so this signal is NOT exported (the catch below re-buffers it, like a real
-				// mid-write COPY failure).
-				if (parquet_seal_fault_hook_for_test) {
-					parquet_seal_fault_hook_for_test(i);
-				}
-#endif
-				RunSQL(*writer_con, BuildParquetExportSql(staging, buf.table_name, config.parquet_export_path));
-			} catch (std::exception &ex) {
-				failed = true;
-				failure_msg = ex.what();
-				failed_signal = i;
-				try {
-					DropTableIfExists(*writer_con, staging);
-				} catch (...) {
-				}
-				break;
-			} catch (...) {
-				failed = true;
-				failure_msg = "unknown (non-std) exception during parquet seal";
-				failed_signal = i;
-				try {
-					DropTableIfExists(*writer_con, staging);
-				} catch (...) {
-				}
-				break;
-			}
-			// COPY returned success: these rows are durable in Parquet. exported[i] means
-			// exactly "this signal's COPY returned", NOT that the write is per-signal atomic —
-			// a partitioned COPY that throws part-way may already have written some partition
-			// files, so the re-buffer + retry below is at-least-once at signal granularity. The
-			// staging drop and the inspection view are best-effort and must never turn a durable
-			// export into a failure (that would re-buffer and re-export the rows).
-			exported[i] = true;
-			exported_rows += sealing[i].rows;
-			result.rows += sealing[i].rows;
-			try {
-				DropTableIfExists(*writer_con, staging);
-			} catch (...) {
-			}
-			if (config.parquet_views) {
-				EnsureParquetView(i, buf.table_name);
-			}
-		}
-
-		if (failed) {
-			// Re-buffer only the signals that did NOT export, ahead of any rows workers appended
-			// during the COPY (old rows first, preserving order). Admission is split EXACTLY by
-			// signal: each un-exported signal puts back its OWN admission bytes (carried in the
-			// plan) and the exported signals' shares are released. No proportional re-split, so
-			// repeated partial failures cannot cumulatively over-release the budget (M2).
-			// `exported` (false = not exported -> restore) is exactly the restore mask: signals
-			// that did export are NOT re-buffered (no cross-signal duplication).
-			std::vector<bool> restore(signal_buffers.size());
-			idx_t restored_admission = 0;
-			for (idx_t i = 0; i < signal_buffers.size(); i++) {
-				restore[i] = !exported[i];
-				if (restore[i]) {
-					restored_admission += sealing[i].admission_bytes;
-				}
-			}
-			RestoreUnsealed(plan, restore);
-			// The exported share is exactly the aggregate minus the restored per-signal sum.
-			sealed_admission_bytes -= restored_admission;
-			ReleaseAdmission(sealed_admission_bytes); // release only the exported share
-			if (exported_rows > 0) {
-				// Some signals were durably written; advance the seal clock for them but do
-				// not count this as a fully successful seal.
-				last_seal_unix_ms.store(NowUnixMs());
-			}
-			// Parquet COPY is not transactional, so the exported share is durable even though the
-			// seal failed overall. Count it in committed_rows_total (it reflects rows on disk, not
-			// successful seals); this is why otlp_seal_list() can show success=false with
-			// rows_committed > 0. Bumped BEFORE RecordSealOutcome so the snapshotted event total
-			// includes it. The transaction path adds nothing on failure (rollback).
-			committed_rows_total.fetch_add(exported_rows);
-			LogServerEvent(StringUtil::Format("parquet seal failed at signal %llu (%llu/%llu rows exported): %s",
-			                                  static_cast<uint64_t>(failed_signal),
-			                                  static_cast<uint64_t>(exported_rows), static_cast<uint64_t>(total),
-			                                  failure_msg),
-			               LogLevel::LOG_WARNING);
-			RecordSealOutcome(false, exported_rows, sealed_admission_bytes, seal_started_unix_ms, append_duration_ms,
-			                  commit_duration_ms, failure_msg);
-			throw IOException(StringUtil::Format("parquet seal failed: %s", failure_msg));
-		}
-
-		ReleaseAdmission(sealed_admission_bytes);
-		LogServerEvent(StringUtil::Format("parquet seal: path=%s rows=%llu batches=%llu", config.parquet_export_path,
-		                                  static_cast<uint64_t>(result.rows), static_cast<uint64_t>(result.batches)));
-		RecordSealOutcome(true, result.rows, sealed_admission_bytes, seal_started_unix_ms, append_duration_ms,
-		                  commit_duration_ms, "");
-		return result;
-	}
-}
-
-OtlpIngestResult OtlpServer::SealCatalog(SealingPlan &plan, int64_t seal_started_unix_ms, bool allow_maintenance,
-                                         DatabaseInstance &db) {
-	int64_t append_duration_ms = 0;
-	int64_t commit_duration_ms = 0;
-	idx_t sealed_admission_bytes = plan.sealed_admission_bytes;
-	auto &sealing = plan.signals;
-	OtlpIngestResult result;
-
-	// Attribute promotion / schema evolution: a signal whose target table is wider than the base
-	// schema — because promotion is enabled, or because a prior run promoted columns into a persisted
-	// catalog — is sealed via a column-targeted INSERT...SELECT from a TEMP table, so the extra
-	// columns are populated (promotion) or NULL-filled (otherwise). Tables that are exactly the base
-	// schema keep the fast direct Appender path. Temp tables are staged OUTSIDE the data transaction;
-	// the transaction below only runs the INSERTs. Best-effort: a staging failure drops that signal
-	// back to the Appender path.
-	const bool promote = promoter && promoter->Enabled();
-	std::vector<string> temp_tables(signal_buffers.size());
-	std::vector<string> insert_columns(signal_buffers.size());
-	auto seal_id = seals_total.load() + 1;
-	for (idx_t i = 0; i < signal_buffers.size(); i++) {
-		if (sealing[i].rows == 0) {
-			continue;
-		}
-		bool has_extra = i < table_has_extra_columns.size() && table_has_extra_columns[i];
-		if (!promote && !has_extra) {
-			continue; // base-width table, no promotion: fast Appender path below
-		}
-		auto &buf = *signal_buffers[i];
-		auto temp = StringUtil::Format("__otlp_promote_%s_%llu_%llu", buf.table_name, static_cast<uint64_t>(seal_id),
-		                               static_cast<uint64_t>(i));
-		try {
-			vector<LogicalType> staging_types;
-			vector<string> staging_names;
-			GetSignalColumns(buf.signal_type, staging_types, staging_names);
-			StageCollectionToTempTable(staging_names, staging_types, *sealing[i].collection, temp);
-			string cols;
-			for (idx_t c = 0; c < staging_names.size(); c++) {
-				cols += (c > 0 ? string(", ") : string()) + QuoteIdentifier(staging_names[c]);
-			}
-			if (promote) {
-				cols += promoter->TargetColumnList();
-			}
-			temp_tables[i] = temp;
-			insert_columns[i] = cols;
-		} catch (std::exception &ex) {
-			try {
-				DropTableIfExists(*writer_con, temp);
-			} catch (...) {
-			}
-			temp_tables[i].clear();
-			LogServerEvent(
-			    StringUtil::Format("attribute promotion: staging failed for %s: %s", buf.table_name, ex.what()),
-			    LogLevel::LOG_WARNING);
-		}
-	}
-	auto drop_temp_tables = [&]() {
-		for (auto &temp : temp_tables) {
-			if (temp.empty()) {
-				continue;
-			}
-			try {
-				DropTableIfExists(*writer_con, temp);
-			} catch (...) {
-			}
-		}
-	};
-
-	try {
-		RunSQL(*writer_con, "BEGIN TRANSACTION");
-		auto append_started = std::chrono::steady_clock::now();
-		for (idx_t i = 0; i < signal_buffers.size(); i++) {
-			if (sealing[i].rows == 0) {
-				continue;
-			}
-			auto &buf = *signal_buffers[i];
-			if (!temp_tables[i].empty()) {
-				// Column-targeted INSERT: name every base column (+ promoted columns when enabled) so
-				// values map by name, not position, and any other columns the table carries are
-				// NULL-filled.
-				auto target = QualifiedTable(config.catalog_name, config.schema_name, buf.table_name);
-				string select_list = string("*") + (promote ? promoter->ProjectionSuffix() : string());
-				RunSQL(*writer_con, "INSERT INTO " + target + " (" + insert_columns[i] + ") SELECT " + select_list +
-				                        " FROM " + QuoteIdentifier(temp_tables[i]));
-				result.batches += 1;
-			} else {
-				result.batches += AppendCollectionToTable(*writer_con, *sealing[i].collection, config.catalog_name,
-				                                          config.schema_name, buf.table_name);
-			}
-			result.rows += sealing[i].rows;
-		}
-		append_duration_ms =
-		    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - append_started)
-		        .count();
-#ifdef DUCKDB_OTLP_ENABLE_TEST_SEAM
-		// Test-only fault injection: simulate a commit-time seal failure so the harness can
-		// assert the re-buffer/retry invariants. Null (and the whole branch absent) in
-		// production builds; throws here so the rows are still staged-but-uncommitted, exactly
-		// like a real COMMIT failure, exercising the catch/rollback/re-buffer path below.
-		if (seal_fault_hook_for_test) {
-			seal_fault_hook_for_test();
-		}
-#endif
-		auto commit_started = std::chrono::steady_clock::now();
-		RunSQL(*writer_con, "COMMIT");
-		commit_duration_ms =
-		    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - commit_started)
-		        .count();
-	} catch (...) {
-		// catch(...) — not just std::exception — so a non-std throw can never escape and
-		// std::terminate the host process, and the buffer is always restored.
-		string msg;
-		try {
-			throw;
-		} catch (std::exception &ex) {
-			msg = ex.what();
-		} catch (...) {
-			msg = "unknown (non-std) exception during seal";
-		}
-		bool rollback_ok = true;
-		try {
-			RunSQL(*writer_con, "ROLLBACK");
-		} catch (...) {
-			rollback_ok = false;
-		}
-		if (!rollback_ok) {
-			// ROLLBACK failed: the writer connection may be wedged in an aborted
-			// transaction. Rebuild it so the next seal can recover instead of failing
-			// forever on BEGIN.
-			try {
-				writer_con = make_uniq<Connection>(db);
-				writer_con->context->config.enable_progress_bar = false;
-			} catch (...) {
-			}
-		}
-		// Restore ALL un-sealed rows ahead of whatever workers buffered during the COPY, so
-		// nothing is lost and order is preserved (RestoreUnsealed with an all-true mask). Only
-		// the old (swapped-out) rows are re-counted; the live rows were already counted as they
-		// were appended. Each restored signal puts its OWN admission bytes back (nothing committed,
-		// so nothing is released; the per-signal sum equals the aggregate, so the all-or-nothing
-		// path is unchanged). RestoreUnsealed preserves the swapped-out rows' original
-		// first_unsealed (M3), so oldest_buffered_age_ms keeps reporting the true age across
-		// consecutive seal failures instead of resetting to now on each failure.
-		{
-			std::vector<bool> restore(signal_buffers.size(), true);
-			RestoreUnsealed(plan, restore);
-		}
-		drop_temp_tables();
-		LogServerEvent(StringUtil::Format("seal failed: %s", msg), LogLevel::LOG_WARNING);
-		RecordSealOutcome(false, 0, 0, seal_started_unix_ms, append_duration_ms, commit_duration_ms, msg);
-		throw;
-	}
-
-	drop_temp_tables();
-	ReleaseAdmission(sealed_admission_bytes);
-	LogServerEvent(StringUtil::Format("seal: catalog=%s rows=%llu batches=%llu", config.catalog_name,
-	                                  static_cast<uint64_t>(result.rows), static_cast<uint64_t>(result.batches)));
-	RecordSealOutcome(true, result.rows, sealed_admission_bytes, seal_started_unix_ms, append_duration_ms,
-	                  commit_duration_ms, "");
-	if (allow_maintenance) {
-		MaybeRunCatalogMaintenance(result.rows, sealed_admission_bytes);
-	}
-	return result;
 }
 
 bool OtlpServer::CatalogMaintenanceEnabled() const {
@@ -1616,7 +1466,7 @@ void OtlpServer::ConfigureCatalogMaintenanceOptions() {
 		// Not a DuckLake catalog (or options unsupported): leave defaults; maintenance will
 		// DISABLE on its first CHECKPOINT if the catalog can't be checkpointed at all. catch(...)
 		// — not just std::exception — so a non-std throw can't escape this best-effort startup
-		// path and lose the reason; extract the message the same way SealCatalog/Maybe... do.
+		// path and lose the reason; extract the message the same way SealOnce does.
 		string msg;
 		try {
 			throw;

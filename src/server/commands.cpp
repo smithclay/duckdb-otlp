@@ -68,7 +68,7 @@ duckdb::unique_ptr<duckdb::DuckDB> OpenScratchDatabase() {
 //!
 //! The `parquet` mode has no catalog, so a signal is readable only through a view over
 //! `<root>/<table>/**/*.parquet`. The seal path already creates exactly that view after every
-//! successful export (see SealParquet), which covers the ordinary case of serving and reading
+//! successful export (see OtlpServer::EnsureParquetView), which covers the ordinary case of serving and reading
 //! on one host. It does NOT cover a dataset written by another process or host, or one whose
 //! control database was never created locally -- there, nothing has ever run the seal, and
 //! `export` found no signal tables at all. Both sites build the view from
