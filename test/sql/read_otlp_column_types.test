@@ -1,8 +1,9 @@
 # name: test/sql/read_otlp_column_types.test
-# description: Pin every reader's column types. The readers hand otlp2records' DuckDb Arrow profile to
-#              DuckDB's stock Arrow importer, so these types are what that mapping produces; a change in
-#              either the profile or the importer shows up here first.
+# description: Pin every reader's column types
 # group: [sql]
+
+# The readers hand otlp2records' DuckDb Arrow profile to DuckDB's stock Arrow importer, so these
+# types are what that mapping produces; a change in either the profile or the importer shows up here.
 
 require otlp
 
