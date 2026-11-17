@@ -1,0 +1,56 @@
+name: Retry failed release pipeline
+
+# A release is one tag push and one pipeline run, so a transient failure on that run
+# loses the release outright: no GitHub release, no daemon binaries, no image, and the
+# Homebrew tap never sees a new version. v0.8.0 went that way -- GitHub Actions returned
+# "Internal server error" while expanding the extension build matrices, those jobs were
+# never created, and the tag sat unreleased for 8 days. A mirror serving an empty
+# repomd.xml to the upstream build image has failed a build the same way.
+#
+# Neither failure is ours to prevent, so this re-runs a failed tag pipeline exactly once.
+# Only tags: on a branch the next push re-runs CI anyway, and a real test failure would
+# just burn a second macOS build. Only the first attempt: a failure that survives the
+# retry is not transient, and GitHub's own failure notification covers it.
+#
+# workflow_run triggers are read from the default branch, so this protects a tag only
+# once it is on main.
+
+on:
+  workflow_run:
+    workflows: ["Main Extension Distribution Pipeline"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  retry:
+    name: Re-run the failed tag pipeline once
+    if: >-
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.run_attempt == 1 &&
+      startsWith(github.event.workflow_run.head_branch, 'v')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Re-run all jobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          # Via env, not interpolated into the script: a ref name is pusher-controlled text.
+          REF_NAME: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          # head_branch holds the tag name for a tag push, but a branch named v-something
+          # would match the filter above too. Retry only if the name really is a tag.
+          if ! gh api "repos/${REPO}/git/ref/tags/${REF_NAME}" --silent 2>/dev/null; then
+            echo "${REF_NAME} is not a tag; not retrying"
+            exit 0
+          fi
+          # All jobs, not --failed: when the run-level error hits, the failed jobs were
+          # never created, so there is nothing for --failed to select.
+          gh run rerun "${RUN_ID}" --repo "${REPO}"
+          echo "Re-ran ${REF_NAME} pipeline: https://github.com/${REPO}/actions/runs/${RUN_ID}"
