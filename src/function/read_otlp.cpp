@@ -128,7 +128,15 @@ static unique_ptr<FunctionData> ReadOTLPRustBind(ClientContext &context, TableFu
 	}
 	result->schema_initialized = true;
 
-	GetArrowSchemaColumns(result->arrow_schema, return_types, names);
+	// attributes_as_variant := true promotes the JSON attribute bags to DuckDB VARIANT. The
+	// scan needs no flag of its own: the bound return types are what CopyArrowToDuckDB
+	// dispatches on, so a VARIANT column converts and every other column is untouched.
+	OtlpArrowSchemaOptions options;
+	auto variant_param = input.named_parameters.find("attributes_as_variant");
+	if (variant_param != input.named_parameters.end() && !variant_param->second.IsNull()) {
+		options.attributes_as_variant = variant_param->second.GetValue<bool>();
+	}
+	GetArrowSchemaColumns(result->arrow_schema, return_types, names, options);
 
 	result->return_types = return_types;
 	result->names = names;
@@ -536,8 +544,13 @@ void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
 	     "SELECT * FROM read_otap_metrics_histogram('metrics.bar');"},
 	};
 	for (const auto &reg : supported) {
-		TableFunction func(reg.name, {LogicalType::VARCHAR}, ReadOTLPRustScan, reg.bind, ReadOTLPRustInitGlobal,
-		                   ReadOTLPRustInitLocal);
+		// `path` is declared positional-only by name and the option as a typed kwarg, so
+		// duckdb_functions() renders [path, attributes_as_variant] rather than a colN placeholder.
+		auto signature = FunctionSignature().AddPositionalOnly("path", LogicalType::VARCHAR);
+		signature.WithTypedKwargs(
+		    "options", [](TypedKwargs &options) { options.Add("attributes_as_variant", LogicalType::BOOLEAN); });
+		TableFunction func(Identifier(reg.name), std::move(signature), ReadOTLPRustScan, reg.bind,
+		                   ReadOTLPRustInitGlobal, ReadOTLPRustInitLocal);
 		func.projection_pushdown = true;
 		func.filter_pushdown = false;
 		// The two protocols are the axis a caller has to choose along, so they are the second
@@ -551,10 +564,12 @@ void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
 			               "rest, so the four metric readers all read the same file.";
 		}
 		description += " `path` is a single file or a glob, resolved through DuckDB's file systems (local, S3, "
-		               "HTTP(S), Azure, GCS).";
-		loader.RegisterFunction(
-		    OtlpDocumented(std::move(func), {OtlpDoc({LogicalType::VARCHAR}, {"path"}, std::move(description),
-		                                             {reg.example}, {"opentelemetry", protocol})}));
+		               "HTTP(S), Azure, GCS). Set attributes_as_variant := true to read the attribute bags "
+		               "(resource_attributes, scope_attributes and the signal's own) as VARIANT instead of JSON "
+		               "text.";
+		loader.RegisterFunction(OtlpDocumented(
+		    std::move(func), {OtlpDoc({LogicalType::VARCHAR}, {"path", "attributes_as_variant"}, std::move(description),
+		                              {reg.example}, {"opentelemetry", protocol})}));
 	}
 
 	// read_otlp_metrics: registered solely to throw a not-implemented error at bind time. Documented

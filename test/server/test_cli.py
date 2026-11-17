@@ -15,6 +15,7 @@ Point the tests at a binary with DUCKDB_OTLP_SERVER_BIN, or rely on the default
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -625,6 +626,9 @@ def test_export_rejects_an_unknown_partition_scheme(tmp_path):
         (["export", "--file", "script.sql"], "query"),
         (["--since", "-24h"], "export"),
         (["--readonly"], "query"),
+        (["convert", "--attributes-as-variant", "x.pb"], "serve"),
+        (["export", "--promote-resource-attributes", "host.name"], "serve"),
+        (["doctor", "--attributes-as-variant"], "serve"),
     ],
 )
 def test_a_flag_of_another_command_is_rejected_by_name(args, belongs_to, tmp_path):
@@ -632,6 +636,122 @@ def test_a_flag_of_another_command_is_rejected_by_name(args, belongs_to, tmp_pat
     assert result.returncode == 2  # usage error
     assert "does not accept" in result.stderr
     assert belongs_to in result.stderr
+
+
+def test_ingest_shape_flags_reach_the_generated_serve_call(tmp_path):
+    """--attributes-as-variant and the promotion flags are the CLI face of what ingest writes.
+
+    They were environment-only, so an operator running the binary by hand had to export a
+    variable to choose the attribute-bag column type or promote a key. Each is one row in the
+    flag table over the variable it overrides.
+    """
+    result = run(
+        [
+            "validate",
+            "--attributes-as-variant",
+            "--promote-resource-attributes",
+            "deployment.environment,k8s.namespace.name",
+            "--promote-scope-attributes",
+            "telemetry.sdk.name",
+        ],
+        home=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "attributes_as_variant := true" in result.stdout
+    assert "promote_resource_attributes := 'deployment.environment,k8s.namespace.name'" in result.stdout
+    assert "promote_scope_attributes := 'telemetry.sdk.name'" in result.stdout
+
+
+def test_promotion_flags_accept_the_short_spelling(tmp_path):
+    result = run(["validate", "--promote-resource", "host.name", "--promote-scope", "scope.team"], home=tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "promote_resource_attributes := 'host.name'" in result.stdout
+    assert "promote_scope_attributes := 'scope.team'" in result.stdout
+
+
+def test_promotion_flags_are_refused_by_a_mode_that_cannot_promote(tmp_path):
+    """`parquet` mode writes files, so there is no table for ALTER TABLE to add a column to.
+
+    The serve path skips promotion entirely there, so accepting the flags and reporting
+    promoted_columns_total = 0 at runtime is the silent no-op the per-command flag table exists
+    to prevent. `validate` has to be the one that says so -- it is where an operator checks a
+    configuration before starting it.
+    """
+    result = run(
+        ["validate", "--mode", "parquet", "--promote-resource-attributes", "service.name"],
+        env={"PARQUET_EXPORT_PATH": str(tmp_path / "dataset")},
+        home=tmp_path,
+    )
+    assert result.returncode != 0
+    assert "catalog" in result.stderr
+    assert "promote" in result.stderr
+
+
+def test_variant_columns_export_as_json_not_as_their_display_form(tmp_path):
+    """`export --format json` of a VARIANT bag must hold JSON values, not DuckDB's display form.
+
+    DuckDB 1.5's json writer rendered a VARIANT through its VARCHAR display form -- the string
+    "{'k': 1}", neither JSON nor parseable. DuckDB 2.0's writes the value as JSON, so the export
+    path carries no cast of its own; this pins the behaviour it relies on.
+    """
+    init = tmp_path / "init.sql"
+    init.write_text(
+        "CREATE TABLE otlp_logs AS SELECT "
+        "'{\"service.name\":\"x\",\"count\":1}'::JSON::VARIANT AS resource_attributes, "
+        "TIMESTAMP '2026-01-01' AS time_unix_nano;\n"
+    )
+    out = tmp_path / "logs.json"
+    result = run(
+        [
+            "export",
+            "--mode",
+            "none",
+            "--database",
+            ":memory:",
+            "--init-sql",
+            str(init),
+            "--signal",
+            "logs",
+            "--to",
+            str(out),
+        ],
+        home=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    written = out.read_text()
+    assert "{'service.name'" not in written  # DuckDB's display form, the bug this guards
+    rows = json.loads(written)
+    assert rows[0]["resource_attributes"] == {"service.name": "x", "count": 1}
+
+
+def test_query_json_output_holds_variant_values_as_json(tmp_path):
+    """The same guarantee as the export test, on arbitrary SQL."""
+    result = run(
+        [
+            "query",
+            "--mode",
+            "none",
+            "--database",
+            ":memory:",
+            "--format",
+            "json",
+            "SELECT '{\"k\":1}'::JSON::VARIANT AS bag",
+        ],
+        home=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)[0]["bag"] == {"k": 1}
+
+
+def test_ingest_shape_flags_beat_the_environment(tmp_path):
+    result = run(
+        ["validate", "--promote-resource-attributes", "from.flag"],
+        env={"DUCKDB_OTLP_PROMOTE_RESOURCE_ATTRIBUTES": "from.env"},
+        home=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "promote_resource_attributes := 'from.flag'" in result.stdout
+    assert "from.env" not in result.stdout
 
 
 def test_an_unknown_flag_names_the_command_whose_help_to_read(tmp_path):

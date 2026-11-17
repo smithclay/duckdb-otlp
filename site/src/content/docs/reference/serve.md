@@ -141,6 +141,7 @@ SELECT * FROM otlp_serve('otlp:localhost:4318', catalog := 'lake', token := 'my-
 | `maintenance_retention_ms` | BIGINT | `900000` (15 min) | DuckLake only. How old snapshots and unused data files must be before the post-seal `CHECKPOINT` expires and deletes them (`expire_older_than` / `delete_older_than`), and how old an untracked data file must be before the orphan sweep deletes it. Keep it longer than your longest read; time-travel below this window is unavailable. Must be greater than zero. |
 | `promote_resource_attributes` | VARCHAR | *(none)* | Comma-separated **resource** attribute keys to promote into first-class columns at ingest. See [Attribute promotion](#attribute-promotion). Catalog mode only. |
 | `promote_scope_attributes` | VARCHAR | *(none)* | Comma-separated **scope** attribute keys to promote into first-class columns at ingest. See [Attribute promotion](#attribute-promotion). Catalog mode only. |
+| `attributes_as_variant` | BOOLEAN | `false` | Create and fill the attribute bags as `VARIANT` instead of `VARCHAR` holding JSON text. See [Attributes as VARIANT](#attributes-as-variant). |
 
 **Output columns** (one row per listener):
 
@@ -324,19 +325,76 @@ SELECT * FROM otlp_serve(
 ```
 
 - **Column naming.** Each key becomes `resource_attr_<key>` or `scope_attr_<key>` (non-alphanumeric characters become `_`), e.g. `deployment.environment` → `resource_attr_deployment_environment`, on **all six** signal tables. The columns are added once when the server starts.
-- **The JSON blob is kept.** A promoted column is an accelerator, not a replacement — the original key stays in `resource_attributes`/`scope_attributes`. Rows written *before* a key was promoted read back `NULL` for its column, so query across old and new data with:
+- **The bag is kept.** A promoted column is an accelerator, not a replacement — the original key stays in `resource_attributes`/`scope_attributes`. Rows written *before* a key was promoted read back `NULL` for its column, so query across old and new data by COALESCEing the column with the same extract the server projects. Over a JSON bag that is:
 
   ```sql
   COALESCE(resource_attr_deployment_environment,
            json_extract_string(resource_attributes, '$."deployment.environment"'))
   ```
 
+  and with [`attributes_as_variant`](#attributes-as-variant):
+
+  ```sql
+  COALESCE(resource_attr_deployment_environment,
+           CAST(variant_extract(resource_attributes, 'deployment.environment') AS VARCHAR))
+  ```
+
+  Neither extract runs on the other's type: `json_extract_string` over a VARIANT bag fails with `Malformed JSON`, because it is handed DuckDB's display form rather than JSON text.
+
 - **No auto-discovery.** The promoted set is exactly what you list — there is no workload observation or automatic promotion.
-- **Catalog mode only.** Promotion adds real columns via `ALTER TABLE`, so it requires a catalog target (DuckLake). It is ignored under `parquet_export_path`. On an Iceberg REST catalog it works only if the catalog supports `ADD COLUMN`; otherwise the server logs a warning and disables promotion (ingest continues).
+- **Catalog mode only.** Promotion adds real columns via `ALTER TABLE`, so it requires a catalog target (DuckLake). Combining it with `parquet_export_path` (or the daemon's `--mode parquet`) is rejected at startup rather than ignored — there is no table to add the columns to. On an Iceberg REST catalog it works only if the catalog supports `ADD COLUMN`; otherwise the server logs a warning and disables promotion (ingest continues).
 - **Type.** Promoted columns are `VARCHAR` (the JSON-extracted text).
 - `otlp_server_list().promoted_columns_total` reports the promoted column count per signal.
 
-The daemon exposes the same option via `DUCKDB_OTLP_PROMOTE_RESOURCE_ATTRIBUTES` and `DUCKDB_OTLP_PROMOTE_SCOPE_ATTRIBUTES` (comma-separated). The daemon image must have the `json` extension available; if it cannot load it, promotion disables itself with a log.
+The daemon exposes the same option as `--promote-resource-attributes` / `--promote-scope-attributes` (or `DUCKDB_OTLP_PROMOTE_RESOURCE_ATTRIBUTES` / `DUCKDB_OTLP_PROMOTE_SCOPE_ATTRIBUTES`), comma-separated. The daemon image must have the `json` extension available; if it cannot load it, promotion disables itself with a log.
+
+## Attributes as VARIANT
+
+`attributes_as_variant := true` makes the server create and fill every `*_attributes` column as DuckDB's [`VARIANT`](https://duckdb.org/docs/stable/sql/data_types/variant) type instead of `VARCHAR` holding JSON text. The readers take the same flag — see [Attributes as VARIANT](../schemas/#attributes-as-variant) for what changes about querying — and the daemon exposes it as `--attributes-as-variant` (or `DUCKDB_OTLP_ATTRIBUTES_AS_VARIANT=1`).
+
+```sql
+SELECT * FROM otlp_serve('otlp:0.0.0.0:4318', catalog := 'lake', attributes_as_variant := true);
+```
+
+- **It is part of the destination's shape, not a runtime preference.** The server creates its six signal tables with the column types the flag implies, and on startup it validates the types it finds. Pointing a server at tables created the other way fails with an error naming the migration rather than writing the wrong encoding into them. Under `parquet_export_path` the same check reads the existing dataset instead: files cannot be migrated in place, and two encodings under one root make the older rows unreadable (`union_by_name` hands them back as VARIANT *strings*), so a flipped flag is refused and the remedy is a new export root.
+- **Migrating an existing catalog** means one `ALTER` per bag column per signal table, with an explicit `USING` — a bare cast from `VARCHAR` would store the whole JSON document as a VARIANT *string* instead of parsing it:
+
+  ```sql
+  ALTER TABLE lake.main.otlp_logs
+    ALTER COLUMN resource_attributes SET DATA TYPE VARIANT
+    USING CAST(resource_attributes AS JSON)::VARIANT;
+  ```
+
+- **An old DuckDB file catalog may need upgrading.** A database file created by DuckDB 2.0 holds `VARIANT` columns as is. One created by DuckDB 1.x keeps its original storage version and fails at table creation with *"VARIANT columns are not supported in storage versions prior to v1.5.0"*; copy it into a new file (`COPY FROM DATABASE old TO new`) to upgrade it. DuckLake and `parquet_export_path` write Parquet and are unaffected.
+- **DuckLake and Parquet.** `VARIANT` columns are written to Parquet in the [Parquet variant encoding](https://duckdb.org/docs/stable/sql/data_types/variant) and shredded into typed subcolumns, which is where the storage and query win comes from. DuckLake stores them natively from DuckLake 0.4; a catalog older than that cannot hold the column type.
+- **JSON output needs no cast.** `duckdb-otlp export --format json`, `duckdb-otlp query --format json` and your own `COPY ... TO '*.json'` write a `VARIANT` as a real JSON value. CSV is the exception: it renders DuckDB's display form (`{'k': 1}`), so cast the bag with `CAST(resource_attributes AS JSON)` there.
+- **Attribute promotion still works.** With `VARIANT` bags the promoted column is filled by `CAST(variant_extract(bag, 'key') AS VARCHAR)` rather than `json_extract_string`, and stays `VARCHAR` either way.
+- **What it costs at ingest, measured.** The Rust backend has no VARIANT encoder: it emits each bag as JSON either way, and the extension converts that text to `VARIANT` once per chunk on the way in; the seal then shreds it. On a 2-core VM with DuckDB 2.0.0, 80k log records with 8 resource + 5 record attributes each, posted over OTLP/HTTP into `parquet` mode by a client on the same machine:
+
+  | | JSON text | VARIANT | change |
+  |---|---|---|---|
+  | POST throughput | 166k rec/s | 124k rec/s | −25% |
+  | Ingest incl. the final seal | 0.87 s | 1.60 s | +84% |
+  | Parquet on disk | 1.46 MB | 0.93 MB | **−36%** |
+
+  Reading the same data from files with `read_otlp_logs` (200k records) costs +24% in the scan. `scripts/benchmark_catalog_ingest.py --attributes-as-variant` runs the daemon e2e benchmark with the flag on.
+
+- **What it buys at query time, measured.** DuckDB 2.0 executes an extraction against the shredded subcolumn instead of rebuilding the bag, from Parquet files and from DuckDB storage alike. The same 200k log records, JSON → VARIANT:
+
+  | Query | Parquet files | DuckDB table |
+  |---|---|---|
+  | String key, repeated resource bags | 15 ms → **2 ms** | 15 ms → **1 ms** |
+  | String key, per-record bags | 29 ms → **2 ms** | 23 ms → **1 ms** |
+  | `GROUP BY` an attribute | 29 ms → **2 ms** | 19 ms → **2 ms** |
+  | Numeric key (`>= 500`) | 27 ms → 99 ms | 22 ms → **1 ms** |
+
+  Three things to know before relying on those numbers:
+
+  - **The idiom matters.** They are for `CAST(variant_extract(bag, 'key') AS VARCHAR)` and its shorthand `bag['key']::VARCHAR` (numeric: `variant_extract(bag, 'key')::BIGINT`). `variant_extract_string(bag, 'key')` is not pushed down and runs no faster than `json_extract_string`.
+  - **Numeric keys read from Parquet are slower than JSON**, and that includes a DuckLake catalog. From DuckDB storage they are as fast as string keys.
+  - **Reading a whole bag from Parquet is slower** (1 ms → 88 ms for `count(log_attributes)`), because the bag is reassembled from its shredded columns. Select the keys you need rather than the bag.
+
+  [Attribute promotion](#attribute-promotion) remains the answer for the handful of keys you filter on constantly: a promoted column also gets row-group pruning.
 
 ## URI scheme
 
