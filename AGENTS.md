@@ -29,8 +29,8 @@ This file provides guidance to coding agents when working with code in this repo
   config no longer links it into the shell/`unittest`: `extension_config.cmake` asks for that with
   `duckdb_extension_statically_link(otlp)`.
 - **Windows (`windows_amd64`, MSVC) builds the extension only.** `CMakeLists.txt` gates the
-  native daemon (`duckdb_otlp_server`) and the C++ harnesses (`otlp_seal_harness`,
-  `otlp_arrow_harness`) on `NOT WIN32`, because `make release` builds the default ALL target
+  native daemon (`duckdb_otlp_server`) and the C++ seal harness (`otlp_seal_harness`)
+  on `NOT WIN32`, because `make release` builds the default ALL target
   and the daemon only ships as the Linux container image. Windows-specific build details:
   `src/otlp_server.cpp` selects Winsock over the POSIX socket headers under `#ifdef _WIN32`,
   the extension targets get `/bigobj` (cpp-httplib is a large header), and the Rust archive is
@@ -162,7 +162,7 @@ A parallel set of `read_otap_*` functions (same six signals, identical output sc
 
 - **Rust Backend (`external/otlp2records`)**: Rust library that parses OTLP JSON, NDJSON, and protobuf — and decodes OTAP (`BatchArrowRecords`) via a stateful decoder — returning Arrow arrays via the C Data Interface
 - **FFI Bridge (`src/function/read_otlp.cpp`)**: Table function implementations that drive the Rust backend over FFI
-- **Arrow conversion (`src/otlp_arrow.cpp`)**: Converts the Arrow arrays returned by Rust into DuckDB DataChunks
+- **Arrow import (`src/otlp_arrow.cpp`)**: A thin wrapper over DuckDB's stock Arrow importer (`ArrowTableFunction::ArrowToDuckDB`). Every otlp2records call requests `OTLP_ARROW_PROFILE_DUCKDB` (the `*_with_profile` FFI entry points), which emits hex `Utf8` ids, an `Int64` nanosecond duration and signed counters, so the stock mapping already yields the extension's column types and there is no hand-written converter. The one remaining narrowing is the ingest server's: its buffers and destination tables hold `TIMESTAMP` (µs, truncated), where the importer yields `TIMESTAMP_NS` (`OtlpServer::BufferColumnType`). The importer needs a `ClientContext`, which it consults only for Arrow extension types; `OtlpArrowTable::ForSignal` rejects any such column, which is what lets the server's ingest threads share one context (`arrow_con`)
 - **Live ingest server (`src/otlp_server.cpp`)**: `OtlpServer` is one pipeline (buffers, admission cap, single sealer/writer, catalog maintenance) fed by N `OtlpListener`s. A listener is a bound socket plus a transport and owns no buffers or counters
 - **HTTP listener (`src/otlp_server_http.cpp`)**: `OtlpHttpListener`, native OTLP/HTTP ingest for `/v1/logs`, `/v1/traces`, and `/v1/metrics`
 - **gRPC listener (`src/otlp_server_grpc.cpp`)**: `OtlpGrpcListener` bridges the embedded tonic gRPC server (in `otlp2records`) into the same server as the HTTP path via a per-batch C callback. Two disjoint gRPC service families, selected via the `service_flags` FFI arg: OTLP/gRPC unary `Export` for `otlp_serve(transport := 'grpc')`, OTAP/Arrow streaming for `otap_serve`
@@ -228,7 +228,7 @@ src/
 │   └── otlp_extension.cpp     # Extension entry point + registration
 ├── function/
 │   └── read_otlp.cpp          # FFI bridge / `read_otlp_*` table functions
-├── otlp_arrow.cpp             # Arrow → DuckDB DataChunk conversion
+├── otlp_arrow.cpp             # Arrow import via DuckDB's stock importer
 ├── otlp_server.cpp            # Shared ingest core (admission, buffering, seal)
 ├── otlp_server_http.cpp       # HTTP transport (cpp-httplib)
 ├── otlp_server_grpc.cpp       # gRPC transport bridge (tonic, via otlp2records FFI)

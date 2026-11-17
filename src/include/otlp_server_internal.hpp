@@ -1,5 +1,6 @@
 #pragma once
 
+#include "otlp_arrow.hpp"
 #include "otlp_server.hpp"
 
 #include "duckdb/common/types/column/column_data_collection.hpp"
@@ -40,6 +41,9 @@ struct OtlpSignalBuffer {
 	//! reuses it instead of rebuilding a column_ids vector for every buffered slice. Immutable
 	//! after construction like the other metadata, so workers read it without the mutex.
 	const vector<column_t> identity_column_ids;
+	//! How a decoded batch of this signal is imported. Its types are the importer's; `types` above
+	//! differ only where the buffer narrows them (TIMESTAMP_NS -> TIMESTAMP, see BufferColumnType).
+	const unique_ptr<OtlpArrowTable> arrow_table;
 	std::mutex mutex;
 	unique_ptr<ColumnDataCollection> collection;
 	idx_t buffered_rows = 0;
@@ -54,10 +58,11 @@ struct OtlpSignalBuffer {
 	std::chrono::steady_clock::time_point first_unsealed;
 
 	OtlpSignalBuffer(OtlpSignalType signal_type_p, string table_name_p, vector<LogicalType> types_p,
-	                 vector<Identifier> names_p, unique_ptr<ColumnDataCollection> collection_p)
+	                 vector<Identifier> names_p, unique_ptr<OtlpArrowTable> arrow_table_p,
+	                 unique_ptr<ColumnDataCollection> collection_p)
 	    : signal_type(signal_type_p), table_name(std::move(table_name_p)), types(std::move(types_p)),
 	      names(std::move(names_p)), identity_column_ids(MakeIdentityColumnIds(types.size())),
-	      collection(std::move(collection_p)) {
+	      arrow_table(std::move(arrow_table_p)), collection(std::move(collection_p)) {
 	}
 
 private:

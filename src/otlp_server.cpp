@@ -210,28 +210,29 @@ static bool IsUnsupportedEncoding(const string &content_encoding) {
 
 } // namespace
 
-void OtlpServer::GetSignalColumns(OtlpSignalType signal_type, vector<LogicalType> &types, vector<string> &names) {
-	ArrowSchema arrow_schema;
-	OtlpStatus status = otlp_get_schema(signal_type, &arrow_schema);
-	if (status != OTLP_OK) {
-		throw IOException("Failed to get OTLP schema: %s", otlp_status_message(status));
+LogicalType OtlpServer::BufferColumnType(const LogicalType &imported) {
+	return imported.id() == LogicalTypeId::TIMESTAMP_NS ? LogicalType::TIMESTAMP : imported;
+}
+
+void OtlpServer::GetSignalColumns(ClientContext &context, OtlpSignalType signal_type, vector<LogicalType> &types,
+                                  vector<string> &names) {
+	auto table = OtlpArrowTable::ForSignal(context, signal_type);
+	for (auto &type : table->types) {
+		types.push_back(BufferColumnType(type));
 	}
-	try {
-		OtlpArrowSchemaOptions options;
-		options.timestamp_ns_as_timestamp = true;
-		vector<Identifier> identifiers;
-		GetArrowSchemaColumns(arrow_schema, types, identifiers, options);
-		for (auto &identifier : identifiers) {
-			names.push_back(identifier.GetIdentifierName());
+	names = table->names;
+}
+
+// Narrow nanosecond timestamps to the buffer's microseconds, truncating toward zero.
+static void TimestampNsToTimestamp(Vector &source, Vector &result, idx_t count) {
+	auto values = source.Values<int64_t>();
+	auto writer = FlatVector::Writer<timestamp_t>(result, count);
+	for (auto entry : values) {
+		if (!entry.IsValid()) {
+			writer.WriteNull();
+			continue;
 		}
-	} catch (...) {
-		if (arrow_schema.release) {
-			arrow_schema.release(&arrow_schema);
-		}
-		throw;
-	}
-	if (arrow_schema.release) {
-		arrow_schema.release(&arrow_schema);
+		writer.WriteValue(timestamp_t(entry.GetValue() / Interval::NANOS_PER_MICRO));
 	}
 }
 
@@ -242,13 +243,16 @@ void OtlpServer::InitBuffers() {
 	}
 	auto &allocator = Allocator::Get(*db);
 	for (auto &target : TARGET_TABLES) {
+		auto arrow_table = OtlpArrowTable::ForSignal(*arrow_con->context, target.signal_type);
 		vector<LogicalType> types;
-		vector<string> names;
-		GetSignalColumns(target.signal_type, types, names);
+		for (auto &type : arrow_table->types) {
+			types.push_back(BufferColumnType(type));
+		}
 		auto collection = make_uniq<ColumnDataCollection>(allocator, types);
-		vector<Identifier> identifiers(names.begin(), names.end());
+		vector<Identifier> identifiers(arrow_table->names.begin(), arrow_table->names.end());
 		signal_buffers.push_back(make_uniq<OtlpSignalBuffer>(target.signal_type, target.table_name, std::move(types),
-		                                                     std::move(identifiers), std::move(collection)));
+		                                                     std::move(identifiers), std::move(arrow_table),
+		                                                     std::move(collection)));
 	}
 	parquet_view_settled.assign(signal_buffers.size(), false);
 }
@@ -387,6 +391,7 @@ OtlpServer::OtlpServer(ClientContext &context, const vector<OtlpListenerSpec> &l
 	if (!db) {
 		throw InternalException("Database was closed");
 	}
+	arrow_con = make_uniq<Connection>(*db);
 	EnsureTargetTables();
 	InitBuffers();
 	// One dedicated writer connection; the single sealer thread is the only thing
@@ -562,7 +567,7 @@ void OtlpServer::CreateOrValidateTable(Connection &con, OtlpSignalType signal_ty
 	}
 	vector<LogicalType> expected_types;
 	vector<string> expected_names;
-	GetSignalColumns(signal_type, expected_types, expected_names);
+	GetSignalColumns(*con.context, signal_type, expected_types, expected_names);
 
 	auto qualified = QualifiedTable(config.catalog_name, config.schema_name, table_name);
 	if (config.create_tables) {
@@ -678,8 +683,9 @@ void OtlpServer::BufferSignal(OtlpSignalType signal_type, const string &body, Ot
 	auto &buf = BufferFor(signal_type);
 	ArrowArray array;
 	ArrowSchema schema;
-	OtlpStatus status = otlp_transform(signal_type, format, reinterpret_cast<const uint8_t *>(body.data()), body.size(),
-	                                   &array, &schema);
+	OtlpStatus status =
+	    otlp_transform_with_profile(signal_type, format, OTLP_ARROW_PROFILE_DUCKDB,
+	                                reinterpret_cast<const uint8_t *>(body.data()), body.size(), &array, &schema);
 	if (status != OTLP_OK) {
 		throw OtlpHttpError(
 		    400, StringUtil::Format("OTLP parse failed for %s: %s", buf.table_name, otlp_status_message(status)));
@@ -712,8 +718,8 @@ void OtlpServer::BufferSignal(OtlpSignalType signal_type, const string &body, Ot
 void OtlpServer::BufferMetrics(const string &body, OtlpInputFormat format, OtlpIngestResult &result,
                                idx_t &admission_bytes) {
 	OtlpMetricsArrowBatches batches = {};
-	OtlpStatus status =
-	    otlp_transform_metrics_all(format, reinterpret_cast<const uint8_t *>(body.data()), body.size(), &batches);
+	OtlpStatus status = otlp_transform_metrics_all_with_profile(
+	    format, OTLP_ARROW_PROFILE_DUCKDB, reinterpret_cast<const uint8_t *>(body.data()), body.size(), &batches);
 
 	auto release_all = [&]() {
 		ReleaseOtlpArrowBatch(batches.gauge);
@@ -799,14 +805,30 @@ OtlpServer::StagedSignal OtlpServer::StageArrowBatch(OtlpSignalType signal_type,
 	if (!db) {
 		throw IOException("Database was closed");
 	}
+	auto &table = *buf.arrow_table;
+	table.CheckBatchSchema(schema);
 	auto &allocator = Allocator::Get(*db);
 	staged.collection = make_uniq<ColumnDataCollection>(allocator, buf.types);
+	// `imported` holds the importer's types and may reference the Arrow buffers (zero-copy); `chunk`
+	// holds the buffer's types. Append copies, so nothing outlives the borrowed array.
+	auto batch = OtlpBorrowArrowBatch(array);
+	DataChunk imported;
+	imported.Initialize(allocator, table.types, APPEND_CHUNK_SIZE);
 	DataChunk chunk;
 	chunk.Initialize(allocator, buf.types, APPEND_CHUNK_SIZE);
 	for (idx_t offset = 0; offset < static_cast<idx_t>(array.length); offset += APPEND_CHUNK_SIZE) {
 		auto count = MinValue<idx_t>(APPEND_CHUNK_SIZE, static_cast<idx_t>(array.length) - offset);
+		imported.Reset();
 		chunk.Reset();
-		CopyProjectedArrowStructToDataChunk(array, schema, chunk, buf.identity_column_ids, offset, count);
+		OtlpArrowScan(*arrow_con->context, table, batch, buf.identity_column_ids, offset, count, imported);
+		for (idx_t col = 0; col < chunk.ColumnCount(); col++) {
+			if (imported.data[col].GetType() == chunk.data[col].GetType()) {
+				chunk.data[col].Reference(imported.data[col]);
+			} else {
+				TimestampNsToTimestamp(imported.data[col], chunk.data[col], count);
+			}
+		}
+		chunk.SetChildCardinality(count);
 		StageAppend(*staged.collection, chunk);
 		staged.rows += count;
 		staged.batches++;
@@ -1583,6 +1605,7 @@ idx_t OtlpServer::ShutdownIngest() {
 	{
 		std::lock_guard<std::mutex> writer_lock(writer_mutex);
 		writer_con.reset();
+		arrow_con.reset();
 	}
 	return remaining_rows;
 }

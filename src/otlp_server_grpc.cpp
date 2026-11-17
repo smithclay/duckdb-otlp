@@ -27,7 +27,7 @@ OtlpIngestStatus OtlpServer::IngestDecodedArrowBatch(OtlpSignalType signal_type,
 	try {
 		// Stage off to the side, then move into the live buffer (CommitStaged sets
 		// unclaimed_admission to 0 once the rows are attributed). The array/schema are
-		// borrowed from the Rust caller: StageArrowBatch copies them and never releases.
+		// borrowed from the Rust caller: StageArrowBatch copies the rows out and never releases.
 		vector<StagedSignal> staged;
 		auto stage = StageArrowBatch(signal_type, array, schema);
 		if (stage.rows > 0) {
@@ -111,9 +111,10 @@ public:
 		// received gRPC message at the same per-request body limit as the HTTP path, so one OTLP
 		// Export / OTAP BatchArrowRecords shares one size bound across transports (else tonic's
 		// 4 MiB default would differ). The callbacks reach the shared server, not this listener.
-		handle = otlp_grpc_server_start(
-		    addr.data(), addr.size(), &OtlpGrpcBatchThunk, &OtlpGrpcAuthThunk, static_cast<void *>(&server),
-		    spec.grpc_service_flags, static_cast<uint64_t>(server.Config().max_body_bytes), err_buf, sizeof(err_buf));
+		handle = otlp_grpc_server_start_with_profile(addr.data(), addr.size(), &OtlpGrpcBatchThunk, &OtlpGrpcAuthThunk,
+		                                             static_cast<void *>(&server), spec.grpc_service_flags,
+		                                             static_cast<uint64_t>(server.Config().max_body_bytes),
+		                                             OTLP_ARROW_PROFILE_DUCKDB, err_buf, sizeof(err_buf));
 		if (!handle) {
 			throw IOException("Failed to start OTLP/gRPC server at %s: %s", uri.Uri(),
 			                  err_buf[0] != '\0' ? err_buf : "unknown error");

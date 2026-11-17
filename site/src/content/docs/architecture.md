@@ -39,11 +39,11 @@ The extension reads OTLP files (JSON or protobuf), detects the format, and strea
 
 Parses OTLP JSON, JSONL, and protobuf payloads and emits Arrow arrays through the Arrow C Data Interface.
 
-### Arrow Bridge
+### Arrow Import
 
 **Location:** `src/otlp_arrow.cpp`, `src/function/read_otlp.cpp`
 
-Converts Arrow arrays from the Rust backend into DuckDB `DataChunk`s for the table functions.
+Hands the Rust backend's Arrow arrays to DuckDB's own Arrow importer. The extension asks otlp2records for its DuckDB Arrow profile, which already uses the column types the schemas promise (hex `VARCHAR` ids, a `BIGINT` nanosecond duration, signed integer counters), so no custom conversion code is needed.
 
 ### Schema Definitions
 

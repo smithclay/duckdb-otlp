@@ -156,28 +156,6 @@ if(NOT EMSCRIPTEN AND NOT WIN32)
     link_threads(otlp_seal_harness "")
     otlp_link_duckdb_extensions(otlp_seal_harness)
 
-    # Direct C++ harness for the Arrow list-conversion guard
-    # (test/cpp/test_arrow_harness.cpp). It reuses the same otlp_test_seam
-    # archive (which contains otlp_arrow.cpp / CopyArrowToDuckDB) but is a
-    # SEPARATE Catch2 executable (its own main) because the list-child offset!=0
-    # branch is unreachable from SQL — the Rust producer always emits child
-    # offset 0.
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_arrow_harness.cpp")
-      add_executable(otlp_arrow_harness test/cpp/test_arrow_harness.cpp)
-      target_compile_definitions(otlp_arrow_harness
-                                 PRIVATE DUCKDB_OTLP_ENABLE_TEST_SEAM)
-      target_include_directories(
-        otlp_arrow_harness
-        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
-                ${CMAKE_CURRENT_SOURCE_DIR}/src/include
-                ${DUCKDB_MODULE_BASE_DIR}/third_party/catch)
-      set_target_properties(otlp_arrow_harness
-                            PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
-      target_link_libraries(otlp_arrow_harness otlp_test_seam duckdb_static
-                            ${DUCKDB_EXTRA_LINK_FLAGS})
-      link_threads(otlp_arrow_harness "")
-      otlp_link_duckdb_extensions(otlp_arrow_harness)
-    endif()
   endif()
 endif()
 
