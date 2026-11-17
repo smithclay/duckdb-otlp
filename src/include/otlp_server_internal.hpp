@@ -34,6 +34,8 @@ struct OtlpSignalBuffer {
 	const OtlpSignalType signal_type;
 	const string table_name;
 	const vector<LogicalType> types;
+	//! Column names parallel to `types`: what the sink statement addresses the sealed rows by.
+	const vector<Identifier> names;
 	//! Identity projection (0..n_columns-1), precomputed once so the per-chunk append path
 	//! reuses it instead of rebuilding a column_ids vector for every buffered slice. Immutable
 	//! after construction like the other metadata, so workers read it without the mutex.
@@ -52,9 +54,10 @@ struct OtlpSignalBuffer {
 	std::chrono::steady_clock::time_point first_unsealed;
 
 	OtlpSignalBuffer(OtlpSignalType signal_type_p, string table_name_p, vector<LogicalType> types_p,
-	                 unique_ptr<ColumnDataCollection> collection_p)
+	                 vector<Identifier> names_p, unique_ptr<ColumnDataCollection> collection_p)
 	    : signal_type(signal_type_p), table_name(std::move(table_name_p)), types(std::move(types_p)),
-	      identity_column_ids(MakeIdentityColumnIds(types.size())), collection(std::move(collection_p)) {
+	      names(std::move(names_p)), identity_column_ids(MakeIdentityColumnIds(types.size())),
+	      collection(std::move(collection_p)) {
 	}
 
 private:

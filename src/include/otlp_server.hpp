@@ -325,7 +325,7 @@ public:
 	void SetSealFaultHookForTest(std::function<void()> hook) {
 		seal_fault_hook_for_test = std::move(hook);
 	}
-	//! Fault hook invoked inside SealParquet's per-signal loop immediately before the COPY for
+	//! Fault hook invoked inside SealOnce's per-signal loop (Parquet mode) immediately before the COPY for
 	//! signal index `i`. If it throws for some signal, that signal (and all later ones) fail to
 	//! export while earlier signals are already durable, exercising the at-least-once partial-
 	//! export + proportional-admission re-buffer path. Default (unset) = no-op.
@@ -445,7 +445,7 @@ private:
 	};
 	//! The atomic snapshot a single seal operates on: every signal's rows swapped out under
 	//! lock plus the admission bytes attributed to them. Produced once by SwapBuffersForSeal()
-	//! and consumed by exactly one of SealParquet()/SealCatalog().
+	//! and consumed by SealOnce().
 	struct SealingPlan {
 		std::vector<SealingSignal> signals;
 		idx_t total_rows = 0;
@@ -470,17 +470,15 @@ private:
 	//! OWN SealingSignal::admission_bytes (no proportional re-split), so repeated partial failures
 	//! cannot drift the budget (M2). Returns the row count restored.
 	idx_t RestoreUnsealed(SealingPlan &plan, const std::vector<bool> &restore);
-	//! Plain Parquet export protocol (no shared transaction; at-least-once per signal).
-	OtlpIngestResult SealParquet(SealingPlan &plan, int64_t seal_started_unix_ms);
 	//! Create the Parquet-mode inspection view for one signal at most once per server, and only
 	//! when the catalog has no entry by that name. Seal thread only (under writer_mutex).
 	void EnsureParquetView(idx_t signal_index, const string &table_name);
-	//! Transactional catalog commit protocol (swap-under-lock, full restore on failure). `db` is
-	//! the live DatabaseInstance (kept alive by SealOnce's shared_ptr) needed to rebuild the
-	//! writer connection if a ROLLBACK wedges the transaction.
-	OtlpIngestResult SealCatalog(SealingPlan &plan, int64_t seal_started_unix_ms, bool allow_maintenance,
-	                             DatabaseInstance &db);
-	//! Centralize the success/failure metric bookkeeping shared by both seal protocols:
+	//! Build `sinks`: one statement per signal that writes the relation `sealed` to the
+	//! destination (INSERT ... BY NAME into the catalog, or a partitioned Parquet COPY).
+	void BuildSinks();
+	//! Where seals land, for log lines: the Parquet root or `catalog.schema`.
+	string SealTargetDescription() const;
+	//! Centralize the success/failure metric bookkeeping for every seal outcome:
 	//! seals_total / seal_failures_total / committed_rows_total, last_seal_unix_ms,
 	//! seal_last_error, and the RecordSealEvent history append.
 	void RecordSealOutcome(bool success, idx_t rows_committed, idx_t admitted_bytes_committed,
@@ -508,11 +506,6 @@ private:
 
 	void CreateOrValidateTable(Connection &con, OtlpSignalType signal_type, const string &table_name);
 	void GetSignalColumns(OtlpSignalType signal_type, vector<LogicalType> &types, vector<string> &names);
-	//! Create a TEMP table with columns `names`/`types` on the writer connection and append
-	//! `collection` into it. Returns the appended batch count. Shared staging step for the seal
-	//! paths that stage to a temp table before COPY (parquet export) or INSERT...SELECT (promotion).
-	idx_t StageCollectionToTempTable(const vector<string> &names, const vector<LogicalType> &types,
-	                                 ColumnDataCollection &collection, const string &temp_table);
 
 private:
 	weak_ptr<DatabaseInstance> db_ptr;
@@ -523,11 +516,9 @@ private:
 	// Per-signal in-memory buffers. The vector is immutable after InitBuffers();
 	// each OtlpSignalBuffer carries its own mutex and mutable counters.
 	std::vector<unique_ptr<OtlpSignalBuffer>> signal_buffers;
-	//! Per-signal flag (EnsureTargetTables order == signal_buffers order, catalog mode only):
-	//! true when the persisted table has more columns than the base schema (e.g. a restart against
-	//! a previously promoted catalog). Such a table is sealed via a column-targeted INSERT so the
-	//! extra columns are NULL-filled. Empty in Parquet-export mode.
-	std::vector<bool> table_has_extra_columns;
+	//! Per signal (signal_buffers order): the one statement a seal runs over that signal's sealed
+	//! rows. Built once at construction; immutable afterwards.
+	std::vector<string> sinks;
 	//! Payload-byte admission counter for in-flight and unsealed accepted requests.
 	//! The single real byte counter: enforces max_buffered_bytes under concurrency and
 	//! drives the seal size trigger (seal_target_bytes).
@@ -589,7 +580,7 @@ private:
 	//! path only invokes it when set, so the production seal path is unaffected.
 	std::function<void()> seal_fault_hook_for_test;
 	//! Test-only parquet per-signal fault hook (see SetParquetSealFaultHookForTest). Null in
-	//! production; SealParquet only invokes it when set.
+	//! production; SealOnce only invokes it when set.
 	std::function<void(idx_t)> parquet_seal_fault_hook_for_test;
 	//! Test-only metrics staging fault hook (see SetMetricsStageFaultHookForTest). Null in
 	//! production; BufferMetrics only invokes it when set.

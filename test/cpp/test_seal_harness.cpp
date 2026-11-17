@@ -243,7 +243,7 @@ TEST_CASE("seal harness: injected seal failure re-buffers rows, then retry commi
 	server->Close();
 }
 
-// Drives the plain-Parquet export protocol (SwapBuffersForSeal -> SealParquet success branch).
+// Drives the plain-Parquet export protocol (SwapBuffersForSeal -> SealOnce, Parquet sink).
 // There is no persistent destination table in parquet mode; each successful seal COPYs the rows
 // to <root>/<table>/year=.../*.parquet and lazily creates a read-only VIEW over them, so the row
 // count is observable through the same table name.
@@ -705,4 +705,41 @@ TEST_CASE("seal harness: successful maintenance on a non-DuckLake catalog skips 
 	REQUIRE(server->MaintenanceLastError().empty());
 
 	server->Close();
+}
+
+// The catalog sink inserts BY NAME, so a table wider than the signal schema (an earlier run's
+// promoted columns, or an operator's own addition) is sealed into without a special path: the
+// promoted column is populated while promotion is on, and NULL-filled once it is off.
+TEST_CASE("seal harness: catalog sink fills promoted columns by name and NULL-fills extras", "[seal_harness]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+
+	auto promoted = HarnessConfig();
+	promoted.promote.resource_keys = {"service.name"};
+	{
+		auto server = MakeServer(*con.context, promoted);
+		REQUIRE(server->PromotedColumnsTotal() == 1);
+		server->IngestForTest(OtlpRequestKind::LOGS, "application/json", "", MakeLogsJson(3));
+		REQUIRE(server->FlushNow().rows == 3);
+		server->Close();
+	}
+	REQUIRE_FALSE(con.Query("ALTER TABLE otlp_logs ADD COLUMN operator_note VARCHAR")->HasError());
+
+	// Restart without promotion against the now-wider table: it must validate and seal.
+	{
+		auto server = MakeServer(*con.context, HarnessConfig());
+		server->IngestForTest(OtlpRequestKind::LOGS, "application/json", "", MakeLogsJson(2));
+		REQUIRE(server->FlushNow().rows == 2);
+		server->Close();
+	}
+
+	auto result =
+	    con.Query("SELECT count(resource_attr_service_name), count(*) FILTER (WHERE resource_attr_service_name "
+	              "= 'harness'), count(operator_note), count(*) FROM otlp_logs");
+	REQUIRE_FALSE(result->HasError());
+	auto chunk = result->Fetch();
+	REQUIRE(chunk->GetValue(0, 0).GetValue<int64_t>() == 3); // populated only while promoting
+	REQUIRE(chunk->GetValue(1, 0).GetValue<int64_t>() == 3);
+	REQUIRE(chunk->GetValue(2, 0).GetValue<int64_t>() == 0); // operator column NULL-filled
+	REQUIRE(chunk->GetValue(3, 0).GetValue<int64_t>() == 5);
 }
