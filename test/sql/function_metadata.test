@@ -27,19 +27,17 @@ read_otlp_metrics
 read_otlp_metrics_summary
 
 # Placeholder parameter names are what this metadata exists to remove, but as of DuckDB 2.0
-# only a scalar function can carry them: duckdb_functions() now takes parameter names off the
-# function's own signature whenever their count matches the parameter list, and only falls
-# back to the FunctionDescription when it does not (GetParameterNames in
-# duckdb_functions.cpp -- in v1.5.5 the description won outright). A ScalarFunction can name
-# its parameters, via a FunctionSignature of named FunctionParameters, and otlp_uri_parser
-# does. A TableFunction cannot -- it is constructed from a bare vector<LogicalType> and its
-# extractor emits col0, col1, ... unconditionally -- so every read_ot* reader and every
-# control-plane table function reports colN on 2.0 no matter what its description says. Their
-# descriptions keep real parameter_names anyway, both to document the argument and so they
-# take effect if upstream restores the override.
+# the FunctionDescription cannot do it: duckdb_functions() takes parameter names off the
+# function's own signature (GetParameterNames in duckdb_functions.cpp -- in v1.5.5 the
+# description won outright). A function built from a bare vector<LogicalType> gets
+# positional-only parameters named col0, col1, ...; one whose signature declares the
+# parameter by name (AddPositionalOnly) reports that name. otlp_uri_parser and the
+# read_ot* readers do; the control-plane table functions still report colN, and keep real
+# parameter_names in their descriptions to document the argument.
 query I
-SELECT function_name FROM duckdb_functions()
-WHERE function_name = 'otlp_uri_parser'
+SELECT DISTINCT function_name FROM duckdb_functions()
+WHERE (function_name = 'otlp_uri_parser' OR function_name SIMILAR TO 'read_ot[la]p_(logs|traces|metrics_.*)')
+  AND function_name NOT IN ('read_otlp_metrics_summary')
   AND len(list_filter(parameters, lambda p: p SIMILAR TO 'col\d+')) > 0;
 ----
 
@@ -69,3 +67,11 @@ ORDER BY function_name;
 ----
 read_otap_logs	[opentelemetry, otap]
 read_otlp_logs	[opentelemetry, otlp]
+
+# The readers declare `path` by name and attributes_as_variant as a typed kwarg, so both
+# render by name.
+query II
+SELECT parameters, parameter_types FROM duckdb_functions()
+WHERE function_name = 'read_otlp_logs';
+----
+[path, attributes_as_variant]	[VARCHAR, BOOLEAN]
