@@ -61,14 +61,6 @@ static idx_t DefaultHttpThreads() {
 	return std::min<idx_t>(32, std::max<idx_t>(4, static_cast<idx_t>(cores) * 4));
 }
 
-bool OtlpLoopbackHttpStatusOk(int port, const string &path) {
-	duckdb_httplib::Client client("127.0.0.1", port);
-	client.set_connection_timeout(2, 0);
-	client.set_read_timeout(2, 0);
-	auto res = client.Get(path);
-	return res && res->status >= 200 && res->status < 400;
-}
-
 class OtlpHttpListener final : public OtlpListener {
 public:
 	OtlpHttpListener(OtlpServer &server_p, const OtlpListenerSpec &spec_p) : OtlpListener(server_p, spec_p) {
@@ -95,15 +87,11 @@ void OtlpHttpListener::Start() {
 	auto &config = server.config;
 	http = make_uniq<duckdb_httplib::Server>();
 	auto http_threads = config.http_threads == 0 ? DefaultHttpThreads() : config.http_threads;
-	// The worker-pool size bounds how many connections we serve at once (each keep-alive
-	// connection holds a worker for its lifetime). Keep it bounded for small containers,
-	// but let the daemon raise it explicitly for high-concurrency exporters.
+	// Each keep-alive connection holds a worker for its lifetime, so this bounds concurrent connections.
 	http->new_task_queue = [http_threads] {
 		return new duckdb_httplib::ThreadPool(static_cast<size_t>(http_threads));
 	};
-	// keep_alive_max_count is the number of requests served per keep-alive connection
-	// before it is closed (NOT a connection cap), so it is independent of the worker
-	// count. A small value would force exporters to reconnect mid-stream, so keep it high.
+	// Requests per keep-alive connection before it closes (not a connection cap); low values force reconnects.
 	http->set_keep_alive_max_count(128);
 	http->set_keep_alive_timeout(10);
 	http->set_tcp_nodelay(true);
@@ -113,11 +101,7 @@ void OtlpHttpListener::Start() {
 		SetJson(res, 200, "{\"status\":\"ok\"}");
 	});
 	http->Get("/readyz", [this](const duckdb_httplib::Request &, duckdb_httplib::Response &res) {
-		// Degrade readiness when buffered rows are not committing, so an orchestrator (and the
-		// daemon's own `doctor`, which probes /readyz) sees a wedged seal backend instead of a
-		// listener that keeps returning 202 while nothing becomes durable. The server is shared by
-		// every listener, so this reports the one write path regardless of which transport the
-		// traffic arrives on. /healthz stays liveness-only.
+		// Not ready while buffered rows are not committing (a wedged seal backend); /healthz stays liveness-only.
 		if (server.SealStalled()) {
 			SetJson(res, 503, "{\"status\":\"degraded\",\"reason\":\"buffered rows are not committing\"}");
 		} else {
@@ -127,8 +111,7 @@ void OtlpHttpListener::Start() {
 
 	auto post_handler = [&](OtlpRequestKind kind) {
 		return [this, kind](const duckdb_httplib::Request &req, duckdb_httplib::Response &res) {
-			// RAII so active_requests is decremented on every exit path, including a
-			// throw that escapes the catch chain below (e.g. allocation failure).
+			// Decrements even if an exception escapes the catch chain below.
 			struct RequestGuard {
 				std::atomic<idx_t> &counter;
 				explicit RequestGuard(std::atomic<idx_t> &counter_p) : counter(counter_p) {
@@ -145,8 +128,7 @@ void OtlpHttpListener::Start() {
 				} else {
 					auto result = server.Ingest(kind, req.get_header_value("Content-Type"),
 					                            req.get_header_value("Content-Encoding"), req.body);
-					// 202 Accepted: rows are parsed + buffered in memory, not yet durable.
-					// They commit at the next seal (otlp_flush / otlp_stop force one).
+					// 202: buffered in memory, not yet durable until the next seal.
 					auto response =
 					    StringUtil::Format("{\"status\":\"buffered\",\"rows\":%llu,\"batches\":%llu",
 					                       static_cast<uint64_t>(result.rows), static_cast<uint64_t>(result.batches));
@@ -167,8 +149,6 @@ void OtlpHttpListener::Start() {
 			} catch (InvalidInputException &ex) {
 				SetError(res, 400, "bad_request", ex.what());
 			} catch (IOException &ex) {
-				// 500-class failures are otherwise only visible in the client's
-				// response body; log them so the operator has a server-side trace.
 				server.LogServerEvent(StringUtil::Format("ingest I/O error: %s", ex.what()), LogLevel::LOG_WARNING);
 				SetError(res, 500, "internal_error", ex.what());
 			} catch (std::exception &ex) {
@@ -187,8 +167,6 @@ void OtlpHttpListener::Start() {
 	if (!http->is_valid()) {
 		throw IOException("Failed to instantiate OTLP HTTP server at %s / %s", uri.Uri(), uri.Http());
 	}
-	// Bind synchronously here so that bind() failures (e.g. EADDRINUSE) propagate
-	// to the caller of otlp_serve() rather than being lost on the listener thread.
 	if (!http->bind_to_port(uri.Host(), uri.Port())) {
 		throw IOException("Failed to bind OTLP HTTP server to %s (address in use, permission denied, or invalid host/"
 		                  "port)",
@@ -196,28 +174,18 @@ void OtlpHttpListener::Start() {
 	}
 	is_running.store(true);
 	listen_thread = std::thread([this] { ListenLoop(); });
-	// Close the TOCTOU window between our is_running flag and httplib's own is_running_
-	// (which only flips true once the listener enters listen_internal()). Until then,
-	// Server::stop() short-circuits to a no-op, so a StopAccepting()/SIGTERM issued in
-	// this window would leave the listener blocked in accept() forever and Close() would
-	// join a thread that never exits. wait_until_ready() spins until the accept loop is
-	// live; the socket is already bound synchronously above, so it cannot block forever
-	// (it also returns immediately if the listener is decommissioned).
+	// httplib's stop() is a no-op until its accept loop is live, so a stop issued before then would
+	// leave Close() joining a thread blocked in accept() forever. The socket is bound, so this returns.
 	http->wait_until_ready();
 }
 
 void OtlpHttpListener::StopAccepting() {
-	// Closes the listening socket only. Idempotent. Safe to call from a
-	// request-handler thread — does not wait on httplib's task queue.
 	if (is_running.exchange(false) && http) {
 		http->stop();
 	}
 }
 
 void OtlpHttpListener::Close() {
-	// Stops accepting new connections AND joins the listener thread (NOT the httplib worker
-	// pool directly; the listen loop's exit path joins it). Must not be called from a worker
-	// thread, which would deadlock through that chain.
 	StopAccepting();
 	if (listen_thread.joinable()) {
 		listen_thread.join();
@@ -225,9 +193,7 @@ void OtlpHttpListener::Close() {
 }
 
 void OtlpHttpListener::ListenLoop() {
-	// The socket is already bound (synchronously, in Start); this only runs the accept loop.
-	// Catch everything so the listener thread never lets an exception escape — that would
-	// call std::terminate and abort the host process.
+	// An exception escaping this thread would std::terminate the host process.
 	try {
 		http->listen_after_bind();
 	} catch (std::exception &ex) {

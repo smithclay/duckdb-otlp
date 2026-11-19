@@ -6,11 +6,8 @@
 
 namespace duckdb {
 
-//! NOT a real storage/ATTACH backend: this StorageExtension implements no attach,
-//! transaction, or catalog semantics. It is only the standard DuckDB hook for hanging
-//! per-DatabaseInstance global state (the OtlpServer registry in OtlpStorageExtensionInfo)
-//! off DatabaseInstance.config, keyed by STORAGE_EXTENSION_KEY. Mirrors duckdb-quack; do
-//! not repurpose as an actual storage backend without sign-off.
+//! Not a storage/ATTACH backend: only the DuckDB hook for hanging per-DatabaseInstance state
+//! (the OtlpServer registry) off DatabaseInstance.config, as duckdb-quack does.
 class OtlpStorageExtension : public StorageExtension {
 public:
 	OtlpStorageExtension();
@@ -33,64 +30,20 @@ public:
 		bool found = false;
 		//! Every listener the stop closed (the whole server, whichever URI named it).
 		vector<string> listen_uris;
-		//! Rows still buffered after the final shutdown drain failed (dropped). 0 on a clean stop.
-		//! Lets otlp_stop / the daemon distinguish a clean shutdown from a data-dropping one (M4).
+		//! Rows dropped because the final drain failed; 0 on a clean stop.
 		idx_t dropped_rows = 0;
-		//! Non-empty when the stop itself threw. Only StopAllServers can report one: it keeps
-		//! going after a failed server so one wedged backend cannot leave the rest unsealed,
-		//! and the error has to travel back per server rather than as an exception.
+		//! Set only by StopAllServersGraceful, which keeps going after a failed server so the rest still seal.
 		string error;
 	};
 	StopResult StopServer(ClientContext &context, const OtlpUri &listen_uri);
 
-	//! Gracefully stop (and seal) EVERY registered server, returning one result per server.
-	//!
-	//! This is the whole-instance counterpart of StopServer, and the only way to drain a
-	//! server whose listen URI the caller does not know -- for example one started
-	//! out-of-band over Quack. It must be called while the DatabaseInstance is still alive:
-	//! the private StopAllServers() teardown path runs from ~OtlpStorageExtensionInfo, by
-	//! which point OtlpServer::db_ptr has expired and the final seal is a no-op, so buffered
-	//! rows are dropped rather than committed.
-	//!
-	//! Unlike that teardown path this does NOT mark the registry shut down: the instance
-	//! stays usable and a later otlp_serve can start a new server.
+	//! Stop and seal every registered server. Must run while the DatabaseInstance is alive: at
+	//! ~OtlpStorageExtensionInfo the db_ptr has expired, the final seal is a no-op and rows are dropped.
+	//! Does not mark the registry shut down, so a later otlp_serve still works.
 	vector<StopResult> StopAllServersGraceful();
 
-	//! One row per listener. Listeners of the same server share every buffer/seal/maintenance
-	//! counter; is_listening/last_error/transport are per listener.
-	struct ServerSnapshot {
-		string listen_uri;
-		string transport;
-		string listen_url;
-		string host;
-		uint16_t port;
-		string catalog_name;
-		string schema_name;
-		idx_t active_requests;
-		idx_t total_requests;
-		idx_t total_rows;
-		bool is_listening;
-		string last_error;
-		idx_t buffered_rows;
-		idx_t buffered_bytes;
-		idx_t admitted_bytes;
-		idx_t seal_target_bytes;
-		int64_t seal_max_age_ms;
-		int64_t oldest_buffered_age_ms;
-		int64_t last_seal_age_ms;
-		idx_t seals_total;
-		idx_t committed_rows_total;
-		idx_t seal_failures_total;
-		string seal_last_error;
-		idx_t maintenance_runs_total;
-		idx_t maintenance_failures_total;
-		idx_t maintenance_contended_total;
-		int64_t last_maintenance_age_ms;
-		string maintenance_last_error;
-		idx_t promoted_columns_total;
-	};
-
-	vector<ServerSnapshot> ListServers();
+	//! One otlp_server_list() row per listener, in OtlpServer::ListColumns() order, sorted by URI.
+	vector<vector<Value>> ListServers();
 
 	//! Seal events are server-wide; listen_uri is the server's first (primary) listener.
 	struct SealSnapshot {
@@ -106,30 +59,22 @@ public:
 		idx_t seals_total = 0;
 		string error;
 	};
-	//! Force a synchronous seal of the server that owns `listen_uri` (any of its listeners). Takes a shared_ptr
-	//! under servers_mutex, then releases the registry lock while the seal runs.
+	//! Synchronous seal of the server owning `listen_uri`; the registry lock is not held during the seal.
 	FlushResult FlushServer(const OtlpUri &listen_uri);
 
 private:
 	void StopAllServers();
 	//! Distinct servers in the registry (several URIs can map to one). Caller holds servers_mutex.
 	vector<shared_ptr<OtlpServer>> DistinctServers() const;
-	//! Throw a clean InvalidInputException if the registry has begun teardown. MUST be called
-	//! with servers_mutex held. Guards multi-connection library embedders that race a registry
-	//! operation against a concurrent DB close, so a post-teardown access fails cleanly instead
-	//! of racing freed server state (review finding L4).
+	//! Throws once teardown has begun, so a registry call racing a DB close fails cleanly. Caller holds servers_mutex.
 	void EnsureNotShutDown() const;
 
 private:
 	std::mutex servers_mutex;
-	//! Set true under servers_mutex at the start of teardown (StopAllServers, called from the
-	//! destructor). Once set, registry operations refuse to run (EnsureNotShutDown). Guarded by
-	//! servers_mutex so it is observed consistently with the servers map (review finding L4).
+	//! Set by StopAllServers (destructor teardown); guarded by servers_mutex.
 	bool shutting_down = false;
-	//! Canonical listen URI -> owning server; every listener of a server has an entry.
-	//! shared_ptr (not unique_ptr) so FlushServer can hold a ref across a slow seal
-	//! with servers_mutex released; the server can't be freed mid-flush, and a
-	//! concurrent otlp_stop/db-close isn't blocked by the seal.
+	//! Canonical listen URI -> owning server; every listener of a server has an entry. shared_ptr so
+	//! FlushServer can keep a server alive across a slow seal with servers_mutex released.
 	unordered_map<string, shared_ptr<OtlpServer>> servers;
 };
 

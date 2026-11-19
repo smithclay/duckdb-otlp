@@ -190,9 +190,8 @@ def main() -> int:
         "DUCKDB_SCHEMA": SCHEMA,
         "DUCKDB_DATABASE": "/tmp/duckdb-otlp-smoke-control.duckdb",
         "DUCKDB_OTLP_TOKEN": token,
-        "DUCKDB_QUACK_ENABLED": "1",
+        "DUCKDB_QUACK_PORT": "9494",
         "DUCKDB_QUACK_TOKEN": quack_token,
-        "OTEL_HTTP_ADDR": "0.0.0.0:4318",
     }
 
     docker_args = [

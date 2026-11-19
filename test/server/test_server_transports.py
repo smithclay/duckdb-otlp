@@ -1,7 +1,7 @@
 """Real daemon transport/auth/shutdown tests, using disposable local Parquet storage.
 
 Run with uv run --with pytest --with grpcio --with opentelemetry-proto \
-    --with duckdb==1.5.6 pytest test/server
+    --with duckdb==2.0.0 pytest test/server
 """
 
 import contextlib
@@ -33,14 +33,22 @@ def configuration(tmp_path, transports):
         'DUCKDB_DATABASE': ':memory:',
         'DUCKDB_OTLP_DATA_DIR': str(tmp_path),
         'PARQUET_EXPORT_PATH': str(tmp_path / 'parquet'),
-        'DUCKDB_OTLP_TRANSPORTS': transports,
-        'OTEL_HTTP_ADDR': f'127.0.0.1:{http_port}',
-        'OTEL_GRPC_ADDR': f'127.0.0.1:{grpc_port}',
+        'DUCKDB_OTLP_HOST': '127.0.0.1',
+        'DUCKDB_OTLP_HTTP_PORT': str(http_port) if 'http' in transports else '0',
+        'DUCKDB_OTLP_GRPC_PORT': str(grpc_port) if 'grpc' in transports else '0',
         'DUCKDB_OTLP_TOKEN': TOKEN,
         # Ensure these small batches require the SIGTERM drain to become durable.
         'DUCKDB_OTLP_SEAL_MAX_AGE_MS': '600000',
         'DUCKDB_OTLP_STARTUP_TIMEOUT': '5',
     }
+
+
+def http_addr(env):
+    return f"127.0.0.1:{env['DUCKDB_OTLP_HTTP_PORT']}"
+
+
+def grpc_addr(env):
+    return f"127.0.0.1:{env['DUCKDB_OTLP_GRPC_PORT']}"
 
 
 @contextlib.contextmanager
@@ -87,7 +95,7 @@ def trace_request(identifier):
 
 def post_http(env, message, token):
     request = urllib.request.Request(
-        f"http://{env['OTEL_HTTP_ADDR']}/v1/traces",
+        f"http://{http_addr(env)}/v1/traces",
         data=message.SerializeToString(),
         headers={'Content-Type': 'application/x-protobuf', 'Authorization': f'Bearer {token}'},
     )
@@ -108,7 +116,7 @@ def test_ingest_auth_and_sigterm_drain_for_selected_transports(tmp_path, transpo
             assert post_http(env, trace_request(1), TOKEN) == 202
             expected.append('transport-1')
         if 'grpc' in transports:
-            with grpc.insecure_channel(env['OTEL_GRPC_ADDR']) as channel:
+            with grpc.insecure_channel(grpc_addr(env)) as channel:
                 stub = trace_service_pb2_grpc.TraceServiceStub(channel)
                 with pytest.raises(grpc.RpcError) as refused:
                     stub.Export(trace_request(9), metadata=[('authorization', 'Bearer wrong-token')], timeout=5)
@@ -128,8 +136,8 @@ def test_ingest_auth_and_sigterm_drain_for_selected_transports(tmp_path, transpo
     # writes a single traces file rather than one per listener.
     assert len(files) == 1, files
     log = log_path.read_text()
-    listeners = [f"otlp:{env['OTEL_HTTP_ADDR']}"] if 'http' in transports else []
-    listeners += [f"otlp:{env['OTEL_GRPC_ADDR']}"] if 'grpc' in transports else []
+    listeners = [f"otlp:{http_addr(env)}"] if 'http' in transports else []
+    listeners += [f"otlp:{grpc_addr(env)}"] if 'grpc' in transports else []
     assert log.count('Stopped listening on') == 1, log
     assert all(listener in log for listener in listeners), log
     assert TOKEN not in log
@@ -140,7 +148,7 @@ def test_second_listener_bind_failure_cleans_up_first_listener(tmp_path):
     with socket.socket() as occupied:
         occupied.bind(('127.0.0.1', 0))
         occupied.listen(16)
-        env['OTEL_GRPC_ADDR'] = f'127.0.0.1:{occupied.getsockname()[1]}'
+        env['DUCKDB_OTLP_GRPC_PORT'] = str(occupied.getsockname()[1])
         with daemon(tmp_path, env) as (process, log_path):
             assert process.wait(timeout=15) == 1
         log = log_path.read_text()
@@ -150,7 +158,7 @@ def test_second_listener_bind_failure_cleans_up_first_listener(tmp_path):
         assert 'Failed to start OTLP/gRPC server' in log, log
         assert 'No OTLP servers are running' in log, log
         with socket.socket() as probe:
-            assert probe.connect_ex(('127.0.0.1', int(env['OTEL_HTTP_ADDR'].split(':')[1]))) != 0
+            assert probe.connect_ex(('127.0.0.1', int(env['DUCKDB_OTLP_HTTP_PORT']))) != 0
 
 
 def test_quack_clients_reach_the_signal_tables_unqualified(tmp_path):
@@ -174,13 +182,12 @@ def test_quack_clients_reach_the_signal_tables_unqualified(tmp_path):
         'DUCKDB_MODE': 'local-ducklake',
         'DUCKDB_OTLP_DATA_DIR': str(tmp_path / 'lake'),
         'DUCKDB_DATABASE': str(tmp_path / 'control.duckdb'),
-        'DUCKDB_OTLP_TRANSPORTS': 'http',
-        'OTEL_HTTP_ADDR': f'127.0.0.1:{http_port}',
+        'DUCKDB_OTLP_HOST': '127.0.0.1',
+        'DUCKDB_OTLP_HTTP_PORT': str(http_port),
         'DUCKDB_OTLP_TOKEN': TOKEN,
-        'DUCKDB_QUACK_ENABLED': '1',
-        'DUCKDB_QUACK_TOKEN': quack_token,
         # Loopback, so Quack serves plain HTTP and the client needs no fingerprint.
-        'DUCKDB_QUACK_LISTEN_URI': f'quack:127.0.0.1:{quack_port}',
+        'DUCKDB_QUACK_PORT': str(quack_port),
+        'DUCKDB_QUACK_TOKEN': quack_token,
         'DUCKDB_OTLP_STARTUP_TIMEOUT': '15',
     }
 
@@ -210,7 +217,7 @@ def test_init_sql_adds_a_parquet_destination_next_to_the_ducklake_catalog(tmp_pa
 
     This is what --init-sql buys for fan-out, and equally what it costs to know: a server
     has exactly ONE ingest target (otlp_serve rejects parquet_export_path combined with a
-    catalog, and the seal path is SealParquet XOR SealCatalog), so the second destination
+    catalog, and each signal has exactly one sink statement), so the second destination
     is a second server on its own port. A given batch lands in whichever port received it
     -- this is fan-out by port, not a tee of one stream into two places.
 
@@ -238,8 +245,8 @@ def test_init_sql_adds_a_parquet_destination_next_to_the_ducklake_catalog(tmp_pa
         'DUCKDB_MODE': 'local-ducklake',
         'DUCKDB_OTLP_DATA_DIR': str(lake_dir),
         'DUCKDB_DATABASE': str(tmp_path / 'control.duckdb'),
-        'DUCKDB_OTLP_TRANSPORTS': 'http',
-        'OTEL_HTTP_ADDR': f'127.0.0.1:{http_port}',
+        'DUCKDB_OTLP_HOST': '127.0.0.1',
+        'DUCKDB_OTLP_HTTP_PORT': str(http_port),
         'DUCKDB_OTLP_TOKEN': TOKEN,
         'DUCKDB_OTLP_INIT_SQL': str(script),
         # Force both batches to depend on the SIGTERM drain to become durable.
@@ -250,7 +257,7 @@ def test_init_sql_adds_a_parquet_destination_next_to_the_ducklake_catalog(tmp_pa
     with daemon(tmp_path, env) as (process, log_path):
         wait_ready(process, env, log_path)
         assert post_http(env, trace_request(1), TOKEN) == 202
-        second = dict(env, OTEL_HTTP_ADDR=f'127.0.0.1:{parquet_port}')
+        second = dict(env, DUCKDB_OTLP_HTTP_PORT=str(parquet_port))
         assert post_http(second, trace_request(2), TOKEN) == 202
         assert not list(parquet_dir.rglob('*.parquet')), 'batch should still be buffered'
 
@@ -267,15 +274,10 @@ def test_init_sql_adds_a_parquet_destination_next_to_the_ducklake_catalog(tmp_pa
             ('transport-2',)
         ]
 
-    # Destination 2: the mode's DuckLake catalog, read back through DuckLake by the binary under
-    # test. Not through this interpreter's duckdb: the catalog is a DuckDB database written in the
-    # daemon's storage format, which a host DuckDB older than the daemon's cannot open.
-    query = subprocess.run(
-        [str(SERVER_BIN), 'query', 'SELECT name FROM otlp_traces', '--format', 'csv'],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    assert query.returncode == 0, query.stderr
-    assert query.stdout.split() == ['name', 'transport-1'], query.stdout
+    # Destination 2: the mode's DuckLake catalog, read back through DuckLake. The host duckdb has
+    # to be the daemon's version (CI pins it): an older one cannot open the catalog file.
+    catalog = lake_dir / 'ducklake' / 'catalog.duckdb'
+    with duckdb.connect() as connection:
+        connection.execute('INSTALL ducklake; LOAD ducklake;')
+        connection.execute(f"ATTACH 'ducklake:{catalog}' AS lake (READ_ONLY)")
+        assert connection.execute('SELECT name FROM lake.main.otlp_traces').fetchall() == [('transport-1',)]

@@ -24,11 +24,11 @@ Three beats, deliberately: **receive → ingest → query**.
 Anything outside those three beats was cut. The reel is a hook that autoplays
 muted on a timeline, not a tutorial, so it stays under a minute.
 
-The queries in beat 3 use `duckdb` rather than `duckdb-otlp query` for a
-concrete reason: in a catalog mode the running server holds the control
-database's write lock, so `duckdb-otlp query` cannot read it until the server
-stops (even with `--readonly`). Reading the Parquet directly is both the only
-live option and the better story — the data is open the moment it lands.
+The queries in beat 3 read the Parquet directly for a concrete reason: in a
+catalog mode the running server holds the control database's write lock, so
+nothing else can open it until the server stops. Reading the Parquet directly
+is both the only live option and the better story — the data is open the
+moment it lands.
 
 ## The data is synthetic
 

@@ -92,11 +92,35 @@ endfunction()
 # container image (docker/duckdb-otlp-server), never as a Windows binary.
 # Windows therefore builds the extension (static + loadable) and nothing else.
 if(NOT EMSCRIPTEN AND NOT WIN32)
+  # Compile the mode presets (src/server/modes/*.sql) into the daemon as a
+  # {name, sql} table. Written only when it changes, and re-run whenever a
+  # preset is added, removed or edited.
+  file(GLOB OTLP_MODE_FILES CONFIGURE_DEPENDS
+       ${CMAKE_CURRENT_SOURCE_DIR}/src/server/modes/*.sql)
+  set_property(
+    DIRECTORY
+    APPEND
+    PROPERTY CMAKE_CONFIGURE_DEPENDS ${OTLP_MODE_FILES})
+  set(OTLP_MODES_SRC "#include \"server_config.hpp\"\n")
+  string(APPEND OTLP_MODES_SRC "namespace duckdb_otlp_server {\n")
+  string(APPEND OTLP_MODES_SRC "const ModePreset MODE_PRESETS[] = {\n")
+  foreach(mode_file ${OTLP_MODE_FILES})
+    get_filename_component(mode_name ${mode_file} NAME_WE)
+    file(READ ${mode_file} mode_sql)
+    string(APPEND OTLP_MODES_SRC
+           "{\"${mode_name}\", R\"MODE(${mode_sql})MODE\"},\n")
+  endforeach()
+  string(APPEND OTLP_MODES_SRC "{nullptr, nullptr}};\n}\n")
+  file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/otlp_mode_presets.cpp.in
+       "${OTLP_MODES_SRC}")
+  configure_file(${CMAKE_CURRENT_BINARY_DIR}/otlp_mode_presets.cpp.in
+                 ${CMAKE_CURRENT_BINARY_DIR}/otlp_mode_presets.cpp COPYONLY)
+
   add_executable(
     duckdb_otlp_server
     src/server/main.cpp src/server/server_config.cpp src/server/cli.cpp
-    src/server/commands.cpp src/server/server_util.cpp
-    src/server/env_source.cpp)
+    src/server/server_util.cpp src/server/env_source.cpp
+    ${CMAKE_CURRENT_BINARY_DIR}/otlp_mode_presets.cpp)
   # The target keeps its historical name (scripts and CI build --target
   # duckdb_otlp_server) but ships as `duckdb-otlp`: it is a general CLI now, not
   # only a daemon. The container installs a `duckdb-otlp-server` alias alongside

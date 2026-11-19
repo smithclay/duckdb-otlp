@@ -75,8 +75,7 @@ DUCKDB_OTLP_TOKEN=dev-token-123456
 DUCKDB_CATALOG=r2catalog
 DUCKDB_SCHEMA=otlp
 
-DUCKDB_QUACK_ENABLED=1
-DUCKDB_QUACK_ADDR=0.0.0.0:9494
+DUCKDB_QUACK_PORT=9494
 DUCKDB_QUACK_TOKEN=dev-quack-token-123456
 
 CLOUDFLARE_ACCOUNT_ID=<account-id>
@@ -90,7 +89,7 @@ R2_SECRET_ACCESS_KEY=<r2-s3-secret-access-key>
 The three settings above the blank line are the required ones. The key pair is optional: leave it out and DuckDB resolves R2 access from its own secret store instead, which is the better choice when you would rather not put credentials in an env file. Create the secret once, against the same data directory the server uses:
 
 ```bash
-duckdb-otlp query --mode none "
+duckdb -c "
   INSTALL httpfs; LOAD httpfs;
   CREATE PERSISTENT SECRET cloudflare_r2_secret (
     TYPE s3,
@@ -102,7 +101,7 @@ duckdb-otlp query --mode none "
   );"
 ```
 
-The server prints which of the two it is using on startup (`Credentials: ...`). To keep secrets somewhere other than `$HOME/.duckdb/stored_secrets`, point both commands at it with `--secret-dir`.
+The server prints which of the two it is using on startup (`Credentials: ...`). To keep secrets somewhere other than `$HOME/.duckdb/stored_secrets`, set `SET secret_directory = '...'` before creating it and pass the same directory to the server with `--secret-dir`.
 
 ## Start the server
 

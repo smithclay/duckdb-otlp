@@ -3,19 +3,12 @@
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/query_result.hpp"
 
+#include "otlp_arrow.hpp"
 #include "otlp_sql_util.hpp"
 
 namespace duckdb {
 
 namespace {
-
-//! The six signal tables every server creates; resource_attributes/scope_attributes exist on all.
-const char *const SIGNAL_TABLES[] = {"otlp_logs",
-                                     "otlp_traces",
-                                     "otlp_metrics_gauge",
-                                     "otlp_metrics_sum",
-                                     "otlp_metrics_histogram",
-                                     "otlp_metrics_exp_histogram"};
 
 void Exec(Connection &con, const string &sql) {
 	auto result = con.Query(sql);
@@ -79,8 +72,6 @@ OtlpColumnPromoter::OtlpColumnPromoter(OtlpPromoteConfig config_p, string catalo
 }
 
 void OtlpColumnPromoter::Disable(const string &reason) {
-	// ProjectionSuffix()/PromotedColumnsTotal() are only consulted when Enabled(), so clearing
-	// `enabled` is enough — no need to also wipe suffix/columns.
 	enabled = false;
 	if (log) {
 		log("attribute promotion disabled: " + reason);
@@ -91,7 +82,6 @@ void OtlpColumnPromoter::Initialize(Connection &con) {
 	if (columns.empty()) {
 		return;
 	}
-	// JSON functions back the extract; if unavailable we cannot promote.
 	try {
 		Exec(con, "LOAD json");
 	} catch (...) {
@@ -102,10 +92,8 @@ void OtlpColumnPromoter::Initialize(Connection &con) {
 			return;
 		}
 	}
-	// Add every promoted column on every signal table (idempotent). A fixed config means the first
-	// ALTER failure indicates the catalog cannot add columns (e.g. an Iceberg REST catalog without
-	// write support), so disable rather than retry per column/table.
-	for (auto *table : SIGNAL_TABLES) {
+	// The first ALTER failure means the catalog cannot add columns at all, so disable rather than retry.
+	for (auto *table : OTLP_SIGNAL_TABLES) {
 		auto qualified = QualifiedTable(catalog_name, schema_name, table);
 		for (auto &c : columns) {
 			try {

@@ -26,68 +26,17 @@
 #include <cstdlib>
 #include <filesystem>
 
-#ifndef __EMSCRIPTEN__
-// Only for the host-aware `doctor` probes (OtlpHttpStatusOk / OtlpTcpConnectOk) at the bottom
-// of this file. The HTTP server itself lives in otlp_server_http.cpp; both TUs are in the same
-// archive, so the header-only library's inline symbols deduplicate at link time.
-#include "httplib.hpp"
-
-#include <cerrno>
-#ifdef _WIN32
-// Winsock is the Windows equivalent of the POSIX socket headers below. httplib.hpp (above)
-// already includes winsock2.h/ws2tcpip.h, links ws2_32, and owns the process-wide
-// WSAStartup/WSACleanup through its own static initializer, so these are include-order-safe
-// and no explicit WSAStartup is needed here. Including them anyway keeps the dependency
-// visible if the httplib vendoring ever changes.
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#else
-#include <fcntl.h>
-#include <netdb.h>
-#include <poll.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#endif
-#endif
-
 namespace duckdb {
 
 static int64_t NowUnixMs();
 
-//! Milliseconds elapsed since `last_unix_ms` (a NowUnixMs() timestamp), or -1 if
-//! it was never set (0). Clamps to 0 if the clock appears to have gone backwards.
+//! -1 if never set (0); clamps to 0 if the clock went backwards.
 static int64_t AgeMsSince(int64_t last_unix_ms);
 
 namespace {
 
 static constexpr idx_t TOKEN_BYTES = 16;
 static constexpr idx_t APPEND_CHUNK_SIZE = STANDARD_VECTOR_SIZE;
-//! Internal best-effort maintenance cadence. Catalog-native CHECKPOINT can add its
-//! own commit for catalogs that implement it, so keep it well below seal cadence.
-static constexpr idx_t CATALOG_MAINTENANCE_ROW_SEAL_INTERVAL = 32;
-static constexpr int64_t CATALOG_MAINTENANCE_MIN_INTERVAL_MS = 5 * 60 * 1000;
-//! Time-based trigger: once any row-seal is pending, run maintenance after this long even if
-//! the row-seal count never reaches CATALOG_MAINTENANCE_ROW_SEAL_INTERVAL. At low volume the
-//! count trigger can take hours (or never fire before a restart), leaving DuckLake-inlined
-//! rows in the metadata catalog instead of Parquet; CHECKPOINT flushes them.
-static constexpr int64_t CATALOG_MAINTENANCE_MAX_INTERVAL_MS = 10 * 60 * 1000;
-static constexpr int64_t CATALOG_MAINTENANCE_HEADROOM_MS = 60 * 1000;
-static constexpr double CATALOG_MAINTENANCE_HEADROOM_FRACTION = 0.5;
-static constexpr double CATALOG_MAINTENANCE_RATE_EWMA_ALPHA = 0.5;
-
-struct OtlpTargetTable {
-	OtlpSignalType signal_type;
-	const char *table_name;
-};
-
-static const OtlpTargetTable TARGET_TABLES[] = {
-    {OTLP_SIGNAL_LOGS, "otlp_logs"},
-    {OTLP_SIGNAL_TRACES, "otlp_traces"},
-    {OTLP_SIGNAL_METRICS_GAUGE, "otlp_metrics_gauge"},
-    {OTLP_SIGNAL_METRICS_SUM, "otlp_metrics_sum"},
-    {OTLP_SIGNAL_METRICS_HISTOGRAM, "otlp_metrics_histogram"},
-    {OTLP_SIGNAL_METRICS_EXP_HISTOGRAM, "otlp_metrics_exp_histogram"},
-};
 
 static string HexEncode(const data_t *bytes, idx_t n) {
 	string result(n * 2, '\0');
@@ -124,41 +73,13 @@ static bool IsUnsupportedCatalogMaintenanceError(const string &message) {
 	       lower.find("checkpoint is only supported") != string::npos;
 }
 
-//! True when a maintenance statement lost a race to another writer on the same catalog rather than
-//! failing. With a shared DuckLake catalog (e.g. several receiver processes), two CHECKPOINTs can
-//! flush the same inlined rows; Postgres rejects the loser with "could not serialize access due to
-//! concurrent delete/update". The winner already did the work, so this is not a failure.
+//! A maintenance statement that lost a race to another writer's CHECKPOINT on a shared catalog
+//! (Postgres: "could not serialize access due to concurrent delete/update"). Not a failure.
 static bool IsContendedCatalogMaintenanceError(const string &message) {
 	auto lower = StringUtil::Lower(message);
 	return lower.find("could not serialize access") != string::npos ||
 	       lower.find("serialization failure") != string::npos || lower.find("concurrent delete") != string::npos ||
 	       lower.find("concurrent update") != string::npos;
-}
-
-static bool CatalogMaintenanceTestOverridesEnabled() {
-	auto value = std::getenv("DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE");
-	return value && string(value) == "1";
-}
-
-template <class T>
-static T GetCatalogMaintenanceTestOverride(const char *name, T fallback, bool allow_zero = false) {
-	if (!CatalogMaintenanceTestOverridesEnabled()) {
-		return fallback;
-	}
-	auto value = std::getenv(name);
-	if (!value || value[0] == '\0') {
-		return fallback;
-	}
-	try {
-		size_t pos = 0;
-		auto parsed = std::stoull(value, &pos);
-		if (pos != string(value).size() || (!allow_zero && parsed == 0)) {
-			return fallback;
-		}
-		return static_cast<T>(parsed);
-	} catch (...) {
-		return fallback;
-	}
 }
 
 static void RunSQL(Connection &connection, const string &sql) {
@@ -186,8 +107,7 @@ static OtlpInputFormat FormatFromContentType(const string &content_type) {
 	if (value == "application/x-protobuf" || value == "application/protobuf" || value == "application/otlp") {
 		return OTLP_FORMAT_PROTOBUF;
 	}
-	// 415: a genuine content-type problem. Raise it as an HTTP error directly rather
-	// than InvalidInputException, which is also thrown for non-content-type reasons.
+	// Not InvalidInputException, which is also thrown for non-content-type reasons.
 	throw OtlpHttpError(415, StringUtil::Format("unsupported content-type %s", value.empty() ? "<missing>" : value));
 }
 
@@ -223,7 +143,7 @@ void OtlpServer::GetSignalColumns(ClientContext &context, OtlpSignalType signal_
 	names = table->names;
 }
 
-// Narrow nanosecond timestamps to the buffer's microseconds, truncating toward zero.
+// Truncates toward zero.
 static void TimestampNsToTimestamp(Vector &source, Vector &result, idx_t count) {
 	auto values = source.Values<int64_t>();
 	auto writer = FlatVector::Writer<timestamp_t>(result, count);
@@ -242,17 +162,17 @@ void OtlpServer::InitBuffers() {
 		throw InternalException("Database was closed");
 	}
 	auto &allocator = Allocator::Get(*db);
-	for (auto &target : TARGET_TABLES) {
-		auto arrow_table = OtlpArrowTable::ForSignal(*arrow_con->context, target.signal_type);
+	for (auto signal_type : OTLP_SIGNALS) {
+		auto arrow_table = OtlpArrowTable::ForSignal(*arrow_con->context, signal_type);
 		vector<LogicalType> types;
 		for (auto &type : arrow_table->types) {
 			types.push_back(BufferColumnType(type));
 		}
 		auto collection = make_uniq<ColumnDataCollection>(allocator, types);
 		vector<Identifier> identifiers(arrow_table->names.begin(), arrow_table->names.end());
-		signal_buffers.push_back(make_uniq<OtlpSignalBuffer>(target.signal_type, target.table_name, std::move(types),
-		                                                     std::move(identifiers), std::move(arrow_table),
-		                                                     std::move(collection)));
+		signal_buffers.push_back(make_uniq<OtlpSignalBuffer>(signal_type, OTLP_SIGNAL_TABLES[signal_type],
+		                                                     std::move(types), std::move(identifiers),
+		                                                     std::move(arrow_table), std::move(collection)));
 	}
 	parquet_view_settled.assign(signal_buffers.size(), false);
 }
@@ -383,7 +303,6 @@ OtlpServer::OtlpServer(ClientContext &context, const vector<OtlpListenerSpec> &l
 	if (listener_specs.empty()) {
 		throw InvalidInputException("OTLP server requires at least one listen URI");
 	}
-	// Anonymous mode (opt-in) runs with no token; only enforce the floor when auth is on.
 	if (!config.disable_auth) {
 		ValidateToken(config.token);
 	}
@@ -394,30 +313,23 @@ OtlpServer::OtlpServer(ClientContext &context, const vector<OtlpListenerSpec> &l
 	arrow_con = make_uniq<Connection>(*db);
 	EnsureTargetTables();
 	InitBuffers();
-	// One dedicated writer connection; the single sealer thread is the only thing
-	// that ever commits, so concurrent DuckLake writes never conflict.
+	// The sealer thread is the only thing that commits, so concurrent DuckLake writes never conflict.
 	writer_con = make_uniq<Connection>(*db);
 	writer_con->context->config.enable_progress_bar = false;
-	// Set the DuckLake catalog options the post-seal CHECKPOINT consumes (bounded target file
-	// size + snapshot/file retention) before the sealer can fire. Best-effort; no-op for the
-	// default/non-DuckLake catalogs.
+	// Before the sealer can fire.
 	ConfigureCatalogMaintenanceOptions();
-	// Attribute promotion (opt-in, catalog mode only): add the operator-specified resource/scope
-	// attribute columns once, before the sealer fires. Parquet-export mode has no table to ALTER.
+	// Parquet-export mode has no table to ALTER.
 	if (config.promote.Enabled() && config.parquet_export_path.empty()) {
 		promoter = make_uniq<OtlpColumnPromoter>(config.promote, config.catalog_name, config.schema_name,
 		                                         [this](const string &msg) { LogServerEvent(msg); });
 		promoter->Initialize(*writer_con);
 	}
-	// After promotion has settled (it may disable itself), so the sinks project exactly the
-	// columns that exist.
+	// After promotion has settled (it may disable itself), so the sinks project only existing columns.
 	BuildSinks();
 	StartSealer();
 
-	// The sealer thread is now running. If any bind fails (e.g. EADDRINUSE) this object is not
-	// fully constructed, so ~OtlpServer() won't run: close the listeners that did start and stop
-	// the sealer here so no socket stays bound and no joinable std::thread is destroyed (which
-	// would std::terminate the process).
+	// A throw here means ~OtlpServer() won't run: close started listeners and stop the sealer, or
+	// a socket stays bound and a joinable std::thread is destroyed (std::terminate).
 	try {
 		for (auto &spec : listener_specs) {
 			listeners.push_back(spec.transport == OtlpTransport::GRPC ? MakeOtlpGrpcListener(*this, spec)
@@ -432,13 +344,66 @@ OtlpServer::OtlpServer(ClientContext &context, const vector<OtlpListenerSpec> &l
 #endif
 }
 
+static Value NullIfEmpty(const string &value) {
+	return value.empty() ? Value(LogicalType::VARCHAR) : Value(value);
+}
+
+//! Ages are -1 until the event first happens.
+static Value NullIfNegative(int64_t value) {
+	return value < 0 ? Value(LogicalType::BIGINT) : Value::BIGINT(value);
+}
+
+#define OTLP_COLUMN(name, type, expr)                                                                                  \
+	{                                                                                                                  \
+		name, LogicalTypeId::type, [](const OtlpServer &s, const OtlpListener &l) -> Value {                           \
+			return expr;                                                                                               \
+		}                                                                                                              \
+	}
+
+const vector<OtlpServerListColumn> &OtlpServer::ListColumns() {
+	// Append new columns at the end; callers may read by index.
+	static const vector<OtlpServerListColumn> columns = {
+	    OTLP_COLUMN("listen_uri", VARCHAR, Value(l.Uri().Uri())),
+	    OTLP_COLUMN("listen_url", VARCHAR, Value(l.Uri().Http())),
+	    OTLP_COLUMN("host", VARCHAR, Value(l.Uri().Host())),
+	    OTLP_COLUMN("port", USMALLINT, Value::USMALLINT(l.Uri().Port())),
+	    OTLP_COLUMN("schema_name", VARCHAR, Value(s.config.schema_name)),
+	    OTLP_COLUMN("active_requests", UBIGINT, Value::UBIGINT(s.active_requests.load())),
+	    OTLP_COLUMN("total_requests", UBIGINT, Value::UBIGINT(s.total_requests.load())),
+	    OTLP_COLUMN("total_rows", UBIGINT, Value::UBIGINT(s.total_rows.load())),
+	    OTLP_COLUMN("is_listening", BOOLEAN, Value::BOOLEAN(l.IsListening())),
+	    OTLP_COLUMN("last_error", VARCHAR, NullIfEmpty(l.LastError())),
+	    OTLP_COLUMN("catalog_name", VARCHAR, Value(s.config.catalog_name)),
+	    OTLP_COLUMN("buffered_rows", UBIGINT, Value::UBIGINT(s.BufferedRows())),
+	    OTLP_COLUMN("admitted_bytes", UBIGINT, Value::UBIGINT(s.AdmittedBytes())),
+	    OTLP_COLUMN("seal_target_bytes", UBIGINT, Value::UBIGINT(s.config.seal_target_bytes)),
+	    OTLP_COLUMN("seal_max_age_ms", BIGINT, Value::BIGINT(s.config.seal_max_age_ms)),
+	    OTLP_COLUMN("oldest_buffered_age_ms", BIGINT, NullIfNegative(s.OldestBufferedAgeMs())),
+	    OTLP_COLUMN("last_seal_age_ms", BIGINT, NullIfNegative(s.LastSealAgeMs())),
+	    OTLP_COLUMN("seals_total", UBIGINT, Value::UBIGINT(s.SealsTotal())),
+	    OTLP_COLUMN("committed_rows_total", UBIGINT, Value::UBIGINT(s.CommittedRowsTotal())),
+	    OTLP_COLUMN("seal_failures_total", UBIGINT, Value::UBIGINT(s.SealFailuresTotal())),
+	    OTLP_COLUMN("seal_last_error", VARCHAR, NullIfEmpty(s.SealLastError())),
+	    OTLP_COLUMN("maintenance_runs_total", UBIGINT, Value::UBIGINT(s.MaintenanceRunsTotal())),
+	    OTLP_COLUMN("maintenance_failures_total", UBIGINT, Value::UBIGINT(s.MaintenanceFailuresTotal())),
+	    OTLP_COLUMN("last_maintenance_age_ms", BIGINT, NullIfNegative(s.LastMaintenanceAgeMs())),
+	    OTLP_COLUMN("maintenance_last_error", VARCHAR, NullIfEmpty(s.MaintenanceLastError())),
+	    OTLP_COLUMN("buffered_bytes", UBIGINT, Value::UBIGINT(s.BufferedBytes())),
+	    OTLP_COLUMN("promoted_columns_total", UBIGINT, Value::UBIGINT(s.PromotedColumnsTotal())),
+	    OTLP_COLUMN("transport", VARCHAR, Value(OtlpTransportName(l.Transport()))),
+	    OTLP_COLUMN("maintenance_contended_total", UBIGINT, Value::UBIGINT(s.MaintenanceContendedTotal())),
+	};
+	return columns;
+}
+
+#undef OTLP_COLUMN
+
 const OtlpUri &OtlpServer::PrimaryUri() const {
 	return listeners.front()->Uri();
 }
 
 void OtlpServer::CloseListeners() {
-	// Stop accepting everywhere first so no transport admits new rows while another is still
-	// draining, then close (join/drain) in reverse start order.
+	// Stop accepting everywhere first so no transport admits rows while another drains.
 	for (auto &listener : listeners) {
 		listener->StopAccepting();
 	}
@@ -448,9 +413,7 @@ void OtlpServer::CloseListeners() {
 }
 
 void OtlpServer::Close() {
-	// Every listener is closed (workers joined, in-flight gRPC requests drained) before the one
-	// final seal, so rows buffered by any transport are included. Safe here (controlling thread,
-	// not a worker); idempotent with the ~OtlpServer() safety-net call.
+	// After every listener has closed, so the final seal includes rows from any transport.
 	CloseListeners();
 	ShutdownIngest();
 }
@@ -463,9 +426,7 @@ OtlpServer::~OtlpServer() {
 }
 
 void OtlpServer::ValidateToken(const string &token) {
-	// 16 is the deliberate floor for *user-supplied* tokens. Auto-generated tokens
-	// (GenerateRandomToken) carry a full 128 bits of entropy as 32 hex chars; the
-	// lower minimum only bounds how weak a hand-picked token may be.
+	// Floor for user-supplied tokens; generated ones carry 128 bits.
 	if (token.size() < otlp_limits::MIN_TOKEN_LENGTH) {
 		throw InvalidInputException("OTLP server token must be at least %llu characters long",
 		                            static_cast<uint64_t>(otlp_limits::MIN_TOKEN_LENGTH));
@@ -489,13 +450,10 @@ string OtlpServer::GenerateRandomToken(DatabaseInstance &db) {
 }
 
 bool OtlpServer::CheckAuth(const string &authorization, const string &api_key) const {
-	// Opt-in anonymous mode: skip all credential checks. Off by default; see disable_auth.
 	if (config.disable_auth) {
 		return true;
 	}
-	// Accept the request if EITHER a Bearer token OR an x-api-key matches. Checking
-	// both independently avoids a wrong/malformed Authorization header masking a
-	// valid x-api-key (and vice versa). RFC 7235 schemes are case-insensitive.
+	// Check both independently so a malformed Authorization header cannot mask a valid x-api-key.
 	if (authorization.size() >= 7 && StringUtil::Lower(authorization.substr(0, 7)) == "bearer ") {
 		auto bearer = authorization.substr(7);
 		if (!bearer.empty() && TimingSafeEqual(bearer, config.token)) {
@@ -527,9 +485,8 @@ void OtlpServer::ReleaseAdmission(idx_t bytes) {
 	}
 	auto current = admitted_bytes.load();
 	while (true) {
-		// An over-release means the admission accounting is out of balance (we are releasing
-		// more than was reserved). Surface it in debug/CI; release builds still clamp at 0 so a
-		// bug can never wrap the counter to a huge value and wedge admission.
+		// An over-release means the accounting is out of balance. Release builds clamp at 0 so the
+		// counter can never wrap and wedge admission.
 		D_ASSERT(current >= bytes);
 		auto next = current > bytes ? current - bytes : 0;
 		if (admitted_bytes.compare_exchange_weak(current, next)) {
@@ -543,26 +500,20 @@ void OtlpServer::EnsureTargetTables() {
 	if (!db) {
 		throw InternalException("Database was closed");
 	}
-	// Local Parquet export: pre-create the root directory so the seal's COPY (which only
-	// creates its own partition subdirectories) has an existing base path. Remote/object
-	// stores (s3://, gs://, ...) need no directory creation; a real permission/path
-	// problem surfaces on the first seal.
+	// COPY creates only its partition subdirectories. Remote stores need no directory.
 	if (!config.parquet_export_path.empty() && config.parquet_export_path.find("://") == string::npos) {
 		std::error_code ec;
 		std::filesystem::create_directories(config.parquet_export_path, ec);
 	}
-	// Runs once at construction (single-threaded), so a throwaway connection is fine.
 	Connection con(*db);
 	con.context->config.enable_progress_bar = false;
-	for (auto &target : TARGET_TABLES) {
-		CreateOrValidateTable(con, target.signal_type, target.table_name);
+	for (auto signal_type : OTLP_SIGNALS) {
+		CreateOrValidateTable(con, signal_type, OTLP_SIGNAL_TABLES[signal_type]);
 	}
 }
 
 void OtlpServer::CreateOrValidateTable(Connection &con, OtlpSignalType signal_type, const string &table_name) {
 	if (!config.parquet_export_path.empty()) {
-		// Parquet mode keeps no persistent destination table: the durable store is the
-		// Parquet dataset, and inspection is a lazily-created view over it (see SealOnce).
 		return;
 	}
 	vector<LogicalType> expected_types;
@@ -587,10 +538,8 @@ void OtlpServer::CreateOrValidateTable(Connection &con, OtlpSignalType signal_ty
 		throw IOException("Target table %s is not available: %s", qualified,
 		                  result ? result->GetError() : "query failed");
 	}
-	// The signal's base columns must be present as a leading prefix (name + type, in order). Extra
-	// trailing columns are allowed: attribute promotion adds resource_attr_*/scope_attr_* columns
-	// via ALTER, and a restart against an already-promoted catalog must validate cleanly. The sink
-	// inserts BY NAME, so those extras are NULL-filled when not being populated.
+	// The base columns must be a leading prefix (name + type, in order). Trailing extras (promoted
+	// columns from an earlier run) are allowed; the sink inserts BY NAME and NULL-fills them.
 	auto &result_names = result->GetNames();
 	auto &result_types = result->GetTypes();
 	if (result_names.size() < expected_names.size()) {
@@ -625,17 +574,9 @@ OtlpIngestResult OtlpServer::Ingest(OtlpRequestKind kind, const string &content_
 	}
 	auto format = FormatFromContentType(content_type);
 
-	// Backpressure: reserve payload bytes before parse/transform so concurrent bursts
-	// cannot all pass the check and allocate work beyond max_buffered_bytes. The
-	// reservation moves into the unsealed-row counter when rows are buffered and is
-	// released only after those rows seal; parse/validation failures release it immediately.
-	//
-	// Peak transient memory ceiling: ~max_buffered_bytes + http_threads * max_body_bytes.
-	// `body` is already the DECOMPRESSED payload (httplib content-decodes before calling
-	// Ingest) and is bounded by max_body_bytes, but that decompression+materialization
-	// happens BEFORE this reservation. So each of the http_threads workers can hold up to
-	// one max_body_bytes body in flight that is not yet charged against admission, on top of
-	// the max_buffered_bytes that admission itself bounds.
+	// Reserve before parse so concurrent bursts cannot all pass the check; released immediately on
+	// failure, otherwise only after the rows seal. `body` is already decompressed before this, so
+	// peak memory is ~max_buffered_bytes + http_threads * max_body_bytes.
 	auto reservation_bytes = MaxValue<idx_t>(body.size(), 1024);
 	idx_t admitted_before = 0;
 	if (!TryReserveAdmission(reservation_bytes, admitted_before)) {
@@ -670,12 +611,7 @@ OtlpIngestResult OtlpServer::Ingest(OtlpRequestKind kind, const string &content_
 }
 
 OtlpSignalBuffer &OtlpServer::BufferFor(OtlpSignalType signal_type) {
-	for (auto &buf : signal_buffers) {
-		if (buf->signal_type == signal_type) {
-			return *buf;
-		}
-	}
-	throw InternalException("No OTLP buffer for signal type");
+	return *signal_buffers[signal_type];
 }
 
 void OtlpServer::BufferSignal(OtlpSignalType signal_type, const string &body, OtlpInputFormat format,
@@ -701,8 +637,7 @@ void OtlpServer::BufferSignal(OtlpSignalType signal_type, const string &body, Ot
 	};
 	vector<StagedSignal> staged;
 	try {
-		// Single signal: stage off to the side, then move into the live buffer as the final step.
-		// A conversion failure leaves the live buffer untouched (nothing to roll back).
+		// Stage first, so a conversion failure leaves the live buffer untouched.
 		auto stage = StageArrowBatch(signal_type, array, schema);
 		if (stage.rows > 0) {
 			staged.push_back(std::move(stage));
@@ -721,70 +656,40 @@ void OtlpServer::BufferMetrics(const string &body, OtlpInputFormat format, OtlpI
 	OtlpStatus status = otlp_transform_metrics_all_with_profile(
 	    format, OTLP_ARROW_PROFILE_DUCKDB, reinterpret_cast<const uint8_t *>(body.data()), body.size(), &batches);
 
-	auto release_all = [&]() {
-		ReleaseOtlpArrowBatch(batches.gauge);
-		ReleaseOtlpArrowBatch(batches.sum);
-		ReleaseOtlpArrowBatch(batches.histogram);
-		ReleaseOtlpArrowBatch(batches.exp_histogram);
-	};
-
 	if (status != OTLP_OK) {
-		release_all();
+		ReleaseOtlpMetricBatches(batches);
 		throw OtlpHttpError(400, StringUtil::Format("OTLP parse failed for metrics: %s", otlp_status_message(status)));
 	}
 
-	// Stage ALL four metric sub-signals into LOCAL collections first; only once every present
-	// sub-signal has converted do we move them into the live buffers (CommitStaged). A failure
-	// while converting a later sub-signal therefore leaves the live buffers untouched, so a
-	// correct client retry buffers everything exactly once instead of double-buffering the
-	// sub-signals that happened to convert before the failure (review finding H3).
+	// Stage every metric shape before any reaches the live buffers (CommitStaged), so a failure on
+	// a later shape cannot make a client retry double-buffer the earlier ones.
 	vector<StagedSignal> staged;
 	try {
-		if (batches.gauge.present) {
-			auto stage = StageArrowBatch(OTLP_SIGNAL_METRICS_GAUGE, batches.gauge.array, batches.gauge.schema);
-			if (stage.rows > 0) {
-				staged.push_back(std::move(stage));
+		for (auto signal_type : OTLP_SIGNALS) {
+			if (signal_type < OTLP_SIGNAL_METRICS_GAUGE) {
+				continue;
 			}
-		}
+			auto &shape = OtlpMetricShape(batches, signal_type);
+			if (shape.present) {
+				auto stage = StageArrowBatch(signal_type, shape.array, shape.schema);
+				if (stage.rows > 0) {
+					staged.push_back(std::move(stage));
+				}
+			}
 #ifdef DUCKDB_OTLP_ENABLE_TEST_SEAM
-		// Test-only fault injection: throw AFTER the first sub-signal has converted into its local
-		// staging collection but BEFORE any sub-signal is moved into a live buffer, so the harness can
-		// assert that a mid-conversion failure leaves NO rows buffered and admission untouched. Null
-		// (and the whole branch absent) in production builds.
-		if (metrics_stage_fault_hook_for_test) {
-			metrics_stage_fault_hook_for_test();
-		}
+			if (metrics_stage_fault_hook_for_test && signal_type == OTLP_SIGNAL_METRICS_GAUGE) {
+				metrics_stage_fault_hook_for_test();
+			}
 #endif
-		if (batches.sum.present) {
-			auto stage = StageArrowBatch(OTLP_SIGNAL_METRICS_SUM, batches.sum.array, batches.sum.schema);
-			if (stage.rows > 0) {
-				staged.push_back(std::move(stage));
-			}
-		}
-		if (batches.histogram.present) {
-			auto stage =
-			    StageArrowBatch(OTLP_SIGNAL_METRICS_HISTOGRAM, batches.histogram.array, batches.histogram.schema);
-			if (stage.rows > 0) {
-				staged.push_back(std::move(stage));
-			}
-		}
-		if (batches.exp_histogram.present) {
-			auto stage = StageArrowBatch(OTLP_SIGNAL_METRICS_EXP_HISTOGRAM, batches.exp_histogram.array,
-			                             batches.exp_histogram.schema);
-			if (stage.rows > 0) {
-				staged.push_back(std::move(stage));
-			}
 		}
 	} catch (...) {
-		// `staged` (local collections only) is discarded; the live buffers were never touched.
-		release_all();
+		ReleaseOtlpMetricBatches(batches);
 		throw;
 	}
-	release_all();
+	ReleaseOtlpMetricBatches(batches);
 
-	// Only the skipped-counters are advanced before the all-or-nothing commit; they describe what
-	// the Rust transform dropped during parse, not what we buffer, so they are safe to report even
-	// if a later sub-signal had failed to convert (it would not, since the throw above precedes here).
+	// The skipped-counters describe what the Rust transform dropped, not what was buffered, so they
+	// are safe to advance before the all-or-nothing commit.
 	result.skipped_summaries += batches.skipped_summaries;
 	result.skipped_nan_values += batches.skipped_nan_values;
 	result.skipped_infinity_values += batches.skipped_infinity_values;
@@ -809,8 +714,7 @@ OtlpServer::StagedSignal OtlpServer::StageArrowBatch(OtlpSignalType signal_type,
 	table.CheckBatchSchema(schema);
 	auto &allocator = Allocator::Get(*db);
 	staged.collection = make_uniq<ColumnDataCollection>(allocator, buf.types);
-	// `imported` holds the importer's types and may reference the Arrow buffers (zero-copy); `chunk`
-	// holds the buffer's types. Append copies, so nothing outlives the borrowed array.
+	// `imported` may reference the borrowed Arrow buffers (zero-copy); Append copies out of them.
 	auto batch = OtlpBorrowArrowBatch(array);
 	DataChunk imported;
 	imported.Initialize(allocator, table.types, APPEND_CHUNK_SIZE);
@@ -845,18 +749,15 @@ void OtlpServer::StageAppend(ColumnDataCollection &collection, DataChunk &chunk)
 
 void OtlpServer::CommitStaged(vector<StagedSignal> &staged, OtlpIngestResult &result, idx_t &admission_bytes) {
 	if (staged.empty()) {
-		// Nothing buffered: the request's admission stays unclaimed and Ingest releases it.
+		// Nothing buffered: Ingest releases the unclaimed admission.
 		return;
 	}
 	idx_t total_rows = 0;
 	for (auto &s : staged) {
 		total_rows += s.rows;
 	}
-	// Attribute this request's admitted bytes to the signal(s) it buffers into, exactly ONCE.
-	// Single-signal requests give the whole amount to their one signal; a multi-sub-signal metrics
-	// request splits its bytes across its sub-signals by rows, with the remainder assigned to the
-	// last staged signal so the per-signal shares sum EXACTLY to admission_bytes (no bytes lost or
-	// double-counted). This one-time split is what M2 keeps; the failure-cycle re-split is gone.
+	// Split admission across signals by rows, exactly once; the remainder goes to the last signal
+	// so the shares sum exactly to admission_bytes.
 	idx_t admission_remaining = admission_bytes;
 	auto now = std::chrono::steady_clock::now();
 	for (idx_t i = 0; i < staged.size(); i++) {
@@ -881,22 +782,15 @@ void OtlpServer::CommitStaged(vector<StagedSignal> &staged, OtlpIngestResult &re
 		result.batches += s.batches;
 	}
 	admission_bytes = 0; // the reservation is now attributed to the live buffers (per-signal)
-	// The size trigger reads `admitted_bytes`: the global in-flight admission counter, which
-	// is every reserved request body (in-flight reservations included, NOT just the bytes
-	// already attached to buffered rows). So the trigger may fire slightly ahead of what is
-	// physically buffered; the exact COPY size is whatever the buffered chunks hold at seal time.
+	// admitted_bytes includes in-flight reservations, so this may fire slightly early.
 	if (admitted_bytes.load() >= config.seal_target_bytes) {
 		RequestSeal();
 	}
 }
 
 void OtlpServer::RequestSeal() {
-	// Set the trigger flag UNDER sealer_mutex so it cannot land in the window after the sealer
-	// thread evaluates its wait predicate but before it actually blocks in wait_for — that would
-	// be a lost wakeup. The predicate reads flush_requested atomically, so the flag set is correct
-	// lock-free today, but pairing the store with the same mutex the waiter holds is what makes the
-	// happens-before edge robust against future predicate changes. notify_one may stay outside the
-	// lock (notifying a not-yet-waiting thread is harmless; the predicate re-check catches the flag).
+	// Set the flag under sealer_mutex so it cannot land between the sealer's predicate check and
+	// its wait (a lost wakeup). notify_one may stay outside the lock.
 	{
 		std::lock_guard<std::mutex> lock(sealer_mutex);
 		flush_requested.store(true);
@@ -918,16 +812,13 @@ static int64_t AgeMsSince(int64_t last_unix_ms) {
 }
 
 OtlpServer::SealingPlan OtlpServer::SwapBuffersForSeal(Allocator &allocator) {
-	// Pre-allocate the fresh empty collections outside the lock so the critical section only
-	// does pointer swaps + counter resets, not allocation.
+	// Allocate outside the lock so the critical section is only swaps and counter resets.
 	std::vector<unique_ptr<ColumnDataCollection>> fresh;
 	fresh.reserve(signal_buffers.size());
 	for (auto &buf : signal_buffers) {
 		fresh.push_back(make_uniq<ColumnDataCollection>(allocator, buf->types));
 	}
 
-	// Swap each buffer out for a fresh empty collection so workers keep filling during
-	// the (potentially slow) COPY. The moved-out collections are owned solely by the plan.
 	SealingPlan plan;
 	plan.signals.reserve(signal_buffers.size());
 	{
@@ -941,15 +832,9 @@ OtlpServer::SealingPlan OtlpServer::SwapBuffersForSeal(Allocator &allocator) {
 			SealingSignal state;
 			state.collection = std::move(buf.collection);
 			state.rows = buf.buffered_rows;
-			// Carry this signal's EXACT admission bytes into the plan (parallel to its rows) so a
-			// partial parquet failure can restore them wholesale without re-splitting an aggregate
-			// (M2). The plan's aggregate is just the sum, so the catalog all-or-nothing path is
-			// unchanged.
 			state.admission_bytes = buf.unsealed_admission_bytes;
 			plan.sealed_admission_bytes += buf.unsealed_admission_bytes;
-			// Capture the swapped-out rows' original buffering time so a failed-seal RestoreUnsealed
-			// can preserve their true age (M3). buf.first_unsealed is only valid when these rows
-			// exist; for an empty signal (rows == 0) it is never read on restore.
+			// Only read on restore when rows > 0.
 			state.first_unsealed = buf.first_unsealed;
 			plan.total_rows += state.rows;
 
@@ -964,11 +849,6 @@ OtlpServer::SealingPlan OtlpServer::SwapBuffersForSeal(Allocator &allocator) {
 }
 
 idx_t OtlpServer::RestoreUnsealed(SealingPlan &plan, const std::vector<bool> &restore) {
-	// Re-buffer the selected signals ahead of any rows workers appended during the seal
-	// (old rows first, preserving order), re-acquiring the per-signal locks in the same
-	// forward order. Each restored signal puts back its OWN admission bytes (guarded by the same
-	// per-signal lock as buffered_rows) — no proportional re-split, so repeated partial failures
-	// cannot drift the budget (M2).
 	idx_t restored_rows = 0;
 	std::vector<std::unique_lock<std::mutex>> locks;
 	locks.reserve(signal_buffers.size());
@@ -985,16 +865,10 @@ idx_t OtlpServer::RestoreUnsealed(SealingPlan &plan, const std::vector<bool> &re
 		buf.collection = std::move(state.collection);
 		buf.buffered_rows += state.rows;
 		buf.unsealed_admission_bytes += state.admission_bytes;
-		// Preserve the TRUE age of the restored rows (M3): the buffer's first_unsealed must be the
-		// OLDEST of {the swapped-out rows' original time, the live rows' time}. Workers may have
-		// appended NEW rows during the seal, each with their own (later) first_unsealed; the
-		// swapped-out rows are older, so resetting to now() (or even to the live time) would
-		// under-report how long the restored rows have been stuck across consecutive seal failures.
+		// Keep the restored rows' true age: the older of their original time and the live rows' time.
 		if (buf.have_unsealed) {
-			// Live rows arrived during the seal; keep whichever first_unsealed is older.
 			buf.first_unsealed = std::min(state.first_unsealed, buf.first_unsealed);
 		} else {
-			// No live rows: just carry the swapped-out rows' original time forward.
 			buf.first_unsealed = state.first_unsealed;
 		}
 		buf.have_unsealed = true;
@@ -1006,9 +880,7 @@ idx_t OtlpServer::RestoreUnsealed(SealingPlan &plan, const std::vector<bool> &re
 void OtlpServer::RecordSealOutcome(bool success, idx_t rows_committed, idx_t admitted_bytes_committed,
                                    int64_t seal_started_unix_ms, int64_t append_duration_ms, int64_t commit_duration_ms,
                                    const string &error) {
-	// Order is load-bearing: increment the running counters BEFORE RecordSealEvent snapshots
-	// them into the seal-history event (see OtlpSealEvent comment), and update last_seal_unix_ms
-	// + seal_last_error in the same place both protocols expect.
+	// Increment the counters BEFORE RecordSealEvent snapshots them (see OtlpSealEvent).
 	if (success) {
 		seals_total.fetch_add(1);
 		committed_rows_total.fetch_add(rows_committed);
@@ -1032,12 +904,8 @@ void OtlpServer::RecordSealOutcome(bool success, idx_t rows_committed, idx_t adm
 static constexpr const char *SEALED_RELATION = "sealed";
 
 //! Run `sql` with `collection` bound as the relation SEALED_RELATION.
-//!
-//! The rows never leave the ColumnDataCollection: it is injected into the parsed statement as a
-//! non-materialized CTE over a ColumnDataRef, the same mechanism DuckDB's own Appender flushes
-//! through. So one helper serves every sink shape (an INSERT into any catalog, a partitioned
-//! COPY), with no temp table and no per-row copy. `names` labels the columns, so a sink can
-//! address them by name (INSERT ... BY NAME, a promotion projection, a partition expression).
+//! Injected as a non-materialized CTE over a ColumnDataRef (as DuckDB's Appender flushes), so
+//! there is no temp table and no per-row copy. `names` lets a sink address columns by name.
 static void ExecuteOverSealed(Connection &connection, const string &sql, ColumnDataCollection &collection,
                               const vector<Identifier> &names) {
 	Parser parser(*connection.context);
@@ -1077,7 +945,7 @@ static void ExecuteOverSealed(Connection &connection, const string &sql, ColumnD
 	}
 }
 
-//! The plain-Parquet sink: append the sealed rows to `<root>/<table>/year=/month=/day=/`.
+//! Appends to `<root>/<table>/year=/month=/day=/`.
 static string ParquetSinkSql(const string &table_name, const string &root) {
 	auto ts = QuoteIdentifier(PartitionTimestampColumn(table_name));
 	return StringUtil::Format("COPY (SELECT *, strftime(%s, '%%Y') AS year, strftime(%s, '%%m') AS month, "
@@ -1096,15 +964,13 @@ void OtlpServer::BuildSinks() {
 			sinks.push_back(ParquetSinkSql(buf->table_name, config.parquet_export_path));
 			continue;
 		}
-		// BY NAME: the buffer's columns land in the same-named table columns whatever their
-		// position, and any column the table has beyond them (promoted attributes from an earlier
-		// run, operator additions) is NULL-filled. Promotion is one more projected column.
+		// BY NAME: table columns beyond the buffer's (earlier promotions, operator additions) are NULL-filled.
 		sinks.push_back("INSERT INTO " + QualifiedTable(config.catalog_name, config.schema_name, buf->table_name) +
 		                " BY NAME SELECT *" + promote + " FROM " + SEALED_RELATION);
 	}
 }
 
-OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
+OtlpIngestResult OtlpServer::SealOnce() {
 	std::lock_guard<std::mutex> writer_lock(writer_mutex);
 	if (!writer_con) {
 		return OtlpIngestResult {};
@@ -1123,14 +989,9 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 		return OtlpIngestResult {};
 	}
 
-	// One protocol for every destination: run each signal's sink over its sealed rows. The only
-	// thing that differs is what a failure leaves behind.
-	//  - A catalog sink is transactional: all signals commit together (for DuckLake, one snapshot),
-	//    and a failure rolls everything back and re-buffers everything.
-	//  - A Parquet COPY is a filesystem side effect that cannot be rolled back, so export is
-	//    at-least-once per signal: a failure re-buffers only the signals that had not exported,
-	//    so an exported signal is never re-written. A COPY that throws part-way may still have
-	//    written some partition files, so downstream readers must tolerate duplicates.
+	// A catalog seal is one transaction: a failure rolls back and re-buffers everything. A Parquet
+	// COPY cannot be rolled back, so export is at-least-once: a failure re-buffers only signals not
+	// yet exported, and a COPY that throws part-way may leave duplicates for readers to tolerate.
 	const bool transactional = config.parquet_export_path.empty();
 	auto &sealing = plan.signals;
 	std::vector<bool> sealed(signal_buffers.size(), false);
@@ -1159,7 +1020,7 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 			result.rows += sealing[i].rows;
 			result.batches += sealing[i].collection->ChunkCount();
 			if (!transactional && config.parquet_views) {
-				// The export is durable; the inspection view is best-effort and never fails it.
+				// The export is durable; the view is best-effort and never fails it.
 				EnsureParquetView(i, buf.table_name);
 			}
 		}
@@ -1179,8 +1040,7 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 			        .count();
 		}
 	} catch (...) {
-		// catch(...) -- not just std::exception -- so a non-std throw can never escape and
-		// std::terminate the host process, and the buffers are always restored.
+		// catch(...) so a non-std throw cannot std::terminate the host and the buffers are restored.
 		string msg;
 		try {
 			throw;
@@ -1190,7 +1050,6 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 			msg = "unknown (non-std) exception during seal";
 		}
 		if (transactional) {
-			// Nothing committed, whatever the loop had reached.
 			std::fill(sealed.begin(), sealed.end(), false);
 			bool rollback_ok = true;
 			try {
@@ -1199,8 +1058,7 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 				rollback_ok = false;
 			}
 			if (!rollback_ok) {
-				// The writer connection may be wedged in an aborted transaction. Rebuild it so the
-				// next seal can recover instead of failing forever on BEGIN.
+				// The connection may be wedged in an aborted transaction; rebuild it so BEGIN can succeed.
 				try {
 					writer_con = make_uniq<Connection>(*db);
 					writer_con->context->config.enable_progress_bar = false;
@@ -1208,10 +1066,8 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 				}
 			}
 		}
-		// Re-buffer every signal that did not seal, ahead of rows workers appended meanwhile. Each
-		// restored signal puts back exactly its own admission bytes and only the sealed signals'
-		// shares are released, so repeated partial failures cannot drift the budget (M2).
-		// RestoreUnsealed keeps the restored rows' original age (M3).
+		// Each restored signal puts back exactly its own admission bytes and original age, so repeated
+		// partial failures cannot drift the budget.
 		std::vector<bool> restore(signal_buffers.size());
 		idx_t sealed_rows = 0;
 		idx_t sealed_admission = plan.sealed_admission_bytes;
@@ -1226,10 +1082,8 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 		RestoreUnsealed(plan, restore);
 		ReleaseAdmission(sealed_admission);
 		if (sealed_rows > 0) {
-			// A partial Parquet export is durable even though the seal failed overall: it advances
-			// the seal clock and counts in committed_rows_total (rows on disk, not successful seals),
-			// which is why otlp_seal_list() can show success=false with rows_committed > 0. Bumped
-			// before RecordSealOutcome so the snapshotted event total includes it.
+			// A partial Parquet export is durable: it advances the seal clock and committed_rows_total
+			// (hence success=false with rows_committed > 0). Bumped before RecordSealOutcome snapshots it.
 			last_seal_unix_ms.store(NowUnixMs());
 			committed_rows_total.fetch_add(sealed_rows);
 		}
@@ -1243,13 +1097,13 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 	}
 
 	ReleaseAdmission(plan.sealed_admission_bytes);
+	// DEBUG: otlp_seal_list() keeps the history.
 	LogServerEvent(StringUtil::Format("seal: target=%s rows=%llu batches=%llu", SealTargetDescription(),
-	                                  static_cast<uint64_t>(result.rows), static_cast<uint64_t>(result.batches)));
+	                                  static_cast<uint64_t>(result.rows), static_cast<uint64_t>(result.batches)),
+	               LogLevel::LOG_DEBUG);
 	RecordSealOutcome(true, result.rows, plan.sealed_admission_bytes, seal_started_unix_ms, append_duration_ms,
 	                  commit_duration_ms, "");
-	if (transactional && allow_maintenance) {
-		MaybeRunCatalogMaintenance(result.rows, plan.sealed_admission_bytes);
-	}
+	catalog_maintenance_due = true;
 	return result;
 }
 
@@ -1261,19 +1115,14 @@ string OtlpServer::SealTargetDescription() const {
 }
 
 void OtlpServer::EnsureParquetView(idx_t signal_index, const string &table_name) {
-	// A read-only view over the exported files lets Quack inspect the data without a second
-	// local copy. It is created here, after files exist, so the view binds a resolvable schema.
-	//
-	// Binding it is the expensive part: read_parquet(union_by_name=true) lists the whole glob
-	// and reads every file's footer, and DuckDB binds a CREATE VIEW's query BEFORE it checks
-	// IF NOT EXISTS. So the catalog is consulted first, and each signal is settled at most once per server: a failure
-	// is logged rather than retried, since every retry would rescan an archive that only grows.
+	// Created after files exist so the view binds a schema. Binding reads every file's footer, and
+	// DuckDB binds a CREATE VIEW before checking IF NOT EXISTS, so the catalog is checked first and
+	// each signal is settled once: a failure is logged, never retried against a growing archive.
 	if (parquet_view_settled[signal_index]) {
 		return;
 	}
 	parquet_view_settled[signal_index] = true;
-	// information_schema.tables lists views alongside tables, which is the namespace IF NOT
-	// EXISTS checks, and reads only catalog entries.
+	// information_schema.tables lists views too (the IF NOT EXISTS namespace) and reads only the catalog.
 	auto catalog = config.catalog_name.empty() ? string("current_database()") : SqlQuote(config.catalog_name);
 	auto existing = writer_con->Query("SELECT 1 FROM information_schema.tables WHERE table_catalog = " + catalog +
 	                                  " AND table_schema = " + SqlQuote(config.schema_name) +
@@ -1286,7 +1135,6 @@ void OtlpServer::EnsureParquetView(idx_t signal_index, const string &table_name)
 		RunSQL(*writer_con, "CREATE VIEW IF NOT EXISTS " + view + " AS " +
 		                        ParquetDatasetSelect(config.parquet_export_path, table_name));
 	} catch (std::exception &ex) {
-		// The view is a convenience and the export it describes is already durable.
 		LogServerEvent(StringUtil::Format("parquet inspection view %s not created: %s", view, ex.what()),
 		               LogLevel::LOG_WARNING);
 	}
@@ -1297,63 +1145,19 @@ bool OtlpServer::CatalogMaintenanceEnabled() const {
 	       catalog_maintenance_state != CatalogMaintenanceState::DISABLED && writer_con;
 }
 
-void OtlpServer::MaybeRunCatalogMaintenance(idx_t sealed_rows, idx_t sealed_admission_bytes) {
-	if (sealed_rows == 0 || !CatalogMaintenanceEnabled()) {
-		return;
-	}
-	catalog_maintenance_row_seals_since_attempt++;
+void OtlpServer::MaybeRunCatalogMaintenance() {
+	// Checked before taking writer_mutex: the target is fixed and only this thread touches the time.
 	auto now = std::chrono::steady_clock::now();
-	auto seal_elapsed_ms = std::max<int64_t>(
-	    1, std::chrono::duration_cast<std::chrono::milliseconds>(now - catalog_maintenance_last_row_seal).count());
-	catalog_maintenance_last_row_seal = now;
-	auto seal_rate_bytes_per_ms = static_cast<double>(sealed_admission_bytes) / static_cast<double>(seal_elapsed_ms);
-	catalog_maintenance_ingress_rate_bytes_per_ms =
-	    catalog_maintenance_ingress_rate_bytes_per_ms == 0
-	        ? seal_rate_bytes_per_ms
-	        : (CATALOG_MAINTENANCE_RATE_EWMA_ALPHA * seal_rate_bytes_per_ms) +
-	              ((1 - CATALOG_MAINTENANCE_RATE_EWMA_ALPHA) * catalog_maintenance_ingress_rate_bytes_per_ms);
-	RunCatalogMaintenanceIfDue(now);
-}
-
-void OtlpServer::MaybeRunIdleCatalogMaintenance() {
-	// Called by the sealer between seals so the time-based trigger fires even when ingest
-	// has gone quiet (otherwise the last few row-seals would sit un-checkpointed forever).
+	if (config.catalog_name.empty() || !config.parquet_export_path.empty() ||
+	    now - catalog_maintenance_last_attempt < std::chrono::milliseconds(config.maintenance_interval_ms)) {
+		return;
+	}
 	std::lock_guard<std::mutex> writer_lock(writer_mutex);
-	if (!CatalogMaintenanceEnabled()) {
+	if (!catalog_maintenance_due || !CatalogMaintenanceEnabled()) {
 		return;
 	}
-	RunCatalogMaintenanceIfDue(std::chrono::steady_clock::now());
-}
-
-void OtlpServer::RunCatalogMaintenanceIfDue(std::chrono::steady_clock::time_point now) {
-	if (catalog_maintenance_row_seals_since_attempt == 0) {
-		return;
-	}
-	auto elapsed_ms =
-	    std::chrono::duration_cast<std::chrono::milliseconds>(now - catalog_maintenance_last_attempt).count();
-	auto row_seal_interval = GetCatalogMaintenanceTestOverride<idx_t>(
-	    "DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE_ROW_SEAL_INTERVAL", CATALOG_MAINTENANCE_ROW_SEAL_INTERVAL);
-	auto min_interval_ms = GetCatalogMaintenanceTestOverride<int64_t>(
-	    "DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE_MIN_INTERVAL_MS", CATALOG_MAINTENANCE_MIN_INTERVAL_MS, true);
-	auto max_interval_ms = GetCatalogMaintenanceTestOverride<int64_t>(
-	    "DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE_MAX_INTERVAL_MS", CATALOG_MAINTENANCE_MAX_INTERVAL_MS, true);
-	bool count_due = catalog_maintenance_row_seals_since_attempt >= row_seal_interval && elapsed_ms >= min_interval_ms;
-	bool age_due = elapsed_ms >= max_interval_ms;
-	if (!count_due && !age_due) {
-		return;
-	}
-	auto pending_bytes = admitted_bytes.load();
-	auto headroom_bytes = pending_bytes >= config.max_buffered_bytes ? 0 : config.max_buffered_bytes - pending_bytes;
-	auto projected_bytes = catalog_maintenance_ingress_rate_bytes_per_ms * CATALOG_MAINTENANCE_HEADROOM_MS;
-	if (projected_bytes > static_cast<double>(headroom_bytes) * CATALOG_MAINTENANCE_HEADROOM_FRACTION) {
-		// Maintenance is best-effort. Only run it when recent ingress would still leave
-		// ample admission headroom during a long catalog CHECKPOINT.
-		return;
-	}
-
-	// Reset the triggers before the attempt, so a contended or failed pass waits a full interval
-	// like a successful one instead of retrying on every sealer tick.
-	catalog_maintenance_row_seals_since_attempt = 0;
+	// Reset before the attempt, so a contended or failed pass waits a full interval too.
+	catalog_maintenance_due = false;
 	catalog_maintenance_last_attempt = now;
 	try {
 #ifdef DUCKDB_OTLP_ENABLE_TEST_SEAM
@@ -1381,8 +1185,6 @@ void OtlpServer::RunCatalogMaintenanceIfDue(std::chrono::steady_clock::time_poin
 			msg = "unknown (non-std) exception during catalog maintenance checkpoint";
 		}
 		if (IsContendedCatalogMaintenanceError(msg)) {
-			// Another writer checkpointed this catalog first. Leave the failure counter and
-			// maintenance_last_error alone; the next interval runs as usual.
 			maintenance_contended_total.fetch_add(1);
 			LogServerEvent(StringUtil::Format("catalog maintenance checkpoint skipped: another writer checkpointed "
 			                                  "catalog=%s first: %s",
@@ -1412,12 +1214,10 @@ void OtlpServer::SweepOrphanedFiles() {
 	if (orphan_sweep_state == CatalogMaintenanceState::DISABLED) {
 		return;
 	}
-	// Called only after a successful CHECKPOINT (the catch in RunCatalogMaintenanceIfDue owns
-	// those errors), so a sweep problem never counts as a checkpoint failure: it is logged here.
+	// Only after a successful CHECKPOINT; a sweep error is logged, never counted as a failure.
 	try {
 		if (orphan_sweep_state == CatalogMaintenanceState::PENDING) {
-			// ducklake_delete_orphaned_files exists only for DuckLake catalogs; other catalogs that
-			// accept CHECKPOINT (e.g. a plain DuckDB file) never sweep.
+			// Other catalogs that accept CHECKPOINT (e.g. a plain DuckDB file) never sweep.
 			auto result = writer_con->Query("SELECT type FROM duckdb_databases() WHERE database_name = " +
 			                                SqlQuote(config.catalog_name));
 			if (!result || result->HasError()) {
@@ -1431,9 +1231,8 @@ void OtlpServer::SweepOrphanedFiles() {
 				return;
 			}
 		}
-		// Same window ConfigureCatalogMaintenanceOptions writes into expire_older_than and
-		// delete_older_than. A file younger than the retention window is never a candidate, so the
-		// Parquet of a seal or checkpoint that is still in flight (here or in another process) is safe.
+		// Same retention window as expire_older_than/delete_older_than, so an in-flight seal or
+		// checkpoint's Parquet (here or in another process) is never a candidate.
 		auto retention_s = std::max<int64_t>(1, config.maintenance_retention_ms / 1000);
 		auto result = writer_con->Query(StringUtil::Format(
 		    "SELECT count(*) FROM ducklake_delete_orphaned_files(%s, older_than => now() - INTERVAL %lld SECOND)",
@@ -1462,12 +1261,7 @@ void OtlpServer::SweepOrphanedFiles() {
 }
 
 void OtlpServer::ConfigureCatalogMaintenanceOptions() {
-	// DuckLake's CHECKPOINT (the post-seal maintenance call) reads these catalog options:
-	// target_file_size bounds merge_adjacent_files' output (so already-at-target files are
-	// left alone -> O(new)/cycle, not O(total)); expire_older_than/delete_older_than gate how
-	// old snapshots/files must be before they are expired and deleted. Set once at startup on
-	// the writer connection. Best-effort: the default catalog and non-DuckLake catalogs (e.g.
-	// Iceberg) reject set_option -> ignore here; the maintenance pass DISABLEs itself anyway.
+	// target_file_size bounds merge output (at-target files are left alone, so O(new) per cycle).
 	if (config.catalog_name.empty() || !writer_con) {
 		return;
 	}
@@ -1485,10 +1279,8 @@ void OtlpServer::ConfigureCatalogMaintenanceOptions() {
 		    "catalog maintenance options set: catalog=%s target_file_size=%lluMB retention=%llds", config.catalog_name,
 		    static_cast<uint64_t>(target_mb), static_cast<long long>(retention_s)));
 	} catch (...) {
-		// Not a DuckLake catalog (or options unsupported): leave defaults; maintenance will
-		// DISABLE on its first CHECKPOINT if the catalog can't be checkpointed at all. catch(...)
-		// — not just std::exception — so a non-std throw can't escape this best-effort startup
-		// path and lose the reason; extract the message the same way SealOnce does.
+		// Not DuckLake: keep defaults; maintenance DISABLEs itself if CHECKPOINT fails. catch(...) so a
+		// non-std throw cannot escape this startup path.
 		string msg;
 		try {
 			throw;
@@ -1503,8 +1295,7 @@ void OtlpServer::ConfigureCatalogMaintenanceOptions() {
 }
 
 void OtlpServer::SealerLoop() {
-	// Poll at most every seal_max_age_ms (floored) so a small max_age is honored, rather
-	// than a fixed 1s that would delay seals configured to be faster than 1s.
+	// Poll at most every seal_max_age_ms (floored) so a sub-second max_age is honored.
 	auto poll_ms = std::max<int64_t>(50, std::min<int64_t>(config.seal_max_age_ms, 1000));
 	while (!sealer_stop.load()) {
 		{
@@ -1521,17 +1312,15 @@ void OtlpServer::SealerLoop() {
 		}
 		if (due) {
 			try {
-				SealOnce(true);
+				SealOnce();
 			} catch (...) {
-				// Already logged + buffers restored (SealOnce catches all); back off.
+				// SealOnce already logged and restored the buffers; back off.
 				std::this_thread::sleep_for(std::chrono::milliseconds(250));
 			}
-		} else {
-			try {
-				MaybeRunIdleCatalogMaintenance();
-			} catch (...) {
-				// Best-effort; failures are recorded in the maintenance telemetry.
-			}
+		}
+		try {
+			MaybeRunCatalogMaintenance();
+		} catch (...) {
 		}
 	}
 }
@@ -1558,7 +1347,7 @@ bool OtlpServer::SealAgeDue() const {
 }
 
 OtlpIngestResult OtlpServer::FlushNow() {
-	return SealOnce(false);
+	return SealOnce();
 }
 
 idx_t OtlpServer::ShutdownIngest() {
@@ -1570,27 +1359,19 @@ idx_t OtlpServer::ShutdownIngest() {
 	if (sealer_thread.joinable()) {
 		sealer_thread.join();
 	}
-	// Final drain. Explicit otlp_flush is optional for normal ingest: the background
-	// sealer handles size/age triggers, and otlp_stop lands here while the database is
-	// still alive. On the implicit DB-teardown path (~OtlpStorageExtensionInfo), db_ptr
-	// is already expired, so SealOnce is a no-op and buffered rows are dropped.
-	// Callers should use otlp_stop before closing the database, or otlp_flush when they
-	// need durable rows immediately while the server keeps running.
+	// Final drain. On the implicit DB-teardown path (~OtlpStorageExtensionInfo) db_ptr is already
+	// expired, so SealOnce is a no-op and buffered rows are dropped: callers must otlp_stop first.
 	for (int attempt = 0; attempt < 3 && BufferedRows() > 0; attempt++) {
 		try {
-			SealOnce(false);
+			SealOnce();
 		} catch (...) {
 			LogServerEvent("final seal attempt failed during shutdown", LogLevel::LOG_WARNING);
 		}
 	}
 	auto remaining_rows = BufferedRows();
 	if (remaining_rows > 0) {
-		// Record the dropped-row count so the storage layer / otlp_stop / daemon can fail a
-		// data-dropping shutdown loudly (review finding M4) instead of reporting clean success.
 		shutdown_dropped_rows.store(remaining_rows);
-		// Distinguish the two loss causes: if the database is still alive the final seals were
-		// attempted and failed (graceful otlp_stop against a wedged backend) — surface the seal
-		// error; if db_ptr has expired this is the implicit DB-teardown path where SealOnce no-ops.
+		// A live database means the final seals failed; an expired one means the teardown path.
 		string cause;
 		if (db_ptr.lock()) {
 			auto last_error = SealLastError();
@@ -1609,116 +1390,5 @@ idx_t OtlpServer::ShutdownIngest() {
 	}
 	return remaining_rows;
 }
-
-#ifndef __EMSCRIPTEN__
-// Host-aware HTTP probe backing the daemon's `doctor` subcommand. The loopback-only
-// OtlpLoopbackHttpStatusOk (otlp_server_http.cpp) cannot reach a server bound to an explicit
-// non-loopback interface (e.g. OTEL_HTTP_ADDR=192.168.x.x:4318), which made the container
-// HEALTHCHECK probe 127.0.0.1 and fail forever on a healthy server (review finding M5). This
-// lets the daemon probe the CONFIGURED host. httplib::Client lives in this TU (same archive as
-// otlp_server_http.cpp); it does not touch the request-side gzip decompressor, so the link-order
-// concern in CMakeLists does not apply here.
-bool OtlpHttpStatusOk(const string &host, int port, const string &path) {
-	duckdb_httplib::Client client(host, port);
-	client.set_connection_timeout(2, 0);
-	client.set_read_timeout(2, 0);
-	auto res = client.Get(path);
-	return res && res->status >= 200 && res->status < 400;
-}
-
-namespace {
-
-// Platform seam for the TCP-connect probe below. Winsock mirrors the POSIX socket API closely
-// enough that only the handle type, the non-blocking switch, the "connect still in flight" error
-// code, the poll entry point, and close() differ; everything else (getaddrinfo, socket, connect,
-// getsockopt) is spelled the same on both.
-#ifdef _WIN32
-using probe_socket_t = SOCKET;
-
-bool ProbeSocketValid(probe_socket_t fd) {
-	return fd != INVALID_SOCKET;
-}
-void ProbeSocketClose(probe_socket_t fd) {
-	::closesocket(fd);
-}
-void ProbeSocketSetNonBlocking(probe_socket_t fd) {
-	u_long non_blocking = 1;
-	::ioctlsocket(fd, FIONBIO, &non_blocking);
-}
-//! True if the last connect() returned "in progress" rather than a hard failure.
-bool ProbeConnectPending() {
-	return ::WSAGetLastError() == WSAEWOULDBLOCK;
-}
-bool ProbeWaitWritable(probe_socket_t fd, int timeout_ms) {
-	WSAPOLLFD pfd {};
-	pfd.fd = fd;
-	pfd.events = POLLWRNORM;
-	return ::WSAPoll(&pfd, 1, timeout_ms) > 0 && (pfd.revents & POLLWRNORM) != 0;
-}
-bool ProbeConnectSucceeded(probe_socket_t fd) {
-	int err = 0;
-	int len = static_cast<int>(sizeof(err));
-	return ::getsockopt(fd, SOL_SOCKET, SO_ERROR, reinterpret_cast<char *>(&err), &len) == 0 && err == 0;
-}
-#else
-using probe_socket_t = int;
-
-bool ProbeSocketValid(probe_socket_t fd) {
-	return fd >= 0;
-}
-void ProbeSocketClose(probe_socket_t fd) {
-	::close(fd);
-}
-void ProbeSocketSetNonBlocking(probe_socket_t fd) {
-	auto flags = ::fcntl(fd, F_GETFL, 0);
-	::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-}
-bool ProbeConnectPending() {
-	return errno == EINPROGRESS;
-}
-bool ProbeWaitWritable(probe_socket_t fd, int timeout_ms) {
-	struct pollfd pfd {};
-	pfd.fd = fd;
-	pfd.events = POLLOUT;
-	return ::poll(&pfd, 1, timeout_ms) > 0 && (pfd.revents & POLLOUT) != 0;
-}
-bool ProbeConnectSucceeded(probe_socket_t fd) {
-	int err = 0;
-	socklen_t len = sizeof(err);
-	return ::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) == 0 && err == 0;
-}
-#endif
-
-} // namespace
-
-// TCP-connect probe backing `doctor` for the gRPC (otap:) transport, which speaks
-// HTTP/2 and exposes no HTTP/1.1 /readyz endpoint. A successful connect confirms the tonic
-// listener is bound and accepting (the daemon binds synchronously before serving). 2s timeout.
-bool OtlpTcpConnectOk(const string &host, int port) {
-	struct addrinfo hints {};
-	hints.ai_family = AF_UNSPEC;
-	hints.ai_socktype = SOCK_STREAM;
-	struct addrinfo *res = nullptr;
-	if (getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res) != 0 || res == nullptr) {
-		return false;
-	}
-	bool ok = false;
-	for (auto *ai = res; ai != nullptr && !ok; ai = ai->ai_next) {
-		probe_socket_t fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-		if (!ProbeSocketValid(fd)) {
-			continue;
-		}
-		ProbeSocketSetNonBlocking(fd);
-		if (connect(fd, ai->ai_addr, static_cast<socklen_t>(ai->ai_addrlen)) == 0) {
-			ok = true; // connected immediately (loopback)
-		} else if (ProbeConnectPending() && ProbeWaitWritable(fd, 2000)) {
-			ok = ProbeConnectSucceeded(fd);
-		}
-		ProbeSocketClose(fd);
-	}
-	freeaddrinfo(res);
-	return ok;
-}
-#endif
 
 } // namespace duckdb

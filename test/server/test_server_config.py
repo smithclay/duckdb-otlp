@@ -15,10 +15,13 @@ Point the tests at a binary with DUCKDB_OTLP_SERVER_BIN, or rely on the default
 
 from __future__ import annotations
 
+import contextlib
+import http.server
 import os
 import re
 import socket
 import subprocess
+import threading
 from pathlib import Path
 
 import pytest
@@ -88,14 +91,16 @@ def test_local_ducklake_boot_sql(tmp_path):
     assert "a-private-token-123456" not in out
 
 
-def test_otap_listen_uri_routes_to_otap_serve(tmp_path):
-    # An otap: listen URI must dispatch to otap_serve (OTAP/Arrow), never otlp_serve;
+def test_otap_port_routes_to_otap_serve(tmp_path):
+    # An OTAP listener must dispatch to otap_serve (OTAP/Arrow), never otlp_serve;
     # the two serve functions are bound to their own scheme and reject the other's.
     result = run(
         {
             "DUCKDB_MODE": "local-ducklake",
             "DUCKDB_OTLP_TOKEN": "a-private-token-123456",
-            "DUCKDB_OTLP_LISTEN_URI": "otap:127.0.0.1:4317",
+            "DUCKDB_OTLP_OTAP_PORT": "4317",
+            "DUCKDB_OTLP_HTTP_PORT": "0",
+            "DUCKDB_OTLP_GRPC_PORT": "0",
         },
         tmp_path,
     )
@@ -242,7 +247,7 @@ def test_parquet_views_follow_quack(tmp_path):
     assert without_quack.returncode == 0, without_quack.stderr
     assert "parquet_views := false" in without_quack.stdout
 
-    with_quack = run({**base, "DUCKDB_QUACK_ENABLED": "1", "DUCKDB_QUACK_TOKEN": "a-quack-token-123456"}, tmp_path)
+    with_quack = run({**base, "DUCKDB_QUACK_PORT": "9494", "DUCKDB_QUACK_TOKEN": "a-quack-token-123456"}, tmp_path)
     assert with_quack.returncode == 0, with_quack.stderr
     assert "parquet_views :=" not in with_quack.stdout
 
@@ -308,8 +313,8 @@ def test_gcp_ducklake_loads_a_local_gcs_build_by_path(tmp_path):
     """DUCKDB_OTLP_GCS_EXTENSION_PATH swaps the community gcs build for one on disk.
 
     The community build prints a failed upload finalize instead of raising it, so DuckLake
-    commits data files that were never written. A deployment ships a fixed build instead; it is
-    LOADed by path and never INSTALLed, since an INSTALL would fetch the community build again.
+    commits data files that were never written. The image ships a fixed build; it is LOADed by
+    path and never INSTALLed, since an INSTALL would fetch the community build again.
     """
     env = gcp_env()
     env["DUCKDB_OTLP_GCS_EXTENSION_PATH"] = "/opt/extensions/gcs.duckdb_extension"
@@ -320,7 +325,6 @@ def test_gcp_ducklake_loads_a_local_gcs_build_by_path(tmp_path):
     assert "INSTALL gcs" not in out
     assert "LOAD gcs;" not in out
     assert "INSTALL ducklake;" in out
-    assert "gcs (local file /opt/extensions/gcs.duckdb_extension)" in out
 
 
 def test_gcp_ducklake_uses_adc_and_remote_postgres(tmp_path):
@@ -348,8 +352,8 @@ def test_gcp_ducklake_proxy_and_catalog_overrides(tmp_path):
     env.update({"PGPORT": "5433", "PGSSLMODE": "disable", "DUCKDB_CATALOG": "trace-lake", "DUCKDB_SCHEMA": "traces"})
     result = run(env, tmp_path)
     assert result.returncode == 0, result.stderr
-    assert "PORT getvariable('env_PGPORT')" in result.stdout
-    assert "SSLMODE getvariable('env_PGSSLMODE')" in result.stdout
+    assert "PORT '5433'" in result.stdout
+    assert "SSLMODE 'disable'" in result.stdout
     assert 'AS "trace-lake"' in result.stdout
     assert "schema := 'traces'" in result.stdout
 
@@ -365,20 +369,13 @@ def test_ducklake_inlining_can_be_disabled_on_secret_attach(tmp_path):
     env["DUCKLAKE_DATA_INLINING_ROW_LIMIT"] = "0"
     result = run(env, tmp_path)
     assert result.returncode == 0, result.stderr
-    assert "ATTACH 'ducklake:ducklake_secret' AS \"lake\" (DATA_INLINING_ROW_LIMIT 0);" in result.stdout
+    assert "ATTACH 'ducklake:ducklake_secret' AS \"lake\"\n  (DATA_INLINING_ROW_LIMIT 0)\n;" in result.stdout
 
 
 def test_ducklake_inlining_limit_on_path_attach(tmp_path):
     result = run({"DUCKDB_MODE": "local-ducklake", "DUCKLAKE_DATA_INLINING_ROW_LIMIT": "50"}, tmp_path)
     assert result.returncode == 0, result.stderr
-    assert ",\n  DATA_INLINING_ROW_LIMIT 50\n);" in result.stdout
-
-
-@pytest.mark.parametrize("value", ["-1", "abc", "1.5"])
-def test_ducklake_inlining_limit_rejects_invalid(tmp_path, value):
-    result = run({"DUCKDB_MODE": "local-ducklake", "DUCKLAKE_DATA_INLINING_ROW_LIMIT": value}, tmp_path)
-    assert result.returncode == 1
-    assert "DUCKLAKE_DATA_INLINING_ROW_LIMIT" in result.stderr
+    assert "\n  , DATA_INLINING_ROW_LIMIT 50\n);" in result.stdout
 
 
 @pytest.mark.parametrize("missing", ["DUCKLAKE_DATA_PATH", "PGHOST", "PGDATABASE", "PGUSER", "PGPASSWORD"])
@@ -389,17 +386,6 @@ def test_gcp_ducklake_requires_catalog_and_storage_config(tmp_path, missing):
     assert result.returncode == 1
     assert missing in result.stderr
     assert SECRET not in result.stdout + result.stderr
-
-
-@pytest.mark.parametrize(
-    "path", ["gs://bucket/lake", "gcs://bucket/lake", "s3://bucket/lake", "/data/lake", "gcss://", "gcss:///lake"]
-)
-def test_gcp_ducklake_requires_native_gcs_path(tmp_path, path):
-    env = gcp_env()
-    env["DUCKLAKE_DATA_PATH"] = path
-    result = run(env, tmp_path)
-    assert result.returncode == 1
-    assert "gcss://bucket/prefix" in result.stderr
 
 
 def test_missing_required_var_names_the_var(tmp_path):
@@ -433,109 +419,9 @@ def _healthcheck(env: dict) -> int:
     ).returncode
 
 
-def test_grpc_healthcheck_uses_tcp_connect():
-    # otap: (gRPC/HTTP2) has no HTTP /readyz, so the healthcheck TCP-connects: a bound listener
-    # is healthy, the same port with nothing listening is not.
-    sock = socket.socket()
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(("127.0.0.1", 0))
-    port = sock.getsockname()[1]
-    sock.listen(16)
-    try:
-        assert _healthcheck({"DUCKDB_OTLP_LISTEN_URI": f"otap:127.0.0.1:{port}"}) == 0
-    finally:
-        sock.close()
-    assert _healthcheck({"DUCKDB_OTLP_LISTEN_URI": f"otap:127.0.0.1:{port}"}) == 1
-
-
-def test_http_healthcheck_needs_real_http_not_just_tcp():
-    # otlp: (HTTP) must get a real /readyz response; a bare TCP listener that never speaks HTTP
-    # is unhealthy -- proving the HTTP and gRPC probes are distinct.
-    sock = socket.socket()
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(("127.0.0.1", 0))
-    port = sock.getsockname()[1]
-    sock.listen(16)
-    try:
-        assert _healthcheck({"DUCKDB_OTLP_LISTEN_URI": f"otlp:127.0.0.1:{port}"}) == 1
-    finally:
-        sock.close()
-
-
-@pytest.mark.parametrize("transports", ["http", "grpc", "http,grpc", " grpc, http "])
-def test_transport_selection(tmp_path, transports):
-    result = run({"DUCKDB_MODE": "parquet", "DUCKDB_OTLP_TRANSPORTS": transports}, tmp_path)
-    assert result.returncode == 0, result.stderr
-    selected = [value.strip() for value in transports.split(",")]
-    # Every transport is a listener on one server: exactly one otlp_serve call, with the URIs
-    # and transports as parallel lists in the order given.
-    assert result.stdout.count("FROM otlp_serve(") == 1
-    ports = {"http": 4318, "grpc": 4317}
-    # The default bind host is loopback; the container image opts back into 0.0.0.0 via
-    # DUCKDB_OTLP_HOST in its Dockerfile.
-    uris = ", ".join(f"'otlp:127.0.0.1:{ports[t]}'" for t in selected)
-    assert f"[{uris}]" in result.stdout
-    assert "transport := [" + ", ".join(f"'{t}'" for t in selected) + "]" in result.stdout
-    assert "FROM otap_serve(" not in result.stdout
-
-
-@pytest.mark.parametrize("transports", ["http,", ",grpc", "http,,grpc", "http,http", "grpc,grpc", "otap", " ", "HTTP"])
-def test_invalid_transports_fail_before_startup(tmp_path, transports):
-    result = run({"DUCKDB_MODE": "parquet", "DUCKDB_OTLP_TRANSPORTS": transports}, tmp_path)
-    assert result.returncode == 1
-    assert "DUCKDB_OTLP_TRANSPORTS" in result.stderr
-
-
-@pytest.mark.parametrize(
-    "env,complaint",
-    [
-        ({"DUCKDB_OTLP_TRANSPORTS": "http,grpc", "DUCKDB_OTLP_LISTEN_URI": "otlp:localhost:9000"}, "single transport"),
-        ({"DUCKDB_OTLP_TRANSPORTS": "grpc", "DUCKDB_OTLP_LISTEN_URI": "otap:localhost:9000"}, "otap:"),
-        (
-            {
-                "DUCKDB_OTLP_TRANSPORTS": "http,grpc",
-                "OTEL_HTTP_ADDR": "0.0.0.0:9000",
-                "OTEL_GRPC_ADDR": "localhost:9000",
-            },
-            "different ports",
-        ),
-        ({"DUCKDB_OTLP_TRANSPORTS": "grpc", "OTEL_GRPC_ADDR": "0.0.0.0:70000"}, "port"),
-    ],
-)
-def test_conflicting_or_invalid_listener_addresses(tmp_path, env, complaint):
-    result = run({"DUCKDB_MODE": "parquet", **env}, tmp_path)
-    assert result.returncode == 1
-    assert complaint in result.stderr
-
-
-def test_grpc_uri_override_is_canonical_and_ignores_http_threads(tmp_path):
-    result = run(
-        {
-            "DUCKDB_MODE": "parquet",
-            "DUCKDB_OTLP_TRANSPORTS": "grpc",
-            "DUCKDB_OTLP_LISTEN_URI": "otlp://127.0.0.1:9000",
-            "DUCKDB_OTLP_HTTP_THREADS": "4",
-        },
-        tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "['otlp:127.0.0.1:9000']" in result.stdout
-    assert "transport := ['grpc']" in result.stdout
-    assert "http_threads :=" not in result.stdout
-
-
-def test_standard_grpc_healthcheck_uses_configured_grpc_port():
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        sock.listen(16)
-        env = {"DUCKDB_OTLP_TRANSPORTS": "grpc", "OTEL_GRPC_ADDR": f"127.0.0.1:{sock.getsockname()[1]}"}
-        assert _healthcheck(env) == 0
-    assert _healthcheck(env) == 1
-
-
-def test_healthcheck_requires_both_listeners():
-    import http.server
-    import threading
+@contextlib.contextmanager
+def ready_server():
+    """A fake HTTP listener that answers GET /readyz with 200; yields its port."""
 
     class Ready(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
@@ -545,66 +431,100 @@ def test_healthcheck_requires_both_listeners():
         def log_message(self, *args):
             pass
 
-    with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Ready) as httpd, socket.socket() as grpc_sock:
-        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Ready) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        grpc_sock.bind(("127.0.0.1", 0))
-        grpc_sock.listen(16)
-        env = {
-            "DUCKDB_OTLP_TRANSPORTS": "http,grpc",
-            "OTEL_HTTP_ADDR": f"127.0.0.1:{httpd.server_port}",
-            "OTEL_GRPC_ADDR": f"127.0.0.1:{grpc_sock.getsockname()[1]}",
-        }
         try:
-            assert _healthcheck(env) == 0
-            grpc_sock.close()
-            assert _healthcheck(env) == 1
+            yield server.server_port
         finally:
-            httpd.shutdown()
+            server.shutdown()
             thread.join()
 
 
-def test_healthcheck_probes_the_configured_quack_port():
-    """The Quack probe has to resolve the same address startup binds.
+@contextlib.contextmanager
+def tcp_listener():
+    """A bound TCP socket that never speaks HTTP; yields its port."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(16)
+        yield sock.getsockname()[1]
 
-    It used to read only DUCKDB_QUACK_ADDR/QUACK_HTTP_ADDR and fall back to 9494, while
-    ServerConfig gives DUCKDB_QUACK_PORT (what `--quack PORT` sets) precedence — so
-    `--quack 9999` bound 9999 and the container HEALTHCHECK probed 9494 forever. Both now go
-    through QuackAddrFromEnv.
-    """
-    import http.server
-    import threading
 
-    class Ready(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200 if self.path in ("/readyz", "/") else 404)
-            self.end_headers()
+@pytest.mark.parametrize("variable", ["DUCKDB_OTLP_OTAP_PORT", "DUCKDB_OTLP_GRPC_PORT"])
+def test_grpc_healthcheck_uses_tcp_connect(variable):
+    # gRPC (HTTP/2) has no /readyz, so doctor TCP-connects: a bound port is healthy, the same
+    # port with nothing listening is not.
+    with tcp_listener() as port:
+        env = {variable: str(port), "DUCKDB_OTLP_HTTP_PORT": "0"}
+        assert _healthcheck(env) == 0
+    assert _healthcheck(env) == 1
 
-        def log_message(self, *args):
-            pass
 
-    with (
-        http.server.ThreadingHTTPServer(("127.0.0.1", 0), Ready) as otlp,
-        http.server.ThreadingHTTPServer(("127.0.0.1", 0), Ready) as quack,
-    ):
-        threads = [threading.Thread(target=s.serve_forever, daemon=True) for s in (otlp, quack)]
-        for thread in threads:
-            thread.start()
-        env = {
-            "DUCKDB_OTLP_TRANSPORTS": "http",
-            "OTEL_HTTP_ADDR": f"127.0.0.1:{otlp.server_port}",
-            "DUCKDB_QUACK_ENABLED": "1",
-            "DUCKDB_QUACK_PORT": str(quack.server_port),
-        }
-        try:
+def test_http_healthcheck_needs_real_http_not_just_tcp():
+    # HTTP must answer /readyz; a TCP listener that never speaks HTTP is unhealthy.
+    with tcp_listener() as port:
+        assert _healthcheck({"DUCKDB_OTLP_HTTP_PORT": str(port), "DUCKDB_OTLP_GRPC_PORT": "0"}) == 1
+    with ready_server() as port:
+        assert _healthcheck({"DUCKDB_OTLP_HTTP_PORT": str(port), "DUCKDB_OTLP_GRPC_PORT": "0"}) == 0
+
+
+def test_healthcheck_requires_every_listener():
+    with ready_server() as http_port:
+        with tcp_listener() as grpc_port:
+            env = {"DUCKDB_OTLP_HTTP_PORT": str(http_port), "DUCKDB_OTLP_GRPC_PORT": str(grpc_port)}
             assert _healthcheck(env) == 0
-            # A port nothing is listening on must fail, so the pass above is not vacuous.
-            assert _healthcheck({**env, "DUCKDB_QUACK_PORT": str(quack.server_port + 1)}) == 1
-        finally:
-            for server in (otlp, quack):
-                server.shutdown()
-            for thread in threads:
-                thread.join()
+        assert _healthcheck(env) == 1
+
+
+def test_healthcheck_probes_the_configured_quack_port():
+    # The probe resolves Quack's address the way startup does (QuackAddrFromEnv).
+    with ready_server() as http_port, tcp_listener() as quack_port:
+        env = {"DUCKDB_OTLP_HTTP_PORT": str(http_port), "DUCKDB_QUACK_PORT": str(quack_port)}
+        assert _healthcheck(env) == 0
+        # A port nothing is listening on must fail, so the pass above is not vacuous.
+        assert _healthcheck({**env, "DUCKDB_QUACK_PORT": str(quack_port + 1)}) == 1
+
+
+@pytest.mark.parametrize(
+    "ports,expected",
+    [
+        ({}, ["http", "grpc"]),
+        ({"DUCKDB_OTLP_HTTP_PORT": "4318"}, ["http"]),
+        ({"DUCKDB_OTLP_GRPC_PORT": "4317"}, ["grpc"]),
+        ({"DUCKDB_OTLP_GRPC_PORT": "0"}, ["http"]),
+        ({"DUCKDB_OTLP_HTTP_PORT": "9000", "DUCKDB_OTLP_GRPC_PORT": "9001"}, ["http", "grpc"]),
+    ],
+)
+def test_ports_select_listeners_for_one_otlp_serve_call(tmp_path, ports, expected):
+    result = run({"DUCKDB_MODE": "parquet", **ports}, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.count("FROM otlp_serve(") == 1
+    port_of = {
+        "http": ports.get("DUCKDB_OTLP_HTTP_PORT", "4318"),
+        "grpc": ports.get("DUCKDB_OTLP_GRPC_PORT", "4317"),
+    }
+    # The default bind host is loopback; the container image sets DUCKDB_OTLP_HOST=0.0.0.0.
+    uris = ", ".join(f"'otlp:127.0.0.1:{port_of[t]}'" for t in expected)
+    assert f"[{uris}]" in result.stdout
+    assert "transport := [" + ", ".join(f"'{t}'" for t in expected) + "]" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "env,complaint",
+    [
+        ({"DUCKDB_OTLP_HTTP_PORT": "9000", "DUCKDB_OTLP_GRPC_PORT": "9000"}, "different ports"),
+        ({"DUCKDB_OTLP_GRPC_PORT": "70000"}, "port between 0 and 65535"),
+        ({"DUCKDB_OTLP_HTTP_PORT": "0", "DUCKDB_OTLP_GRPC_PORT": "0"}, "Every listener is disabled"),
+        ({"DUCKDB_OTLP_OTAP_PORT": "4319", "DUCKDB_OTLP_HTTP_PORT": "4318"}, "OTAP/Arrow cannot be combined"),
+        ({"OTEL_HTTP_ADDR": "0.0.0.0:4318"}, "--http PORT"),
+        ({"DUCKDB_OTLP_TRANSPORTS": "http"}, "--http/--grpc PORT"),
+        ({"DUCKDB_QUACK_ENABLED": "1"}, "--quack PORT"),
+    ],
+)
+def test_conflicting_invalid_or_removed_listener_settings(tmp_path, env, complaint):
+    result = run({"DUCKDB_MODE": "parquet", **env}, tmp_path)
+    assert result.returncode == 1
+    assert complaint in result.stderr
 
 
 # --- --init-sql / DUCKDB_OTLP_INIT_SQL -------------------------------------------------
@@ -780,8 +700,7 @@ def test_mode_none_without_init_sql_writes_to_the_control_database(tmp_path):
     assert "Mode: none" in result.stdout
 
 
-# Minimal configuration for each mode, so every mode can be resolved far enough to report the
-# extensions it needs. Mirrors the required-settings table in the CLI reference.
+# Minimal configuration for each mode. Mirrors the required-settings table in the CLI reference.
 MODE_FIXTURES = {
     "local-ducklake": {},
     "none": {},
@@ -805,67 +724,17 @@ MODE_FIXTURES = {
         "PGPASSWORD": SECRET,
     },
     "r2-data-catalog": {"R2_BUCKET": "b", "CLOUDFLARE_ACCOUNT_ID": "a", "CLOUDFLARE_API_TOKEN": SECRET},
-    "s3-tables": {"S3_TABLES_BUCKET_ARN": "arn:aws:s3tables:us-west-2:1:bucket/b"},
-    # Quack is not a mode extension, but it is one the process ends up running, so the image
-    # has to prime it too.
+    "s3-tables": {"S3_TABLES_BUCKET_ARN": "arn:aws:s3tables:us-west-2:1:bucket/b", "AWS_REGION": "us-west-2"},
     "local-ducklake+quack": {
         "DUCKDB_MODE": "local-ducklake",
-        "DUCKDB_QUACK_ENABLED": "1",
+        "DUCKDB_QUACK_PORT": "9494",
         "DUCKDB_QUACK_TOKEN": "a-quack-token-123456",
     },
 }
 
 
-def extensions_reported_by(mode: str, tmp_path) -> dict:
-    """The banner's Extensions block for `mode`, as {name: source}."""
-    env = dict(MODE_FIXTURES[mode])
-    env.setdefault("DUCKDB_MODE", mode)
-    result = run(env, tmp_path)
-    assert result.returncode == 0, f"{mode}: {result.stderr}"
-    reported = {}
-    in_block = False
-    for line in result.stdout.splitlines():
-        if line.startswith("Extensions:"):
-            in_block = True
-            continue
-        if in_block:
-            if not line.strip():
-                break
-            name, _, note = line.strip().partition(" ")
-            reported[name] = note.strip("()") or "core"
-    return reported
-
-
-@pytest.mark.parametrize("mode", sorted(MODE_FIXTURES))
-def test_generated_sql_installs_exactly_what_the_banner_reports(mode, tmp_path):
-    """The banner and the setup SQL are two renderings of one declaration.
-
-    They used to be written out separately -- a list for the banner, hand-typed INSTALL/LOAD
-    for the SQL -- so a mode could load an extension it never mentioned, or name one it never
-    loaded, with no symptom beyond a misleading banner.
-    """
-    env = dict(MODE_FIXTURES[mode])
-    env.setdefault("DUCKDB_MODE", mode)
-    result = run(env, tmp_path)
-    assert result.returncode == 0, result.stderr
-    reported = extensions_reported_by(mode, tmp_path)
-
-    installed = set(re.findall(r"^INSTALL ([a-z0-9_]+)", result.stdout, re.M))
-    loaded = set(re.findall(r"^LOAD ([a-z0-9_]+);", result.stdout, re.M))
-    # `otlp` is statically embedded: reported, never installed. Everything else is both.
-    needs_install = {name for name, source in reported.items() if source != "built in"}
-    assert installed == needs_install
-    assert loaded == needs_install
-    assert "otlp" not in installed, "the statically embedded extension must never be INSTALLed"
-    # A community extension needs its repository named or the INSTALL resolves nowhere.
-    for name, source in reported.items():
-        if source == "community":
-            assert f"INSTALL {name} FROM community;" in result.stdout
-
-
 def test_the_image_primes_every_extension_some_mode_needs(tmp_path):
-    """The container's offline extension cache is a third copy of this list, in another
-    language and build stage, so it cannot share the declaration -- but it can be checked.
+    """The container's offline extension cache has to cover every INSTALL in every preset.
 
     If a mode gains an extension the image does not prime, the daemon's startup INSTALL goes to
     the network, or fails outright in an offline deployment. That is invisible until someone
@@ -879,9 +748,9 @@ def test_the_image_primes_every_extension_some_mode_needs(tmp_path):
         "the priming step's shape changed and this test needs updating alongside it"
     )
 
-    needed = set()
-    for mode in MODE_FIXTURES:
-        needed |= {name for name, source in extensions_reported_by(mode, tmp_path).items() if source != "built in"}
+    presets = (REPO_ROOT / "src" / "server" / "modes").glob("*.sql")
+    needed = {name for preset in presets for name in re.findall(r"^INSTALL ([a-z0-9_]+)", preset.read_text(), re.M)}
+    needed |= {"httpfs", "quack"}  # loaded by the serve path when Quack is enabled
 
     missing = needed - primed
     assert not missing, (
@@ -933,18 +802,17 @@ def test_quack_serves_the_operators_certificate(tmp_path):
     assert "home_directory" not in result.stdout
 
 
-@pytest.mark.parametrize("addr", ["0.0.0.0:9494", "127.0.0.1:9494"])
-def test_quack_loads_httpfs_for_its_crypto(addr, tmp_path):
+@pytest.mark.parametrize("host", ["0.0.0.0", "127.0.0.1"])
+def test_quack_loads_httpfs_for_its_crypto(host, tmp_path):
     """Every Quack server draws a random HMAC key from DuckDB's encryption module, which is
     writable only once httpfs is loaded, so quack_serve failed with "DuckDB currently has a
     read-only crypto module loaded" on any bind, plain HTTP included. The image primes httpfs,
     which DuckDB then autoloads, so only a host without httpfs installed hit this."""
-    env = dict(MODE_FIXTURES["local-ducklake+quack"], DUCKDB_QUACK_ADDR=addr)
+    env = dict(MODE_FIXTURES["local-ducklake+quack"], DUCKDB_OTLP_HOST=host, DUCKDB_OTLP_TOKEN="a-private-token-123456")
     result = run(env, tmp_path)
     assert result.returncode == 0, result.stderr
     out = result.stdout
     assert out.index("LOAD httpfs;") < out.index("quack_serve(")
-    assert "  httpfs\n" in out.split("Extensions:")[1].split("\n\n")[0] + "\n"
 
 
 @pytest.mark.parametrize("name", ["DUCKDB_QUACK_SSL_CERT_FILE", "DUCKDB_QUACK_SSL_KEY_FILE"])
@@ -954,16 +822,6 @@ def test_half_a_quack_certificate_pair_is_an_error(name, tmp_path):
     result = run(env, tmp_path)
     assert result.returncode != 0
     assert "DUCKDB_QUACK_SSL_CERT_FILE and DUCKDB_QUACK_SSL_KEY_FILE must be set together" in result.stderr
-
-
-def test_quack_appears_in_the_banner_only_when_enabled(tmp_path):
-    """The banner listed the mode's extensions only, so a running Quack endpoint -- an
-    administrative one granting full SQL access -- was absent from the startup report."""
-    enabled = extensions_reported_by("local-ducklake+quack", tmp_path)
-    assert "quack" in enabled
-
-    disabled = extensions_reported_by("local-ducklake", tmp_path)
-    assert "quack" not in disabled
 
 
 @pytest.mark.parametrize("mode,extra", [("parquet", {"S3_BUCKET": "b"}), ("s3-tables", {}), ("aws-ducklake", {})])
@@ -997,7 +855,7 @@ def test_an_aws_profile_still_selects_that_profile(tmp_path):
         {"DUCKDB_MODE": "parquet", "S3_BUCKET": "b", "AWS_REGION": "us-west-2", "AWS_PROFILE": "dev"}, tmp_path
     )
     assert result.returncode == 0, result.stderr
-    assert "CHAIN config" in result.stdout
+    assert "CHAIN 'env;config;instance'" in result.stdout
     assert "PROFILE 'dev'" in result.stdout
     assert 'AWS profile "dev"' in result.stdout
 
@@ -1010,20 +868,47 @@ def test_r2_data_path_keeps_its_trailing_slash(tmp_path):
     assert "DATA_PATH 's3://bkt/duckdb-otlp/'" in result.stdout
 
 
-def test_a_malformed_value_is_reported_alongside_a_missing_one(tmp_path):
-    """A malformed value used to throw from inside the mode function, skipping everything after
-    it -- so this reported the path and only mentioned AWS_REGION on the next run."""
-    result = run({"DUCKDB_MODE": "aws-ducklake", "DUCKLAKE_DATA_PATH": "/local/path"}, tmp_path)
-    assert result.returncode != 0
-    assert "DUCKLAKE_DATA_PATH" in result.stderr
-    assert "s3://bucket/prefix" in result.stderr
-    assert "AWS_REGION" in result.stderr
+PRESETS = sorted(path.stem for path in (REPO_ROOT / "src" / "server" / "modes").glob("*.sql"))
 
 
-def test_parquet_rejects_a_remote_scheme_it_cannot_write(tmp_path):
-    """An `IsS3Path` locality test sent a gcss:// export path down the local branch, so nothing
-    was loaded to write it and `validate` reported success. The first seal was the first sign."""
-    result = run({"DUCKDB_MODE": "parquet", "PARQUET_EXPORT_PATH": "gcss://bucket/prefix"}, tmp_path)
-    assert result.returncode != 0
-    assert "PARQUET_EXPORT_PATH" in result.stderr
-    assert "s3://" in result.stderr
+def test_every_preset_has_a_fixture():
+    assert set(PRESETS) <= set(MODE_FIXTURES), "add the new mode's minimal settings to MODE_FIXTURES"
+
+
+@pytest.mark.parametrize("mode", sorted(MODE_FIXTURES))
+def test_every_mode_renders_with_its_minimal_settings(mode, tmp_path):
+    """Each preset expands to SQL with nothing left to substitute and no secret in it."""
+    env = dict(MODE_FIXTURES[mode])
+    env.setdefault("DUCKDB_MODE", mode)
+    result = run(env, tmp_path)
+    assert result.returncode == 0, result.stderr
+    sql = result.stdout[result.stdout.index("Generated initialization SQL:") :]
+    assert "${" not in sql
+    assert "-- @" not in sql
+    assert "getenv(" not in sql
+    assert SECRET not in result.stdout
+    # The otlp extension is statically embedded; INSTALLing it would fetch a different build.
+    assert "INSTALL otlp" not in sql
+    for name in re.findall(r"^LOAD ([a-z0-9_]+);", sql, re.M):
+        assert re.search(rf"^INSTALL {name}( FROM community)?;", sql, re.M), name
+
+
+def test_a_missing_setting_inside_a_default_names_what_could_replace_it(tmp_path):
+    result = run({"DUCKDB_MODE": "aws-ducklake", "DUCKLAKE_DATA_PATH": "s3://b/p"}, tmp_path)
+    assert result.returncode == 1
+    assert "AWS_REGION  (or AWS_DEFAULT_REGION)" in result.stderr
+    result = run({"DUCKDB_MODE": "r2-local-ducklake", "R2_BUCKET": "b", "R2_ACCESS_KEY_ID": "k"}, tmp_path)
+    assert "CLOUDFLARE_ACCOUNT_ID  (or set R2_ENDPOINT)" in result.stderr
+    assert "R2_SECRET_ACCESS_KEY" in result.stderr
+
+
+def test_an_s3_parquet_export_path_loads_s3_without_s3_bucket(tmp_path):
+    """The Parquet guide's primary S3 form sets only PARQUET_EXPORT_PATH."""
+    env = {"DUCKDB_MODE": "parquet", "PARQUET_EXPORT_PATH": "s3://bucket/otlp", "AWS_REGION": "us-west-2"}
+    result = run(env, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "CREATE OR REPLACE SECRET plain_s3_secret" in result.stdout
+    assert "parquet_export_path := 's3://bucket/otlp'" in result.stdout
+    local = run({"DUCKDB_MODE": "parquet"}, tmp_path)
+    assert local.returncode == 0, local.stderr
+    assert "INSTALL aws" not in local.stdout

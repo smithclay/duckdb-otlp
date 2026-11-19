@@ -25,10 +25,8 @@ class ColumnDataCollection;
 class DataChunk;
 struct OtlpSignalBuffer;
 
-//! Wire transport for one listener. HTTP is the OTLP/HTTP server (cpp-httplib);
-//! GRPC is the OTLP/gRPC + OTAP/Arrow server (an embedded tonic server reached
-//! through the otlp2records FFI). otap: URIs are always GRPC; otlp: URIs are HTTP
-//! unless otlp_serve(transport := 'grpc') selects GRPC.
+//! Wire transport for one listener: HTTP (cpp-httplib) or GRPC (OTLP/gRPC + OTAP/Arrow via the
+//! tonic server in otlp2records). otap: URIs are always GRPC.
 enum class OtlpTransport { HTTP, GRPC };
 
 const char *OtlpTransportName(OtlpTransport transport);
@@ -37,68 +35,45 @@ const char *OtlpTransportName(OtlpTransport transport);
 struct OtlpListenerSpec {
 	OtlpUri uri;
 	OtlpTransport transport = OtlpTransport::HTTP;
-	//! When transport == GRPC, OR of OTLP_GRPC_SERVICE_* bits selecting which gRPC service
-	//! families the listener registers: OTLP_GRPC_SERVICE_OTLP_UNARY for otlp_serve(grpc),
-	//! OTLP_GRPC_SERVICE_OTAP_ARROW for otap_serve. Unused for HTTP. 0 would register both.
+	//! GRPC only: OR of OTLP_GRPC_SERVICE_* bits selecting the service families to register.
+	//! 0 would register both.
 	uint32_t grpc_service_flags = 0;
 };
 
-//! Server-wide settings shared by every listener: one buffer set, one admission cap,
-//! one sealer, and one maintenance schedule per server.
+//! Server-wide settings shared by every listener.
 struct OtlpServerConfig {
 	string token;
-	//! Opt-in: accept every request without checking the bearer token / x-api-key. Defaults
-	//! to false (auth required). Intended for trusted local networks and for producers that
-	//! cannot attach a bearer token (e.g. the otel-arrow OTAP exporter has no auth-header
-	//! config). When true, no token is generated or validated at bind time.
+	//! Accept every request without checking the token (for producers that cannot send one, e.g.
+	//! the otel-arrow OTAP exporter). When true, no token is generated or validated at bind time.
 	bool disable_auth = false;
 	//! Target catalog (attached database). Empty = the connection's default catalog.
-	//! Set this to an attached writable catalog name for lakehouse ingest.
 	string catalog_name;
 	string schema_name = "main";
-	//! Optional plain Parquet export root. When set, the server keeps no persistent
-	//! destination table: each seal writes the sealed rows straight to
-	//! <root>/<table>/year=YYYY/month=MM/day=DD/*.parquet (the only durable store), and a
-	//! read-only view over those files is created lazily for inspection. Export is
-	//! at-least-once (a COPY cannot be rolled back), so downstream readers must dedupe.
+	//! Optional Parquet export root: each seal COPYs to <root>/<table>/year=/month=/day=/ instead of
+	//! a table. At-least-once (a COPY cannot be rolled back), so downstream readers must dedupe.
 	string parquet_export_path;
-	//! Parquet mode only: create that inspection view. Binding it lists the whole dataset and
-	//! reads every file's footer (union_by_name), so a caller that never reads the view (the
-	//! daemon with Quack off) turns it off rather than pay a full-archive scan per server.
+	//! Parquet mode only: create an inspection view per signal. Binding it reads every file's
+	//! footer, so a caller that never reads the view should turn it off.
 	bool parquet_views = true;
 	bool create_tables = true;
 	idx_t max_body_bytes = otlp_limits::DEFAULT_MAX_BODY_BYTES;
 	//! Worker threads for each HTTP listener. Zero means choose a conservative host-based default.
 	idx_t http_threads = 0;
-	//! Internal buffered group-commit ("seal") defaults. Ingest buffers rows in memory
-	//! and a single writer seals them on a size or age trigger, avoiding per-request
-	//! Parquet files and write conflicts. These are exposed as advanced cadence knobs;
-	//! max_buffered_bytes remains the independent admission/backpressure cap.
-	//! Explicit otlp_flush is optional; it only requests an immediate seal for fresh
-	//! reads/durability while the server keeps running. otlp_stop performs a final seal.
+	//! Group-commit ("seal") triggers: one writer seals buffered rows on size or age, avoiding
+	//! per-request Parquet files and write conflicts. Independent of max_buffered_bytes.
 	idx_t seal_target_bytes = otlp_limits::DEFAULT_SEAL_TARGET_BYTES; //! seal when admitted bytes reach this
 	int64_t seal_max_age_ms = otlp_limits::DEFAULT_SEAL_MAX_AGE_MS;   //! seal when the oldest buffered row is this old
-	//! Tier-1 compaction for DuckLake catalogs. Successful automatic row-seals into a named
-	//! catalog are followed by best-effort catalog-native maintenance (`CHECKPOINT <catalog>`,
-	//! which merges adjacent files and expires/cleans old snapshots+files) when recent ingress
-	//! and pending bytes leave ample admission headroom; it is skipped for explicit otlp_flush
-	//! and shutdown drains so those stay pure durability/seal operations. The maintenance CADENCE
-	//! is internal, but these two knobs (set once on the catalog at startup) bound it:
-	//!  - target_file_size: OUTPUT Parquet file size the merge bin-packs toward; bounds write
-	//!    amplification (files already at target are left alone). Distinct from seal_target_bytes,
-	//!    which is admitted *input* bytes.
-	//!  - maintenance_retention_ms: how old snapshots/files must be before CHECKPOINT expires and
-	//!    deletes them (expire_older_than / delete_older_than). Long enough for in-flight reads /
-	//!    time-travel, short enough to bound disk.
+	//! Catalog maintenance: the sealer runs `CHECKPOINT <catalog>` at most once per
+	//! maintenance_interval_ms, after rows were sealed (never from otlp_flush or shutdown drains).
+	//! target_file_size is the OUTPUT file size the merge packs toward (seal_target_bytes is input
+	//! bytes); maintenance_retention_ms is the age before snapshots/files are expired and deleted.
 	idx_t target_file_size = otlp_limits::DEFAULT_TARGET_FILE_SIZE;
 	int64_t maintenance_retention_ms = otlp_limits::DEFAULT_MAINTENANCE_RETENTION_MS;
-	//! Backpressure admission cap (over it -> 503). NOTE: this bounds cumulative *admitted
-	//! request-body bytes* (each request reserves max(body_size, 1024) input bytes), NOT
-	//! decoded buffer heap — decoded columnar size differs from the encoded/compressed
-	//! input size. It is an admission/throughput proxy, not a precise memory bound.
+	int64_t maintenance_interval_ms = otlp_limits::DEFAULT_MAINTENANCE_INTERVAL_MS;
+	//! Backpressure cap (over it -> 503) on admitted request-body bytes (max(body_size, 1024)
+	//! each), not decoded buffer heap: a throughput proxy, not a precise memory bound.
 	idx_t max_buffered_bytes = otlp_limits::DEFAULT_MAX_BUFFERED_BYTES;
-	//! Opt-in attribute promotion: extract these resource/scope attribute keys into first-class
-	//! columns at ingest. Off when both lists are empty. Catalog (non-Parquet-export) mode only.
+	//! Resource/scope attribute keys promoted to columns. Off when empty; catalog mode only.
 	OtlpPromoteConfig promote;
 };
 
@@ -126,10 +101,8 @@ struct OtlpSealEvent {
 	idx_t rows_committed = 0;
 	idx_t admitted_bytes_committed = 0;
 	bool success = false;
-	// Whole-server running totals as of this seal, snapshotted in RecordSealEvent *after* the
-	// per-seal counters have been incremented. Deliberately denormalized so otlp_seal_list() can
-	// show the cumulative tally at each seal without a window function; keep the increment-then-
-	// snapshot order in SealOnce or these values will be off by one seal.
+	// Running totals snapshotted *after* this seal's counters were incremented; keep that order
+	// in SealOnce or these are off by one seal.
 	idx_t seals_total = 0;
 	idx_t seal_failures_total = 0;
 	idx_t committed_rows_total = 0;
@@ -138,9 +111,7 @@ struct OtlpSealEvent {
 
 class OtlpServer;
 
-//! One bound socket feeding a shared OtlpServer. Listeners own no buffers, sealer, or
-//! counters: every transport admits into the same server, so the admission cap, seal
-//! cadence, maintenance schedule, and readiness all describe the one write path.
+//! One bound socket feeding a shared OtlpServer. Listeners own no buffers, sealer, or counters.
 class OtlpListener {
 public:
 	OtlpListener(OtlpServer &server_p, OtlpListenerSpec spec_p) : server(server_p), spec(std::move(spec_p)) {
@@ -151,8 +122,7 @@ public:
 	virtual void Start() = 0;
 	//! Stop accepting new connections without joining. Safe from a request-handler thread.
 	virtual void StopAccepting() = 0;
-	//! Stop accepting and join/drain the transport's threads. Must not run on a worker thread.
-	//! Idempotent. The server runs its final seal only after every listener has closed.
+	//! Stop accepting and join the transport's threads. Idempotent; must not run on a worker thread.
 	virtual void Close() = 0;
 
 	const OtlpUri &Uri() const {
@@ -165,7 +135,6 @@ public:
 	bool IsListening() const {
 		return is_running.load() && !failed.load();
 	}
-	//! Last fatal listener error, or empty if none.
 	string LastError() const {
 		std::lock_guard<std::mutex> lock(error_mutex);
 		return last_error;
@@ -182,12 +151,17 @@ protected:
 	string last_error;
 };
 
-//! Transport constructors. Each returns an unstarted listener registered against `server`.
+//! One otlp_server_list() column and how to read it for one listener of a server.
+struct OtlpServerListColumn {
+	const char *name;
+	LogicalTypeId type;
+	Value (*get)(const OtlpServer &server, const OtlpListener &listener);
+};
+
 unique_ptr<OtlpListener> MakeOtlpHttpListener(OtlpServer &server, const OtlpListenerSpec &spec);
 unique_ptr<OtlpListener> MakeOtlpGrpcListener(OtlpServer &server, const OtlpListenerSpec &spec);
 
-//! One ingest pipeline: buffers, admission, a single sealer/writer, and catalog maintenance,
-//! fed by N listeners (the collector receiver model: several protocols, one exporter).
+//! One ingest pipeline (buffers, admission, a single sealer/writer, maintenance) fed by N listeners.
 class OtlpServer {
 public:
 	//! Build the pipeline, then start every listener in order. If any listener fails to bind,
@@ -195,9 +169,8 @@ public:
 	OtlpServer(ClientContext &context, const vector<OtlpListenerSpec> &listener_specs, const OtlpServerConfig &config);
 	~OtlpServer();
 
-	//! Synchronously stop every listener, then drain the buffers with one final seal. Must
-	//! NOT be called from a worker / request-handler thread; httplib's listen-loop teardown
-	//! joins all workers, which would deadlock.
+	//! Stop every listener, then drain with one final seal. Must NOT be called from a request-handler
+	//! thread: httplib's teardown joins all workers, which would deadlock.
 	void Close();
 
 	const vector<unique_ptr<OtlpListener>> &Listeners() const {
@@ -206,50 +179,24 @@ public:
 	//! The first listener's URI; labels server-wide rows such as otlp_seal_list().
 	const OtlpUri &PrimaryUri() const;
 
-	//! Generate a fresh CSPRNG-backed 128-bit token, hex-encoded (32 chars).
+	//! CSPRNG-backed 128-bit token, hex-encoded.
 	static string GenerateRandomToken(DatabaseInstance &db);
 
-	//! Throw InvalidInputException if `token` doesn't meet requirements (length >= 16).
 	static void ValidateToken(const string &token);
 
 	const OtlpServerConfig &Config() const {
 		return config;
 	}
-	const string &Token() const {
-		return config.token;
-	}
-	const string &SchemaName() const {
-		return config.schema_name;
-	}
-	const string &CatalogName() const {
-		return config.catalog_name;
-	}
-	idx_t ActiveRequests() const {
-		return active_requests.load();
-	}
-	idx_t TotalRequests() const {
-		return total_requests.load();
-	}
-	idx_t TotalRows() const {
-		return total_rows.load();
-	}
+	//! otlp_server_list()'s columns, in output order.
+	static const vector<OtlpServerListColumn> &ListColumns();
 	idx_t BufferedRows() const;
-	//! Approximate decoded heap held by the in-memory buffers (sum of each signal's
-	//! ColumnDataCollection size). admitted_bytes bounds *input* bytes, not this; surfaced so
-	//! the real memory footprint under a slow/stuck seal is observable.
+	//! Approximate decoded heap held by the buffers (admitted_bytes counts input bytes, not this).
 	idx_t BufferedBytes() const;
-	//! True when buffered rows are not committing: at least one seal has failed, rows are
-	//! still buffered, and the last successful seal is absent or older than several seal
-	//! cycles. Drives /readyz so a wedged seal backend is visible to orchestrators.
+	//! A seal has failed, rows are still buffered, and no seal succeeded for several cycles.
+	//! Drives /readyz.
 	bool SealStalled() const;
 	idx_t AdmittedBytes() const {
 		return admitted_bytes.load();
-	}
-	idx_t SealTargetBytes() const {
-		return config.seal_target_bytes;
-	}
-	int64_t SealMaxAgeMs() const {
-		return config.seal_max_age_ms;
 	}
 	//! Milliseconds since the oldest currently buffered row was admitted, or -1 if empty.
 	int64_t OldestBufferedAgeMs() const;
@@ -259,8 +206,7 @@ public:
 	idx_t CommittedRowsTotal() const {
 		return committed_rows_total.load();
 	}
-	//! Monotonic count of failed seal attempts (never reset), so a flapping/failing
-	//! sealer is visible even when seal_last_error self-clears on the next success.
+	//! Never reset, unlike seal_last_error, which clears on the next success.
 	idx_t SealFailuresTotal() const {
 		return seal_failures_total.load();
 	}
@@ -270,15 +216,13 @@ public:
 		std::lock_guard<std::mutex> lock(seal_error_mutex);
 		return seal_last_error;
 	}
-	//! Catalog-maintenance (CHECKPOINT) telemetry, mirroring the seal counters.
 	idx_t MaintenanceRunsTotal() const {
 		return maintenance_runs_total.load();
 	}
 	idx_t MaintenanceFailuresTotal() const {
 		return maintenance_failures_total.load();
 	}
-	//! Maintenance passes that lost a race to another writer's CHECKPOINT on the same catalog
-	//! (e.g. a second receiver process). Not failures: the other writer already did the work.
+	//! Passes that lost a CHECKPOINT race to another writer on the same catalog. Not failures.
 	idx_t MaintenanceContendedTotal() const {
 		return maintenance_contended_total.load();
 	}
@@ -288,87 +232,56 @@ public:
 		std::lock_guard<std::mutex> lock(seal_error_mutex);
 		return maintenance_last_error;
 	}
-	//! Promoted attribute columns per signal table (0 when promotion is disabled).
 	idx_t PromotedColumnsTotal() const {
 		return promoter ? promoter->PromotedColumnsTotal() : 0;
 	}
 	vector<OtlpSealEvent> SealHistory() const;
 
-	//! Force a synchronous seal of all buffered rows (used by otlp_flush). Returns the
-	//! number of rows sealed.
+	//! Synchronous seal of all buffered rows (otlp_flush).
 	OtlpIngestResult FlushNow();
 
-	//! Rows that were still buffered (and therefore dropped) after the final shutdown drain
-	//! gave up. 0 on a clean shutdown. Populated by ShutdownIngest(); read by the storage
-	//! layer after Close() so otlp_stop / the daemon can surface a data-dropping shutdown.
-	//! A second (idempotent) ShutdownIngest() drops nothing and leaves this value unchanged.
+	//! Rows dropped because the final shutdown drain failed; 0 on a clean shutdown. Read after
+	//! Close() so otlp_stop / the daemon can surface a data-dropping shutdown.
 	idx_t ShutdownDroppedRows() const {
 		return shutdown_dropped_rows.load();
 	}
 
-	// --- test-only seam (no production caller) ---
-	// These exist solely so the C++ ingest/seal harness (test/cpp/test_seal_harness.cpp)
-	// can drive the buffer/seal path directly: SQL cannot drive HTTP, and the seal-failure
-	// re-buffer/retry invariants must be locked in before the SealOnce refactor (finding H4).
-	// They are NEVER referenced by production code, so production behavior is unchanged: the
-	// fault hook is a null std::function (the seal path's `if (fault) fault();` is a no-op),
-	// and IngestForTest just forwards to the private Ingest() the HTTP handler already calls.
+	// --- test-only seam for test/cpp/test_seal_harness.cpp, which drives the buffer/seal path
+	// without a socket. Every hook defaults to unset, which is a no-op. ---
 #ifdef DUCKDB_OTLP_ENABLE_TEST_SEAM
-	//! Drive the in-memory buffer path exactly as an HTTP POST would, without a socket.
 	OtlpIngestResult IngestForTest(OtlpRequestKind kind, const string &content_type, const string &content_encoding,
 	                               const string &body) {
 		return Ingest(kind, content_type, content_encoding, body);
 	}
-	//! Fault hook invoked inside SealOnce's transaction path immediately before COMMIT. If it
-	//! throws, the seal fails through the production catch/rollback/re-buffer path. Default
-	//! (unset) = no-op, so SealOnce is byte-for-byte identical to production when not set.
+	//! Runs immediately before the catalog seal's COMMIT; a throw takes the rollback/re-buffer path.
 	void SetSealFaultHookForTest(std::function<void()> hook) {
 		seal_fault_hook_for_test = std::move(hook);
 	}
-	//! Fault hook invoked inside SealOnce's per-signal loop (Parquet mode) immediately before the COPY for
-	//! signal index `i`. If it throws for some signal, that signal (and all later ones) fail to
-	//! export while earlier signals are already durable, exercising the at-least-once partial-
-	//! export + proportional-admission re-buffer path. Default (unset) = no-op.
+	//! Runs before the Parquet COPY for signal `i`; a throw exercises the partial-export re-buffer path.
 	void SetParquetSealFaultHookForTest(std::function<void(idx_t)> hook) {
 		parquet_seal_fault_hook_for_test = std::move(hook);
 	}
-	//! Fault hook invoked inside BufferMetrics AFTER the first metric sub-signal has converted into
-	//! its local staging collection but BEFORE the remaining sub-signals convert and BEFORE anything
-	//! is moved into the live buffers. If it throws, the request fails mid-conversion; the staging
-	//! design (H3) guarantees NO rows reach the live buffers and admission is untouched, so a retry
-	//! buffers everything exactly once. Default (unset) = no-op.
+	//! Runs in BufferMetrics after the first metric shape is staged, before anything reaches the live
+	//! buffers; a throw must leave the buffers and admission untouched.
 	void SetMetricsStageFaultHookForTest(std::function<void()> hook) {
 		metrics_stage_fault_hook_for_test = std::move(hook);
 	}
-	//! Fault hook invoked inside the catalog-maintenance pass immediately before CHECKPOINT. If it
-	//! throws, the pass fails through the production classification path (contended / unsupported /
-	//! failed). Set it before the maintenance trigger can fire. Default (unset) = no-op.
+	//! Runs immediately before the maintenance CHECKPOINT. Set it before the trigger can fire.
 	void SetMaintenanceFaultHookForTest(std::function<void()> hook) {
 		maintenance_fault_hook_for_test = std::move(hook);
 	}
 #endif
 
-	// --- gRPC transport bridge ---
-	// The gRPC server lives in the otlp2records crate and reaches back into this
-	// server through a C callback. These two entry points are the bridge the free
-	// callback in otlp_server_grpc.cpp invokes (it holds an OtlpServer* as its
-	// user_data). Public only because that callback has C linkage and cannot be a
-	// member; not part of the general API.
+	// --- gRPC transport bridge: public only because the C-linkage callback in
+	// otlp_server_grpc.cpp cannot be a member. Not part of the general API. ---
 
-	//! Buffer one already-decoded Arrow batch into `signal_type`'s buffer, applying
-	//! the same admission/backpressure + stage + group-commit path as the HTTP
-	//! ingest path. `input_bytes` is the wire size charged against admission. The
-	//! array/schema are borrowed (copied, never released here). Returns the gRPC
-	//! mapped status (OTLP_INGEST_OK / _RESOURCE_EXHAUSTED / _INTERNAL).
+	//! Buffer one decoded Arrow batch through the same admission/stage path as HTTP. `input_bytes`
+	//! is the wire size charged against admission. The array/schema are borrowed, never released.
 	OtlpIngestStatus IngestDecodedArrowBatch(OtlpSignalType signal_type, idx_t input_bytes, ArrowArray &array,
 	                                         ArrowSchema &schema);
-	//! Validate a gRPC request's `authorization` metadata against the server token
-	//! (shares OtlpServer::CheckAuth with the HTTP path).
 	bool CheckGrpcAuth(const string &authorization) const;
 
 private:
-	// The transport listeners drive the private request path (Ingest, CheckAuth, request
-	// counters, LogServerEvent) and report readiness from SealStalled().
 	friend class OtlpHttpListener;
 	friend class OtlpListener;
 
@@ -376,18 +289,13 @@ private:
 	OtlpIngestResult Ingest(OtlpRequestKind kind, const string &content_type, const string &content_encoding,
 	                        const string &body);
 	void EnsureTargetTables();
-	//! Stop the sealer thread and seal any remaining buffered rows before the writer
-	//! connection / database go away. Idempotent; called from Close() and ~OtlpServer().
-	//! Returns the number of rows still buffered after the final drain failed (i.e. dropped):
-	//! 0 on a clean shutdown, and 0 on every call after the first (a second call has nothing
-	//! left to drain). Also recorded in shutdown_dropped_rows for ShutdownDroppedRows().
+	//! Stop the sealer and seal remaining rows before the writer connection / database go away.
+	//! Idempotent. Returns the rows dropped by a failed final drain (0 on every later call).
 	idx_t ShutdownIngest();
-	//! Write a server-side diagnostic to duckdb_logs under the OTLP log type. No-op
-	//! if the database has been closed. Safe to call from any worker thread. Routine
-	//! lifecycle events log at INFO (the default); pass LogLevel::LOG_WARNING for
-	//! failure paths so they stay visible at default log thresholds.
+	//! Log to duckdb_logs; no-op once the database is closed. Any thread. Use LOG_WARNING for
+	//! failures so they stay visible at default thresholds.
 	void LogServerEvent(const string &message, LogLevel level = OtlpLogType::LEVEL) const;
-	//! Close every started listener (reverse start order). Idempotent.
+	//! Reverse start order. Idempotent.
 	void CloseListeners();
 
 	std::atomic<idx_t> active_requests {0};
@@ -395,10 +303,8 @@ private:
 	std::atomic<idx_t> total_rows {0};
 
 	// --- request path (runs on httplib worker threads; buffers, never commits) ---
-	//! One signal's rows converted off to the side (NOT yet in the live buffer). Built so a
-	//! request's signals are staged in local collections and only moved into the live buffers
-	//! once ALL of them convert successfully — a mid-conversion failure leaves the live buffers
-	//! untouched so a client retry cannot double-buffer (review finding H3).
+	//! One signal's rows converted off to the side. A request's signals reach the live buffers only
+	//! once ALL convert, so a mid-conversion failure cannot make a client retry double-buffer.
 	struct StagedSignal {
 		OtlpSignalType signal_type;
 		unique_ptr<ColumnDataCollection> collection;
@@ -408,13 +314,10 @@ private:
 	void BufferSignal(OtlpSignalType signal_type, const string &body, OtlpInputFormat format, OtlpIngestResult &result,
 	                  idx_t &admission_bytes);
 	void BufferMetrics(const string &body, OtlpInputFormat format, OtlpIngestResult &result, idx_t &admission_bytes);
-	//! Convert one Arrow batch into a local staging collection (no live buffer, no admission).
 	StagedSignal StageArrowBatch(OtlpSignalType signal_type, ArrowArray &array, ArrowSchema &schema);
-	//! Append `chunk` into `collection` (a local staging collection); pure conversion, no locks.
 	void StageAppend(ColumnDataCollection &collection, DataChunk &chunk);
-	//! Move all staged signals into the live per-signal buffers under their locks and attribute
-	//! `admission_bytes` across them by rows, exactly once (all-or-nothing for the request). Sets
-	//! `admission_bytes` to 0 once consumed. Updates `result` rows/batches.
+	//! Move staged signals into the live buffers and attribute `admission_bytes` across them by
+	//! rows, exactly once (zeroes it once consumed).
 	void CommitStaged(vector<StagedSignal> &staged, OtlpIngestResult &result, idx_t &admission_bytes);
 	OtlpSignalBuffer &BufferFor(OtlpSignalType signal_type);
 	bool TryReserveAdmission(idx_t bytes, idx_t &current);
@@ -425,88 +328,54 @@ private:
 	void StartSealer();
 	void SealerLoop();
 
-	//! One signal's rows swapped out of the live buffer for the duration of a seal. The
-	//! moved-out collection is owned solely by the SealingPlan until it is either appended
-	//! (success) or re-buffered (RestoreUnsealed).
+	//! One signal's rows swapped out of the live buffer for a seal, until written or re-buffered.
 	struct SealingSignal {
 		unique_ptr<ColumnDataCollection> collection;
 		idx_t rows = 0;
-		//! Admission bytes attributed to this signal's swapped-out rows (the live buffer's
-		//! unsealed_admission_bytes at swap time). On a partial parquet failure the EXACT value is
-		//! restored for an un-exported signal and the exact exported share is released — no
-		//! proportional re-split, so repeated partial failures cannot drift the budget (M2).
+		//! Restored exactly on a partial Parquet failure (no proportional re-split), so repeated
+		//! partial failures cannot drift the admission budget.
 		idx_t admission_bytes = 0;
-		//! The swapped-out rows' original buffering timestamp (the live buffer's first_unsealed at
-		//! swap time). Preserved so a failed-seal restore keeps the TRUE age of these rows instead
-		//! of resetting it to now() — otherwise oldest_buffered_age_ms under-reports how long rows
-		//! have actually been stuck across consecutive seal failures (review finding M3). Only
-		//! meaningful when rows > 0.
+		//! Preserved so a failed-seal restore keeps the rows' true age. Only meaningful when rows > 0.
 		std::chrono::steady_clock::time_point first_unsealed;
 	};
-	//! The atomic snapshot a single seal operates on: every signal's rows swapped out under
-	//! lock plus the admission bytes attributed to them. Produced once by SwapBuffersForSeal()
-	//! and consumed by SealOnce().
+	//! The atomic snapshot one seal operates on.
 	struct SealingPlan {
 		std::vector<SealingSignal> signals;
 		idx_t total_rows = 0;
-		//! Aggregate admission bytes unsealed at swap time (sum of every signal's per-signal
-		//! admission). On success the whole amount is ReleaseAdmission()'d; on a parquet partial
-		//! failure each restored signal puts back its OWN SealingSignal::admission_bytes and only
-		//! the exported signals' shares are released. Equals the sum of the per-signal values, so
-		//! the all-or-nothing catalog path is unchanged.
+		//! Sum of the signals' admission_bytes; released whole on success.
 		idx_t sealed_admission_bytes = 0;
 	};
 
-	OtlpIngestResult SealOnce(bool allow_maintenance);
-	//! Swap every live signal buffer out for a fresh empty collection under the established
-	//! per-signal lock order (forward index order, all held simultaneously), capturing each
-	//! signal's per-signal unsealed admission bytes into its SealingSignal (summed into
-	//! plan.sealed_admission_bytes). Workers keep filling the fresh buffers during the slow COPY.
+	OtlpIngestResult SealOnce();
+	//! Swap every live buffer for an empty one, holding all per-signal locks in forward index order.
+	//! Workers keep filling the fresh buffers during the slow write.
 	SealingPlan SwapBuffersForSeal(Allocator &allocator);
-	//! Re-buffer the un-sealed remainder of `plan` ahead of any rows workers appended during
-	//! the seal (old rows first, order preserved), re-acquiring the per-signal locks in the
-	//! same forward order. `restore` selects which signals to restore (false = leave released,
-	//! used by the parquet path's already-exported signals). Each restored signal puts back its
-	//! OWN SealingSignal::admission_bytes (no proportional re-split), so repeated partial failures
-	//! cannot drift the budget (M2). Returns the row count restored.
+	//! Re-buffer the signals selected by `restore` ahead of rows appended during the seal (old rows
+	//! first), taking the per-signal locks in forward order. Returns the row count restored.
 	idx_t RestoreUnsealed(SealingPlan &plan, const std::vector<bool> &restore);
-	//! Create the Parquet-mode inspection view for one signal at most once per server, and only
-	//! when the catalog has no entry by that name. Seal thread only (under writer_mutex).
+	//! At most once per signal, and only if the name is free. Seal thread only (under writer_mutex).
 	void EnsureParquetView(idx_t signal_index, const string &table_name);
-	//! Build `sinks`: one statement per signal that writes the relation `sealed` to the
-	//! destination (INSERT ... BY NAME into the catalog, or a partitioned Parquet COPY).
+	//! One statement per signal that writes the relation `sealed` to the destination.
 	void BuildSinks();
-	//! Where seals land, for log lines: the Parquet root or `catalog.schema`.
 	string SealTargetDescription() const;
-	//! Centralize the success/failure metric bookkeeping for every seal outcome:
-	//! seals_total / seal_failures_total / committed_rows_total, last_seal_unix_ms,
-	//! seal_last_error, and the RecordSealEvent history append.
 	void RecordSealOutcome(bool success, idx_t rows_committed, idx_t admitted_bytes_committed,
 	                       int64_t seal_started_unix_ms, int64_t append_duration_ms, int64_t commit_duration_ms,
 	                       const string &error);
 	void RequestSeal();
 	bool SealAgeDue() const;
-	void MaybeRunCatalogMaintenance(idx_t sealed_rows, idx_t sealed_admission_bytes);
-	//! Sealer-thread idle hook: lets the time-based maintenance trigger fire without new seals.
-	void MaybeRunIdleCatalogMaintenance();
-	//! Run CHECKPOINT when the row-seal-count or time-based trigger is due and headroom allows.
-	//! Caller holds writer_mutex.
-	void RunCatalogMaintenanceIfDue(std::chrono::steady_clock::time_point now);
+	//! Sealer thread only.
+	void MaybeRunCatalogMaintenance();
 	bool CatalogMaintenanceEnabled() const;
-	//! After a successful CHECKPOINT, delete DuckLake data files the catalog does not track and
-	//! that are older than maintenance_retention_ms (the Parquet a losing concurrent checkpoint or
-	//! a crashed seal leaves behind). Best-effort; DuckLake catalogs only. Caller holds writer_mutex.
+	//! Delete untracked DuckLake files older than maintenance_retention_ms (left by a losing concurrent
+	//! checkpoint or a crashed seal). Best-effort; DuckLake only. Caller holds writer_mutex.
 	void SweepOrphanedFiles();
-	//! Set the DuckLake catalog options the post-seal CHECKPOINT consumes (target_file_size,
-	//! expire_older_than, delete_older_than). Best-effort and idempotent: called once at startup;
-	//! non-DuckLake / default catalogs throw and are ignored (maintenance DISABLEs on its own).
+	//! Best-effort: non-DuckLake catalogs throw and are ignored.
 	void ConfigureCatalogMaintenanceOptions();
 	void RecordSealEvent(int64_t started_unix_ms, int64_t append_duration_ms, int64_t commit_duration_ms,
 	                     idx_t rows_committed, idx_t admitted_bytes_committed, bool success, const string &error);
 
 	void CreateOrValidateTable(Connection &con, OtlpSignalType signal_type, const string &table_name);
-	//! The buffer/table column types: the importer's, except that the buffers hold TIMESTAMP (us),
-	//! which is the destination tables' column type, where the importer yields TIMESTAMP_NS.
+	//! The importer's type, except TIMESTAMP_NS narrows to the tables' TIMESTAMP (us).
 	static LogicalType BufferColumnType(const LogicalType &imported);
 	static void GetSignalColumns(ClientContext &context, OtlpSignalType signal_type, vector<LogicalType> &types,
 	                             vector<string> &names);
@@ -514,37 +383,26 @@ private:
 private:
 	weak_ptr<DatabaseInstance> db_ptr;
 	OtlpServerConfig config;
-	//! Every listener feeding this server, in start order. Immutable after construction.
+	//! Start order. Immutable after construction.
 	vector<unique_ptr<OtlpListener>> listeners;
 
-	// Per-signal in-memory buffers. The vector is immutable after InitBuffers();
-	// each OtlpSignalBuffer carries its own mutex and mutable counters.
+	// Immutable after InitBuffers(); each buffer carries its own mutex.
 	std::vector<unique_ptr<OtlpSignalBuffer>> signal_buffers;
-	//! Per signal (signal_buffers order): the one statement a seal runs over that signal's sealed
-	//! rows. Built once at construction; immutable afterwards.
+	//! Per signal (signal_buffers order). Immutable after construction.
 	std::vector<string> sinks;
-	//! Payload-byte admission counter for in-flight and unsealed accepted requests.
-	//! The single real byte counter: enforces max_buffered_bytes under concurrency and
-	//! drives the seal size trigger (seal_target_bytes).
+	//! Admitted bytes of in-flight and unsealed requests: enforces max_buffered_bytes and drives the
+	//! seal size trigger. The per-signal share lives in OtlpSignalBuffer::unsealed_admission_bytes.
 	std::atomic<idx_t> admitted_bytes {0};
-	//! The subset of admitted_bytes already attached to buffered rows is tracked PER SIGNAL in
-	//! OtlpSignalBuffer::unsealed_admission_bytes (guarded by that signal's own mutex), parallel
-	//! to buffered_rows. A swap sums those into SealingPlan; a partial parquet failure restores
-	//! the exact per-signal share without re-splitting an aggregate (review finding M2).
 
-	// Single serialized writer + background sealer. writer_mutex serializes SealOnce
-	// (sealer thread) against FlushNow (otlp_flush) and the final drain on shutdown.
+	// writer_mutex serializes SealOnce against FlushNow and the shutdown drain.
 	unique_ptr<Connection> writer_con;
 	mutex writer_mutex;
-	//! Context handed to DuckDB's Arrow importer by every ingest thread. It runs no queries, and the
-	//! importer consults it only for Arrow extension types, which OtlpArrowTable::ForSignal rules out;
-	//! that is what makes sharing it across threads safe. Reset with writer_con, after the listeners.
+	//! Shared by every ingest thread for DuckDB's Arrow importer: safe because it runs no queries and
+	//! the importer reads it only for extension types, which ForSignal rules out.
 	unique_ptr<Connection> arrow_con;
-	//! Per signal: the inspection view has been found or attempted (EnsureParquetView), so later
-	//! seals never re-bind it. Touched only by the seal path under writer_mutex.
+	//! Per signal: view already found or attempted. Under writer_mutex.
 	std::vector<bool> parquet_view_settled;
-	//! Attribute promotion (null unless config.promote.Enabled()). Resolved at construction; the
-	//! seal thread only reads its immutable ProjectionSuffix().
+	//! Null unless promotion is enabled. Immutable after construction.
 	unique_ptr<OtlpColumnPromoter> promoter;
 	std::thread sealer_thread;
 	std::mutex sealer_mutex;
@@ -552,7 +410,6 @@ private:
 	std::atomic<bool> sealer_stop {false};
 	std::atomic<bool> flush_requested {false};
 	std::atomic<bool> ingest_shutdown_done {false};
-	//! Rows dropped by the final shutdown drain (set once by the first ShutdownIngest()).
 	std::atomic<idx_t> shutdown_dropped_rows {0};
 
 	std::atomic<idx_t> seals_total {0};
@@ -567,51 +424,25 @@ private:
 
 	enum class CatalogMaintenanceState { PENDING, SUPPORTED, DISABLED };
 	CatalogMaintenanceState catalog_maintenance_state = CatalogMaintenanceState::PENDING;
-	// Starts at 1 (not 0) so the time-based trigger checkpoints once after startup even with no
-	// new ingest: a previous process may have left DuckLake-inlined rows un-checkpointed, since
-	// shutdown drains skip maintenance.
-	idx_t catalog_maintenance_row_seals_since_attempt = 1;
+	//! Rows were sealed since the last attempt. Starts true so rows a previous process left inlined
+	//! are flushed too. Both fields are sealer-thread only.
+	bool catalog_maintenance_due = true;
 	std::chrono::steady_clock::time_point catalog_maintenance_last_attempt = std::chrono::steady_clock::now();
-	std::chrono::steady_clock::time_point catalog_maintenance_last_row_seal = std::chrono::steady_clock::now();
-	double catalog_maintenance_ingress_rate_bytes_per_ms = 0;
-	// Catalog-maintenance telemetry (written by the sealer thread, read by ListServers).
 	std::atomic<idx_t> maintenance_runs_total {0};
 	std::atomic<idx_t> maintenance_failures_total {0};
 	std::atomic<idx_t> maintenance_contended_total {0};
 	std::atomic<int64_t> last_maintenance_unix_ms {0};
 	string maintenance_last_error; // guarded by seal_error_mutex
-	//! Orphan sweep eligibility, resolved on the first sweep: SUPPORTED only for DuckLake catalogs.
+	//! SUPPORTED only for DuckLake catalogs; resolved on the first sweep.
 	CatalogMaintenanceState orphan_sweep_state = CatalogMaintenanceState::PENDING;
 
 #ifdef DUCKDB_OTLP_ENABLE_TEST_SEAM
-	//! Test-only seal fault hook (see SetSealFaultHookForTest). Null in production; the seal
-	//! path only invokes it when set, so the production seal path is unaffected.
+	//! Test-only fault hooks (see the Set*FaultHookForTest setters).
 	std::function<void()> seal_fault_hook_for_test;
-	//! Test-only parquet per-signal fault hook (see SetParquetSealFaultHookForTest). Null in
-	//! production; SealOnce only invokes it when set.
 	std::function<void(idx_t)> parquet_seal_fault_hook_for_test;
-	//! Test-only metrics staging fault hook (see SetMetricsStageFaultHookForTest). Null in
-	//! production; BufferMetrics only invokes it when set.
 	std::function<void()> metrics_stage_fault_hook_for_test;
-	//! Test-only maintenance fault hook (see SetMaintenanceFaultHookForTest). Null in production.
 	std::function<void()> maintenance_fault_hook_for_test;
 #endif
 };
-
-//! Loopback HTTP probe backing the daemon's `doctor` subcommand. Distroless images
-//! ship no shell/curl, so the daemon health-checks itself: returns true if
-//! GET http://127.0.0.1:<port><path> answers 2xx/3xx within a short timeout. Defined in
-//! otlp_server_http.cpp (httplib lives there); not built for wasm.
-#ifndef __EMSCRIPTEN__
-bool OtlpLoopbackHttpStatusOk(int port, const string &path);
-//! Host-aware variant: probes GET http://<host>:<port><path>. Used by `doctor` so
-//! a server bound to an explicit non-loopback interface is reachable (review finding M5). Defined
-//! in otlp_server.cpp; not built for wasm.
-bool OtlpHttpStatusOk(const string &host, int port, const string &path);
-//! TCP-connect probe for `doctor`'s gRPC (otap:) transport, which has no HTTP
-//! /readyz endpoint. Returns true if a connection to <host>:<port> succeeds within 2s. Defined
-//! in otlp_server.cpp; not built for wasm.
-bool OtlpTcpConnectOk(const string &host, int port);
-#endif
 
 } // namespace duckdb

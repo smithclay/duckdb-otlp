@@ -1,0 +1,4 @@
+-- none: attach nothing and install nothing. The destination is entirely --init-sql plus
+-- --catalog; with neither, telemetry lands in the control database.
+-- @set CATALOG ${DUCKDB_CATALOG:-}
+-- @set SCHEMA ${DUCKDB_SCHEMA:-main}

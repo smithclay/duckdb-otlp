@@ -9,22 +9,13 @@ public:
 	static CreateTableFunctionInfo GetFunction();
 };
 
-//! Start a live ingest server over gRPC (OTLP/gRPC unary + OTAP/Arrow streaming).
-//! Identical to otlp_serve but defaults the listen URI to otap:localhost:4317 and
-//! selects the gRPC transport. otlp_serve('otap:...') is equivalent.
+//! otlp_serve's OTAP/Arrow counterpart: otap: URIs only (default otap:localhost:4317), always gRPC.
 class OtapServeFunction {
 public:
 	static CreateTableFunctionInfo GetFunction();
 };
 
-//! Stop a live ingest server, sealing its buffered rows before returning.
-//!
-//! Two overloads: otlp_stop(uri) stops the server that owns `uri` (any of its listeners),
-//! and otlp_stop() stops every server on the instance. The no-argument form is what makes
-//! the documented "call otlp_stop before closing the database" contract satisfiable when the
-//! caller does not know every listen URI -- a server started out-of-band would otherwise
-//! survive to database teardown, where the final seal is a no-op and its rows are dropped.
-//! Returns one row per stopped server.
+//! otlp_stop(uri) / otlp_stop(): stop one server or all of them, sealing buffered rows first.
 class OtlpStopFunction {
 public:
 	static CreateTableFunctionInfo GetFunction();

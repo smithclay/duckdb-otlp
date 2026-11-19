@@ -2,7 +2,7 @@
 
 These cover the command-line layer that sits in front of ``ServerConfig``: subcommand
 dispatch, flag/env precedence, the OTLP environment-variable contract, the authentication
-rules, and the ``convert``/``export``/``query`` subcommands.
+and the authentication rules.
 
 Everything here runs against the real binary with a *scrubbed* environment (``env -i`` in
 spirit: only PATH and HOME survive), because the whole point of several of these tests is
@@ -23,7 +23,6 @@ import pytest
 
 from test_server_config import REPO_ROOT, SERVER_BIN, free_port, pytestmark  # noqa: F401  (pytestmark re-export)
 
-DATA_DIR = REPO_ROOT / "test" / "data"
 TOKEN = "a-private-token-123456"
 
 
@@ -52,7 +51,7 @@ def run(args, env=None, home: Path | None = None, timeout: int = 120):
 # --------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("args", [["help"], ["--help"], ["-h"], ["help", "convert"], ["help", "export"]])
+@pytest.mark.parametrize("args", [["help"], ["--help"], ["-h"], ["help", "doctor"], ["help", "validate"]])
 def test_help_variants_exit_zero(args, tmp_path):
     result = run(args, home=tmp_path)
     assert result.returncode == 0, result.stderr
@@ -158,13 +157,6 @@ def test_explicit_port_selects_only_that_transport(tmp_path):
     assert "OTLP http:" not in result.stdout
 
 
-def test_zero_port_disables_a_transport(tmp_path):
-    result = run(["validate", "--http", "0", "--grpc", "4317"], home=tmp_path)
-    assert result.returncode == 0, result.stderr
-    assert "OTLP http:" not in result.stdout
-    assert "OTLP grpc:" in result.stdout
-
-
 @pytest.mark.parametrize(
     "off,stays_on",
     [("--grpc", "OTLP http:"), ("--http", "OTLP grpc:")],
@@ -206,34 +198,6 @@ def test_host_flag_moves_every_listener(tmp_path):
     assert "otlp:0.0.0.0:4317" in result.stdout
 
 
-def test_legacy_transport_list_still_works(tmp_path):
-    """The container image and existing deployments set these; they must keep working."""
-    result = run(
-        ["validate"],
-        env={
-            "DUCKDB_OTLP_TRANSPORTS": "http,grpc",
-            "OTEL_HTTP_ADDR": "127.0.0.1:5318",
-            "OTEL_GRPC_ADDR": "127.0.0.1:5317",
-        },
-        home=tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "otlp:127.0.0.1:5318" in result.stdout
-    assert "otlp:127.0.0.1:5317" in result.stdout
-
-
-def test_ports_supersede_the_legacy_transport_list(tmp_path):
-    """A container pins DUCKDB_OTLP_TRANSPORTS, so a --grpc flag has to win over it."""
-    result = run(
-        ["validate", "--grpc", "4317"],
-        env={"DUCKDB_OTLP_TRANSPORTS": "http"},
-        home=tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "OTLP grpc:" in result.stdout
-    assert "OTLP http:" not in result.stdout
-
-
 def test_duplicate_ports_are_rejected(tmp_path):
     result = run(["validate", "--http", "4317", "--grpc", "4317"], home=tmp_path)
     assert result.returncode == 1
@@ -258,93 +222,6 @@ def test_otap_alone_uses_otap_serve(tmp_path):
 # --------------------------------------------------------------------------------------
 
 
-def test_exporter_endpoint_is_ignored_entirely(tmp_path):
-    """The single most important footgun: a shell pointing at a real collector.
-
-    OTEL_EXPORTER_OTLP_ENDPOINT must neither move the listener nor fail the startup.
-    """
-    result = run(
-        ["validate"],
-        env={"OTEL_EXPORTER_OTLP_ENDPOINT": "https://api.honeycomb.io:443"},
-        home=tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "otlp:127.0.0.1:4318" in result.stdout
-    assert "honeycomb" not in result.stdout
-
-
-@pytest.mark.parametrize(
-    "protocol,expected,absent",
-    [
-        ("grpc", "OTLP grpc:", "OTLP http:"),
-        ("http/protobuf", "OTLP http:", "OTLP grpc:"),
-        ("http/json", "OTLP http:", "OTLP grpc:"),
-    ],
-)
-def test_exporter_protocol_narrows_the_default(protocol, expected, absent, tmp_path):
-    result = run(["validate"], env={"OTEL_EXPORTER_OTLP_PROTOCOL": protocol}, home=tmp_path)
-    assert result.returncode == 0, result.stderr
-    assert expected in result.stdout
-    assert absent not in result.stdout
-    # The banner must say why, so a narrowed listener set is never silent.
-    assert f"OTEL_EXPORTER_OTLP_PROTOCOL={protocol}" in result.stdout
-
-
-def test_exporter_protocol_does_not_override_explicit_ports(tmp_path):
-    result = run(["validate", "--http", "4318"], env={"OTEL_EXPORTER_OTLP_PROTOCOL": "grpc"}, home=tmp_path)
-    assert result.returncode == 0, result.stderr
-    assert "OTLP http:" in result.stdout
-    assert "OTLP grpc:" not in result.stdout
-
-
-def test_invalid_port_in_a_legacy_addr_is_rejected(tmp_path):
-    """A port that is present but out of range must fail, not silently fall back to the default."""
-    result = run(
-        ["validate"],
-        env={"OTEL_GRPC_ADDR": "0.0.0.0:70000", "DUCKDB_OTLP_TRANSPORTS": "grpc"},
-        home=tmp_path,
-    )
-    assert result.returncode == 1
-    assert "OTEL_GRPC_ADDR" in result.stderr
-
-
-def test_invalid_exporter_protocol_is_rejected(tmp_path):
-    result = run(["validate"], env={"OTEL_EXPORTER_OTLP_PROTOCOL": "carrier-pigeon"}, home=tmp_path)
-    assert result.returncode == 1
-    assert "OTEL_EXPORTER_OTLP_PROTOCOL" in result.stderr
-
-
-def test_exporter_headers_supply_the_token(tmp_path):
-    result = run(
-        ["validate", "--host", "0.0.0.0"],
-        env={"OTEL_EXPORTER_OTLP_HEADERS": f"Authorization=Bearer {TOKEN}"},
-        home=tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "token := getvariable('duckdb_otlp_effective_token')" in result.stdout
-    assert TOKEN not in result.stdout
-
-
-def test_exporter_headers_pick_authorization_out_of_several(tmp_path):
-    result = run(
-        ["validate", "--host", "0.0.0.0"],
-        env={"OTEL_EXPORTER_OTLP_HEADERS": f"x-team=infra,Authorization=Bearer {TOKEN},x-env=prod"},
-        home=tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "disable_auth" not in result.stdout
-
-
-def test_explicit_token_beats_exporter_headers(tmp_path):
-    result = run(
-        ["validate", "--host", "0.0.0.0", "--token", TOKEN],
-        env={"OTEL_EXPORTER_OTLP_HEADERS": "Authorization=Bearer short"},
-        home=tmp_path,
-    )
-    # Would fail the 16-character floor if the header had won.
-    assert result.returncode == 0, result.stderr
-
-
 @pytest.mark.parametrize(
     "name,value",
     [
@@ -364,338 +241,14 @@ def test_unsupportable_otel_vars_fail_loudly(name, value, tmp_path):
     assert "cannot be honored" in result.stderr
 
 
-# --------------------------------------------------------------------------------------
-# convert
-# --------------------------------------------------------------------------------------
-
-
-def test_convert_needs_no_mode_or_credentials(tmp_path):
-    """`convert` is the stateless path: it must work with nothing configured at all."""
-    out = tmp_path / "out"
-    result = run(
-        ["convert", str(DATA_DIR / "otlp_traces.pb"), "--signal", "traces", "--to", str(out) + "/"],
-        home=tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    assert (out / "traces.parquet").exists()
-
-
-def test_convert_detects_the_signal(tmp_path):
-    out = tmp_path / "out"
-    result = run(["convert", str(DATA_DIR / "otlp_traces.pb"), "--to", str(out) + "/"], home=tmp_path)
-    assert result.returncode == 0, result.stderr
-    assert "Detected signal(s): traces" in result.stderr
-    assert (out / "traces.parquet").exists()
-    # A traces file must NOT be mis-detected as another signal.
-    assert not (out / "logs.parquet").exists()
-
-
-def test_convert_detects_every_metric_shape(tmp_path):
-    out = tmp_path / "out"
-    result = run(["convert", str(DATA_DIR / "metrics_all_types.jsonl"), "--to", str(out) + "/"], home=tmp_path)
-    assert result.returncode == 0, result.stderr
-    for shape in ("gauge", "sum", "histogram", "exp_histogram"):
-        assert (out / f"metrics_{shape}.parquet").exists(), shape
-
-
-def test_convert_streams_csv_to_stdout(tmp_path):
-    result = run(
-        ["convert", str(DATA_DIR / "logs_simple.jsonl"), "--signal", "logs", "--format", "csv"],
-        home=tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "service_name" in result.stdout.splitlines()[0]
-    assert "Application started" in result.stdout
-
-
-def test_convert_rejects_parquet_on_stdout(tmp_path):
-    result = run(
-        ["convert", str(DATA_DIR / "logs_simple.jsonl"), "--signal", "logs", "--format", "parquet"],
-        home=tmp_path,
-    )
-    assert result.returncode == 1
-    assert "--to" in result.stderr
-
-
-def test_convert_refuses_to_clobber_without_overwrite(tmp_path):
-    out = tmp_path / "out"
-    args = ["convert", str(DATA_DIR / "logs_simple.jsonl"), "--signal", "logs", "--to", str(out) + "/"]
-    assert run(args, home=tmp_path).returncode == 0
-    second = run(args, home=tmp_path)
-    assert second.returncode == 1
-    assert "--overwrite" in second.stderr
-    assert run([*args, "--overwrite"], home=tmp_path).returncode == 0
-
-
-def test_convert_unions_several_inputs(tmp_path):
-    out = tmp_path / "out" / "logs.csv"
-    result = run(
-        [
-            "convert",
-            str(DATA_DIR / "logs_simple.jsonl"),
-            str(DATA_DIR / "logs_simple.jsonl"),
-            "--signal",
-            "logs",
-            "--to",
-            str(out),
-            "--format",
-            "csv",
-        ],
-        home=tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    # Two copies of the same file: header once, twice the rows.
-    single = run(
-        ["convert", str(DATA_DIR / "logs_simple.jsonl"), "--signal", "logs", "--format", "csv"],
-        home=tmp_path,
-    ).stdout
-    single_rows = len(single.strip().splitlines()) - 1
-    doubled_rows = len(out.read_text().strip().splitlines()) - 1
-    assert doubled_rows == 2 * single_rows
-
-
-def test_convert_without_input_explains_itself(tmp_path):
-    result = run(["convert"], home=tmp_path)
-    assert result.returncode == 2  # usage error
-    assert "at least one input file" in result.stderr
-
-
-def test_convert_rejects_an_unknown_signal_by_listing_them(tmp_path):
-    result = run(["convert", str(DATA_DIR / "logs_simple.jsonl"), "--signal", "sparks"], home=tmp_path)
-    assert result.returncode == 1
-    assert "metrics_exp_histogram" in result.stderr
-
-
-def test_export_rejects_file_arguments(tmp_path):
-    """The convert/export split has to be explained, not silently guessed."""
-    result = run(["export", str(DATA_DIR / "logs_simple.jsonl")], home=tmp_path)
-    assert result.returncode == 2  # usage error
-    assert "duckdb-otlp convert" in result.stderr
-
-
-# --------------------------------------------------------------------------------------
-# query and export against a real catalog
-# --------------------------------------------------------------------------------------
-
-
 def parquet_mode_env(tmp_path):
-    """A mode that needs no downloadable extension, so these run offline."""
+    """A mode that needs no downloadable extension."""
     return {
         "DUCKDB_MODE": "parquet",
         "DUCKDB_OTLP_DATA_DIR": str(tmp_path / "data"),
         "DUCKDB_DATABASE": str(tmp_path / "data" / "control.duckdb"),
         "PARQUET_EXPORT_PATH": str(tmp_path / "data" / "parquet"),
     }
-
-
-def test_query_runs_ddl_without_wrapping_it(tmp_path):
-    """A COPY wrapper around DDL is a syntax error; only a trailing SELECT may be redirected."""
-    env = parquet_mode_env(tmp_path)
-    result = run(
-        ["query", "CREATE SCHEMA IF NOT EXISTS otlp; CREATE TABLE otlp.t AS SELECT 1 AS x;"],
-        env=env,
-        home=tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-
-
-def test_query_selects_after_setup_statements(tmp_path):
-    env = parquet_mode_env(tmp_path)
-    result = run(
-        [
-            "query",
-            "CREATE SCHEMA IF NOT EXISTS otlp; CREATE TABLE otlp.t AS SELECT 7 AS x; SELECT x FROM otlp.t;",
-            "--format",
-            "csv",
-        ],
-        env=env,
-        home=tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip().splitlines() == ["x", "7"]
-
-
-def test_query_reads_files_without_a_catalog(tmp_path):
-    env = parquet_mode_env(tmp_path)
-    result = run(
-        ["query", f"SELECT count(*) AS n FROM read_otlp_logs('{DATA_DIR / 'logs_simple.jsonl'}')", "--format", "csv"],
-        env=env,
-        home=tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip().splitlines()[0] == "n"
-
-
-def test_query_from_a_file(tmp_path):
-    env = parquet_mode_env(tmp_path)
-    script = tmp_path / "q.sql"
-    script.write_text("SELECT 42 AS answer;")
-    result = run(["query", "--file", str(script), "--format", "csv"], env=env, home=tmp_path)
-    assert result.returncode == 0, result.stderr
-    assert "42" in result.stdout
-
-
-def test_query_rejects_both_inline_sql_and_file(tmp_path):
-    script = tmp_path / "q.sql"
-    script.write_text("SELECT 1;")
-    result = run(["query", "SELECT 1", "--file", str(script)], env=parquet_mode_env(tmp_path), home=tmp_path)
-    assert result.returncode == 2  # usage error
-    assert "not both" in result.stderr
-
-
-def test_export_round_trips_a_catalog_table(tmp_path):
-    env = parquet_mode_env(tmp_path)
-    seed = run(
-        [
-            "query",
-            "CREATE SCHEMA IF NOT EXISTS otlp; "
-            f"CREATE OR REPLACE TABLE otlp.otlp_logs AS SELECT * FROM read_otlp_logs('{DATA_DIR / 'logs_simple.jsonl'}');",
-        ],
-        env=env,
-        home=tmp_path,
-    )
-    assert seed.returncode == 0, seed.stderr
-
-    out = tmp_path / "dump"
-    result = run(["export", "--signal", "logs", "--to", str(out) + "/"], env=env, home=tmp_path)
-    assert result.returncode == 0, result.stderr
-    assert (out / "logs.parquet").exists()
-
-    back = run(
-        ["query", f"SELECT count(*) AS n FROM read_parquet('{out / 'logs.parquet'}')", "--format", "csv"],
-        env=env,
-        home=tmp_path,
-    )
-    assert back.returncode == 0, back.stderr
-    assert int(back.stdout.strip().splitlines()[1]) > 0
-
-
-def test_export_since_filters_rows(tmp_path):
-    env = parquet_mode_env(tmp_path)
-    seed = run(
-        [
-            "query",
-            "CREATE SCHEMA IF NOT EXISTS otlp; "
-            f"CREATE OR REPLACE TABLE otlp.otlp_logs AS SELECT * FROM read_otlp_logs('{DATA_DIR / 'logs_simple.jsonl'}');",
-        ],
-        env=env,
-        home=tmp_path,
-    )
-    assert seed.returncode == 0, seed.stderr
-
-    # The fixture's timestamps are from 2021, so "the last hour" must select nothing.
-    out = tmp_path / "recent"
-    result = run(
-        ["export", "--signal", "logs", "--since", "-1h", "--to", str(out) + "/", "--format", "csv"],
-        env=env,
-        home=tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    assert len((out / "logs.csv").read_text().strip().splitlines()) == 1  # header only
-
-
-def test_export_rejects_an_unknown_partition_scheme(tmp_path):
-    result = run(
-        ["export", "--partition-by", "hour", "--to", str(tmp_path / "x")],
-        env=parquet_mode_env(tmp_path),
-        home=tmp_path,
-    )
-    assert result.returncode == 1
-    assert "--partition-by" in result.stderr
-
-
-# --------------------------------------------------------------------------------------
-# Per-command flag tables
-#
-# One global flag table used to mean every command silently accepted every flag, so
-# `convert --quack 9494` parsed and then did nothing. Each command now declares the flags it
-# accepts, and a misdirected flag is an error that says where the flag does belong.
-# --------------------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("args", "belongs_to"),
-    [
-        (["convert", "--quack", "9494", "x.pb"], "serve"),
-        (["convert", "--mode", "parquet", "x.pb"], "serve"),
-        (["convert", "--partition-by", "day", "x.pb"], "export"),
-        (["query", "--token", TOKEN, "SELECT 1"], "serve"),
-        (["query", "--signal", "logs", "SELECT 1"], "convert"),
-        (["export", "--http", "4318"], "serve"),
-        (["export", "--file", "script.sql"], "query"),
-        (["--since", "-24h"], "export"),
-        (["--readonly"], "query"),
-    ],
-)
-def test_a_flag_of_another_command_is_rejected_by_name(args, belongs_to, tmp_path):
-    result = run(args, home=tmp_path)
-    assert result.returncode == 2  # usage error
-    assert "does not accept" in result.stderr
-    assert belongs_to in result.stderr
-
-
-def test_an_unknown_flag_names_the_command_whose_help_to_read(tmp_path):
-    result = run(["convert", "--nonsense", "x.pb"], home=tmp_path)
-    assert result.returncode == 2  # usage error
-    assert "Unknown flag" in result.stderr
-    assert "help convert" in result.stderr
-
-
-@pytest.mark.parametrize("command", ["export", "query"])
-def test_export_and_query_accept_the_catalog_selection_flags(command, tmp_path):
-    """export and query read back what `serve` wrote, so they take the flags that choose it.
-
-    Naming a catalog on the command line has to reach the same resolution `serve` uses; the
-    CATALOG_CMDS group in the flag table is what extends those five flags to these commands.
-    """
-    seed = run(
-        [
-            "query",
-            "CREATE SCHEMA IF NOT EXISTS otlp; "
-            f"CREATE OR REPLACE TABLE otlp.otlp_logs AS SELECT * FROM read_otlp_logs('{DATA_DIR / 'logs_simple.jsonl'}');",
-        ],
-        env=parquet_mode_env(tmp_path),
-        home=tmp_path,
-    )
-    assert seed.returncode == 0, seed.stderr
-
-    # The same catalog as parquet_mode_env, but selected entirely by flag.
-    args = [
-        "--mode",
-        "parquet",
-        "--data-dir",
-        str(tmp_path / "data"),
-        "--database",
-        str(tmp_path / "data" / "control.duckdb"),
-        "--schema",
-        "otlp",
-    ]
-    env = {"PARQUET_EXPORT_PATH": str(tmp_path / "data" / "parquet")}
-    if command == "export":
-        args = ["export", "--signal", "logs", "--to", str(tmp_path / "out") + "/", "--format", "csv", *args]
-    else:
-        args = ["query", "SELECT count(*) AS n FROM otlp_logs", "--format", "csv", *args]
-    result = run(args, env=env, home=tmp_path)
-    assert result.returncode == 0, result.stderr
-    if command == "export":
-        assert len((tmp_path / "out" / "logs.csv").read_text().strip().splitlines()) > 1
-    else:
-        assert int(result.stdout.strip().splitlines()[1]) > 0
-
-
-def test_otap_is_a_switch_for_convert_and_a_port_for_serve(tmp_path):
-    # The one flag whose meaning depends on the command: convert reads OTAP files, serve opens
-    # an OTAP/Arrow listener. The flag table settles it, so neither spelling needs a special case.
-    converted = run(
-        ["convert", "--otap", "--signal", "logs", str(DATA_DIR / "logs_simple.jsonl"), "--format", "csv"],
-        home=tmp_path,
-    )
-    assert converted.returncode == 1  # an OTLP fixture read as OTAP, not a usage error
-    assert "does not accept" not in converted.stderr
-
-    served = run(["validate", "--otap", "4317", "--http", "0", "--grpc", "0"], home=tmp_path)
-    assert served.returncode == 0, served.stderr
-    assert "otap:127.0.0.1:4317" in served.stdout
 
 
 # --------------------------------------------------------------------------------------
@@ -731,7 +284,7 @@ def test_the_cli_never_mutates_the_process_environment():
         (["--host", "::1"], {}, "otlp:[::1]:4318"),
         (["--host", "[::1]"], {}, "otlp:[::1]:4318"),
         # The IPv6 wildcard is not loopback, so it needs auth opted out like 0.0.0.0 does.
-        (["--no-auth"], {"DUCKDB_OTLP_TRANSPORTS": "http", "OTEL_HTTP_ADDR": "[::]:4318"}, "otlp:[::]:4318"),
+        (["--no-auth"], {"DUCKDB_OTLP_HOST": "::"}, "otlp:[::]:4318"),
     ],
 )
 def test_ipv6_hosts_are_bracketed_in_the_listener_uri(args, env, expected, tmp_path):
@@ -744,36 +297,6 @@ def test_ipv6_hosts_are_bracketed_in_the_listener_uri(args, env, expected, tmp_p
     result = run(["validate", *args], env=env, home=tmp_path)
     assert result.returncode == 0, result.stderr
     assert expected in result.stdout
-
-
-def test_an_explicit_otel_addr_host_beats_an_inherited_duckdb_otlp_host(tmp_path):
-    """The image sets DUCKDB_OTLP_HOST=0.0.0.0; narrowing the bind must not be widened back.
-
-    Between two environment variables the more specific one wins, so a host spelled out in
-    OTEL_HTTP_ADDR beats the global DUCKDB_OTLP_HOST.
-    """
-    result = run(
-        ["validate"],
-        env={
-            "DUCKDB_OTLP_HOST": "0.0.0.0",
-            "DUCKDB_OTLP_TRANSPORTS": "http",
-            "OTEL_HTTP_ADDR": "127.0.0.1:4318",
-        },
-        home=tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "otlp:127.0.0.1:4318" in result.stdout
-
-
-def test_the_host_flag_still_moves_every_listener(tmp_path):
-    """--host is the most specific thing the user said, so it beats an OTEL_*_ADDR host too."""
-    result = run(
-        ["validate", "--host", "0.0.0.0", "--no-auth"],
-        env={"DUCKDB_OTLP_TRANSPORTS": "http", "OTEL_HTTP_ADDR": "127.0.0.1:4318"},
-        home=tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "otlp:0.0.0.0:4318" in result.stdout
 
 
 def test_quack_zero_disables_quack(tmp_path):
@@ -790,94 +313,12 @@ def test_quack_port_enables_quack(tmp_path):
 
 
 # --------------------------------------------------------------------------------------
-# `query`: trailing semicolons and comments
-#
-# DuckDB gives the last statement of a script everything to the end of the input, so its text
-# arrives with any trailing ';' and comment attached. Splicing that into COPY (...) was a
-# syntax error, and a trailing line comment swallowed the closing paren.
-# --------------------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("sql", "expected"),
-    [
-        ("SELECT 1 AS a -- trailing note", "1"),
-        ("SELECT 1 AS a; -- trailing note", "1"),
-        ("SELECT 1 AS a /* trailing block */", "1"),
-        ("SELECT 1 /* mid */ + 1 AS a", "2"),
-        ("SELECT '-- not a comment' AS a", "-- not a comment"),
-    ],
-)
-def test_query_tolerates_trailing_semicolons_and_comments(sql, expected, tmp_path):
-    result = run(["query", sql, "--format", "csv"], env=parquet_mode_env(tmp_path), home=tmp_path)
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip().splitlines()[1] == expected
-
-
-def test_query_script_ending_in_a_comment(tmp_path):
-    script = tmp_path / "script.sql"
-    script.write_text("CREATE OR REPLACE TEMP TABLE t AS SELECT 2 AS b; -- setup\nSELECT * FROM t -- a\n; -- b\n")
-    result = run(
-        ["query", "--file", str(script), "--format", "csv"],
-        env=parquet_mode_env(tmp_path),
-        home=tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip().splitlines()[1] == "2"
-
-
-def test_query_preserves_ordering_through_the_output_view(tmp_path):
-    result = run(
-        ["query", "SELECT * FROM (VALUES (3),(1),(2)) t(n) ORDER BY n", "--format", "csv"],
-        env=parquet_mode_env(tmp_path),
-        home=tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip().splitlines()[1:] == ["1", "2", "3"]
-
-
-def test_query_format_box_renders_an_actual_box(tmp_path):
-    """`--format box` must go through DuckDB's BoxRenderer, not MaterializedQueryResult::ToString().
-
-    ToString() is a debug rendering: it emits a column-types row and a "[ Rows: N]" line
-    *ahead* of the data and draws no box at all, so `--format box` silently produced
-    something that was neither a box nor the `duckdb` CLI's output.
-    """
-    result = run(
-        ["query", "SELECT 'cart-service' AS service_name, 19 AS p95_ms", "--format", "box"],
-        env=parquet_mode_env(tmp_path),
-        home=tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "┌" in result.stdout and "└" in result.stdout, result.stdout
-    assert "│ service_name │" in result.stdout.replace("  ", " "), result.stdout
-    assert "cart-service" in result.stdout
-    # The ToString() debug form's tell-tale footer must be gone.
-    assert "[ Rows:" not in result.stdout, result.stdout
-
-
-# --------------------------------------------------------------------------------------
 # Ergonomics: a mistake must not start a server
 #
 # A bare `duckdb-otlp` means serve, and unrecognized argv used to fall through to it — so
-# `duckdb-otlp covert traces.pb` bound ports and created a DuckLake instead of reporting a
+# `duckdb-otlp srve` bound ports and created a DuckLake instead of reporting a
 # typo, and the two stray words were never mentioned.
 # --------------------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("word", "expected"),
-    [
-        ("covert", "duckdb-otlp convert"),
-        ("expor", "duckdb-otlp export"),
-        ("quer", "duckdb-otlp query"),
-    ],
-)
-def test_a_mistyped_subcommand_is_rejected_with_a_suggestion(word, expected, tmp_path):
-    result = run([word], home=tmp_path, timeout=30)
-    assert result.returncode == 2  # usage error
-    assert "Unknown command" in result.stderr
-    assert expected in result.stderr
 
 
 def test_an_unrecognizable_word_gets_no_guess(tmp_path):
@@ -887,114 +328,10 @@ def test_an_unrecognizable_word_gets_no_guess(tmp_path):
     assert "Did you mean" not in result.stderr
 
 
-def test_a_file_without_a_subcommand_suggests_convert(tmp_path):
-    result = run([str(DATA_DIR / "otlp_traces.pb")], home=tmp_path, timeout=30)
-    assert result.returncode == 2  # usage error
-    assert "duckdb-otlp convert" in result.stderr
-
-
-@pytest.mark.parametrize("command", ["serve", "validate", "doctor"])
-def test_commands_that_take_no_files_reject_them(command, tmp_path):
-    result = run([command, "some-file.pb"], home=tmp_path, timeout=30)
-    assert result.returncode == 2  # usage error
-    assert "takes no file arguments" in result.stderr
-
-
-# --------------------------------------------------------------------------------------
-# Ergonomics: errors name the problem, not the SQL we generated
-# --------------------------------------------------------------------------------------
-
-
-def test_a_missing_input_file_does_not_echo_generated_sql(tmp_path):
-    result = run(["convert", "nope.pb", "--signal", "traces"], home=tmp_path)
-    assert result.returncode == 1
-    assert "nope.pb" in result.stderr
-    assert "COPY" not in result.stderr
-
-
-def test_a_query_syntax_error_still_shows_the_users_own_sql(tmp_path):
-    """The echo is only noise when the user did not write the statement."""
-    result = run(["query", "SELCT 1"], env=parquet_mode_env(tmp_path), home=tmp_path)
-    assert result.returncode == 1
-    assert "SELCT 1" in result.stderr
-    assert "TEMP VIEW" not in result.stderr
-
-
-# --------------------------------------------------------------------------------------
-# Ergonomics: `export` works on a catalog holding only some signals
-# --------------------------------------------------------------------------------------
-
-
-def _seed_logs_only(tmp_path):
-    seed = run(
-        [
-            "query",
-            "CREATE SCHEMA IF NOT EXISTS otlp; "
-            f"CREATE OR REPLACE TABLE otlp.otlp_logs AS SELECT * FROM read_otlp_logs('{DATA_DIR / 'logs_simple.jsonl'}');",
-        ],
-        env=parquet_mode_env(tmp_path),
-        home=tmp_path,
-    )
-    assert seed.returncode == 0, seed.stderr
-
-
-def test_export_all_skips_signals_the_catalog_does_not_hold(tmp_path):
-    """A logs-only catalog is the common case; `export` used to die on traces and write nothing."""
-    _seed_logs_only(tmp_path)
-    out = tmp_path / "dump"
-    result = run(["export", "--to", str(out) + "/"], env=parquet_mode_env(tmp_path), home=tmp_path)
-    assert result.returncode == 0, result.stderr
-    assert (out / "logs.parquet").exists()
-    assert "Skipped" in result.stderr and "traces" in result.stderr
-
-
-def test_export_of_an_explicitly_named_missing_signal_still_fails(tmp_path):
-    _seed_logs_only(tmp_path)
-    result = run(
-        ["export", "--signal", "traces", "--to", str(tmp_path / "d2") + "/"],
-        env=parquet_mode_env(tmp_path),
-        home=tmp_path,
-    )
-    assert result.returncode == 1
-    assert "otlp_traces" in result.stderr
-
-
-def test_export_of_an_empty_catalog_says_so(tmp_path):
-    result = run(
-        ["export", "--to", str(tmp_path / "d3") + "/", "--schema", "nosuch"],
-        env=parquet_mode_env(tmp_path),
-        home=tmp_path,
-    )
-    assert result.returncode == 1
-    assert "Nothing to export" in result.stderr
-
-
-# --------------------------------------------------------------------------------------
-# Ergonomics: `query` handles the statements people actually explore with
-# --------------------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("sql", ["SHOW TABLES", "DESCRIBE otlp_logs", "SUMMARIZE SELECT 1 AS a"])
-def test_query_supports_show_describe_and_summarize(sql, tmp_path):
-    """DuckDB types these as SELECT but rejects them as a COPY subquery or a view body."""
-    _seed_logs_only(tmp_path)
-    result = run(["query", sql, "--format", "csv"], env=parquet_mode_env(tmp_path), home=tmp_path)
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip()
-
-
-def test_query_does_not_leak_its_own_helper_view(tmp_path):
-    """The redirect used to create a named temp view, which `SHOW TABLES` then listed."""
-    _seed_logs_only(tmp_path)
-    result = run(["query", "SHOW TABLES", "--format", "csv"], env=parquet_mode_env(tmp_path), home=tmp_path)
-    assert result.returncode == 0, result.stderr
-    assert "duckdb_otlp_query_result" not in result.stdout
-
-
 @pytest.mark.parametrize("command", ["doctor", "healthcheck"])
 def test_doctor_names_the_listener_it_could_not_reach(command, tmp_path):
     """`healthcheck` stays accepted: the container HEALTHCHECK and compose probes call it."""
-    result = run([command], env={"DUCKDB_OTLP_TRANSPORTS": "grpc"}, home=tmp_path, timeout=30)
+    result = run([command], env={"DUCKDB_OTLP_GRPC_PORT": "4317"}, home=tmp_path, timeout=30)
     assert result.returncode == 1
     assert "FAIL" in result.stdout and "4317" in result.stdout
 
@@ -1024,7 +361,7 @@ def test_doctor_reports_each_check_that_passed(tmp_path):
         try:
             result = run(
                 ["doctor"],
-                env={"DUCKDB_OTLP_TRANSPORTS": "http", "OTEL_HTTP_ADDR": f"127.0.0.1:{httpd.server_port}"},
+                env={"DUCKDB_OTLP_HTTP_PORT": str(httpd.server_port)},
                 home=tmp_path,
                 timeout=30,
             )
@@ -1033,97 +370,6 @@ def test_doctor_reports_each_check_that_passed(tmp_path):
         finally:
             httpd.shutdown()
             thread.join()
-
-
-@pytest.mark.parametrize(("typo", "expected"), [("healthchek", "doctor"), ("sqll", "query")])
-def test_a_typo_of_an_alias_suggests_the_canonical_command(typo, expected, tmp_path):
-    result = run([typo], home=tmp_path, timeout=30)
-    assert result.returncode == 2  # usage error
-    assert f"duckdb-otlp {expected}" in result.stderr
-
-
-# --------------------------------------------------------------------------------------
-# Output files: the format follows the extension, and a directory is spelled like one
-# --------------------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("name", "magic"),
-    [("out.parquet", b"PAR1"), ("out.csv", b"start_time"), ("out.ndjson", b'{"')],
-)
-def test_convert_format_follows_the_output_extension(name, magic, tmp_path):
-    """`--to out.csv` used to write Parquet into it, which is a mislabelled artifact."""
-    out = tmp_path / name
-    result = run(
-        ["convert", str(DATA_DIR / "otlp_traces.pb"), "--signal", "traces", "--to", str(out)],
-        home=tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    assert out.read_bytes()[:10].startswith(magic[:4])
-
-
-def test_an_explicit_format_still_beats_the_extension(tmp_path):
-    out = tmp_path / "lies.csv"
-    result = run(
-        ["convert", str(DATA_DIR / "otlp_traces.pb"), "--signal", "traces", "--to", str(out), "--format", "parquet"],
-        home=tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    assert out.read_bytes()[:4] == b"PAR1"
-
-
-def test_query_format_follows_the_output_extension(tmp_path):
-    out = tmp_path / "q.parquet"
-    result = run(["query", "SELECT 1 AS a", "--to", str(out)], env=parquet_mode_env(tmp_path), home=tmp_path)
-    assert result.returncode == 0, result.stderr
-    assert out.read_bytes()[:4] == b"PAR1"
-
-
-def test_several_signals_to_a_file_path_is_an_error_not_a_surprise_directory(tmp_path):
-    """The output shape must follow the command, not the data: `--to out` was a file for a
-    traces input and a directory for a metrics one."""
-    out = tmp_path / "out"
-    result = run(
-        ["convert", str(DATA_DIR / "metrics_all_types.jsonl"), "--signal", "metrics", "--to", str(out)],
-        home=tmp_path,
-    )
-    assert result.returncode == 1
-    assert "names a file" in result.stderr
-    assert not out.exists()
-
-
-def test_a_trailing_slash_writes_a_directory_of_signals(tmp_path):
-    out = tmp_path / "out"
-    result = run(
-        ["convert", str(DATA_DIR / "metrics_all_types.jsonl"), "--signal", "metrics", "--to", str(out) + "/"],
-        home=tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    assert (out / "metrics_gauge.parquet").exists()
-
-
-@pytest.mark.parametrize("fmt", ["json", "ndjson"])
-def test_json_output_works(fmt, tmp_path):
-    """Documented since the CLI landed, but the json COPY function was not in the binary."""
-    result = run(
-        ["convert", str(DATA_DIR / "otlp_traces.pb"), "--signal", "traces", "--format", fmt],
-        home=tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.lstrip().startswith(("[", "{"))
-
-
-def test_convert_all_skips_readers_the_input_does_not_match(tmp_path):
-    """One OTLP file holds one signal family, so `--signal all` used to write traces.parquet
-    and then die on the logs reader, leaving partial output and a non-zero exit."""
-    out = tmp_path / "all"
-    result = run(
-        ["convert", str(DATA_DIR / "otlp_traces.pb"), "--signal", "all", "--to", str(out) + "/"],
-        home=tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    assert (out / "traces.parquet").exists()
-    assert "Skipped" in result.stderr
 
 
 def test_validate_does_not_claim_to_start_a_server(tmp_path):
@@ -1139,12 +385,6 @@ def test_the_banner_names_where_data_lands_not_just_the_control_database(tmp_pat
     assert result.returncode == 0, result.stderr
     assert "Data: " in result.stdout
     assert "(control)" in result.stdout
-
-
-def test_dash_f_with_a_sql_file_suggests_the_file_flag(tmp_path):
-    result = run(["query", "-f", "script.sql"], env=parquet_mode_env(tmp_path), home=tmp_path)
-    assert result.returncode == 2  # usage error
-    assert "--file script.sql" in result.stderr
 
 
 def test_help_lists_the_modes(tmp_path):
@@ -1172,8 +412,7 @@ def test_the_startup_banner_is_visible_while_the_server_runs(tmp_path):
         "DUCKDB_MODE": "parquet",
         "DUCKDB_DATABASE": ":memory:",
         "PARQUET_EXPORT_PATH": str(tmp_path / "pq"),
-        "DUCKDB_OTLP_TRANSPORTS": "http",
-        "OTEL_HTTP_ADDR": f"127.0.0.1:{free_port()}",
+        "DUCKDB_OTLP_HTTP_PORT": str(free_port()),
         "DUCKDB_OTLP_STARTUP_TIMEOUT": "30",
     }
     with log.open("w") as handle:
@@ -1199,47 +438,15 @@ def test_the_startup_banner_is_visible_while_the_server_runs(tmp_path):
                 process.wait()
 
 
-@pytest.mark.parametrize(
-    ("args", "code"),
-    [
-        (["version"], 0),
-        (["nonsense"], 2),
-        (["convert", "--bogus", "x.pb"], 2),
-        (["query"], 2),
-        (["doctor"], 1),
-    ],
-)
-def test_a_usage_error_exits_2_and_a_failure_exits_1(args, code, tmp_path):
-    """One exit code for everything forces a caller to parse stderr to tell a typo from a
-    real failure."""
-    result = run(args, env={"DUCKDB_OTLP_TRANSPORTS": "grpc"}, home=tmp_path, timeout=30)
-    assert result.returncode == code, result.stderr
-
-
 def test_doctor_json_is_parseable_and_agrees_with_the_exit_code(tmp_path):
     import json
 
-    result = run(["doctor", "--json"], env={"DUCKDB_OTLP_TRANSPORTS": "grpc"}, home=tmp_path, timeout=30)
+    result = run(["doctor", "--json"], env={"DUCKDB_OTLP_GRPC_PORT": "4317"}, home=tmp_path, timeout=30)
     assert result.returncode == 1
     report = json.loads(result.stdout)
     assert report["healthy"] is False
     assert [check["ok"] for check in report["checks"]] == [False]
     assert report["checks"][0]["check"] == "OTLP grpc"
-
-
-def test_json_is_only_a_doctor_flag(tmp_path):
-    result = run(["convert", "--json", "x.pb"], home=tmp_path)
-    assert result.returncode == 2
-    assert "it is a flag of: doctor" in result.stderr
-
-
-def test_the_catalog_flag_help_appears_on_both_pages_that_take_those_flags(tmp_path):
-    """The block is one shared constant; a bad hoist silently dropped it from both pages."""
-    for command in ("export", "query"):
-        result = run(["help", command], home=tmp_path)
-        assert result.returncode == 0, result.stderr
-        assert result.stdout.count("Catalog selection") == 1, command
-        assert "--catalog NAME" in result.stdout
 
 
 def test_an_ipv6_host_is_bracketed_in_the_quack_address_too(tmp_path):
@@ -1254,280 +461,41 @@ def test_an_ipv6_host_is_bracketed_in_the_quack_address_too(tmp_path):
     assert "otlp:[::1]:4318" in result.stdout
 
 
-def seed_parquet_dataset(tmp_path, env, table="otlp_logs", fixture="logs_simple.jsonl"):
-    """Write the exact partitioned layout the serve-side seal produces.
-
-    Reproducing the COPY rather than running a server keeps this deterministic and offline;
-    the shape is what matters (year=/month=/day= in the PATH, WRITE_PARTITION_COLUMNS false,
-    so the files carry only the signal's own columns).
-    """
-    root = Path(env["PARQUET_EXPORT_PATH"]) / table
-    reader = "read_otlp_logs" if table == "otlp_logs" else "read_otlp_traces"
-    time_column = "time_unix_nano" if table == "otlp_logs" else "start_time_unix_nano"
-    result = run(
-        [
-            "query",
-            f"COPY (SELECT *, strftime({time_column}, '%Y') AS year, strftime({time_column}, '%m') AS month, "
-            f"strftime({time_column}, '%d') AS day FROM {reader}('{DATA_DIR / fixture}')) "
-            f"TO '{root}' (FORMAT PARQUET, PARTITION_BY (year, month, day), APPEND, "
-            "FILENAME_PATTERN 'seal_{uuid}', WRITE_PARTITION_COLUMNS false)",
-        ],
-        env=env,
-        home=tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    return root
+@pytest.mark.parametrize(
+    ("args", "belongs_to"),
+    [
+        (["doctor", "--init-sql", "x.sql"], "serve, validate"),
+        (["validate", "--json"], "doctor"),
+        (["doctor", "--dry-run"], "serve, validate"),
+    ],
+)
+def test_a_flag_of_another_command_is_rejected_by_name(args, belongs_to, tmp_path):
+    """doctor must not run operator SQL (the container HEALTHCHECK calls it on every probe)."""
+    result = run(args, home=tmp_path)
+    assert result.returncode == 2  # usage error
+    assert "does not accept" in result.stderr
+    assert belongs_to in result.stderr
 
 
-def test_query_reads_the_parquet_dataset_by_signal_name(tmp_path):
-    """`parquet` mode has no catalog, so `FROM otlp_logs` used to dead-end with "Table with
-    name otlp_logs does not exist" even though serve had written the rows."""
-    env = parquet_mode_env(tmp_path)
-    seed_parquet_dataset(tmp_path, env)
-
-    result = run(["query", "SELECT count(*) AS n FROM otlp_logs", "--format", "csv"], env=env, home=tmp_path)
-    assert result.returncode == 0, result.stderr
-    assert int(result.stdout.strip().splitlines()[1]) > 0
+@pytest.mark.parametrize(("word", "expected"), [("valdate", "validate"), ("doctr", "doctor"), ("healthchek", "doctor")])
+def test_a_mistyped_subcommand_is_rejected_with_a_suggestion(word, expected, tmp_path):
+    """A bare `duckdb-otlp` means serve, so a typo must not fall through and bind ports."""
+    result = run([word], home=tmp_path, timeout=30)
+    assert result.returncode == 2  # usage error
+    assert "Unknown command" in result.stderr
+    assert f"duckdb-otlp {expected}" in result.stderr
 
 
-def test_parquet_dataset_view_has_the_same_columns_as_a_catalog_table(tmp_path):
-    """read_parquet infers year/month/day from the directory names; left on, every exported
-    row carried three columns a catalog mode's export does not have."""
-    env = parquet_mode_env(tmp_path)
-    seed_parquet_dataset(tmp_path, env)
-
-    via_view = run(["query", "SELECT * FROM otlp_logs LIMIT 0", "--format", "csv"], env=env, home=tmp_path)
-    direct = run(
-        ["query", f"SELECT * FROM read_otlp_logs('{DATA_DIR / 'logs_simple.jsonl'}') LIMIT 0", "--format", "csv"],
-        env=env,
-        home=tmp_path,
-    )
-    assert via_view.returncode == 0, via_view.stderr
-    assert direct.returncode == 0, direct.stderr
-    assert via_view.stdout.strip() == direct.stdout.strip()
-    for partition_column in ("year", "month", "day"):
-        assert partition_column not in via_view.stdout.strip().split(",")
+@pytest.mark.parametrize("command", ["serve", "validate", "doctor"])
+def test_commands_reject_positional_arguments(command, tmp_path):
+    result = run([command, "some-file.pb"], home=tmp_path, timeout=30)
+    assert result.returncode == 2  # usage error
+    assert "takes no arguments" in result.stderr
 
 
-def test_export_reads_the_parquet_dataset(tmp_path):
-    env = parquet_mode_env(tmp_path)
-    seed_parquet_dataset(tmp_path, env)
-
-    out = tmp_path / "dump"
-    result = run(["export", "--signal", "logs", "--to", str(out) + "/"], env=env, home=tmp_path)
-    assert result.returncode == 0, result.stderr
-    assert (out / "logs.parquet").exists()
-
-
-def test_export_skips_signals_absent_from_the_dataset(tmp_path):
-    """`--signal all` stays a clean skip, so a logs-only dataset does not fail the export."""
-    env = parquet_mode_env(tmp_path)
-    seed_parquet_dataset(tmp_path, env)
-
-    out = tmp_path / "all"
-    result = run(["export", "--to", str(out) + "/"], env=env, home=tmp_path)
-    assert result.returncode == 0, result.stderr
-    assert (out / "logs.parquet").exists()
-    assert "Skipped" in result.stderr
-    assert "traces" in result.stderr
-    # The wording has to match the mode: this one has no catalog to be "not in" yet.
-    assert "dataset" in result.stderr
-
-
-def test_export_names_the_dataset_when_there_is_nothing_to_export(tmp_path):
-    """The catalog wording advised running serve to create tables -- a state `parquet` mode
-    never reaches, because ingest lands in the dataset rather than in a catalog."""
-    env = parquet_mode_env(tmp_path)
-    result = run(["export", "--to", str(tmp_path / "out") + "/"], env=env, home=tmp_path)
-    assert result.returncode != 0
-    assert "no Parquet files under" in result.stderr
-    assert env["PARQUET_EXPORT_PATH"] in result.stderr
-
-
-def test_parquet_dataset_is_readable_with_a_read_only_database(tmp_path):
-    """A read-only database cannot hold a view, so the session-scoped fallback has to work."""
-    env = parquet_mode_env(tmp_path)
-    seed_parquet_dataset(tmp_path, env)
-
-    result = run(
-        ["query", "SELECT count(*) AS n FROM otlp_logs", "--format", "csv", "--readonly"], env=env, home=tmp_path
-    )
-    assert result.returncode == 0, result.stderr
-    assert int(result.stdout.strip().splitlines()[1]) > 0
-
-
-def test_partitioned_export_creates_a_missing_output_directory(tmp_path):
-    """DuckDB's partitioned COPY creates the year=/month=/day= levels but not the root above
-    them, and its directory creation is not recursive, so this failed with "Failed to create
-    directory <root>/<table>". The unpartitioned path has always created its parent."""
-    env = parquet_mode_env(tmp_path)
-    seed_parquet_dataset(tmp_path, env)
-
-    out = tmp_path / "does-not-exist-yet"
-    result = run(
-        ["export", "--signal", "logs", "--partition-by", "day", "--to", str(out) + "/"], env=env, home=tmp_path
-    )
-    assert result.returncode == 0, result.stderr
-    assert list(out.glob("otlp_logs/year=*/month=*/day=*/*.parquet"))
-    # The reported path is the directory actually written, with no doubled separator.
-    assert f"Wrote {out}/otlp_logs/" in result.stderr
-
-
-def test_partitioned_export_creates_a_nested_missing_directory(tmp_path):
-    env = parquet_mode_env(tmp_path)
-    seed_parquet_dataset(tmp_path, env)
-
-    out = tmp_path / "a" / "b" / "c"
-    result = run(
-        ["export", "--signal", "logs", "--partition-by", "day", "--to", str(out) + "/"], env=env, home=tmp_path
-    )
-    assert result.returncode == 0, result.stderr
-    assert list(out.glob("otlp_logs/year=*/month=*/day=*/*.parquet"))
-
-
-@pytest.mark.parametrize("extra", [[], ["--partition-by", "day"]])
-def test_remote_output_does_not_create_a_local_directory(extra, tmp_path):
-    """An `s3://` destination is a URI, not a path. std::filesystem does not reject one -- it
-    builds a literal "s3:/bucket/prefix" tree under the working directory -- so exporting to
-    object storage quietly littered wherever the command happened to run.
-
-    Runs with cwd set to tmp_path rather than the repo, since the bug's whole symptom is
-    creating directories relative to the working directory.
-    """
-    env = parquet_mode_env(tmp_path)
-    seed_parquet_dataset(tmp_path, env)
-
-    cwd = tmp_path / "cwd"
-    cwd.mkdir()
-    result = subprocess.run(
-        [str(SERVER_BIN), "export", "--signal", "logs", "--to", "s3://fake-bucket/dump/", *extra],
-        env={"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path), **env},
-        capture_output=True,
-        text=True,
-        timeout=120,
-        cwd=str(cwd),
-    )
-    # It fails for want of httpfs, which is the honest error; what matters is what it did NOT
-    # leave behind on the way there.
-    assert "httpfs" in result.stderr
-    assert not (cwd / "s3:").exists()
-    assert list(cwd.iterdir()) == []
-
-
-def control_db_view_count(tmp_path, env):
-    """Views in the control database, read WITHOUT triggering registration (`--mode none`)."""
-    result = run(
-        [
-            "query",
-            "--mode",
-            "none",
-            "--database",
-            env["DUCKDB_DATABASE"],
-            "SELECT count(*) AS n FROM duckdb_views() WHERE NOT internal",
-            "--format",
-            "csv",
-        ],
-        env={"PATH": os.environ.get("PATH", "")},
-        home=tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    return int(result.stdout.strip().splitlines()[1])
-
-
-def test_query_only_probes_the_signals_its_sql_names(tmp_path):
-    """Registering a view costs a directory listing per signal -- a remote LIST against an
-    `s3://` root -- so `query "SELECT 1"` must not pay for six of them."""
-    env = parquet_mode_env(tmp_path)
-    seed_parquet_dataset(tmp_path, env)
-
-    naming_nothing = run(["query", "SELECT 1 AS x", "--format", "csv"], env=env, home=tmp_path)
-    assert naming_nothing.returncode == 0, naming_nothing.stderr
-    assert control_db_view_count(tmp_path, env) == 0
-
-    naming_logs = run(["query", "SELECT count(*) FROM otlp_logs", "--format", "csv"], env=env, home=tmp_path)
-    assert naming_logs.returncode == 0, naming_logs.stderr
-    assert control_db_view_count(tmp_path, env) == 1
-
-
-def test_seal_created_view_and_cli_view_share_one_definition(tmp_path):
-    """The seal path already creates a view over the dataset after each successful export, and
-    the CLI creates one for a dataset this host has never sealed. Two hand-copied globs and two
-    sets of read_parquet options is how they would silently stop agreeing -- both now build the
-    SELECT from ParquetDatasetSelect, so the recorded definitions must match."""
-    env = parquet_mode_env(tmp_path)
-    seed_parquet_dataset(tmp_path, env)
-
-    # Force the CLI to define it, then read back what was recorded.
-    assert run(["query", "SELECT count(*) FROM otlp_logs"], env=env, home=tmp_path).returncode == 0
-    definition = run(
-        [
-            "query",
-            "--mode",
-            "none",
-            "--database",
-            env["DUCKDB_DATABASE"],
-            "SELECT sql FROM duckdb_views() WHERE view_name = 'otlp_logs'",
-            "--format",
-            "csv",
-        ],
-        env={"PATH": os.environ.get("PATH", "")},
-        home=tmp_path,
-    )
-    assert definition.returncode == 0, definition.stderr
-    body = definition.stdout
-    assert "/otlp_logs/**/*.parquet" in body
-    # Both options are load-bearing and must survive: hive_partitioning would append
-    # year/month/day columns no catalog mode has, union_by_name lets a schema change read.
-    assert "hive_partitioning" in body
-    assert "union_by_name" in body
-
-
-def test_a_stray_temp_view_does_not_fool_a_catalog_mode(tmp_path):
-    """ExistingSignalTables answers "can I SELECT from catalog.schema.table". An unscoped
-    `temporary` arm matched every temp view in the session, so an --init-sql script defining one
-    named like a signal made `export --signal all` claim it existed and then fail binding it."""
-    init = tmp_path / "init.sql"
-    init.write_text("CREATE TEMP VIEW otlp_traces AS SELECT 1 AS x;\n")
-    result = run(
-        ["export", "--to", str(tmp_path / "out") + "/", "--init-sql", str(init)],
-        env={"DUCKDB_OTLP_DATA_DIR": str(tmp_path / "data")},
-        home=tmp_path,
-    )
-    # Nothing was ingested, so every signal is absent: the honest answer is "nothing to
-    # export", not a binder error about otlp_traces.
-    assert result.returncode != 0
-    assert "Nothing to export" in result.stderr
-    assert "Binder Error" not in result.stderr
-    assert "otlp_traces does not exist" not in result.stderr
-
-
-def test_registering_nothing_leaves_no_schema_behind(tmp_path):
-    """The schema was created before the probe loop, so a query against a dataset with no files
-    left a stray empty schema in the control database."""
-    env = parquet_mode_env(tmp_path)
-    run(["query", "SELECT count(*) FROM otlp_logs"], env=env, home=tmp_path)
-
-    def schema_count():
-        result = run(
-            [
-                "query",
-                "--mode",
-                "none",
-                "--database",
-                env["DUCKDB_DATABASE"],
-                f"SELECT count(*) AS n FROM duckdb_schemas() WHERE schema_name = '{env['DUCKDB_SCHEMA'] if 'DUCKDB_SCHEMA' in env else 'otlp'}'",
-                "--format",
-                "csv",
-            ],
-            env={"PATH": os.environ.get("PATH", "")},
-            home=tmp_path,
-        )
-        assert result.returncode == 0, result.stderr
-        return int(result.stdout.strip().splitlines()[1])
-
-    assert schema_count() == 0
-
-    # Once the dataset has files, the view — and only then the schema — is created.
-    seed_parquet_dataset(tmp_path, env)
-    assert run(["query", "SELECT count(*) FROM otlp_logs"], env=env, home=tmp_path).returncode == 0
-    assert schema_count() == 1
+@pytest.mark.parametrize(
+    ("args", "code"), [(["version"], 0), (["nonsense"], 2), (["doctor", "--bogus"], 2), (["doctor"], 1)]
+)
+def test_a_usage_error_exits_2_and_a_failure_exits_1(args, code, tmp_path):
+    result = run(args, env={"DUCKDB_OTLP_GRPC_PORT": "4317"}, home=tmp_path, timeout=30)
+    assert result.returncode == code, result.stderr

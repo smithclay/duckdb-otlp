@@ -6,16 +6,11 @@
 
 namespace duckdb {
 
-// The gRPC transport bridge. These two entry points are transport-agnostic
-// buffering helpers that the gRPC FFI callback invokes; they reuse the same
-// admission + stage + group-commit machinery as the HTTP ingest path, so the
-// seal/storage core has exactly one implementation. They are compiled on every
-// platform (they touch only Arrow + the buffer path, not the gRPC FFI).
+// Entry points the gRPC FFI callbacks reach; they share the HTTP path's admission and seal machinery.
 
 OtlpIngestStatus OtlpServer::IngestDecodedArrowBatch(OtlpSignalType signal_type, idx_t input_bytes, ArrowArray &array,
                                                      ArrowSchema &schema) {
-	// Mirror the admission discipline of Ingest(): reserve the wire bytes up front
-	// so concurrent streams cannot all pass the check and overshoot max_buffered_bytes.
+	// Reserve up front, as Ingest() does, so concurrent streams cannot overshoot max_buffered_bytes.
 	auto reservation_bytes = MaxValue<idx_t>(input_bytes, 1024);
 	idx_t admitted_before = 0;
 	if (!TryReserveAdmission(reservation_bytes, admitted_before)) {
@@ -25,9 +20,7 @@ OtlpIngestStatus OtlpServer::IngestDecodedArrowBatch(OtlpSignalType signal_type,
 	OtlpIngestResult result;
 	idx_t unclaimed_admission = reservation_bytes;
 	try {
-		// Stage off to the side, then move into the live buffer (CommitStaged sets
-		// unclaimed_admission to 0 once the rows are attributed). The array/schema are
-		// borrowed from the Rust caller: StageArrowBatch copies the rows out and never releases.
+		// array/schema are borrowed from Rust: StageArrowBatch copies the rows and never releases them.
 		vector<StagedSignal> staged;
 		auto stage = StageArrowBatch(signal_type, array, schema);
 		if (stage.rows > 0) {
@@ -44,8 +37,6 @@ OtlpIngestStatus OtlpServer::IngestDecodedArrowBatch(OtlpSignalType signal_type,
 }
 
 bool OtlpServer::CheckGrpcAuth(const string &authorization) const {
-	// gRPC carries the bearer token in the `authorization` metadata; reuse the
-	// HTTP auth check (x-api-key has no gRPC equivalent, so pass it empty).
 	return CheckAuth(authorization, "");
 }
 
@@ -53,10 +44,7 @@ bool OtlpServer::CheckGrpcAuth(const string &authorization) const {
 
 namespace {
 
-// C-linkage thunks handed to the otlp2records gRPC server. They recover the
-// OtlpServer from the opaque user_data and forward to the bridge methods above.
-// Any exception is contained and mapped to a status (a throw must never cross
-// back into Rust).
+// C-linkage thunks for the otlp2records gRPC server; an exception must never cross back into Rust.
 extern "C" {
 
 static OtlpIngestStatus OtlpGrpcBatchThunk(void *user_data, OtlpSignalType signal_type, uint64_t stream_id,
@@ -102,15 +90,10 @@ public:
 
 	void Start() override {
 		auto &uri = spec.uri;
-		// Bind address: bracket IPv6 literals so "host:port" parses unambiguously.
 		string addr = uri.IPv6() ? "[" + uri.Host() + "]:" + std::to_string(uri.Port())
 		                         : uri.Host() + ":" + std::to_string(uri.Port());
 		char err_buf[256] = {0};
-		// service_flags selects the gRPC service family for this listener (OTLP/gRPC unary for
-		// otlp_serve(grpc), OTAP/Arrow for otap_serve), keeping the two disjoint. Cap a single
-		// received gRPC message at the same per-request body limit as the HTTP path, so one OTLP
-		// Export / OTAP BatchArrowRecords shares one size bound across transports (else tonic's
-		// 4 MiB default would differ). The callbacks reach the shared server, not this listener.
+		// max_body_bytes caps one gRPC message, so both transports share one size bound (not tonic's 4 MiB).
 		handle = otlp_grpc_server_start_with_profile(addr.data(), addr.size(), &OtlpGrpcBatchThunk, &OtlpGrpcAuthThunk,
 		                                             static_cast<void *>(&server), spec.grpc_service_flags,
 		                                             static_cast<uint64_t>(server.Config().max_body_bytes),
@@ -123,17 +106,14 @@ public:
 	}
 
 	void StopAccepting() override {
-		// The gRPC graceful shutdown + runtime join happens in Close(); it must not run here
-		// because a request-handler (tokio worker) thread would deadlock joining its own runtime.
+		// The runtime join is in Close(): from a tokio worker thread it would deadlock.
 		is_running.store(false);
 	}
 
 	void Close() override {
 		StopAccepting();
 		if (handle) {
-			// Graceful shutdown: stop accepting, drain in-flight requests (bounded), join the
-			// runtime threads, then free. Runs before the server's final seal so in-flight
-			// requests' buffered rows are included.
+			// Drains in-flight requests (bounded); runs before the server's final seal so their rows are included.
 			otlp_grpc_server_stop(handle, 5000);
 			otlp_grpc_server_free(handle);
 			handle = nullptr;

@@ -43,23 +43,22 @@ duckdb-otlp --host 0.0.0.0 --token "$TOKEN"  # a non-loopback bind requires a to
 
 ## Docker daemon transports
 
-The image starts HTTP by default. Choose standard OTLP
-listeners with `DUCKDB_OTLP_TRANSPORTS`, or with the `--http`/`--grpc` flags
-(and the matching `DUCKDB_OTLP_HTTP_PORT` / `DUCKDB_OTLP_GRPC_PORT` variables),
-which take precedence over the transport list:
+The image starts OTLP/HTTP on `0.0.0.0:4318` (`DUCKDB_OTLP_HTTP_PORT=4318`). Each
+port setting selects its listener; `0` turns one off:
 
-| Setting | Listeners |
+| Setting | Listener |
 | --- | --- |
-| `http` (default) | OTLP/HTTP on `OTEL_HTTP_ADDR` (default `0.0.0.0:4318`) |
-| `grpc` | Standard OTLP/gRPC on `OTEL_GRPC_ADDR` (default `0.0.0.0:4317`) |
-| `http,grpc` | Both, on separate ports |
+| `--http PORT` / `DUCKDB_OTLP_HTTP_PORT` | OTLP/HTTP |
+| `--grpc PORT` / `DUCKDB_OTLP_GRPC_PORT` | Standard OTLP/gRPC |
+| `--otap PORT` / `DUCKDB_OTLP_OTAP_PORT` | OTAP/Arrow (cannot be combined with the two above) |
 
-For example, accept both protocols into the same local DuckLake:
+All of them bind `--host` / `DUCKDB_OTLP_HOST`. For example, accept both protocols
+into the same local DuckLake:
 
 ```sh
 docker run --rm -p 4317:4317 -p 4318:4318 \
   -e DUCKDB_MODE=local-ducklake \
-  -e DUCKDB_OTLP_TRANSPORTS=http,grpc \
+  -e DUCKDB_OTLP_GRPC_PORT=4317 \
   -e DUCKDB_OTLP_TOKEN=replace-with-a-private-token \
   -v otlp-data:/data ghcr.io/smithclay/duckdb-otlp:latest
 ```
@@ -69,16 +68,8 @@ buffers, writer, and maintenance schedule. `DUCKDB_OTLP_MAX_BUFFERED_BYTES` and
 `DUCKDB_OTLP_SEAL_TARGET_BYTES` apply to the whole process, not to each
 listener. Startup must succeed for every listener. On shutdown the daemon stops
 every listener, then drains the shared buffers once. If a later listener cannot
-start, the earlier ones are closed and the daemon exits with an error. Duplicate/unknown transports, empty list entries, and matching HTTP/gRPC
-ports are rejected. Whitespace around list entries is allowed.
-
-`DUCKDB_OTLP_LISTEN_URI` remains a single-listener override, and cannot be
-combined with `--http`/`--grpc`/`--otap`. With `grpc`, use an
-`otlp:` URI (for example `otlp:0.0.0.0:4317`); the transport setting selects gRPC.
-Do not combine this URI override with `http,grpc`; use the two bind-address
-variables instead. The existing `otap:` URI mode still starts OTAP/Arrow when
-`DUCKDB_OTLP_TRANSPORTS` is unset. OTAP/Arrow is distinct from standard OTLP/gRPC,
-and cannot be combined with the transport list.
+start, the earlier ones are closed and the daemon exits with an error. Two
+listeners on the same port are rejected.
 
 The image's `doctor` command (also accepted as `healthcheck`) checks every enabled listener, using HTTP
 `/readyz` for HTTP and TCP connect for gRPC. A TCP check confirms a bound socket,
@@ -87,10 +78,10 @@ server, the HTTP `/readyz` reports the commit health of rows from both
 transports. `DUCKDB_OTLP_HTTP_THREADS` applies
 only to the HTTP listener. Quack remains a separate opt-in administrative endpoint.
 
-For Cloud Run, select `grpc`, expose its port as `h2c`, and use a compatible
+For Cloud Run, set `DUCKDB_OTLP_GRPC_PORT` and `DUCKDB_OTLP_HTTP_PORT=0`, expose its port as `h2c`, and use a compatible
 probe instead of HTTP `/readyz` on that port. Cloud Run terminates TLS and
 forwards cleartext HTTP/2 to the container. Its single ingress port does not
-expose both daemon ports; running `http,grpc` does not multiplex the protocols
+expose both daemon ports; running both does not multiplex the protocols
 onto one port. See [Cloud Run HTTP/2 configuration](https://docs.cloud.google.com/run/docs/configuring/http2).
 
 ## Functions
@@ -139,6 +130,7 @@ SELECT * FROM otlp_serve('otlp:localhost:4318', catalog := 'lake', token := 'my-
 | `seal_max_age_ms` | BIGINT | `5000` | Request an asynchronous seal when the oldest buffered row reaches this age. Must be greater than zero. |
 | `target_file_size` | UBIGINT | `268435456` (256 MiB) | DuckLake only. **Output** Parquet file size the post-seal `CHECKPOINT` merge bin-packs toward; bounds compaction write amplification (files already at target are left alone). Distinct from `seal_target_bytes`, which is admitted *input* bytes. Must be greater than zero. |
 | `maintenance_retention_ms` | BIGINT | `900000` (15 min) | DuckLake only. How old snapshots and unused data files must be before the post-seal `CHECKPOINT` expires and deletes them (`expire_older_than` / `delete_older_than`), and how old an untracked data file must be before the orphan sweep deletes it. Keep it longer than your longest read; time-travel below this window is unavailable. Must be greater than zero. |
+| `maintenance_interval_ms` | BIGINT | `300000` (5 min) | Named catalogs only. The most often the background writer runs `CHECKPOINT <catalog>`; it runs only after rows were committed since the last attempt. Must be greater than zero. |
 | `promote_resource_attributes` | VARCHAR | *(none)* | Comma-separated **resource** attribute keys to promote into first-class columns at ingest. See [Attribute promotion](#attribute-promotion). Catalog mode only. |
 | `promote_scope_attributes` | VARCHAR | *(none)* | Comma-separated **scope** attribute keys to promote into first-class columns at ingest. See [Attribute promotion](#attribute-promotion). Catalog mode only. |
 
@@ -299,7 +291,7 @@ CALL otlp_serve('otlp:localhost:4318', catalog := 'lake');
 SELECT count(*) FROM lake.main.otlp_logs;
 ```
 
-Each batch commit writes **one Parquet data file per signal** plus one DuckLake snapshot. After a conservative number of successful automatic row-seals — or about 10 minutes after the last attempt whenever any row-seal is pending, even if ingest has gone idle — `duckdb-otlp` runs best-effort catalog-native maintenance with DuckDB's non-force `CHECKPOINT lake` when recent ingest rate and pending bytes leave ample admission headroom. On a DuckLake catalog, `CHECKPOINT` merges adjacent files and expires/cleans old snapshots and data files in one pass — turning the many small per-seal files into compacted, query-efficient files. At startup the server sets the DuckLake options `CHECKPOINT` reads so this is **bounded**: `target_file_size` caps the merge output (files already at target are left alone, so re-compaction is O(new), not O(total)), and `expire_older_than` / `delete_older_than` (from `maintenance_retention_ms`) gate how old snapshots/files must be before reclaim. See [Durability and background commits](#durability-and-background-commits).
+Each batch commit writes **one Parquet data file per signal** plus one DuckLake snapshot. At most once per `maintenance_interval_ms` (5 minutes by default), and only when rows were committed since the last attempt, `duckdb-otlp` runs best-effort catalog-native maintenance with DuckDB's non-force `CHECKPOINT lake`. On a DuckLake catalog, `CHECKPOINT` merges adjacent files and expires/cleans old snapshots and data files in one pass — turning the many small per-seal files into compacted, query-efficient files. At startup the server sets the DuckLake options `CHECKPOINT` reads so this is **bounded**: `target_file_size` caps the merge output (files already at target are left alone, so re-compaction is O(new), not O(total)), and `expire_older_than` / `delete_older_than` (from `maintenance_retention_ms`) gate how old snapshots/files must be before reclaim. See [Durability and background commits](#durability-and-background-commits).
 
   Several processes can share one DuckLake catalog (for example two receiver instances during a deploy). Their `CHECKPOINT`s can race: the loser fails with a catalog error such as PostgreSQL's `could not serialize access due to concurrent delete`. The server counts that as **contention**, not failure: it increments `maintenance_contended_total`, leaves `maintenance_failures_total` and `maintenance_last_error` alone, and tries again at the next interval. The losing checkpoint can leave a Parquet file the catalog never tracked. After each successful `CHECKPOINT` on a DuckLake catalog, the server runs `ducklake_delete_orphaned_files` with `older_than` set to `maintenance_retention_ms`, so it removes those files but never a file a seal or checkpoint may still be writing.
 
@@ -454,7 +446,7 @@ The server **buffers ingest and commits rows in batches** for each target. Batch
    - the oldest buffered row reaches the internal age limit, about 5 seconds today, or
    - an explicit [`otlp_flush`](#otlp_flushuri).
 3. For a DuckLake target, each batch commit writes **one Parquet data file per signal** plus one snapshot.
-4. For named catalogs, the server may follow successful automatic row-seals (and, when a row-seal is pending, the idle writer after about 10 minutes) with best-effort, non-force `CHECKPOINT <catalog>` outside the ingest transaction when recent ingest rate and pending bytes leave ample admission headroom. Treat this as internal scheduling. The server skips the default catalog. The hook also skips explicit `otlp_flush`, sustained high ingest, high pending buffered bytes, and shutdown drains; unsupported checkpoint implementations log once and disable the hook for that server.
+4. For named catalogs, the writer runs best-effort, non-force `CHECKPOINT <catalog>` outside the ingest transaction at most once per `maintenance_interval_ms`, when rows were committed since the last attempt. The server skips the default catalog, explicit `otlp_flush`, and shutdown drains; unsupported checkpoint implementations log once and disable maintenance for that server. While a checkpoint runs, commits wait for it and ingest keeps buffering against `max_buffered_bytes`.
 
 **Durability contract:**
 
@@ -468,7 +460,7 @@ The project tracks a future durable raw-spool journal for at-least-once delivery
 
 **Seal cadence:** `seal_target_bytes` and `seal_max_age_ms` are size and age triggers for the single asynchronous writer. They control batching latency and file/transaction size; they do not raise durable write throughput. `max_buffered_bytes` remains the separate admission cap.
 
-**Keeping DuckLake tidy:** each batch commit leaves one Parquet file per signal, so a high seal cadence creates many small files. For DuckLake, the post-seal `CHECKPOINT` merges those into larger files and reclaims old snapshots/files when recent ingest leaves enough admission headroom. The merge is **bounded** by the `target_file_size` option the server sets at startup (files already at target are skipped, so re-compaction cost scales with new data, not total data), and reclaim is gated by `maintenance_retention_ms` (`expire_older_than` / `delete_older_than`). The hook skips per-seal maintenance and stays outside the ingest transaction; a maintenance failure leaves committed rows intact. `otlp_flush` still forces only ingest durability and leaves compaction to catalog maintenance.
+**Keeping DuckLake tidy:** each batch commit leaves one Parquet file per signal, so a high seal cadence creates many small files. For DuckLake, the periodic `CHECKPOINT` merges those into larger files and reclaims old snapshots/files. The merge is **bounded** by the `target_file_size` option the server sets at startup (files already at target are skipped, so re-compaction cost scales with new data, not total data), and reclaim is gated by `maintenance_retention_ms` (`expire_older_than` / `delete_older_than`). Maintenance stays outside the ingest transaction; a maintenance failure leaves committed rows intact. `otlp_flush` still forces only ingest durability and leaves compaction to catalog maintenance.
 
 ## Concurrency model
 
@@ -477,22 +469,12 @@ The project tracks a future durable raw-spool journal for at-least-once delivery
 
 ## Verifying ingest under load
 
-`make test` cannot issue HTTP POSTs, so the SQL logic tests cover only the lifecycle functions. To exercise the ingest hot path, run the manual concurrency harness. It covers auth, content-type handling, the metrics fan-out, buffering and batch commits, and Arrow → DuckDB conversion under concurrency:
+`make test` cannot issue HTTP POSTs, so the SQL logic tests cover only the lifecycle functions. The ingest path is tested against the real daemon in `test/server/`, which CI runs on every pull request: auth (bearer and `x-api-key`), content-type and content-encoding handling, `413`, `503` backpressure, the metrics fan-out, OTLP/HTTP and OTLP/gRPC, OTAP/Arrow streams with dictionary reuse, and the drain on SIGTERM. `test/cpp/test_seal_harness.cpp` drives the seal path directly: failure and re-buffer, Parquet partial exports, catalog maintenance, and promoted columns.
 
 ```bash
-uv run --script test/manual/otlp_serve_concurrency.py
-
-# Override the payload / concurrency:
-OTLP_PAYLOAD=test/data/logs_simple.jsonl OTLP_CONCURRENCY=64 \
-    uv run --script test/manual/otlp_serve_concurrency.py
-
-# Exercise the DuckLake path (writes Parquet under the given dir and checks the
-# automatic catalog-maintenance event):
-OTLP_DUCKLAKE_DIR=/tmp/otlp_lake \
-    uv run --script test/manual/otlp_serve_concurrency.py
+DUCKDB_OTLP_SERVER_BIN=build/release/extension/otlp/duckdb-otlp \
+  uv run --with pytest --with grpcio --with opentelemetry-proto --with duckdb==2.0.0 pytest test/server
 ```
-
-It covers auth and validation errors, low-buffer backpressure, metrics fanout, stop-under-load, concurrent flush/stop, and the optional local DuckLake maintenance checkpoint event, then reconciles accepted rows against committed row counts. Run it against a TSan/ASan build to catch races.
 
 ## See also
 

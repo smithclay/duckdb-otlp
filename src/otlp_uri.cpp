@@ -8,15 +8,13 @@ namespace {
 
 static void ValidateHost(const string &host, bool is_ipv6) {
 	if (is_ipv6) {
-		// IPv6 literal content (between the brackets): hex digits, colons, dots (for
-		// v4-mapped addresses like ::ffff:192.0.2.1), and '%' for zone IDs.
+		// Dots for v4-mapped addresses, '%' for zone IDs.
 		for (char c : host) {
 			if (!isxdigit((unsigned char)c) && c != ':' && c != '.' && c != '%') {
 				throw InvalidInputException("Invalid character in IPv6 address");
 			}
 		}
 	} else {
-		// Regular hostname: alphanumerics, hyphens, dots.
 		for (char c : host) {
 			if (!isalnum((unsigned char)c) && c != '-' && c != '.') {
 				throw InvalidInputException("Invalid character in OTLP hostname");
@@ -44,8 +42,6 @@ static uint16_t ParsePort(const string &port_str) {
 OtlpUri::OtlpUri(string uri_p) : uri(std::move(uri_p)) {
 	StringUtil::Trim(uri);
 	string remainder;
-	// otap: selects the gRPC transport and defaults to the OTLP/OTAP gRPC port
-	// 4317; otlp: selects the HTTP transport and defaults to 4318.
 	uint16_t default_port = 4318;
 	if (StringUtil::StartsWith(uri, "otap://")) {
 		scheme = "otap";
@@ -116,11 +112,8 @@ static void OtlpUriParser(const DataChunk &args, ExpressionState &, Vector &resu
 }
 
 CreateScalarFunctionInfo OtlpUriParserFunction::GetFunction() {
-	// Materialize the LogicalType constants into locals (read by value) before they
-	// reach perfect-forwarding APIs (pair/initializer_list). Binding a reference to
-	// the static constexpr LogicalType::VARCHAR/USMALLINT/BOOLEAN members ODR-uses
-	// them and forces a duplicate symbol definition, which the GNU linker rejects as
-	// a multiple definition of e.g. duckdb::LogicalType::VARCHAR.
+	// Copies, not references: binding a reference to the static constexpr LogicalType members
+	// ODR-uses them and the GNU linker then reports a multiple definition.
 	LogicalType varchar_type(LogicalType::VARCHAR);
 	LogicalType usmallint_type(LogicalType::USMALLINT);
 	LogicalType boolean_type(LogicalType::BOOLEAN);
@@ -131,10 +124,7 @@ CreateScalarFunctionInfo OtlpUriParserFunction::GetFunction() {
 	struct_children.emplace_back("ipv6", boolean_type);
 	struct_children.emplace_back("url", varchar_type);
 
-	// Named FunctionParameter rather than a bare LogicalType: DuckDB 2.0 reads a scalar
-	// function's parameter names off its own signature, and the vector<LogicalType> overload
-	// auto-names them col0, col1, ... A FunctionDescription no longer overrides that (see
-	// GetParameterNames in duckdb_functions.cpp), so the name has to be on the signature.
+	// duckdb_functions() takes parameter names from the signature (a bare LogicalType would be col0).
 	auto function = ScalarFunction("otlp_uri_parser", {FunctionParameter(Identifier("listen_uri"), varchar_type)},
 	                               LogicalType::STRUCT(std::move(struct_children)), OtlpUriParser);
 	function.SetFallible();

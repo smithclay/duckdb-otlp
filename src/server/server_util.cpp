@@ -7,10 +7,18 @@
 #include "duckdb/main/query_result.hpp"
 
 #include <cctype>
+#include <cerrno>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <system_error>
+
+#include <fcntl.h>
+#include <netdb.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 namespace duckdb_otlp_server {
 
@@ -42,10 +50,6 @@ void Execute(duckdb::Connection &con, const string &sql, const string &label, bo
 }
 
 void BindConfigEnvVariables(duckdb::Connection &con, const ServerConfig &config, const EnvSource &env) {
-	// getenv() is a CLI-only DuckDB function and is not registered in the embedded library the
-	// daemon links, so the generated SQL reads these through getvariable() instead. Recording
-	// only the variable NAME in the config keeps secret values out of the generated SQL text
-	// (which `validate` prints and the engine can echo back in error messages).
 	for (const auto &name : config.env_variables) {
 		con.context->config.SetUserVariable("env_" + name, duckdb::Value(env.Get(name.c_str())));
 	}
@@ -62,8 +66,7 @@ string CliErrorMessage(const std::exception &ex) {
 }
 
 string ReadSqlFile(const string &path, const string &what) {
-	// Rejecting a directory explicitly: an ifstream opened on one succeeds on some platforms
-	// and then reads nothing, which would silently turn a mistyped path into "no SQL to run".
+	// An ifstream on a directory can succeed and read nothing, silently running no SQL.
 	std::error_code ec;
 	if (std::filesystem::is_directory(path, ec)) {
 		throw InvalidInputException("%s \"%s\" is a directory, not a SQL file", what, path);
@@ -74,8 +77,7 @@ string ReadSqlFile(const string &path, const string &what) {
 	}
 	std::ostringstream buffer;
 	buffer << file.rdbuf();
-	// An ifstream that opened but failed mid-read (an unreadable mount, an I/O error) would
-	// otherwise hand back a silently truncated script.
+	// Otherwise a failed mid-read would hand back a silently truncated script.
 	if (file.bad()) {
 		throw InvalidInputException("Failed to read %s \"%s\"", what, path);
 	}
@@ -84,15 +86,8 @@ string ReadSqlFile(const string &path, const string &what) {
 	return sql;
 }
 
-bool PathExists(const string &path) {
-	std::error_code ec;
-	return std::filesystem::exists(path, ec);
-}
-
 bool IsRemotePath(const string &path) {
-	// A scheme followed by "://" (s3://, gcss://, https://, az://, ...). Deliberately not a
-	// list of known schemes: any URI names an object store or a server, and none of them has
-	// local directories to create.
+	// Any scheme, not a list of known ones: no URI has local directories to create.
 	auto sep = path.find("://");
 	if (sep == string::npos || sep == 0) {
 		return false;
@@ -136,6 +131,69 @@ void CreateParentDirectory(const string &path) {
 		    "Failed to create parent directory \"%s\" for \"%s\": %s (check the mounted volume and permissions)",
 		    parent.string(), path, ec.message());
 	}
+}
+
+namespace {
+
+constexpr int PROBE_TIMEOUT_MS = 2000;
+
+bool WaitFor(int fd, decltype(pollfd::events) events) {
+	struct pollfd pfd {};
+	pfd.fd = fd;
+	pfd.events = events;
+	return ::poll(&pfd, 1, PROBE_TIMEOUT_MS) > 0 && (pfd.revents & events) != 0;
+}
+
+bool Connect(int fd, const struct addrinfo &ai) {
+	::fcntl(fd, F_SETFL, ::fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+	if (::connect(fd, ai.ai_addr, ai.ai_addrlen) == 0) {
+		return true;
+	}
+	int err = 0;
+	socklen_t len = sizeof(err);
+	return errno == EINPROGRESS && WaitFor(fd, POLLOUT) && ::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) == 0 &&
+	       err == 0;
+}
+
+//! Send GET `path` on a connected socket and read the status line ("HTTP/1.1 200 OK").
+bool HttpStatusOk(int fd, const duckdb::string &path) {
+	auto request = "GET " + path + " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+	if (!WaitFor(fd, POLLOUT) || ::send(fd, request.data(), request.size(), 0) != (ssize_t)request.size()) {
+		return false;
+	}
+	duckdb::string response;
+	char buffer[256];
+	while (response.size() < 12 && WaitFor(fd, POLLIN)) {
+		auto n = ::recv(fd, buffer, sizeof(buffer), 0);
+		if (n <= 0) {
+			break;
+		}
+		response.append(buffer, static_cast<size_t>(n));
+	}
+	return response.size() >= 12 && response.compare(0, 5, "HTTP/") == 0 && (response[9] == '2' || response[9] == '3');
+}
+
+} // namespace
+
+bool ProbeListener(const duckdb::string &host, int port, const duckdb::string &path) {
+	struct addrinfo hints {};
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_socktype = SOCK_STREAM;
+	struct addrinfo *res = nullptr;
+	if (::getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res) != 0) {
+		return false;
+	}
+	bool ok = false;
+	for (auto *ai = res; ai && !ok; ai = ai->ai_next) {
+		int fd = ::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+		if (fd < 0) {
+			continue;
+		}
+		ok = Connect(fd, *ai) && (path.empty() || HttpStatusOk(fd, path));
+		::close(fd);
+	}
+	::freeaddrinfo(res);
+	return ok;
 }
 
 } // namespace duckdb_otlp_server
