@@ -131,13 +131,14 @@ duckdb-otlp serve
 
 To keep it running in the background instead, use `brew services start duckdb-otlp`.
 
-The running server holds a lock on its catalog. Stop it first (Ctrl-C commits buffered rows), then query with the same binary:
+The running server holds a lock on its catalog. Stop it first (Ctrl-C commits buffered rows), then query it with the `duckdb` CLI:
 
 ```sh
-duckdb-otlp query "SELECT time_unix_nano, service_name, severity_text, body FROM otlp_logs"
+duckdb -c "ATTACH 'ducklake:$HOME/.local/share/duckdb-otlp/ducklake/catalog.duckdb' AS otel;
+           SELECT time_unix_nano, service_name, severity_text, body FROM otel.otlp_logs"
 ```
 
-The same binary converts OTLP/OTAP files to Parquet with no server running: `duckdb-otlp convert traces.pb --to out/`. See the [CLI reference](https://smithclay.github.io/duckdb-otlp/reference/cli/) for every command and flag.
+To query while it runs, enable Quack (`--quack 9494 --quack-token ...`). See the [CLI reference](https://smithclay.github.io/duckdb-otlp/reference/cli/) for every command and flag.
 
 </details>
 

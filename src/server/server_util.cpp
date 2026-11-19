@@ -84,11 +84,6 @@ string ReadSqlFile(const string &path, const string &what) {
 	return sql;
 }
 
-bool PathExists(const string &path) {
-	std::error_code ec;
-	return std::filesystem::exists(path, ec);
-}
-
 bool IsRemotePath(const string &path) {
 	// A scheme followed by "://" (s3://, gcss://, https://, az://, ...). Deliberately not a
 	// list of known schemes: any URI names an object store or a server, and none of them has

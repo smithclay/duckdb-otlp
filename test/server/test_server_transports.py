@@ -210,7 +210,7 @@ def test_init_sql_adds_a_parquet_destination_next_to_the_ducklake_catalog(tmp_pa
 
     This is what --init-sql buys for fan-out, and equally what it costs to know: a server
     has exactly ONE ingest target (otlp_serve rejects parquet_export_path combined with a
-    catalog, and the seal path is SealParquet XOR SealCatalog), so the second destination
+    catalog, and each signal has exactly one sink statement), so the second destination
     is a second server on its own port. A given batch lands in whichever port received it
     -- this is fan-out by port, not a tee of one stream into two places.
 
@@ -267,15 +267,10 @@ def test_init_sql_adds_a_parquet_destination_next_to_the_ducklake_catalog(tmp_pa
             ('transport-2',)
         ]
 
-    # Destination 2: the mode's DuckLake catalog, read back through DuckLake by the binary under
-    # test. Not through this interpreter's duckdb: the catalog is a DuckDB database written in the
-    # daemon's storage format, which a host DuckDB older than the daemon's cannot open.
-    query = subprocess.run(
-        [str(SERVER_BIN), 'query', 'SELECT name FROM otlp_traces', '--format', 'csv'],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    assert query.returncode == 0, query.stderr
-    assert query.stdout.split() == ['name', 'transport-1'], query.stdout
+    # Destination 2: the mode's DuckLake catalog, read back through DuckLake. The host duckdb has
+    # to be the daemon's version (CI pins it): an older one cannot open the catalog file.
+    catalog = lake_dir / 'ducklake' / 'catalog.duckdb'
+    with duckdb.connect() as connection:
+        connection.execute('INSTALL ducklake; LOAD ducklake;')
+        connection.execute(f"ATTACH 'ducklake:{catalog}' AS lake (READ_ONLY)")
+        assert connection.execute('SELECT name FROM lake.main.otlp_traces').fetchall() == [('transport-1',)]

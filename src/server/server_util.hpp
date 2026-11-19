@@ -35,26 +35,12 @@ void Execute(duckdb::Connection &con, const duckdb::string &sql, const duckdb::s
 //! missing call makes backend credentials silently resolve to the empty string.
 void BindConfigEnvVariables(duckdb::Connection &con, const ServerConfig &config, const EnvSource &env);
 
-//! The message to print for `ex`, with DuckDB's echo of the offending statement removed.
-//!
-//! DuckDB appends the statement and a caret ("\nLINE 1: ... ^") to parser and binder errors.
-//! That is exactly what you want when the user wrote the SQL, and noise when they did not:
-//! `convert` and `export` generate their own statements, so a missing input file answered
-//! with our own COPY(...) text instead of saying the file was missing.
+//! The message to print for `ex`, without DuckDB's echo of the offending (generated) statement.
 duckdb::string CliErrorMessage(const std::exception &ex);
 
 //! Read a SQL script from `path`, throwing an actionable error when it cannot be opened or
-//! read. `what` names the setting that supplied the path (for example "--init-sql"), so a
-//! bad init script and a bad `query --file` are distinguishable in the message.
-//!
-//! Returns the contents trimmed. Whether *empty* is an error is the caller's call: an empty
-//! init script is a no-op, an empty `query --file` is a usage error.
+//! read. `what` names the setting that supplied the path. Returns the contents trimmed.
 duckdb::string ReadSqlFile(const duckdb::string &path, const duckdb::string &what);
-
-//! True when `path` exists, including as a directory. Lives here with the other filesystem
-//! helpers because two callers want it: the output-overwrite check and the CLI's "that word
-//! names a file, did you mean convert?" hint.
-bool PathExists(const duckdb::string &path);
 
 //! True when `path` carries a URI scheme ("s3://bucket/...", "gcss://...", "https://...").
 //!

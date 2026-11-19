@@ -78,12 +78,9 @@ struct OtlpServerConfig {
 	//! reads/durability while the server keeps running. otlp_stop performs a final seal.
 	idx_t seal_target_bytes = otlp_limits::DEFAULT_SEAL_TARGET_BYTES; //! seal when admitted bytes reach this
 	int64_t seal_max_age_ms = otlp_limits::DEFAULT_SEAL_MAX_AGE_MS;   //! seal when the oldest buffered row is this old
-	//! Tier-1 compaction for DuckLake catalogs. Successful automatic row-seals into a named
-	//! catalog are followed by best-effort catalog-native maintenance (`CHECKPOINT <catalog>`,
-	//! which merges adjacent files and expires/cleans old snapshots+files) when recent ingress
-	//! and pending bytes leave ample admission headroom; it is skipped for explicit otlp_flush
-	//! and shutdown drains so those stay pure durability/seal operations. The maintenance CADENCE
-	//! is internal, but these two knobs (set once on the catalog at startup) bound it:
+	//! Catalog maintenance: the sealer runs `CHECKPOINT <catalog>` (merge adjacent files, expire
+	//! and clean old snapshots and files) at most once per maintenance_interval_ms, after rows
+	//! were sealed. otlp_flush and shutdown drains never run it. Set once on the catalog:
 	//!  - target_file_size: OUTPUT Parquet file size the merge bin-packs toward; bounds write
 	//!    amplification (files already at target are left alone). Distinct from seal_target_bytes,
 	//!    which is admitted *input* bytes.
@@ -92,6 +89,7 @@ struct OtlpServerConfig {
 	//!    time-travel, short enough to bound disk.
 	idx_t target_file_size = otlp_limits::DEFAULT_TARGET_FILE_SIZE;
 	int64_t maintenance_retention_ms = otlp_limits::DEFAULT_MAINTENANCE_RETENTION_MS;
+	int64_t maintenance_interval_ms = otlp_limits::DEFAULT_MAINTENANCE_INTERVAL_MS;
 	//! Backpressure admission cap (over it -> 503). NOTE: this bounds cumulative *admitted
 	//! request-body bytes* (each request reserves max(body_size, 1024) input bytes), NOT
 	//! decoded buffer heap — decoded columnar size differs from the encoded/compressed
@@ -457,7 +455,7 @@ private:
 		idx_t sealed_admission_bytes = 0;
 	};
 
-	OtlpIngestResult SealOnce(bool allow_maintenance);
+	OtlpIngestResult SealOnce();
 	//! Swap every live signal buffer out for a fresh empty collection under the established
 	//! per-signal lock order (forward index order, all held simultaneously), capturing each
 	//! signal's per-signal unsealed admission bytes into its SealingSignal (summed into
@@ -486,12 +484,9 @@ private:
 	                       const string &error);
 	void RequestSeal();
 	bool SealAgeDue() const;
-	void MaybeRunCatalogMaintenance(idx_t sealed_rows, idx_t sealed_admission_bytes);
-	//! Sealer-thread idle hook: lets the time-based maintenance trigger fire without new seals.
-	void MaybeRunIdleCatalogMaintenance();
-	//! Run CHECKPOINT when the row-seal-count or time-based trigger is due and headroom allows.
-	//! Caller holds writer_mutex.
-	void RunCatalogMaintenanceIfDue(std::chrono::steady_clock::time_point now);
+	//! CHECKPOINT the catalog when rows were sealed and maintenance_interval_ms has passed since
+	//! the last attempt. Called by the sealer thread; takes writer_mutex.
+	void MaybeRunCatalogMaintenance();
 	bool CatalogMaintenanceEnabled() const;
 	//! After a successful CHECKPOINT, delete DuckLake data files the catalog does not track and
 	//! that are older than maintenance_retention_ms (the Parquet a losing concurrent checkpoint or
@@ -567,13 +562,10 @@ private:
 
 	enum class CatalogMaintenanceState { PENDING, SUPPORTED, DISABLED };
 	CatalogMaintenanceState catalog_maintenance_state = CatalogMaintenanceState::PENDING;
-	// Starts at 1 (not 0) so the time-based trigger checkpoints once after startup even with no
-	// new ingest: a previous process may have left DuckLake-inlined rows un-checkpointed, since
-	// shutdown drains skip maintenance.
-	idx_t catalog_maintenance_row_seals_since_attempt = 1;
+	//! Rows were sealed since the last maintenance attempt. Starts true so rows a previous process
+	//! left inlined in the catalog are checkpointed too (shutdown drains skip maintenance).
+	bool catalog_maintenance_due = true;
 	std::chrono::steady_clock::time_point catalog_maintenance_last_attempt = std::chrono::steady_clock::now();
-	std::chrono::steady_clock::time_point catalog_maintenance_last_row_seal = std::chrono::steady_clock::now();
-	double catalog_maintenance_ingress_rate_bytes_per_ms = 0;
 	// Catalog-maintenance telemetry (written by the sealer thread, read by ListServers).
 	std::atomic<idx_t> maintenance_runs_total {0};
 	std::atomic<idx_t> maintenance_failures_total {0};

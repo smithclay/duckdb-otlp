@@ -237,6 +237,13 @@ static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableF
 			throw InvalidInputException("maintenance_retention_ms must be greater than zero");
 		}
 	}
+	if (input.named_parameters.find("maintenance_interval_ms") != input.named_parameters.end()) {
+		bind_data->config.maintenance_interval_ms =
+		    input.named_parameters["maintenance_interval_ms"].GetValue<int64_t>();
+		if (bind_data->config.maintenance_interval_ms <= 0) {
+			throw InvalidInputException("maintenance_interval_ms must be greater than zero");
+		}
+	}
 	// Attribute promotion: comma-separated lists of resource / scope attribute keys to promote into
 	// first-class columns at ingest.
 	auto parse_attr_keys = [&](const char *param, vector<string> &out) {
@@ -354,6 +361,7 @@ static TableFunctionSet BuildServeFunctionSet(const string &name, table_function
 			    .Add("seal_max_age_ms", OtlpBigIntType())
 			    .Add("target_file_size", OtlpUBigIntType())
 			    .Add("maintenance_retention_ms", OtlpBigIntType())
+			    .Add("maintenance_interval_ms", OtlpBigIntType())
 			    // Attribute promotion: comma-separated resource / scope attribute keys to promote.
 			    .Add("promote_resource_attributes", OtlpVarcharType())
 			    .Add("promote_scope_attributes", OtlpVarcharType());

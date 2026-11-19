@@ -1,5 +1,4 @@
 #include "cli.hpp"
-#include "commands.hpp"
 #include "env_source.hpp"
 #include "server_config.hpp"
 #include "server_util.hpp"
@@ -434,30 +433,6 @@ int RunServe(const EnvSource &env) {
 		if (!config.init_sql_path.empty()) {
 			std::cout << "Init SQL: " << config.init_sql_path << "\n";
 		}
-		auto extensions = config.AllExtensions();
-		if (!extensions.empty()) {
-			// Derived from the same list the setup SQL is generated from, and it says WHERE each
-			// one comes from: "built in" is why otlp never appears in an INSTALL, and
-			// "community" is why that one needs a different repository to be reachable offline.
-			std::cout << "\nExtensions:\n";
-			for (auto &extension : extensions) {
-				std::cout << "  " << extension.name;
-				switch (extension.source) {
-				case duckdb_otlp_server::ExtensionSource::BUILT_IN:
-					std::cout << " (built in)";
-					break;
-				case duckdb_otlp_server::ExtensionSource::COMMUNITY:
-					std::cout << " (community)";
-					break;
-				case duckdb_otlp_server::ExtensionSource::CORE:
-					break;
-				case duckdb_otlp_server::ExtensionSource::LOCAL_FILE:
-					std::cout << " (local file " << extension.path << ")";
-					break;
-				}
-				std::cout << "\n";
-			}
-		}
 		std::cout << '\n';
 
 		if (config.dry_run) {
@@ -469,7 +444,7 @@ int RunServe(const EnvSource &env) {
 
 		duckdb::DBConfig db_config;
 		db_config.SetOptionByName("allow_unsigned_extensions",
-		                          duckdb::Value::BOOLEAN(config.NeedsUnsignedExtensions()));
+		                          duckdb::Value::BOOLEAN(config.allow_unsigned_extensions));
 		duckdb::DuckDB db(config.database, &db_config);
 		db.LoadStaticExtension<duckdb::OtlpExtension>();
 		duckdb::Connection con(db);
@@ -571,9 +546,10 @@ int RunServe(const EnvSource &env) {
 					break;
 				}
 			}
-			std::cout << "Read it back with: duckdb-otlp query \"SELECT * FROM otlp_logs LIMIT 10\"\n";
 			if (config.quack_enabled) {
 				PrintQuackEndpoint(con, config);
+			} else {
+				std::cout << "Query it while the server runs by enabling Quack (--quack PORT --quack-token TOKEN)\n";
 			}
 			auto listener_ok = WaitForShutdownOrListenerFailure(con, config);
 
@@ -607,25 +583,6 @@ int RunServe(const EnvSource &env) {
 	}
 }
 
-// convert/export/query differ only in which function runs; they share one error rendering,
-// so the dispatch names each command exactly once. `convert` is stateless and takes no
-// EnvSource, hence a callable rather than a uniform function pointer.
-//
-// `keep_sql_context` is true only for `query`, the one command whose failing statement the
-// user actually wrote: there DuckDB's "LINE 1: ... ^" echo points at their own typo. For
-// convert and export the statement is generated, so the echo showed the reader a COPY(...)
-// they never asked for instead of the missing file or table.
-template <typename Fn>
-int RunDataCommand(Fn &&run, bool keep_sql_context = false) {
-	try {
-		return run();
-	} catch (std::exception &ex) {
-		// DuckDB exceptions stringify as a JSON blob; both helpers give the plain text.
-		std::cerr << "ERROR: " << (keep_sql_context ? duckdb::ErrorData(ex).RawMessage() : CliErrorMessage(ex)) << '\n';
-		return 1;
-	}
-}
-
 } // namespace
 
 int main(int argc, char **argv) {
@@ -633,8 +590,7 @@ int main(int argc, char **argv) {
 	// stdout held the whole startup banner until the process exited: `docker logs` on a
 	// healthy container showed a raw listener table and nothing else, and the mode, data
 	// location, listeners and auth notice only appeared once the container stopped. Flush
-	// per write — this CLI's stdout volume is banners and small result sets, and bulk data
-	// goes through DuckDB's own COPY handle rather than here.
+	// per write; this CLI's stdout is banners.
 	std::cout << std::unitbuf;
 
 	duckdb_otlp_server::CliOptions options;
@@ -663,8 +619,9 @@ int main(int argc, char **argv) {
 	switch (options.command) {
 	case Command::HELP:
 		// `help <command>` prints that command's page; a bare `help` prints the overview.
-		duckdb_otlp_server::PrintUsage(
-		    std::cout, options.inputs.empty() ? Command::HELP : duckdb_otlp_server::CommandFromName(options.inputs[0]));
+		duckdb_otlp_server::PrintUsage(std::cout, options.help_topic.empty()
+		                                              ? Command::HELP
+		                                              : duckdb_otlp_server::CommandFromName(options.help_topic));
 		return 0;
 	case Command::VERSION:
 		std::cout << "duckdb-otlp " << duckdb::OtlpExtension().Version() << " (DuckDB "
@@ -672,12 +629,6 @@ int main(int argc, char **argv) {
 		return 0;
 	case Command::DOCTOR:
 		return RunDoctor(env, options.json_output);
-	case Command::CONVERT:
-		return RunDataCommand([&] { return duckdb_otlp_server::RunConvert(options); });
-	case Command::EXPORT:
-		return RunDataCommand([&] { return duckdb_otlp_server::RunExport(options, env); });
-	case Command::QUERY:
-		return RunDataCommand([&] { return duckdb_otlp_server::RunQuery(options, env); }, true);
 	case Command::VALIDATE:
 	// `validate` is `serve` stopped just before anything is opened or bound (ParseCli sets
 	// DRY_RUN for it). Reusing the serve path rather than a parallel implementation is what

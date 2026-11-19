@@ -56,12 +56,6 @@ BASE_PORT = int(os.environ.get("OTLP_PORT", "4329"))
 DUCKLAKE_DIR = os.environ.get("OTLP_DUCKLAKE_DIR", "")
 TOKEN = "manual-smoke-token-0123456789"
 
-CATALOG_MAINTENANCE_TEST_ENV = (
-    "DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE",
-    "DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE_ROW_SEAL_INTERVAL",
-    "DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE_MIN_INTERVAL_MS",
-)
-
 CONTENT_TYPES = {
     ".json": "application/json",
     ".jsonl": "application/x-ndjson",
@@ -181,22 +175,6 @@ def table_count(con, table_prefix, table_name):
 def require(failures, condition, message):
     if not condition:
         failures.append(message)
-
-
-def enable_catalog_maintenance_test_overrides():
-    previous = {name: os.environ.get(name) for name in CATALOG_MAINTENANCE_TEST_ENV}
-    os.environ["DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE"] = "1"
-    os.environ["DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE_ROW_SEAL_INTERVAL"] = "1"
-    os.environ["DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE_MIN_INTERVAL_MS"] = "0"
-    return previous
-
-
-def restore_env(previous):
-    for name, value in previous.items():
-        if value is None:
-            os.environ.pop(name, None)
-        else:
-            os.environ[name] = value
 
 
 def scenario_auth_and_validation(failures, port):
@@ -467,14 +445,13 @@ def scenario_ducklake_catalog_maintenance_event(failures, port):
         print("[ducklake-maint] skipped (set OTLP_DUCKLAKE_DIR)")
         return
 
-    previous_env = enable_catalog_maintenance_test_overrides()
     con = None
     try:
         con, catalog, table_prefix = connect("catalog_maintenance")
         con.execute("CALL enable_logging('OTLP')")
         body = load_payload(LOG_PAYLOAD)
         ctype = content_type_for(LOG_PAYLOAD)
-        base_url = start_server(con, port, catalog=catalog)
+        base_url = start_server(con, port, catalog=catalog, maintenance_interval_ms=1)
         status, text = post(base_url + "/v1/logs", body, ctype, auth="bearer", timeout=20)
         accepted_rows = rows_from_response(status, text)
         print(f"[ducklake-maint] {status} catalog={catalog}")
@@ -558,7 +535,6 @@ def scenario_ducklake_catalog_maintenance_event(failures, port):
     finally:
         if con is not None:
             con.close()
-        restore_env(previous_env)
 
 
 def main():

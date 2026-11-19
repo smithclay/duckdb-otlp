@@ -2,7 +2,7 @@
 title: "CLI Reference"
 ---
 
-`duckdb-otlp` is a single binary that receives OpenTelemetry data, converts OTLP/OTAP files, and queries what it has stored. It runs on macOS and Linux, and is the same binary that ships in the Docker image.
+`duckdb-otlp` is a single binary that receives OpenTelemetry data and writes it to a DuckDB-attached catalog or Parquet. It runs on macOS and Linux, and is the same binary that ships in the Docker image.
 
 With no arguments it starts a working local receiver — no configuration file, no environment variables, no credentials:
 
@@ -73,32 +73,28 @@ docker run --rm -p 4318:4318 ghcr.io/smithclay/duckdb-otlp:latest
 | Command | What it does |
 |---------|--------------|
 | `duckdb-otlp [serve]` | Start the OTLP listeners. The default when no subcommand is given. |
-| `duckdb-otlp convert FILE...` | Convert OTLP/OTAP files to Parquet, CSV, or JSON. Needs no configuration. |
-| `duckdb-otlp export` | Export the configured catalog's signal tables. |
-| `duckdb-otlp query "SQL"` | Run one-shot SQL against the configured catalog. |
 | `duckdb-otlp validate` | Resolve the configuration, print the effective settings and generated SQL, exit. |
 | `duckdb-otlp doctor` | Check every configured listener and report each one. Exit 0 means healthy. |
 | `duckdb-otlp version` | Print the version. |
 | `duckdb-otlp help [COMMAND]` | Show help for the tool or one command. |
 
-### `convert` vs `export`
+### Reading files and querying data
 
-These do different jobs and have different prerequisites. `convert` is stateless — it reads files you name and needs no `DUCKDB_MODE`, no data directory, no catalog, and no backend credentials, so it works on a machine with nothing set up. `export` reads the catalog that `serve` writes to, so it needs the same mode configuration and credentials that `serve` does.
+`duckdb-otlp` only receives. To read OTLP/OTAP files, or to query what it stored, use the `otlp` extension from the `duckdb` CLI:
 
 ```sh
-# Files on disk -> Parquet. Nothing configured.
-duckdb-otlp convert traces.pb --signal traces --to out/
-
-# The configured lakehouse -> Parquet.
-duckdb-otlp export --signal logs --since -24h --to out/
+duckdb -c "INSTALL otlp FROM community; LOAD otlp;
+           COPY (FROM read_otlp_traces('traces.pb')) TO 'traces.parquet'"
 ```
+
+While the server runs it holds the catalog's write lock, so query it over [Quack](#serve) (`--quack PORT`) instead.
 
 Mistyping a command is an error rather than a silent fall-through to `serve`:
 
 ```
-$ duckdb-otlp covert traces.pb
-ERROR: Unknown command "covert".
-Did you mean `duckdb-otlp convert`?
+$ duckdb-otlp valdate
+ERROR: Unknown command "valdate".
+Did you mean `duckdb-otlp validate`?
 ```
 
 ## Exit codes and output streams
@@ -106,30 +102,22 @@ Did you mean `duckdb-otlp convert`?
 | Code | Meaning |
 |------|---------|
 | `0` | Success. |
-| `1` | The work failed — a listener is down, a table is missing, a query errored. |
+| `1` | The work failed — a listener is down, the configuration is incomplete, startup failed. |
 | `2` | The command line was wrong — unknown command or flag, a missing or extra argument. |
 
 The split matters to anything that checks the result rather than reading it: `2` says fix the invocation, `1` says the invocation was fine and the work was not.
 
-Data goes to stdout; progress, warnings and errors go to stderr. So `duckdb-otlp convert traces.pb --signal traces | jq` gets only rows, with the "Detected signal(s)" and "Wrote …" notices left on the terminal. The `serve` banner is written unbuffered, so a redirected or captured stdout (`docker logs`, a systemd journal, a CI log) shows it as the server starts rather than when it stops.
-
-## Output files
-
-Two rules apply to `--to` across `convert`, `export` and `query`.
-
-**The format follows the extension** when you do not pass `--format`. `--to out.parquet` writes Parquet, `--to out.csv` writes CSV, and `.json`/`.ndjson`/`.jsonl` do the obvious thing. An explicit `--format` always wins, and a path with no recognized extension falls back to the command's default (Parquet for `convert`/`export` when writing to a file, `box`/`csv` for `query`).
-
-**A directory is spelled like one.** `--to out/` (or a path that already exists as a directory) writes one file per signal into it; anything else names a single file. That is decided by how you spell the path, not by how many signals turn up, so the same command always produces the same shape — writing several signals to a path that names a file is an error telling you to add the slash.
+The banner and reports go to stdout; warnings and errors go to stderr. The `serve` banner is written unbuffered, so a redirected or captured stdout (`docker logs`, a systemd journal, a CI log) shows it as the server starts rather than when it stops.
 
 ## Configuration precedence
 
 Command-line flag, then environment variable, then built-in default. Every flag that maps onto a setting overrides the matching variable, so `--http 4318` wins over `DUCKDB_OTLP_HTTP_PORT=9999`. A flag is layered over the environment rather than written into it, so its value — a `--token` above all — stays inside the configuration and is never published to the rest of the process.
 
-Each command accepts only the flags that apply to it. `convert` is stateless, so it takes no catalog flags at all; `--since` belongs to `export`; `--token` and the port flags belong to the commands that bind or probe a listener. Naming a flag outside its command is an error that says where the flag does belong:
+Each command accepts only the flags that apply to it. `doctor` takes every `serve` flag except `--init-sql` and `--dry-run`, and `--json` belongs to `doctor` alone. Naming a flag outside its command is an error that says where the flag does belong:
 
 ```
-$ duckdb-otlp convert --quack 9494 traces.pb
-ERROR: `convert` does not accept "--quack"; it is a flag of: serve, validate, doctor.
+$ duckdb-otlp doctor --init-sql init.sql
+ERROR: `doctor` does not accept "--init-sql"; it is a flag of: serve, validate.
 ```
 
 `duckdb-otlp help COMMAND` lists what a command takes.
@@ -164,7 +152,7 @@ Passing a token as a flag makes it visible in the process list; prefer `DUCKDB_O
 
 ### Destinations (`--mode`)
 
-A mode is a preset: it contributes some setup SQL and a catalog name, and nothing else. Each one is a point in a grid of three independent choices — the catalog kind, where that catalog lives, and where the data files go.
+A mode is a preset: a SQL file ([`src/server/modes/`](https://github.com/smithclay/duckdb-otlp/tree/main/src/server/modes)) compiled into the binary, which installs extensions, creates secrets and attaches the catalog. `duckdb-otlp validate --mode MODE` prints it expanded. Each one is a point in a grid of three independent choices — the catalog kind, where that catalog lives, and where the data files go.
 
 | Mode | Catalog | Catalog store | Data files | Required settings |
 |------|---------|---------------|------------|-------------------|
@@ -175,7 +163,7 @@ A mode is a preset: it contributes some setup SQL and a catalog name, and nothin
 | `r2-local-ducklake` | DuckLake | local DuckDB file | R2 | `R2_BUCKET`, `CLOUDFLARE_ACCOUNT_ID` |
 | `r2-neon-ducklake` | DuckLake | Postgres | R2 | the two above, plus `PGHOST`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` |
 | `r2-data-catalog` | Iceberg REST | Cloudflare | R2 (catalog-managed) | `R2_BUCKET`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` |
-| `s3-tables` | Iceberg REST | AWS | S3 (catalog-managed) | `S3_TABLES_BUCKET_ARN` |
+| `s3-tables` | Iceberg REST | AWS | S3 (catalog-managed) | `S3_TABLES_BUCKET_ARN`, `AWS_REGION` |
 | `none` | *(whatever `--init-sql` attaches)* | — | — | *(none)* |
 
 Missing settings are reported together, in one run:
@@ -183,9 +171,9 @@ Missing settings are reported together, in one run:
 ```console
 $ duckdb-otlp validate --mode r2-data-catalog
 ERROR: Missing 3 required settings for DUCKDB_MODE=r2-data-catalog:
-  CLOUDFLARE_API_TOKEN  (R2 Data Catalog read/write token)
-  R2_BUCKET
-  CLOUDFLARE_ACCOUNT_ID
+  CLOUDFLARE_API_TOKEN
+  CLOUDFLARE_ACCOUNT_ID  (or set CLOUDFLARE_WAREHOUSE)
+  R2_BUCKET  (or set CLOUDFLARE_WAREHOUSE)
 ```
 
 #### Storage settings
@@ -196,11 +184,11 @@ One name per concept, across every mode that uses it.
 |---------|---------|-------|
 | `DUCKLAKE_DATA_PATH` | every DuckLake mode | where Parquet data files go |
 | `DUCKLAKE_CATALOG_PATH` | DuckLake modes with a local catalog | a `postgres:…` value moves the catalog to Postgres |
-| `PARQUET_EXPORT_PATH` | `parquet` | local path or `s3://`; overrides `S3_BUCKET`/`S3_PREFIX` |
-| `S3_BUCKET`, `S3_PREFIX` | `parquet` | composed into `s3://bucket/prefix` |
+| `PARQUET_EXPORT_PATH` | `parquet` | overrides the default path (`<data-dir>/parquet`, or `s3://bucket/prefix` with `S3_BUCKET`) |
+| `S3_BUCKET`, `S3_PREFIX` | `parquet` | write to `s3://bucket/prefix`. Setting `S3_BUCKET` is what loads the S3 filesystem and credential chain, so an `s3://` `PARQUET_EXPORT_PATH` needs it too |
 | `S3_ENDPOINT`, `S3_URL_STYLE` | `parquet` | for S3-compatible storage |
-| `S3_TABLES_BUCKET_ARN` | `s3-tables` | region is read from the ARN when `AWS_REGION` is unset |
-| `AWS_REGION`, `AWS_PROFILE` | every AWS mode | standard AWS variables; `AWS_DEFAULT_*` also accepted |
+| `S3_TABLES_BUCKET_ARN` | `s3-tables` | the table bucket's ARN |
+| `AWS_REGION`, `AWS_PROFILE` | every AWS mode | standard AWS variables; `AWS_DEFAULT_REGION` also accepted |
 | `R2_BUCKET`, `R2_PREFIX` | every R2 mode | composed into `s3://bucket/prefix` |
 | `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | every R2 mode | optional — see below |
 | `R2_ENDPOINT` | every R2 mode | defaults to `<account>.r2.cloudflarestorage.com` |
@@ -209,15 +197,16 @@ One name per concept, across every mode that uses it.
 | `CLOUDFLARE_CATALOG_URI`, `CLOUDFLARE_WAREHOUSE` | `r2-data-catalog` | both derived from the account and bucket; set only to override |
 | `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, `PGSSLMODE` | Postgres-catalog modes | the standard libpq names |
 | `DUCKDB_OTLP_GCS_EXTENSION_PATH` | `gcp-ducklake` | a local `gcs.duckdb_extension` to `LOAD` instead of the community build; turns on `allow_unsigned_extensions`. The image sets it to its bundled build |
+| `DUCKLAKE_DATA_INLINING_ROW_LIMIT` | every DuckLake mode | DuckLake's per-insert inlining limit; `0` writes every seal straight to Parquet |
 
-Credential values are never interpolated into the generated SQL. They are bound as session variables and referenced with `getvariable()`, so `validate` can print the full boot SQL without disclosing them.
+Values are not validated beyond being present: a malformed one fails when the SQL runs. Credential values are never interpolated into the generated SQL. They are bound as session variables and referenced with `getvariable()`, so `validate` can print the full boot SQL without disclosing them.
 
 #### Credentials from the DuckDB secret store
 
 Storage credentials do not have to be environment variables. If no key pair is set, the mode emits no `CREATE SECRET` at all and DuckDB resolves access through its own persistent secret store (or, for AWS and GCP, the provider credential chain). Create the secret once:
 
 ```bash
-duckdb-otlp query --mode none "
+duckdb -c "
   INSTALL httpfs; LOAD httpfs;
   CREATE PERSISTENT SECRET r2_storage (
     TYPE s3, KEY_ID '...', SECRET '...',
@@ -237,14 +226,13 @@ Setting only one half of a key pair is an error, not a silent fall-through to th
 
 #### Reading back the `parquet` dataset
 
-`parquet` mode has no catalog — the seal writes straight to `<root>/<table>/year=/month=/day=/` and defines a view over it once files exist. `query` and `export` read through that view, and define it themselves for a dataset this host has never served, so both work the same way they do against a catalog mode:
+`parquet` mode has no catalog: each seal writes straight to `<root>/<table>/year=/month=/day=/`. Read it with `read_parquet`, passing `hive_partitioning = false` (the partition keys live only in the path):
 
-```bash
-duckdb-otlp query "SELECT service_name, count(*) FROM otlp_logs GROUP BY 1" --mode parquet
-duckdb-otlp export --signal logs --since -24h --to out/ --mode parquet
+```sql
+FROM read_parquet('<root>/otlp_logs/**/*.parquet', hive_partitioning = false, union_by_name = true);
 ```
 
-Only signals that have files get a view, so `--signal all` skips the rest instead of failing. The views select the signal's own columns and nothing else — the partition keys live in the path, not the files — so an exported row is identical to one exported from a catalog mode. A `query` only looks for the signals its SQL names, since each check is a directory listing (a remote request against `s3://`). The views live in the control database, which also makes it a usable handle on the dataset from the plain `duckdb` CLI; with `--readonly` they are session-scoped instead.
+With Quack enabled, the server also defines an `otlp_<signal>` view over each signal once files exist.
 
 #### `--mode none`
 
@@ -281,7 +269,7 @@ duckdb-otlp serve --init-sql /etc/duckdb-otlp/init.sql
 
 Behavior worth knowing:
 
-- **`serve`, `validate`, `export`, and `query` all run it.** `export` and `query` open the same catalog, so a view or `ATTACH` defined here is available when you read the data back. `doctor` deliberately does **not** — the container `HEALTHCHECK` runs it on every probe, and a liveness check must not execute operator SQL. `convert` opens no catalog.
+- **`serve` and `validate` take it.** `doctor` deliberately does **not** — the container `HEALTHCHECK` runs it on every probe, and a liveness check must not execute operator SQL.
 - **`validate` prints the script in place** without running it, so `duckdb-otlp validate --init-sql ...` shows exactly what startup would execute.
 - **Failures are fatal.** An unreadable path or a failing statement stops startup rather than silently serving without the configuration you asked for. An empty script is a no-op.
 - The script runs before the mode's catalog becomes the instance default, so it can `ATTACH` a catalog that `--catalog` then names.
@@ -375,99 +363,6 @@ $ duckdb-otlp doctor --json
 {"healthy":false,"checks":[{"check":"OTLP http","endpoint":"127.0.0.1:4318","ok":true},
                            {"check":"OTLP grpc","endpoint":"127.0.0.1:4317","ok":false}]}
 ``` The container image's `HEALTHCHECK` is this command, and Docker keeps its output in the container's health log. `duckdb-otlp healthcheck` is still accepted as the same command, so existing probes keep working.
-
-## `convert`
-
-```sh
-duckdb-otlp convert FILE... [flags]
-```
-
-| Flag | Meaning |
-|------|---------|
-| `-s`, `--signal SIGNAL` | `traces`, `logs`, `metrics_gauge`, `metrics_sum`, `metrics_histogram`, `metrics_exp_histogram`, `metrics` (the four shapes), `all`, or `auto` (default) |
-| `--otap` | Read OTAP (`BatchArrowRecords`) files instead of OTLP |
-| `-o`, `--to PATH` | Output file, or a directory when several signals are written. Omit to stream to stdout. |
-| `-f`, `--format FORMAT` | `parquet` (default with `--to`), `csv`, `json`, `ndjson` |
-| `--overwrite` | Replace existing output files |
-
-`convert` accepts no configuration flags — no `--mode`, no `--catalog`, no credentials — because it opens no catalog. Passing one is an error rather than a silent no-op.
-
-Several inputs are read as one dataset. Globs work, and are passed to the reader:
-
-```sh
-duckdb-otlp convert 'logs/*.jsonl' --signal logs --format ndjson | jq .
-duckdb-otlp convert a.pb b.pb --signal traces --to out/traces.parquet
-```
-
-With `--signal auto`, every reader is tried and the ones that produce rows are used; the selection is always printed. A metrics file legitimately yields several shapes and writes one file per shape. Pass `--signal` explicitly when you want to be sure.
-
-`--signal all` and `--signal metrics` fan out the same way: a reader that rejects the input is skipped and named, because one OTLP file normally holds one signal family. A single signal named on its own is an error if the file does not hold it.
-
-Parquet cannot be streamed to stdout — the format ends with a footer that needs a seekable file — so `--to` is required for it.
-
-## `export`
-
-```sh
-duckdb-otlp export [flags]
-```
-
-| Flag | Meaning |
-|------|---------|
-| `-s`, `--signal SIGNAL` | Signal to export, or `metrics` / `all` (default) |
-| `-o`, `--to DIR` | Output directory |
-| `-f`, `--format FORMAT` | `parquet` (default), `csv`, `json`, `ndjson` |
-| `--since TS` | Rows at or after this time |
-| `--until TS` | Rows strictly before this time |
-| `--where SQL` | Additional raw predicate |
-| `--partition-by day` | Write `<table>/year=/month=/day=`, matching the layout the serve-side Parquet export writes |
-| `--overwrite` | Replace existing output files |
-
-`export` also takes the catalog-selection flags `serve` uses, since it has to open the same catalog: `-m`/`--mode`, `--data-dir`, `--database`, `--catalog`, `--schema`, and `--init-sql`.
-
-A catalog normally holds only the signals that have been ingested, so the default `--signal all` exports the tables that exist and names the ones it skipped. Naming a signal explicitly is still an error when its table is absent, and a catalog with no signal tables at all reports that rather than writing nothing.
-
-`--since` and `--until` accept an absolute timestamp (`'2026-01-01'`) or a relative shorthand: a sign, a number, and a unit of `s`, `m`, `h`, `d`, or `w`.
-
-```sh
-duckdb-otlp export --signal logs --since -24h --to out/
-duckdb-otlp export --partition-by day --to lake-dump/
-duckdb-otlp export --signal traces --where "service_name = 'checkout'" --to out/ --format csv
-```
-
-## `query`
-
-```sh
-duckdb-otlp query "SELECT ..." [flags]
-duckdb-otlp query --file script.sql [flags]
-```
-
-| Flag | Meaning |
-|------|---------|
-| `--file PATH` | Read SQL from a file |
-| `-f`, `--format FORMAT` | `box` (default on a terminal), `csv` (default when piped), `json`, `ndjson`, `parquet` |
-| `-o`, `--to PATH` | Write results to a file |
-| `--readonly` | Open the database read-only |
-| `--overwrite` | Replace an existing output file |
-
-Like `export`, `query` takes the catalog-selection flags: `-m`/`--mode`, `--data-dir`, `--database`, `--catalog`, `--schema`, and `--init-sql`.
-
-Unqualified table names resolve against the mode's catalog and schema, so `FROM otlp_logs` works directly:
-
-```sh
-duckdb-otlp query "SELECT service_name, count(*) FROM otlp_logs GROUP BY 1 ORDER BY 2 DESC"
-duckdb-otlp query "FROM otlp_traces LIMIT 10" --format json
-```
-
-A script may contain several statements. Only a trailing `SELECT` can be redirected to a file or non-`box` format; earlier statements run as setup. Trailing semicolons and comments are fine, and `SHOW TABLES`, `DESCRIBE`, `SUMMARIZE` and `PRAGMA` work as the final statement too:
-
-```sh
-duckdb-otlp query "SHOW TABLES"
-duckdb-otlp query "SUMMARIZE otlp_logs"
-```
-
-With no `--format`, the output file's extension decides: `--to out.parquet` writes Parquet, `--to out.csv` writes CSV. With no extension to go on, `query` writes `box` on a terminal and `csv` when piped.
-
-`--readonly` is opt-in rather than the default because lakehouse modes need write access to attach their catalog.
 
 ## Docker
 

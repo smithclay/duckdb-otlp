@@ -308,8 +308,8 @@ def test_gcp_ducklake_loads_a_local_gcs_build_by_path(tmp_path):
     """DUCKDB_OTLP_GCS_EXTENSION_PATH swaps the community gcs build for one on disk.
 
     The community build prints a failed upload finalize instead of raising it, so DuckLake
-    commits data files that were never written. A deployment ships a fixed build instead; it is
-    LOADed by path and never INSTALLed, since an INSTALL would fetch the community build again.
+    commits data files that were never written. The image ships a fixed build; it is LOADed by
+    path and never INSTALLed, since an INSTALL would fetch the community build again.
     """
     env = gcp_env()
     env["DUCKDB_OTLP_GCS_EXTENSION_PATH"] = "/opt/extensions/gcs.duckdb_extension"
@@ -320,7 +320,6 @@ def test_gcp_ducklake_loads_a_local_gcs_build_by_path(tmp_path):
     assert "INSTALL gcs" not in out
     assert "LOAD gcs;" not in out
     assert "INSTALL ducklake;" in out
-    assert "gcs (local file /opt/extensions/gcs.duckdb_extension)" in out
 
 
 def test_gcp_ducklake_uses_adc_and_remote_postgres(tmp_path):
@@ -348,8 +347,8 @@ def test_gcp_ducklake_proxy_and_catalog_overrides(tmp_path):
     env.update({"PGPORT": "5433", "PGSSLMODE": "disable", "DUCKDB_CATALOG": "trace-lake", "DUCKDB_SCHEMA": "traces"})
     result = run(env, tmp_path)
     assert result.returncode == 0, result.stderr
-    assert "PORT getvariable('env_PGPORT')" in result.stdout
-    assert "SSLMODE getvariable('env_PGSSLMODE')" in result.stdout
+    assert "PORT '5433'" in result.stdout
+    assert "SSLMODE 'disable'" in result.stdout
     assert 'AS "trace-lake"' in result.stdout
     assert "schema := 'traces'" in result.stdout
 
@@ -365,20 +364,13 @@ def test_ducklake_inlining_can_be_disabled_on_secret_attach(tmp_path):
     env["DUCKLAKE_DATA_INLINING_ROW_LIMIT"] = "0"
     result = run(env, tmp_path)
     assert result.returncode == 0, result.stderr
-    assert "ATTACH 'ducklake:ducklake_secret' AS \"lake\" (DATA_INLINING_ROW_LIMIT 0);" in result.stdout
+    assert "ATTACH 'ducklake:ducklake_secret' AS \"lake\"\n  (DATA_INLINING_ROW_LIMIT 0)\n;" in result.stdout
 
 
 def test_ducklake_inlining_limit_on_path_attach(tmp_path):
     result = run({"DUCKDB_MODE": "local-ducklake", "DUCKLAKE_DATA_INLINING_ROW_LIMIT": "50"}, tmp_path)
     assert result.returncode == 0, result.stderr
-    assert ",\n  DATA_INLINING_ROW_LIMIT 50\n);" in result.stdout
-
-
-@pytest.mark.parametrize("value", ["-1", "abc", "1.5"])
-def test_ducklake_inlining_limit_rejects_invalid(tmp_path, value):
-    result = run({"DUCKDB_MODE": "local-ducklake", "DUCKLAKE_DATA_INLINING_ROW_LIMIT": value}, tmp_path)
-    assert result.returncode == 1
-    assert "DUCKLAKE_DATA_INLINING_ROW_LIMIT" in result.stderr
+    assert "\n  , DATA_INLINING_ROW_LIMIT 50\n);" in result.stdout
 
 
 @pytest.mark.parametrize("missing", ["DUCKLAKE_DATA_PATH", "PGHOST", "PGDATABASE", "PGUSER", "PGPASSWORD"])
@@ -389,17 +381,6 @@ def test_gcp_ducklake_requires_catalog_and_storage_config(tmp_path, missing):
     assert result.returncode == 1
     assert missing in result.stderr
     assert SECRET not in result.stdout + result.stderr
-
-
-@pytest.mark.parametrize(
-    "path", ["gs://bucket/lake", "gcs://bucket/lake", "s3://bucket/lake", "/data/lake", "gcss://", "gcss:///lake"]
-)
-def test_gcp_ducklake_requires_native_gcs_path(tmp_path, path):
-    env = gcp_env()
-    env["DUCKLAKE_DATA_PATH"] = path
-    result = run(env, tmp_path)
-    assert result.returncode == 1
-    assert "gcss://bucket/prefix" in result.stderr
 
 
 def test_missing_required_var_names_the_var(tmp_path):
@@ -780,8 +761,7 @@ def test_mode_none_without_init_sql_writes_to_the_control_database(tmp_path):
     assert "Mode: none" in result.stdout
 
 
-# Minimal configuration for each mode, so every mode can be resolved far enough to report the
-# extensions it needs. Mirrors the required-settings table in the CLI reference.
+# Minimal configuration for each mode. Mirrors the required-settings table in the CLI reference.
 MODE_FIXTURES = {
     "local-ducklake": {},
     "none": {},
@@ -805,9 +785,7 @@ MODE_FIXTURES = {
         "PGPASSWORD": SECRET,
     },
     "r2-data-catalog": {"R2_BUCKET": "b", "CLOUDFLARE_ACCOUNT_ID": "a", "CLOUDFLARE_API_TOKEN": SECRET},
-    "s3-tables": {"S3_TABLES_BUCKET_ARN": "arn:aws:s3tables:us-west-2:1:bucket/b"},
-    # Quack is not a mode extension, but it is one the process ends up running, so the image
-    # has to prime it too.
+    "s3-tables": {"S3_TABLES_BUCKET_ARN": "arn:aws:s3tables:us-west-2:1:bucket/b", "AWS_REGION": "us-west-2"},
     "local-ducklake+quack": {
         "DUCKDB_MODE": "local-ducklake",
         "DUCKDB_QUACK_ENABLED": "1",
@@ -816,56 +794,8 @@ MODE_FIXTURES = {
 }
 
 
-def extensions_reported_by(mode: str, tmp_path) -> dict:
-    """The banner's Extensions block for `mode`, as {name: source}."""
-    env = dict(MODE_FIXTURES[mode])
-    env.setdefault("DUCKDB_MODE", mode)
-    result = run(env, tmp_path)
-    assert result.returncode == 0, f"{mode}: {result.stderr}"
-    reported = {}
-    in_block = False
-    for line in result.stdout.splitlines():
-        if line.startswith("Extensions:"):
-            in_block = True
-            continue
-        if in_block:
-            if not line.strip():
-                break
-            name, _, note = line.strip().partition(" ")
-            reported[name] = note.strip("()") or "core"
-    return reported
-
-
-@pytest.mark.parametrize("mode", sorted(MODE_FIXTURES))
-def test_generated_sql_installs_exactly_what_the_banner_reports(mode, tmp_path):
-    """The banner and the setup SQL are two renderings of one declaration.
-
-    They used to be written out separately -- a list for the banner, hand-typed INSTALL/LOAD
-    for the SQL -- so a mode could load an extension it never mentioned, or name one it never
-    loaded, with no symptom beyond a misleading banner.
-    """
-    env = dict(MODE_FIXTURES[mode])
-    env.setdefault("DUCKDB_MODE", mode)
-    result = run(env, tmp_path)
-    assert result.returncode == 0, result.stderr
-    reported = extensions_reported_by(mode, tmp_path)
-
-    installed = set(re.findall(r"^INSTALL ([a-z0-9_]+)", result.stdout, re.M))
-    loaded = set(re.findall(r"^LOAD ([a-z0-9_]+);", result.stdout, re.M))
-    # `otlp` is statically embedded: reported, never installed. Everything else is both.
-    needs_install = {name for name, source in reported.items() if source != "built in"}
-    assert installed == needs_install
-    assert loaded == needs_install
-    assert "otlp" not in installed, "the statically embedded extension must never be INSTALLed"
-    # A community extension needs its repository named or the INSTALL resolves nowhere.
-    for name, source in reported.items():
-        if source == "community":
-            assert f"INSTALL {name} FROM community;" in result.stdout
-
-
 def test_the_image_primes_every_extension_some_mode_needs(tmp_path):
-    """The container's offline extension cache is a third copy of this list, in another
-    language and build stage, so it cannot share the declaration -- but it can be checked.
+    """The container's offline extension cache has to cover every INSTALL in every preset.
 
     If a mode gains an extension the image does not prime, the daemon's startup INSTALL goes to
     the network, or fails outright in an offline deployment. That is invisible until someone
@@ -879,9 +809,9 @@ def test_the_image_primes_every_extension_some_mode_needs(tmp_path):
         "the priming step's shape changed and this test needs updating alongside it"
     )
 
-    needed = set()
-    for mode in MODE_FIXTURES:
-        needed |= {name for name, source in extensions_reported_by(mode, tmp_path).items() if source != "built in"}
+    presets = (REPO_ROOT / "src" / "server" / "modes").glob("*.sql")
+    needed = {name for preset in presets for name in re.findall(r"^INSTALL ([a-z0-9_]+)", preset.read_text(), re.M)}
+    needed |= {"httpfs", "quack"}  # loaded by the serve path when Quack is enabled
 
     missing = needed - primed
     assert not missing, (
@@ -944,7 +874,6 @@ def test_quack_loads_httpfs_for_its_crypto(addr, tmp_path):
     assert result.returncode == 0, result.stderr
     out = result.stdout
     assert out.index("LOAD httpfs;") < out.index("quack_serve(")
-    assert "  httpfs\n" in out.split("Extensions:")[1].split("\n\n")[0] + "\n"
 
 
 @pytest.mark.parametrize("name", ["DUCKDB_QUACK_SSL_CERT_FILE", "DUCKDB_QUACK_SSL_KEY_FILE"])
@@ -954,16 +883,6 @@ def test_half_a_quack_certificate_pair_is_an_error(name, tmp_path):
     result = run(env, tmp_path)
     assert result.returncode != 0
     assert "DUCKDB_QUACK_SSL_CERT_FILE and DUCKDB_QUACK_SSL_KEY_FILE must be set together" in result.stderr
-
-
-def test_quack_appears_in_the_banner_only_when_enabled(tmp_path):
-    """The banner listed the mode's extensions only, so a running Quack endpoint -- an
-    administrative one granting full SQL access -- was absent from the startup report."""
-    enabled = extensions_reported_by("local-ducklake+quack", tmp_path)
-    assert "quack" in enabled
-
-    disabled = extensions_reported_by("local-ducklake", tmp_path)
-    assert "quack" not in disabled
 
 
 @pytest.mark.parametrize("mode,extra", [("parquet", {"S3_BUCKET": "b"}), ("s3-tables", {}), ("aws-ducklake", {})])
@@ -997,7 +916,7 @@ def test_an_aws_profile_still_selects_that_profile(tmp_path):
         {"DUCKDB_MODE": "parquet", "S3_BUCKET": "b", "AWS_REGION": "us-west-2", "AWS_PROFILE": "dev"}, tmp_path
     )
     assert result.returncode == 0, result.stderr
-    assert "CHAIN config" in result.stdout
+    assert "CHAIN 'env;config;instance'" in result.stdout
     assert "PROFILE 'dev'" in result.stdout
     assert 'AWS profile "dev"' in result.stdout
 
@@ -1010,20 +929,35 @@ def test_r2_data_path_keeps_its_trailing_slash(tmp_path):
     assert "DATA_PATH 's3://bkt/duckdb-otlp/'" in result.stdout
 
 
-def test_a_malformed_value_is_reported_alongside_a_missing_one(tmp_path):
-    """A malformed value used to throw from inside the mode function, skipping everything after
-    it -- so this reported the path and only mentioned AWS_REGION on the next run."""
-    result = run({"DUCKDB_MODE": "aws-ducklake", "DUCKLAKE_DATA_PATH": "/local/path"}, tmp_path)
-    assert result.returncode != 0
-    assert "DUCKLAKE_DATA_PATH" in result.stderr
-    assert "s3://bucket/prefix" in result.stderr
-    assert "AWS_REGION" in result.stderr
+PRESETS = sorted(path.stem for path in (REPO_ROOT / "src" / "server" / "modes").glob("*.sql"))
 
 
-def test_parquet_rejects_a_remote_scheme_it_cannot_write(tmp_path):
-    """An `IsS3Path` locality test sent a gcss:// export path down the local branch, so nothing
-    was loaded to write it and `validate` reported success. The first seal was the first sign."""
-    result = run({"DUCKDB_MODE": "parquet", "PARQUET_EXPORT_PATH": "gcss://bucket/prefix"}, tmp_path)
-    assert result.returncode != 0
-    assert "PARQUET_EXPORT_PATH" in result.stderr
-    assert "s3://" in result.stderr
+def test_every_preset_has_a_fixture():
+    assert set(PRESETS) <= set(MODE_FIXTURES), "add the new mode's minimal settings to MODE_FIXTURES"
+
+
+@pytest.mark.parametrize("mode", sorted(MODE_FIXTURES))
+def test_every_mode_renders_with_its_minimal_settings(mode, tmp_path):
+    """Each preset expands to SQL with nothing left to substitute and no secret in it."""
+    env = dict(MODE_FIXTURES[mode])
+    env.setdefault("DUCKDB_MODE", mode)
+    result = run(env, tmp_path)
+    assert result.returncode == 0, result.stderr
+    sql = result.stdout[result.stdout.index("Generated initialization SQL:") :]
+    assert "${" not in sql
+    assert "-- @" not in sql
+    assert "getenv(" not in sql
+    assert SECRET not in result.stdout
+    # The otlp extension is statically embedded; INSTALLing it would fetch a different build.
+    assert "INSTALL otlp" not in sql
+    for name in re.findall(r"^LOAD ([a-z0-9_]+);", sql, re.M):
+        assert re.search(rf"^INSTALL {name}( FROM community)?;", sql, re.M), name
+
+
+def test_a_missing_setting_inside_a_default_names_what_could_replace_it(tmp_path):
+    result = run({"DUCKDB_MODE": "aws-ducklake", "DUCKLAKE_DATA_PATH": "s3://b/p"}, tmp_path)
+    assert result.returncode == 1
+    assert "AWS_REGION  (or AWS_DEFAULT_REGION)" in result.stderr
+    result = run({"DUCKDB_MODE": "r2-local-ducklake", "R2_BUCKET": "b", "R2_ACCESS_KEY_ID": "k"}, tmp_path)
+    assert "CLOUDFLARE_ACCOUNT_ID  (or set R2_ENDPOINT)" in result.stderr
+    assert "R2_SECRET_ACCESS_KEY  (required because R2_ACCESS_KEY_ID is set)" in result.stderr

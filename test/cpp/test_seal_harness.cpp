@@ -613,24 +613,11 @@ TEST_CASE("seal harness: failed metrics staging buffers nothing, retry buffers e
 
 namespace {
 
-// Enable the catalog-maintenance test overrides so the time-based trigger fires ~300ms after the
-// server starts (instead of 10 minutes). Set BEFORE the server starts so the sealer thread never
-// reads the environment while it is being written; unset by the destructor.
-struct MaintenanceOverrideEnv {
-	MaintenanceOverrideEnv() {
-		setenv("DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE", "1", 1);
-		setenv("DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE_MAX_INTERVAL_MS", "300", 1);
-	}
-	~MaintenanceOverrideEnv() {
-		unsetenv("DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE_MAX_INTERVAL_MS");
-		unsetenv("DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE");
-	}
-};
-
 // A server writing into an attached (non-DuckLake) catalog, so catalog maintenance is enabled.
 OtlpServerConfig MaintenanceHarnessConfig() {
 	auto config = HarnessConfig();
 	config.catalog_name = "lake";
+	config.maintenance_interval_ms = 300;
 	return config;
 }
 
@@ -653,7 +640,6 @@ TEST_CASE("seal harness: contended maintenance checkpoint is not a failure", "[s
 	DuckDB db(nullptr);
 	Connection con(db);
 	REQUIRE_FALSE(con.Query("ATTACH ':memory:' AS lake")->HasError());
-	MaintenanceOverrideEnv env;
 	auto server = MakeServer(*con.context, MaintenanceHarnessConfig());
 	// The sealer polls about once a second, so the hook is in place before the first pass.
 	server->SetMaintenanceFaultHookForTest([]() {
@@ -666,7 +652,7 @@ TEST_CASE("seal harness: contended maintenance checkpoint is not a failure", "[s
 	REQUIRE(server->MaintenanceRunsTotal() == 0);
 	REQUIRE(server->MaintenanceLastError().empty());
 
-	// The attempt reset the trigger like a real pass: no immediate retry on the next sealer tick.
+	// The attempt cleared the trigger like a real pass: with no new seals there is no retry.
 	std::this_thread::sleep_for(std::chrono::milliseconds(1500));
 	REQUIRE(server->MaintenanceContendedTotal() == 1);
 
@@ -677,7 +663,6 @@ TEST_CASE("seal harness: other maintenance errors still count as failures", "[se
 	DuckDB db(nullptr);
 	Connection con(db);
 	REQUIRE_FALSE(con.Query("ATTACH ':memory:' AS lake")->HasError());
-	MaintenanceOverrideEnv env;
 	auto server = MakeServer(*con.context, MaintenanceHarnessConfig());
 	server->SetMaintenanceFaultHookForTest([]() { throw IOException("connection to metadata catalog lost"); });
 
@@ -693,7 +678,6 @@ TEST_CASE("seal harness: successful maintenance on a non-DuckLake catalog skips 
 	DuckDB db(nullptr);
 	Connection con(db);
 	REQUIRE_FALSE(con.Query("ATTACH ':memory:' AS lake")->HasError());
-	MaintenanceOverrideEnv env;
 	auto server = MakeServer(*con.context, MaintenanceHarnessConfig());
 
 	// CHECKPOINT succeeds on a plain DuckDB catalog; the sweep sees it is not DuckLake and stays

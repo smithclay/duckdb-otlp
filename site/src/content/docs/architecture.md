@@ -98,7 +98,7 @@ Worker thread: reserve admission bytes -> otlp_transform (FFI) -> convert -> app
 
 Background writer (trigger: internal size/age threshold; optional otlp_flush)
   → one transaction → for DuckLake: one Parquet data file per signal + one snapshot → COMMIT
-  → after conservative automatic row-seal cadence when there is admission headroom: best-effort CHECKPOINT <catalog> outside the ingest transaction
+  → at most every maintenance_interval_ms, after new commits: best-effort CHECKPOINT <catalog> outside the ingest transaction
 ```
 
 ### Batch commit model and durability
@@ -107,7 +107,7 @@ A single background writer commits the buffer to the target catalog when any tri
 
 - A `202` is **not durable**; rows become durable at the next background commit, on `otlp_stop`, or on `otlp_flush`. A crash loses buffered-but-uncommitted rows (at-most-once for that window).
 - `otlp_stop` and `otlp_flush` commit remaining buffered rows before returning, so those calls lose no accepted rows. **A plain database/connection close does NOT commit buffered rows**. The shutdown drain runs after DuckDB tears down the instance, when `db_ptr` can no longer write, so DuckDB can drop buffered rows. Prefer `otlp_stop` before closing the database. Use `otlp_flush` when the server should stay running but readers need durable rows now. The project tracks a durable raw-spool journal and earlier shutdown hook for at-least-once delivery.
-- After successful automatic row-seals into a named catalog, the writer may run non-force `CHECKPOINT <catalog>` as best-effort catalog-native maintenance when recent ingest rate and pending bytes leave ample admission headroom. The writer runs maintenance after the ingest transaction commits. It skips the default catalog; sustained high ingest and high pending buffered bytes defer maintenance; explicit `otlp_flush` and shutdown drains skip the hook. The server logs unsupported catalog implementations once and disables maintenance for that server. DuckLake uses this hook to apply its own maintenance policy; `duckdb-otlp` has no custom compaction planner.
+- For a named catalog, the writer runs non-force `CHECKPOINT <catalog>` as best-effort catalog-native maintenance at most once per `maintenance_interval_ms`, after rows were committed, outside the ingest transaction. It skips the default catalog; explicit `otlp_flush` and shutdown drains skip it. The server logs unsupported catalog implementations once and disables maintenance for that server. DuckLake uses this hook to apply its own maintenance policy; `duckdb-otlp` has no custom compaction planner.
 
 ### Concurrency model
 

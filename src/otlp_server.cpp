@@ -62,18 +62,6 @@ namespace {
 
 static constexpr idx_t TOKEN_BYTES = 16;
 static constexpr idx_t APPEND_CHUNK_SIZE = STANDARD_VECTOR_SIZE;
-//! Internal best-effort maintenance cadence. Catalog-native CHECKPOINT can add its
-//! own commit for catalogs that implement it, so keep it well below seal cadence.
-static constexpr idx_t CATALOG_MAINTENANCE_ROW_SEAL_INTERVAL = 32;
-static constexpr int64_t CATALOG_MAINTENANCE_MIN_INTERVAL_MS = 5 * 60 * 1000;
-//! Time-based trigger: once any row-seal is pending, run maintenance after this long even if
-//! the row-seal count never reaches CATALOG_MAINTENANCE_ROW_SEAL_INTERVAL. At low volume the
-//! count trigger can take hours (or never fire before a restart), leaving DuckLake-inlined
-//! rows in the metadata catalog instead of Parquet; CHECKPOINT flushes them.
-static constexpr int64_t CATALOG_MAINTENANCE_MAX_INTERVAL_MS = 10 * 60 * 1000;
-static constexpr int64_t CATALOG_MAINTENANCE_HEADROOM_MS = 60 * 1000;
-static constexpr double CATALOG_MAINTENANCE_HEADROOM_FRACTION = 0.5;
-static constexpr double CATALOG_MAINTENANCE_RATE_EWMA_ALPHA = 0.5;
 
 struct OtlpTargetTable {
 	OtlpSignalType signal_type;
@@ -133,32 +121,6 @@ static bool IsContendedCatalogMaintenanceError(const string &message) {
 	return lower.find("could not serialize access") != string::npos ||
 	       lower.find("serialization failure") != string::npos || lower.find("concurrent delete") != string::npos ||
 	       lower.find("concurrent update") != string::npos;
-}
-
-static bool CatalogMaintenanceTestOverridesEnabled() {
-	auto value = std::getenv("DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE");
-	return value && string(value) == "1";
-}
-
-template <class T>
-static T GetCatalogMaintenanceTestOverride(const char *name, T fallback, bool allow_zero = false) {
-	if (!CatalogMaintenanceTestOverridesEnabled()) {
-		return fallback;
-	}
-	auto value = std::getenv(name);
-	if (!value || value[0] == '\0') {
-		return fallback;
-	}
-	try {
-		size_t pos = 0;
-		auto parsed = std::stoull(value, &pos);
-		if (pos != string(value).size() || (!allow_zero && parsed == 0)) {
-			return fallback;
-		}
-		return static_cast<T>(parsed);
-	} catch (...) {
-		return fallback;
-	}
 }
 
 static void RunSQL(Connection &connection, const string &sql) {
@@ -1104,7 +1066,7 @@ void OtlpServer::BuildSinks() {
 	}
 }
 
-OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
+OtlpIngestResult OtlpServer::SealOnce() {
 	std::lock_guard<std::mutex> writer_lock(writer_mutex);
 	if (!writer_con) {
 		return OtlpIngestResult {};
@@ -1247,9 +1209,7 @@ OtlpIngestResult OtlpServer::SealOnce(bool allow_maintenance) {
 	                                  static_cast<uint64_t>(result.rows), static_cast<uint64_t>(result.batches)));
 	RecordSealOutcome(true, result.rows, plan.sealed_admission_bytes, seal_started_unix_ms, append_duration_ms,
 	                  commit_duration_ms, "");
-	if (transactional && allow_maintenance) {
-		MaybeRunCatalogMaintenance(result.rows, plan.sealed_admission_bytes);
-	}
+	catalog_maintenance_due = true;
 	return result;
 }
 
@@ -1297,63 +1257,18 @@ bool OtlpServer::CatalogMaintenanceEnabled() const {
 	       catalog_maintenance_state != CatalogMaintenanceState::DISABLED && writer_con;
 }
 
-void OtlpServer::MaybeRunCatalogMaintenance(idx_t sealed_rows, idx_t sealed_admission_bytes) {
-	if (sealed_rows == 0 || !CatalogMaintenanceEnabled()) {
-		return;
-	}
-	catalog_maintenance_row_seals_since_attempt++;
-	auto now = std::chrono::steady_clock::now();
-	auto seal_elapsed_ms = std::max<int64_t>(
-	    1, std::chrono::duration_cast<std::chrono::milliseconds>(now - catalog_maintenance_last_row_seal).count());
-	catalog_maintenance_last_row_seal = now;
-	auto seal_rate_bytes_per_ms = static_cast<double>(sealed_admission_bytes) / static_cast<double>(seal_elapsed_ms);
-	catalog_maintenance_ingress_rate_bytes_per_ms =
-	    catalog_maintenance_ingress_rate_bytes_per_ms == 0
-	        ? seal_rate_bytes_per_ms
-	        : (CATALOG_MAINTENANCE_RATE_EWMA_ALPHA * seal_rate_bytes_per_ms) +
-	              ((1 - CATALOG_MAINTENANCE_RATE_EWMA_ALPHA) * catalog_maintenance_ingress_rate_bytes_per_ms);
-	RunCatalogMaintenanceIfDue(now);
-}
-
-void OtlpServer::MaybeRunIdleCatalogMaintenance() {
-	// Called by the sealer between seals so the time-based trigger fires even when ingest
-	// has gone quiet (otherwise the last few row-seals would sit un-checkpointed forever).
+void OtlpServer::MaybeRunCatalogMaintenance() {
+	// CHECKPOINT flushes DuckLake-inlined rows to Parquet, merges small files and expires old
+	// snapshots. It runs at most once per maintenance_interval_ms, and only after rows were
+	// sealed (the flag starts set, so rows a previous process left inlined are flushed too).
 	std::lock_guard<std::mutex> writer_lock(writer_mutex);
-	if (!CatalogMaintenanceEnabled()) {
+	auto now = std::chrono::steady_clock::now();
+	if (!catalog_maintenance_due || !CatalogMaintenanceEnabled() ||
+	    now - catalog_maintenance_last_attempt < std::chrono::milliseconds(config.maintenance_interval_ms)) {
 		return;
 	}
-	RunCatalogMaintenanceIfDue(std::chrono::steady_clock::now());
-}
-
-void OtlpServer::RunCatalogMaintenanceIfDue(std::chrono::steady_clock::time_point now) {
-	if (catalog_maintenance_row_seals_since_attempt == 0) {
-		return;
-	}
-	auto elapsed_ms =
-	    std::chrono::duration_cast<std::chrono::milliseconds>(now - catalog_maintenance_last_attempt).count();
-	auto row_seal_interval = GetCatalogMaintenanceTestOverride<idx_t>(
-	    "DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE_ROW_SEAL_INTERVAL", CATALOG_MAINTENANCE_ROW_SEAL_INTERVAL);
-	auto min_interval_ms = GetCatalogMaintenanceTestOverride<int64_t>(
-	    "DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE_MIN_INTERVAL_MS", CATALOG_MAINTENANCE_MIN_INTERVAL_MS, true);
-	auto max_interval_ms = GetCatalogMaintenanceTestOverride<int64_t>(
-	    "DUCKDB_OTLP_TEST_CATALOG_MAINTENANCE_MAX_INTERVAL_MS", CATALOG_MAINTENANCE_MAX_INTERVAL_MS, true);
-	bool count_due = catalog_maintenance_row_seals_since_attempt >= row_seal_interval && elapsed_ms >= min_interval_ms;
-	bool age_due = elapsed_ms >= max_interval_ms;
-	if (!count_due && !age_due) {
-		return;
-	}
-	auto pending_bytes = admitted_bytes.load();
-	auto headroom_bytes = pending_bytes >= config.max_buffered_bytes ? 0 : config.max_buffered_bytes - pending_bytes;
-	auto projected_bytes = catalog_maintenance_ingress_rate_bytes_per_ms * CATALOG_MAINTENANCE_HEADROOM_MS;
-	if (projected_bytes > static_cast<double>(headroom_bytes) * CATALOG_MAINTENANCE_HEADROOM_FRACTION) {
-		// Maintenance is best-effort. Only run it when recent ingress would still leave
-		// ample admission headroom during a long catalog CHECKPOINT.
-		return;
-	}
-
-	// Reset the triggers before the attempt, so a contended or failed pass waits a full interval
-	// like a successful one instead of retrying on every sealer tick.
-	catalog_maintenance_row_seals_since_attempt = 0;
+	// Reset before the attempt, so a contended or failed pass waits a full interval too.
+	catalog_maintenance_due = false;
 	catalog_maintenance_last_attempt = now;
 	try {
 #ifdef DUCKDB_OTLP_ENABLE_TEST_SEAM
@@ -1412,7 +1327,7 @@ void OtlpServer::SweepOrphanedFiles() {
 	if (orphan_sweep_state == CatalogMaintenanceState::DISABLED) {
 		return;
 	}
-	// Called only after a successful CHECKPOINT (the catch in RunCatalogMaintenanceIfDue owns
+	// Called only after a successful CHECKPOINT (the catch in MaybeRunCatalogMaintenance owns
 	// those errors), so a sweep problem never counts as a checkpoint failure: it is logged here.
 	try {
 		if (orphan_sweep_state == CatalogMaintenanceState::PENDING) {
@@ -1521,17 +1436,16 @@ void OtlpServer::SealerLoop() {
 		}
 		if (due) {
 			try {
-				SealOnce(true);
+				SealOnce();
 			} catch (...) {
 				// Already logged + buffers restored (SealOnce catches all); back off.
 				std::this_thread::sleep_for(std::chrono::milliseconds(250));
 			}
-		} else {
-			try {
-				MaybeRunIdleCatalogMaintenance();
-			} catch (...) {
-				// Best-effort; failures are recorded in the maintenance telemetry.
-			}
+		}
+		try {
+			MaybeRunCatalogMaintenance();
+		} catch (...) {
+			// Best-effort; failures are recorded in the maintenance telemetry.
 		}
 	}
 }
@@ -1558,7 +1472,7 @@ bool OtlpServer::SealAgeDue() const {
 }
 
 OtlpIngestResult OtlpServer::FlushNow() {
-	return SealOnce(false);
+	return SealOnce();
 }
 
 idx_t OtlpServer::ShutdownIngest() {
@@ -1578,7 +1492,7 @@ idx_t OtlpServer::ShutdownIngest() {
 	// need durable rows immediately while the server keeps running.
 	for (int attempt = 0; attempt < 3 && BufferedRows() > 0; attempt++) {
 		try {
-			SealOnce(false);
+			SealOnce();
 		} catch (...) {
 			LogServerEvent("final seal attempt failed during shutdown", LogLevel::LOG_WARNING);
 		}

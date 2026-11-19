@@ -43,6 +43,9 @@ constexpr uint64_t DEFAULT_TARGET_FILE_SIZE = 256ULL * 1024ULL * 1024ULL; // 256
 //! How old snapshots/files must be before CHECKPOINT expires and deletes them.
 constexpr int64_t DEFAULT_MAINTENANCE_RETENTION_MS = 15LL * 60LL * 1000LL; // 15 minutes
 
+//! The most often catalog maintenance (CHECKPOINT) runs.
+constexpr int64_t DEFAULT_MAINTENANCE_INTERVAL_MS = 5LL * 60LL * 1000LL; // 5 minutes
+
 // --- file-reading table functions (read_otlp_*) ---
 
 //! Whole-file materialization cap for the read_otlp_* table functions. The entire file is
