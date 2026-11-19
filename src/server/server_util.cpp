@@ -137,7 +137,7 @@ namespace {
 
 constexpr int PROBE_TIMEOUT_MS = 2000;
 
-bool WaitFor(int fd, short events) {
+bool WaitFor(int fd, decltype(pollfd::events) events) {
 	struct pollfd pfd {};
 	pfd.fd = fd;
 	pfd.events = events;

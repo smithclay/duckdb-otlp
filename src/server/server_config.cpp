@@ -359,7 +359,7 @@ void ConfigureMode(const EnvSource &env, ServerConfig &config) {
 int ParsePortEnv(const EnvSource &env, const char *name) {
 	auto value = env.Get(name);
 	size_t pos = 0;
-	long long parsed = -1;
+	int64_t parsed = -1;
 	try {
 		parsed = std::stoll(value, &pos);
 	} catch (...) {
