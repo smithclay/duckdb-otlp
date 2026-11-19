@@ -11,9 +11,7 @@
 namespace duckdb {
 
 struct OtlpStartStopFunctionData : public TableFunctionData {
-	// These lifecycle functions are side-effecting control-plane calls that also
-	// return a status row. DuckDB may rescan table functions, so `finished` makes
-	// server creation/stop safe under rescan instead of repeating the side effect.
+	// DuckDB may rescan a table function; `finished` keeps the side effect from repeating.
 	bool finished = false;
 	OtlpUri listen_uri;
 	vector<OtlpListenerSpec> listeners;
@@ -60,9 +58,7 @@ struct ServeBoolOption {
 	bool OtlpServerConfig::*field;
 };
 static const ServeBoolOption BOOL_OPTIONS[] = {
-    // Opt-in anonymous ingest (no bearer/x-api-key check).
     {"disable_auth", &OtlpServerConfig::disable_auth},
-    // Parquet mode: create the inspection view over the exported files.
     {"parquet_views", &OtlpServerConfig::parquet_views},
     {"create_tables", &OtlpServerConfig::create_tables},
 };
@@ -127,9 +123,6 @@ static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableF
 		}
 		OtlpListenerSpec spec;
 		spec.uri = OtlpUri(listen_uris[i]);
-		// Strict scheme/function binding: otlp_serve serves the OTLP protocol (otlp:),
-		// otap_serve serves OTAP/Arrow (otap:). A mismatched scheme is rejected so the
-		// two functions never overlap and URIs are never mixed across them.
 		if (spec.uri.Scheme() != required_scheme) {
 			throw InvalidInputException("%s requires an '%s:' URI, but got an '%s:' URI", function_name,
 			                            required_scheme, spec.uri.Scheme());
@@ -141,10 +134,7 @@ static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableF
 			}
 		}
 
-		// Transport + which gRPC services to register. otap: is always OTAP/Arrow over
-		// gRPC. otlp: is HTTP by default; transport := 'grpc' runs OTLP/gRPC unary
-		// Export on the same otlp: scheme (no otap: mixing). The two gRPC listener kinds are
-		// disjoint: otlp: registers only the unary services, otap: only the Arrow ones.
+		// The gRPC service sets are disjoint: otlp: registers only the unary services, otap: only the Arrow ones.
 		string transport_opt;
 		if (!transports.empty()) {
 			transport_opt = StringUtil::Lower(transports.size() == 1 ? transports[0] : transports[i]);
@@ -223,14 +213,11 @@ static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableF
 		}
 	}
 	if (!config.disable_auth) {
-		// Anonymous mode needs no token; only mint one when auth is enforced and none was given.
 		if (params.find("token") == params.end()) {
 			config.token = OtlpServer::GenerateRandomToken(*context.db);
 		}
 		OtlpServer::ValidateToken(config.token);
 	}
-	// Parquet export is a standalone store, not a mirror of a catalog table, so the two targets
-	// are mutually exclusive.
 	if (!config.parquet_export_path.empty() && !config.catalog_name.empty()) {
 		throw InvalidInputException("parquet_export_path cannot be combined with a catalog target; use a catalog "
 		                            "mode for transactional ingest or parquet_export_path for plain Parquet export");
@@ -267,11 +254,9 @@ static void OtlpServe(ClientContext &context, TableFunctionInput &data_p, DataCh
 
 	auto &state = OtlpStorageExtensionInfo::GetState(*context.db);
 	state.CreateServer(context, bind_data.listeners, bind_data.config);
-	// Mark finished as soon as the server exists: if any SetValue below throws, a
-	// re-scan must not try to create the (already running) server again.
+	// Set before filling rows: if SetValue throws, a rescan must not create the server again.
 	bind_data.finished = true;
 
-	// One row per listener; every listener feeds the same server.
 	idx_t row = 0;
 	for (auto &spec : bind_data.listeners) {
 		idx_t col = 0;
@@ -289,8 +274,7 @@ static void OtlpServe(ClientContext &context, TableFunctionInput &data_p, DataCh
 }
 
 static TableFunctionSet BuildServeFunctionSet(const string &name, table_function_bind_t bind) {
-	// DuckDB 2.0 declares optional named parameters as a typed "**kwargs" schema: an option the call
-	// leaves out is not passed, so the bind keeps its own defaults exactly as with named_parameters.
+	// Options are a typed **kwargs schema: an omitted option is not passed, so the bind keeps its defaults.
 	auto make_overload = [&](const vector<LogicalType> &arguments) {
 		auto fun = TableFunction(Identifier(name), arguments, OtlpServe, bind);
 		fun.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
@@ -314,7 +298,6 @@ static TableFunctionSet BuildServeFunctionSet(const string &name, table_function
 	};
 	TableFunctionSet set {Identifier(name)};
 	set.AddFunction(make_overload({LogicalType::VARCHAR}));
-	// Several listeners (e.g. HTTP + gRPC) feeding one server: one buffer set, one sealer.
 	set.AddFunction(make_overload({LogicalType::LIST(LogicalType::VARCHAR)}));
 	set.AddFunction(make_overload({}));
 	return set;
@@ -322,9 +305,7 @@ static TableFunctionSet BuildServeFunctionSet(const string &name, table_function
 
 //! Everything otlp_serve and otap_serve do not share, so the descriptions themselves can.
 struct ServeDocs {
-	//! SQL name, e.g. "otlp_serve".
 	const char *function_name;
-	//! Wire protocol as a reader should think of it, e.g. "OTLP".
 	const char *protocol;
 	//! Listen URI used when the function is called with no argument.
 	const char *default_uri;
@@ -334,21 +315,10 @@ struct ServeDocs {
 	const char *list_example;
 };
 
-//! One description per overload of the set: duckdb_functions() matches them on the positional
-//! argument types, which is why each repeats them.
-//!
-//! These two are the only functions here that take named parameters, and that limits what can
-//! be documented about them. duckdb_functions() renders positional and named parameters as one
-//! `parameters` list, and once a description's parameter_names is non-empty every entry past
-//! its end becomes "colN" -- so naming the single positional argument would replace every real
-//! named-parameter name with a placeholder. Nor can the named names be appended here: they come
-//! from an unordered_map that the catalog copies, so the order this code sees is not the order
-//! duckdb_functions() will print. Leaving parameter_names empty keeps DuckDB's fallback, which
-//! lists every named parameter by name and spells only the positional argument col0.
+//! One description per overload: duckdb_functions() matches them on the positional argument types.
+//! parameter_names stay empty; the names come from the signature and its **kwargs schema.
 static vector<FunctionDescription> ServeDescriptions(const ServeDocs &docs) {
 	const vector<string> categories = {"opentelemetry", "ingest"};
-	// True of all three overloads, and the part a caller most needs to know before pointing an
-	// exporter at this: an accepted request is not yet a committed row.
 	const string durability =
 	    " Rows land in the catalog named by the `catalog` parameter -- an attached database, a DuckLake or Iceberg "
 	    "catalog among them -- or in the default catalog when it is unset. They are buffered in memory and "
@@ -404,16 +374,11 @@ CreateTableFunctionInfo OtapServeFunction::GetFunction() {
 }
 
 struct OtlpStopFunctionData : public TableFunctionData {
-	//! True for the no-argument overload: stop every registered server rather than the one
-	//! named by a URI. This is the only way to drain a server whose listen URI the caller does
-	//! not know -- notably one started out-of-band over Quack, which the daemon's own
-	//! otlp_stop('<its uri>') never reached, so its buffered rows were dropped unsealed at
-	//! database teardown.
+	//! No-argument overload: stop every server, including ones whose URI the caller does not know
+	//! (e.g. started over Quack), whose buffered rows would otherwise be dropped at teardown.
 	bool stop_all = false;
 	OtlpUri listen_uri;
-	// Side-effecting control-plane call that also returns a status row. DuckDB may rescan a
-	// table function, so the stop runs once (`executed`) and the rows it produced are then
-	// paged out; a rescan must not stop servers a second time.
+	// The stop runs once and its rows are then paged out; a rescan must not stop servers again.
 	bool executed = false;
 	idx_t offset = 0;
 	vector<OtlpStorageExtensionInfo::StopResult> results;
@@ -433,18 +398,14 @@ static unique_ptr<FunctionData> OtlpStopBind(ClientContext &context, TableFuncti
 	}
 	names.emplace_back("status");
 	return_types.emplace_back(LogicalType::VARCHAR);
-	// Rows still buffered after the final shutdown drain failed (dropped). 0 on a clean stop.
-	// Lets the daemon / an orchestrator detect a data-dropping shutdown (review finding M4).
+	// Rows dropped because the final drain failed; 0 on a clean stop. The daemon exit code keys off it.
 	names.emplace_back("dropped_rows");
 	return_types.emplace_back(LogicalType::UBIGINT);
 	return std::move(bind_data);
 }
 
-//! The status text for one stopped server.
 static string StopStatusMessage(const OtlpStorageExtensionInfo::StopResult &stop) {
 	auto uris = StringUtil::Join(stop.listen_uris, ", ");
-	// Report the error and the row count together: a failed stop that dropped nothing and one
-	// that lost a buffer are very different events, and the daemon exit code keys off the latter.
 	if (!stop.error.empty()) {
 		return StringUtil::Format("Failed to stop %s: %s; dropped %llu un-sealed buffered rows", uris, stop.error,
 		                          static_cast<uint64_t>(stop.dropped_rows));
@@ -467,8 +428,7 @@ static void OtlpStop(ClientContext &context, TableFunctionInput &data_p, DataChu
 			bind_data.results.push_back(state.StopServer(context, bind_data.listen_uri));
 		}
 	}
-	// Nothing to stop. Answer with one informational row rather than an empty result, so both
-	// overloads always say something and `SELECT * FROM otlp_stop()` is never silent.
+	// Nothing to stop: one informational row rather than an empty result.
 	if (bind_data.results.empty()) {
 		if (bind_data.offset > 0) {
 			return;
@@ -495,8 +455,6 @@ static void OtlpStop(ClientContext &context, TableFunctionInput &data_p, DataChu
 
 CreateTableFunctionInfo OtlpStopFunction::GetFunction() {
 	TableFunctionSet set("otlp_stop");
-	// No argument: stop every server on this instance. Added alongside the URI form rather
-	// than replacing it because a targeted stop is still the common case.
 	set.AddFunction(TableFunction("otlp_stop", {}, OtlpStop, OtlpStopBind));
 	set.AddFunction(TableFunction("otlp_stop", {LogicalType::VARCHAR}, OtlpStop, OtlpStopBind));
 	const vector<string> categories = {"opentelemetry", "ingest"};
@@ -619,8 +577,7 @@ CreateTableFunctionInfo OtlpSealListFunction::GetFunction() {
 }
 
 struct OtlpFlushFunctionData : public TableFunctionData {
-	// See OtlpStartStopFunctionData: otlp_flush is a side-effecting table function
-	// that returns a row, and the guard makes DuckDB rescan safe.
+	// Rescan guard, as in OtlpStartStopFunctionData.
 	bool finished = false;
 	OtlpUri listen_uri;
 };

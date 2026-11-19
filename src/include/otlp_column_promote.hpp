@@ -8,12 +8,8 @@ namespace duckdb {
 
 class Connection;
 
-//! User-specified attribute promotion. At ingest the named resource/scope attribute keys are
-//! extracted out of the JSON `resource_attributes` / `scope_attributes` blobs into first-class
-//! VARCHAR columns (`resource_attr_<key>` / `scope_attr_<key>`) so they get zone-map pruning. The
-//! blob is left intact (the residual); any value reconstructs with
-//! `COALESCE(resource_attr_x, json_extract_string(resource_attributes, '$."x"'))`. There is no
-//! auto-discovery: the promoted set is exactly what the operator lists. Catalog mode only.
+//! Operator-listed resource/scope attribute keys copied out of the JSON blobs into VARCHAR columns
+//! (`resource_attr_<key>` / `scope_attr_<key>`) for zone-map pruning; the blob is left intact. Catalog mode only.
 struct OtlpPromoteConfig {
 	vector<string> resource_keys;
 	vector<string> scope_keys;
@@ -22,9 +18,7 @@ struct OtlpPromoteConfig {
 	}
 };
 
-//! Applies a fixed, operator-specified attribute promotion. Resolved once at startup; after
-//! Initialize() all state is immutable, so the seal thread reads ProjectionSuffix() and
-//! otlp_server_list reads PromotedColumnsTotal() without locking.
+//! Immutable after Initialize(), so the seal thread and otlp_server_list read it without locking.
 class OtlpColumnPromoter {
 public:
 	OtlpColumnPromoter(OtlpPromoteConfig config, string catalog_name, string schema_name,
@@ -34,20 +28,15 @@ public:
 		return enabled;
 	}
 
-	//! Once at startup on the writer connection: ensure `json` is available and
-	//! `ALTER TABLE ADD COLUMN IF NOT EXISTS` every promoted column on every signal table
-	//! (idempotent, so a restart with the same config is a no-op). Best-effort: on failure (catalog
-	//! cannot add columns, json missing) it logs and disables promotion rather than blocking start.
+	//! Adds every promoted column to every signal table (idempotent). Best-effort: on failure it logs
+	//! and disables promotion rather than blocking startup.
 	void Initialize(Connection &con);
 
-	//! Sink projection suffix, identical for every signal (resource/scope columns are common to
-	//! all signal tables): `, json_extract_string("resource_attributes", '$."k"') AS
-	//! "resource_attr_k", ...`. Empty when disabled.
+	//! `, json_extract_string(...) AS "resource_attr_k", ...`, the same for every signal. Empty when disabled.
 	const string &ProjectionSuffix() const {
 		return suffix;
 	}
 
-	//! Number of promoted attribute columns per table (resource + scope), 0 when disabled.
 	idx_t PromotedColumnsTotal() const {
 		return enabled ? columns.size() : 0;
 	}

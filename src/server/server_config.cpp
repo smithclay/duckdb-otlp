@@ -63,10 +63,8 @@ string BearerTokenFromOtelHeaders(const string &headers) {
 	return "";
 }
 
-//! Reject the standard OTLP exporter variables whose meaning this server cannot honor, rather
-//! than let someone believe their listener is encrypted or split per signal.
-//! OTEL_EXPORTER_OTLP_ENDPOINT is deliberately not read at all: it usually points at the
-//! user's real collector.
+//! Reject OTLP exporter variables this server cannot honor, rather than silently ignore them.
+//! OTEL_EXPORTER_OTLP_ENDPOINT is deliberately not read: it usually points at the user's collector.
 void RejectUnsupportedOtelEnv(const EnvSource &env) {
 	const char *per_signal = "per-signal endpoints are not supported: one server accepts every signal on the same "
 	                         "listener. Use --http/--grpc";
@@ -78,7 +76,7 @@ void RejectUnsupportedOtelEnv(const EnvSource &env) {
 	    {"OTEL_EXPORTER_OTLP_CERTIFICATE", tls},
 	    {"OTEL_EXPORTER_OTLP_CLIENT_KEY", tls},
 	    {"OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE", tls},
-	    // Settings this daemon no longer reads. Ignoring them would silently change the bind.
+	    // Removed settings: ignoring them would silently change the bind.
 	    {"OTEL_HTTP_ADDR", "it was removed; use --host and --http PORT (DUCKDB_OTLP_HOST, DUCKDB_OTLP_HTTP_PORT)"},
 	    {"OTEL_GRPC_ADDR", "it was removed; use --host and --grpc PORT (DUCKDB_OTLP_HOST, DUCKDB_OTLP_GRPC_PORT)"},
 	    {"DUCKDB_OTLP_TRANSPORTS", "it was removed; select listeners with --http/--grpc PORT (0 disables one)"},
@@ -137,9 +135,7 @@ uint64_t ParsePositiveEnv(const EnvSource &env, const char *name, uint64_t fallb
 	return parsed;
 }
 
-//! Settings passed straight through to the otlp_serve option of the same name: DUCKDB_OTLP_<X>
-//! sets option <x>. The extension validates and defaults them, so the daemon only checks that a
-//! numeric one is a positive integer before rendering it into the generated SQL.
+//! DUCKDB_OTLP_<X> sets otlp_serve option <x>. The extension validates and defaults them.
 struct ServeOption {
 	const char *variable;
 	bool numeric;
@@ -157,8 +153,7 @@ const ServeOption SERVE_OPTIONS[] = {
     {"PROMOTE_SCOPE_ATTRIBUTES", false},
 };
 
-//! Expands a mode preset (src/server/modes/<mode>.sql) against the configuration. The syntax
-//! is documented at the top of local-ducklake.sql.
+//! Expands a mode preset. The syntax is documented at the top of local-ducklake.sql.
 class PresetExpander {
 public:
 	PresetExpander(const EnvSource &env, ServerConfig &config) : env(env), config(config) {
@@ -206,14 +201,12 @@ public:
 		return sql;
 	}
 
-	//! A variable the preset assigned with @set, or "" when it did not.
 	string Var(const string &name) const {
 		auto entry = vars.find(name);
 		return entry == vars.end() ? "" : entry->second;
 	}
 
-	//! Throw one error naming every missing setting, so configuring a remote lakehouse does not
-	//! take one run per variable.
+	//! Throw one error naming every missing setting, not one per run.
 	void ThrowIfMissing() const {
 		if (missing.empty()) {
 			return;
@@ -255,8 +248,8 @@ private:
 		return false;
 	}
 
-	//! getenv('NAME') -> getvariable('env_NAME'). getenv() exists only in the DuckDB CLI, and
-	//! the session variable keeps the secret out of the SQL that `validate` prints.
+	//! getenv('NAME') -> getvariable('env_NAME'). getenv() exists only in the DuckDB CLI, and the
+	//! session variable keeps the secret out of the SQL that `validate` prints.
 	string Secrets(string line) {
 		const string open = "getenv('";
 		for (auto pos = line.find(open); pos != string::npos; pos = line.find(open, pos)) {
@@ -362,9 +355,7 @@ void ConfigureMode(const EnvSource &env, ServerConfig &config) {
 	                                                             : config.database;
 }
 
-//! One transport's resolved bind address. Whether that transport is switched ON is decided
-//! by the caller (ListenersFromEnv), not here, so this struct holds no enablement flag.
-//! Parse a port setting. 0 is legal and means "disable this listener" (--http 0, --grpc 0).
+//! Parse a port setting. 0 means "disable this listener" (--http 0, --grpc 0).
 int ParsePortEnv(const EnvSource &env, const char *name) {
 	auto value = env.Get(name);
 	size_t pos = 0;
@@ -384,8 +375,7 @@ string BindAddr(const EnvSource &env, int port) {
 	return duckdb::UriHost(env.Get("DUCKDB_OTLP_HOST", DEFAULT_HOST)) + ":" + std::to_string(port);
 }
 
-//! Reject two listeners sharing a port. Conservative: distinct host strings can still name
-//! the same socket (a wildcard bind, an alias), so ports must differ regardless of host.
+//! Ports must differ regardless of host: distinct host strings can name the same socket.
 void ValidateDistinctPorts(const std::vector<IngestListener> &listeners) {
 	for (duckdb::idx_t i = 0; i < listeners.size(); i++) {
 		for (duckdb::idx_t j = i + 1; j < listeners.size(); j++) {
@@ -449,25 +439,12 @@ string QuackAddrFromEnv(const EnvSource &env) {
 
 ServerConfig ServerConfig::FromEnv(const EnvSource &env) {
 	ServerConfig config;
-	// DUCKDB_MODE is no longer required: a bare `duckdb-otlp` on a laptop should start a
-	// working local lakehouse with no configuration at all. Every other mode still has to be
-	// named explicitly, so this default cannot silently redirect an intended remote target.
 	config.mode = env.Get("DUCKDB_MODE", "local-ducklake");
 	config.data_dir = env.Get("DUCKDB_OTLP_DATA_DIR", DefaultDataDir(env));
-	// Derived from data_dir rather than hard-coded to /data, so overriding the data directory
-	// moves the control database with it. The container sets DUCKDB_OTLP_DATA_DIR=/data, which
-	// reproduces the previous default path exactly.
 	config.database = env.Get("DUCKDB_DATABASE", config.data_dir + "/duckdb-otlp-control.duckdb");
-	// Where DuckDB loads persistent secrets from. Empty keeps DuckDB's default
-	// ($HOME/.duckdb/stored_secrets), which already works unattended: a secret created once
-	// with CREATE PERSISTENT SECRET is picked up by every later run, so credentials need not be
-	// passed as environment variables at all. The knob exists for deployments that mount them
-	// read-only somewhere else.
 	config.secret_dir = env.Get("DUCKDB_OTLP_SECRET_DIR", "");
 	config.listeners = ListenersFromEnv(env);
-	// Token resolution, most specific first. OTEL_EXPORTER_OTLP_HEADERS is the standard
-	// exporter-side spelling ("Authorization=Bearer <token>"); accepting it lets one variable
-	// configure both an exporter and this receiver.
+	// Most specific first; OTEL_EXPORTER_OTLP_HEADERS lets one variable configure exporter and receiver.
 	config.token = env.Get("OTEL_AUTH_TOKEN", env.Get("DUCKDB_OTLP_TOKEN"));
 	if (config.token.empty() && env.Has("OTEL_EXPORTER_OTLP_HEADERS")) {
 		config.token = BearerTokenFromOtelHeaders(env.Get("OTEL_EXPORTER_OTLP_HEADERS"));
@@ -503,19 +480,14 @@ ServerConfig ServerConfig::FromEnv(const EnvSource &env) {
 	}
 	config.quack_ssl_cert_file = env.Get("DUCKDB_QUACK_SSL_CERT_FILE");
 	config.quack_ssl_key_file = env.Get("DUCKDB_QUACK_SSL_KEY_FILE");
-	// Half a pair is a hard error rather than a fall-through to the self-signed certificate,
-	// which would hide the typo until a client's fingerprint pin stopped matching.
+	// Half a pair is an error: falling back to a self-signed certificate would hide the typo.
 	if (config.quack_ssl_cert_file.empty() != config.quack_ssl_key_file.empty()) {
 		throw InvalidInputException("DUCKDB_QUACK_SSL_CERT_FILE and DUCKDB_QUACK_SSL_KEY_FILE must be set together.");
 	}
 
-	// Authentication. There is deliberately no built-in default token: a token published in
-	// this repository authenticates nothing, and silently falling back to one gave servers the
-	// appearance of being protected. Instead, an unauthenticated server is allowed only where
-	// it cannot be reached from off the machine.
-	// A wildcard bind (0.0.0.0 / ::) is NOT local: it accepts traffic from the whole network
-	// and therefore always needs a token. OtlpUri::IsLocal() is the same predicate the
-	// allow_other_hostname gate in otlp_serve uses, so the two cannot disagree about a URI.
+	// No built-in default token: without one, auth is allowed off only when every listener is
+	// loopback. A wildcard bind is not local. OtlpUri::IsLocal() is the predicate otlp_serve's
+	// allow_other_hostname gate uses, so the two cannot disagree.
 	bool all_loopback = true;
 	for (const auto &listener : config.listeners) {
 		all_loopback = all_loopback && duckdb::OtlpUri(listener.uri).IsLocal();
@@ -585,9 +557,7 @@ string ServerConfig::StartQuackSql() const {
 	if (!quack_enabled) {
 		return "";
 	}
-	// No disable_ssl: as of DuckDB 2.0 Quack serves TLS on every non-loopback bind, with a
-	// self-signed certificate unless one is supplied. Clients pin its fingerprint, which the
-	// startup banner prints (QuackEndpointSql).
+	// No disable_ssl: Quack serves TLS on a non-loopback bind; the banner prints the fingerprint.
 	string ssl_sql;
 	string home_sql;
 	string reset_sql;
@@ -595,13 +565,9 @@ string ServerConfig::StartQuackSql() const {
 		ssl_sql = StringUtil::Format(",\n    ssl_cert_file := %s,\n    ssl_key_file := %s",
 		                             SqlQuote(quack_ssl_cert_file), SqlQuote(quack_ssl_key_file));
 	} else {
-		// Quack keeps its self-signed pair under <home_directory>/.duckdb/extension_data/quack.
-		// In the container $HOME is part of the image, so every new container generated a new
-		// certificate and broke every client's fingerprint pin. The data directory (the /data
-		// volume) outlives a redeploy, so the fingerprint now lasts exactly as long as the data
-		// it guards. home_directory is connection-local by default, and it is set only after
-		// INSTALL/LOAD quack and reset right after, so the extension cache and the secret store
-		// still resolve against $HOME.
+		// Quack keeps its self-signed pair under <home_directory>; pointing that at the data volume
+		// keeps the fingerprint across redeploys. Set only around quack_serve, so the extension cache
+		// and secret store still resolve against $HOME.
 		home_sql = StringUtil::Format("\nSET home_directory = %s;", SqlQuote(data_dir));
 		reset_sql = "RESET home_directory;\n";
 	}
@@ -627,14 +593,8 @@ string ServerConfig::QuackEndpointSql() const {
 }
 
 string ServerConfig::StopOtlpSql() const {
-	// dropped_rows is non-zero only when the final shutdown drain failed and rows were dropped;
-	// main.cpp reads it to exit non-zero on a data-dropping shutdown (review finding M4).
-	//
-	// No argument, so this stops EVERY server on the instance, not just the one the daemon
-	// started. A server started out-of-band -- over Quack, or by the operator's --init-sql --
-	// was previously left to database teardown, where OtlpServer::db_ptr has already expired
-	// and the final seal is a silent no-op, so its buffered rows were dropped. This is the
-	// only shutdown point at which those rows can still be committed.
+	// No argument: stops EVERY server, including ones started over Quack or by --init-sql. At
+	// database teardown their final seal is a silent no-op, so this is the last chance to commit.
 	return "SELECT status, dropped_rows FROM otlp_stop();";
 }
 
@@ -643,9 +603,8 @@ string ServerConfig::StopQuackSql() const {
 }
 
 string ServerConfig::BootSql() const {
-	// Same order the serve path executes in, so `validate` shows exactly what would run.
-	// secret_directory goes first: it has to be set before anything initializes the secret
-	// manager, which the mode's own CREATE SECRET statements would do.
+	// Serve-path order. secret_directory goes first: it must be set before anything (the mode's
+	// CREATE SECRET) initializes the secret manager.
 	auto prelude = secret_dir.empty() ? string() : "SET secret_directory = " + SqlQuote(secret_dir) + ";\n";
 	auto init = init_sql.empty() ? string() : init_sql + "\n";
 	return prelude + mode_setup_sql + "\n" + init + StartOtlpSql() + "\n" + StartQuackSql();

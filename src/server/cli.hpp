@@ -20,9 +20,7 @@ enum class Command {
 
 struct CliOptions {
 	Command command = Command::SERVE;
-	//! Every configuration flag is recorded as a (variable, value) override. main() layers them
-	//! over the process environment in an EnvSource, which gives `flag > env > default` through
-	//! one resolution path and keeps a --token out of getenv().
+	//! Every configuration flag as a (variable, value) override, layered into an EnvSource.
 	std::vector<std::pair<duckdb::string, duckdb::string>> env_overrides;
 	//! `help COMMAND`: the command whose page to print.
 	duckdb::string help_topic;

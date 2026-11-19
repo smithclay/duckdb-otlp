@@ -26,20 +26,16 @@ public:
 	string message;
 };
 
-//! In-memory buffer for one OTLP signal table. The metadata fields are immutable
-//! after construction (so workers may read `types` lock-free); mutable rows live
-//! behind this signal's own mutex so independent signals don't contend on append.
-//! Defined here (not in otlp_server.cpp) so the constructor/destructor in the HTTP
-//! transport TU can destroy the signal_buffers vector of complete type.
+//! In-memory buffer for one OTLP signal table. Metadata is immutable (read lock-free by workers);
+//! rows live behind this signal's own mutex so signals don't contend on append. In a header so
+//! every TU that destroys signal_buffers sees the complete type.
 struct OtlpSignalBuffer {
 	const OtlpSignalType signal_type;
 	const string table_name;
 	const vector<LogicalType> types;
 	//! Column names parallel to `types`: what the sink statement addresses the sealed rows by.
 	const vector<Identifier> names;
-	//! Identity projection (0..n_columns-1), precomputed once so the per-chunk append path
-	//! reuses it instead of rebuilding a column_ids vector for every buffered slice. Immutable
-	//! after construction like the other metadata, so workers read it without the mutex.
+	//! Identity projection (0..n_columns-1), precomputed for the per-chunk append path.
 	const vector<column_t> identity_column_ids;
 	//! How a decoded batch of this signal is imported. Its types are the importer's; `types` above
 	//! differ only where the buffer narrows them (TIMESTAMP_NS -> TIMESTAMP, see BufferColumnType).
@@ -47,12 +43,8 @@ struct OtlpSignalBuffer {
 	std::mutex mutex;
 	unique_ptr<ColumnDataCollection> collection;
 	idx_t buffered_rows = 0;
-	//! Admission bytes attributed to this signal's buffered rows, parallel to buffered_rows and
-	//! guarded by the same mutex. A request's admitted bytes are attributed to the signal(s) it
-	//! buffers into exactly once at buffer time (a multi-sub-signal metrics request splits its
-	//! bytes across its sub-signals by rows, once). Carried into SealingSignal at swap time so a
-	//! failed seal restores the EXACT per-signal admission for un-sealed signals instead of
-	//! re-splitting an aggregate proportionally each failure cycle (review finding M2).
+	//! Admission bytes attributed to this signal's buffered rows (once, at buffer time; a metrics
+	//! request splits by rows). Carried into the seal so a failed seal restores exactly this amount.
 	idx_t unsealed_admission_bytes = 0;
 	bool have_unsealed = false;
 	std::chrono::steady_clock::time_point first_unsealed;

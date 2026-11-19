@@ -22,13 +22,12 @@ constexpr unsigned Bit(Command command) {
 }
 
 constexpr unsigned SERVE_CMDS = Bit(Command::SERVE) | Bit(Command::VALIDATE);
-//! `doctor` takes the same settings so it probes exactly what serve would bind, but not
-//! --init-sql: the container HEALTHCHECK runs it on every probe, and a liveness check must not
-//! execute operator SQL.
+//! `doctor` takes serve's settings but not --init-sql: the HEALTHCHECK runs it on every probe,
+//! and a liveness check must not execute operator SQL.
 constexpr unsigned ALL_CMDS = SERVE_CMDS | Bit(Command::DOCTOR);
 
 //! One accepted flag and the commands that accept it. Every flag but --json overrides the
-//! environment variable it names, so the flag surface and the environment surface cannot drift.
+//! environment variable it names.
 struct FlagDef {
 	const char *long_name;
 	char short_name;
@@ -102,11 +101,9 @@ bool ParseCommand(const string &arg, Command &command) {
 	return false;
 }
 
-//! A first word that is neither a flag nor a command is a mistake, never an argument to serve:
-//! falling through used to start a listener for `duckdb-otlp srve`.
+//! A first word that is neither a flag nor a command is an error, never an argument to serve.
 [[noreturn]] void ThrowUnknownCommand(const string &word) {
-	// Two edits is a typo; more than that is a different word, and a wrong guess is worse than
-	// none. (StringUtil::TopNLevenshtein always keeps its best match, however poor.)
+	// More than two edits is a different word. (TopNLevenshtein always keeps its best match.)
 	string best;
 	duckdb::idx_t best_distance = 3;
 	auto consider = [&](const char *candidate, const char *canonical) {
@@ -133,7 +130,7 @@ bool FlagNameMatches(const FlagDef &flag, const string &name) {
 }
 
 //! The flag `name` names for `command`. A flag of another command is an error naming where it
-//! belongs, rather than a silent no-op.
+//! belongs.
 const FlagDef &FindFlag(const string &arg, const string &name, Command command) {
 	duckdb::vector<string> accepted_by;
 	for (const auto &flag : FLAGS) {
@@ -230,7 +227,6 @@ CliOptions ParseCli(int argc, char **argv) {
 		}
 	}
 	if (options.command == Command::VALIDATE) {
-		// `validate` is `serve` with DRY_RUN set, so what it prints is exactly what serve runs.
 		options.env_overrides.emplace_back("DRY_RUN", "1");
 	}
 	return options;

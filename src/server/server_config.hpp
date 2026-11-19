@@ -23,12 +23,11 @@ struct IngestListener {
 	bool otap = false;
 };
 
-//! The ingest listeners --host and --http/--grpc/--otap select. Shared by startup and `doctor`;
-//! resolving them needs no storage credentials or I/O.
+//! The ingest listeners --host and --http/--grpc/--otap select. Shared with `doctor`; needs no
+//! credentials or I/O.
 std::vector<IngestListener> ListenersFromEnv(const EnvSource &env);
 
-//! The "host:port" Quack binds (--host, --quack PORT), or empty when Quack is off. Shared with
-//! `doctor` so the probe targets exactly what startup bound.
+//! The "host:port" Quack binds (--host, --quack PORT), or empty when Quack is off.
 duckdb::string QuackAddrFromEnv(const EnvSource &env);
 
 struct ServerConfig {
@@ -48,12 +47,11 @@ struct ServerConfig {
 	duckdb::string parquet_export_path;
 	//! Where telemetry lands, for the startup banner (the control database holds none of it).
 	duckdb::string data_location;
-	//! Where object-storage credentials come from, for the startup banner. Set by the preset.
+	//! Where object-storage credentials come from, for the startup banner.
 	duckdb::string credentials_source;
 	//! Directory DuckDB loads persistent secrets from. Empty keeps $HOME/.duckdb/stored_secrets.
 	duckdb::string secret_dir;
-	//! The preset LOADs an extension from a local (unsigned) file. DuckDB accepts this setting
-	//! only before the database starts.
+	//! The preset LOADs an unsigned extension; DuckDB accepts this only before the database starts.
 	bool allow_unsigned_extensions = false;
 	bool quack_enabled = false;
 	bool dry_run = false;
@@ -65,7 +63,6 @@ struct ServerConfig {
 	//! otlp_serve options set from DUCKDB_OTLP_* settings, as (option, SQL literal) pairs.
 	std::vector<std::pair<duckdb::string, duckdb::string>> serve_options;
 
-	//! The mode preset, expanded.
 	duckdb::string mode_setup_sql;
 	//! Contents of the operator's --init-sql script, run after mode setup. Read here rather
 	//! than at execution time so `validate` rejects an unreadable script and prints it.
@@ -75,8 +72,6 @@ struct ServerConfig {
 	//! env_<NAME>, so secret values never appear in the generated SQL text.
 	std::vector<duckdb::string> env_variables;
 
-	//! Resolve the whole configuration from `env`: the process environment plus whatever the
-	//! command line layered on top.
 	static ServerConfig FromEnv(const EnvSource &env);
 
 	//! One otlp_serve/otap_serve call starting every listener against one shared server.

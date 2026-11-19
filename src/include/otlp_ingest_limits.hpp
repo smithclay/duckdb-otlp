@@ -2,32 +2,17 @@
 
 #include <cstdint>
 
-// Centralized ingest/read byte and cadence defaults.
-//
-// These values were previously duplicated as raw literals across the extension
-// (OtlpServerConfig in otlp_server.hpp, the read_otlp_* scan in read_otlp.cpp) and
-// the native daemon (ServerConfig in server_config.hpp). A drifting copy is a silent
-// surface, so each default has exactly one definition here and every site references it.
-//
-// The constants are plain integral constexpr values (no DuckDB types) so this header is
-// dependency-free and can be included from the daemon's lightweight TUs as well as the
-// extension's DuckDB-typed structs (which assign them into idx_t / uint64_t / int64_t fields).
+// Ingest/read defaults shared by the extension and the daemon: one definition each. Plain
+// integral constants (no DuckDB types) so the daemon's lightweight TUs can include this.
 namespace otlp_limits {
 
-// --- live ingest server (otlp_serve) defaults ---
-
-//! Minimum length of a bearer token the ingest server will accept. Enforced twice on
-//! purpose: the daemon checks it while resolving configuration so the failure names the
-//! environment variable, and otlp_serve() checks it again for direct SQL callers.
+//! Checked by the daemon (to name the env var) and again by otlp_serve() for direct SQL callers.
 constexpr uint64_t MIN_TOKEN_LENGTH = 16;
 
-//! Per-request OTLP/HTTP body cap. Bounds a single ingest POST's encoded request body;
-//! a larger body is rejected. This is the *wire* size of one request, distinct from the
-//! whole-file read cap below (which bounds an entire file materialized at once).
+//! Per-request body cap (encoded wire size), for HTTP and gRPC alike.
 constexpr uint64_t DEFAULT_MAX_BODY_BYTES = 16ULL * 1024ULL * 1024ULL; // 16 MiB
 
-//! Backpressure admission cap (over it -> 503): cumulative admitted request-body bytes,
-//! not decoded buffer heap. An admission/throughput proxy, not a precise memory bound.
+//! Backpressure cap (over it -> 503) on admitted request-body bytes, not decoded buffer heap.
 constexpr uint64_t DEFAULT_MAX_BUFFERED_BYTES = 512ULL * 1024ULL * 1024ULL; // 512 MiB
 
 //! Seal (group-commit) size trigger: seal when admitted *input* bytes reach this.
@@ -36,8 +21,7 @@ constexpr uint64_t DEFAULT_SEAL_TARGET_BYTES = 128ULL * 1024ULL * 1024ULL; // 12
 //! Seal age trigger: seal when the oldest buffered row is at least this old.
 constexpr int64_t DEFAULT_SEAL_MAX_AGE_MS = 5000;
 
-//! Tier-1 compaction OUTPUT Parquet file size the post-seal CHECKPOINT merge bin-packs
-//! toward. Distinct from DEFAULT_SEAL_TARGET_BYTES, which bounds admitted *input* bytes.
+//! Output Parquet file size CHECKPOINT compaction bin-packs toward (not an input-byte bound).
 constexpr uint64_t DEFAULT_TARGET_FILE_SIZE = 256ULL * 1024ULL * 1024ULL; // 256 MiB
 
 //! How old snapshots/files must be before CHECKPOINT expires and deletes them.
@@ -46,14 +30,8 @@ constexpr int64_t DEFAULT_MAINTENANCE_RETENTION_MS = 15LL * 60LL * 1000LL; // 15
 //! The most often catalog maintenance (CHECKPOINT) runs.
 constexpr int64_t DEFAULT_MAINTENANCE_INTERVAL_MS = 5LL * 60LL * 1000LL; // 5 minutes
 
-// --- file-reading table functions (read_otlp_*) ---
-
-//! Whole-file materialization cap for the read_otlp_* table functions. The entire file is
-//! read into memory and transformed into a single Arrow batch at once, so this bounds that
-//! one in-memory copy. It is a *different* concept from DEFAULT_MAX_BODY_BYTES: that caps one
-//! streamed ingest request body on the live server; this caps a complete file the prototype
-//! reader materializes whole. They are intentionally separate numbers (a file on disk can be
-//! larger than a single acceptable HTTP request body), so they are NOT unified.
+//! read_ot*_* reads a whole file into memory at once. Deliberately separate from
+//! DEFAULT_MAX_BODY_BYTES: a file may be larger than one acceptable request body.
 constexpr uint64_t MAX_READ_FILE_BYTES = 100ULL * 1024ULL * 1024ULL; // 100 MB
 
 } // namespace otlp_limits

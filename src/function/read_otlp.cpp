@@ -15,17 +15,11 @@
 #include "otlp_function_docs.hpp"
 #include "otlp_ingest_limits.hpp"
 
-// Include the Rust FFI header
 #include "otlp2records.h"
 
 namespace duckdb {
 
-// ============================================================================
-// Bind Data
-// ============================================================================
-
-// OTAP decoder handle freed via RAII. otlp_otap_decoder_free(nullptr) is a
-// documented no-op, so this is safe even if construction left a null handle.
+// otlp_otap_decoder_free(nullptr) is a documented no-op.
 struct OtapDecoderDeleter {
 	void operator()(OtlpOtapDecoder *decoder) const noexcept {
 		otlp_otap_decoder_free(decoder);
@@ -37,40 +31,23 @@ struct ReadOTLPRustBindData : public TableFunctionData {
 	vector<string> files;
 	OtlpSignalType signal_type;
 	OtlpInputFormat format;
-	// True for the read_otap_* functions: input is the OpenTelemetry Arrow
-	// Protocol (canonical BatchArrowRecords), decoded via the stateful OTAP
-	// decoder FFI instead of the one-shot OTLP transform. Output schema is
-	// identical (OTAP normalizes to the same flattened records).
+	// read_otap_*: decoded with the stateful OTAP decoder; same output schema as OTLP.
 	bool is_otap = false;
 
 	// Column types resolved once at bind time; every decoded batch is converted with them.
 	unique_ptr<OtlpArrowTable> table;
 };
 
-// ============================================================================
-// Global State
-// ============================================================================
-
 struct ReadOTLPRustGlobalState : public GlobalTableFunctionState {
 	mutex lock;
 	atomic<idx_t> next_file {0};
-	// Number of files in the glob; one file is handed to each thread via the atomic
-	// next_file cursor, so the scan parallelizes across files (one file per task).
 	idx_t file_count = 1;
 
 	idx_t MaxThreads() const override {
-		// One file per thread: each thread pulls a distinct file via next_file and
-		// keeps fully isolated local state (file_buffer/current_batch). bind_data
-		// (schema) is read-only, so multi-file globs scan in parallel. NOTE: parallelism
-		// is per-file, so a glob that resolves to a SINGLE file (the common case for one
-		// path argument) is processed single-threaded — there is no intra-file split.
+		// Parallel across files only (each thread claims files via next_file); one file is never split.
 		return MaxValue<idx_t>(1, file_count);
 	}
 };
-
-// ============================================================================
-// Local State
-// ============================================================================
 
 struct ReadOTLPRustLocalState : public LocalTableFunctionState {
 	//! The decoded file being emitted; null between files. Output vectors may reference its buffers
@@ -80,10 +57,6 @@ struct ReadOTLPRustLocalState : public LocalTableFunctionState {
 	string file_buffer;
 	vector<column_t> column_ids;
 };
-
-// ============================================================================
-// Bind Function
-// ============================================================================
 
 //! What one read_ot* function reads: a signal, and whether its files are OTAP. A function that is
 //! registered only to point callers elsewhere carries the error it raises instead.
@@ -122,10 +95,6 @@ static unique_ptr<FunctionData> ReadOTLPRustBind(ClientContext &context, TableFu
 	return std::move(result);
 }
 
-// ============================================================================
-// Init Functions
-// ============================================================================
-
 static unique_ptr<GlobalTableFunctionState> ReadOTLPRustInitGlobal(ClientContext &context,
                                                                    TableFunctionInitInput &input) {
 	auto result = make_uniq<ReadOTLPRustGlobalState>();
@@ -142,18 +111,9 @@ static unique_ptr<LocalTableFunctionState> ReadOTLPRustInitLocal(ExecutionContex
 	return std::move(result);
 }
 
-// ============================================================================
-// Decode helpers
-// ============================================================================
-
-// Pick the requested metric shape's array out of a fully-populated batch set:
-// release the chosen shape's schema (conversion uses the bind-time column
-// types) and every other present batch, returning the chosen array (a no-op
-// empty array if that shape had no rows). Shared by the OTLP and OTAP metric
-// paths, which both yield an OtlpMetricsArrowBatches from one parse/decode.
+// Takes ownership of the requested shape's array (empty if the shape had no rows) and releases everything else.
 static ArrowArray SelectMetricShapeArray(OtlpMetricsArrowBatches &batches, OtlpSignalType signal_type) {
 	auto &chosen = OtlpMetricShape(batches, signal_type);
-	// No rows for this shape: a no-op empty array.
 	ArrowArray array = {};
 	if (chosen.present) {
 		if (chosen.schema.release) {
@@ -166,11 +126,7 @@ static ArrowArray SelectMetricShapeArray(OtlpMetricsArrowBatches &batches, OtlpS
 	return array;
 }
 
-// Decode one fully-buffered file into a single Arrow array for the bound signal,
-// dispatching to the stateful OTAP decoder or the one-shot OTLP transform, both in
-// the DuckDb Arrow profile. Any schema returned alongside the array is released
-// here (conversion uses the bind-time column types); the caller owns and must
-// release the returned array.
+// Returned schemas are released here (conversion uses the bind-time types); the caller owns the array.
 static ArrowArray DecodeFileToArray(const ReadOTLPRustBindData &bind_data, const uint8_t *input_bytes, idx_t input_len,
                                     const string &path) {
 	const bool single_shape = bind_data.signal_type == OTLP_SIGNAL_LOGS || bind_data.signal_type == OTLP_SIGNAL_TRACES;
@@ -178,10 +134,7 @@ static ArrowArray DecodeFileToArray(const ReadOTLPRustBindData &bind_data, const
 	ArrowSchema schema;
 
 	if (bind_data.is_otap) {
-		// OTAP is stateful, but each file is one self-contained BatchArrowRecords
-		// message, so one decoder + one decode call per file. (A stream split
-		// across multiple files with cross-message dictionary reuse is not
-		// supported by this one-decoder-per-file model.)
+		// One decoder per file: a file must be a self-contained message (no cross-file dictionary reuse).
 		OtapDecoderPtr decoder(otlp_otap_decoder_new_with_profile(OTLP_ARROW_PROFILE_DUCKDB));
 		if (!decoder) {
 			throw IOException("Failed to allocate OTAP decoder for %s", path);
@@ -207,37 +160,27 @@ static ArrowArray DecodeFileToArray(const ReadOTLPRustBindData &bind_data, const
 		return SelectMetricShapeArray(batches, bind_data.signal_type);
 	}
 
-	// OTLP: protobuf/JSON/NDJSON, auto-detected by the Rust backend.
 	if (single_shape) {
-		// Logs/Traces have a single shape; otlp_transform is the canonical verb for them.
 		OtlpStatus status =
 		    otlp_transform_with_profile(bind_data.signal_type, bind_data.format, OTLP_ARROW_PROFILE_DUCKDB, input_bytes,
 		                                input_len, &array, &schema);
 		if (status != OTLP_OK) {
 			throw IOException("OTLP parse error on %s: %s", path, otlp_status_message(status));
 		}
-		// Column types were resolved at bind time; release this copy and keep only the array.
 		if (schema.release) {
 			schema.release(&schema);
 		}
 		return array;
 	}
-	// Metrics: one parse yields all four shapes (otlp_transform_metrics_all is the
-	// single canonical metric verb). SelectMetricShapeArray keeps the requested
-	// shape and releases the rest.
+	// Metrics: one parse yields all four shapes.
 	OtlpMetricsArrowBatches batches = {};
 	OtlpStatus status = otlp_transform_metrics_all_with_profile(bind_data.format, OTLP_ARROW_PROFILE_DUCKDB,
 	                                                            input_bytes, input_len, &batches);
 	if (status != OTLP_OK) {
-		// On failure no batch is present; nothing to release.
 		throw IOException("OTLP parse error on %s: %s", path, otlp_status_message(status));
 	}
 	return SelectMetricShapeArray(batches, bind_data.signal_type);
 }
-
-// ============================================================================
-// Scan Function
-// ============================================================================
 
 static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
 	auto &bind_data = data.bind_data->CastNoConst<ReadOTLPRustBindData>();
@@ -250,11 +193,7 @@ static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, D
 			const auto row_count = static_cast<idx_t>(lstate.current_batch->arrow_array.length);
 			const auto remaining = row_count - lstate.batch_offset;
 			const auto count = MinValue<idx_t>(STANDARD_VECTOR_SIZE, remaining);
-			// Projection pushdown only prunes the Arrow->DuckDB conversion here: the Rust transform
-			// already parsed the payload and built every column of the batch (the FFI has no
-			// column mask), so unselected columns are materialized in Rust regardless. Skipping
-			// their conversion is the smaller half of the per-column cost; a column-aware transform
-			// is the lever for the larger half and waits on the streaming backend.
+			// Projection pushdown only skips conversion: the FFI has no column mask, so Rust builds every column.
 			OtlpArrowScan(context, *bind_data.table, lstate.current_batch, lstate.column_ids, lstate.batch_offset,
 			              count, output);
 			lstate.batch_offset += count;
@@ -265,28 +204,18 @@ static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, D
 			return;
 		}
 
-		// Get next file
 		idx_t file_idx = gstate.next_file.fetch_add(1);
 		if (file_idx >= bind_data.files.size()) {
-			// No more files
 			output.SetChildCardinality(0);
 			return;
 		}
 
-		// Read file via DuckDB FS
 		auto &path = bind_data.files[file_idx];
 		auto handle = fs.OpenFile(path, FileOpenFlags::FILE_FLAGS_READ);
 
-		// Whole-file materialization: the entire file is read into file_buffer and the whole
-		// file is transformed into a single ArrowArray held in memory at once (input is capped
-		// at otlp_limits::MAX_READ_FILE_BYTES below). This is the prototype approach; a
-		// streaming/chunked reader that incrementally parses and yields batches is the intended
-		// future direction.
+		// The whole file is read and decoded into one in-memory ArrowArray, hence the size cap.
 		auto file_size = handle->GetFileSize();
 
-		// Cap the whole-file read for safety. This bounds an entire file materialized at once and
-		// is intentionally distinct from the live server's per-request body cap
-		// (otlp_limits::DEFAULT_MAX_BODY_BYTES); see otlp_ingest_limits.hpp for why the two differ.
 		constexpr idx_t MAX_FILE_SIZE = otlp_limits::MAX_READ_FILE_BYTES;
 		if (file_size > MAX_FILE_SIZE) {
 			throw IOException("File %s is too large (%llu bytes). Maximum supported size is 100MB.", path,
@@ -320,10 +249,6 @@ static void ReadOTLPRustScan(ClientContext &context, TableFunctionInput &data, D
 		}
 	}
 }
-
-// ============================================================================
-// Registration
-// ============================================================================
 
 void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
 	//! Per signal, in OTLP_SIGNALS order: what a row is, the column count, and any detail worth naming.
@@ -377,8 +302,7 @@ void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
 		                {StringUtil::Format("SELECT * FROM %s('%s.bar');", otap_name, file)}, "otap");
 	}
 
-	// Registered only to raise, and documented so a caller who finds them in duckdb_functions() is
-	// pointed at the readers that work. No examples, since every call raises.
+	// Registered only to raise and point at the working readers; no examples, since every call raises.
 	register_reader("read_otlp_metrics",
 	                make_shared_ptr<ReadOtlpInfo>(OTLP_SIGNAL_METRICS_GAUGE, false,
 	                                              "read_otlp_metrics() is not supported yet because OTLP metrics "

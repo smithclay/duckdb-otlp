@@ -50,10 +50,6 @@ void Execute(duckdb::Connection &con, const string &sql, const string &label, bo
 }
 
 void BindConfigEnvVariables(duckdb::Connection &con, const ServerConfig &config, const EnvSource &env) {
-	// getenv() is a CLI-only DuckDB function and is not registered in the embedded library the
-	// daemon links, so the generated SQL reads these through getvariable() instead. Recording
-	// only the variable NAME in the config keeps secret values out of the generated SQL text
-	// (which `validate` prints and the engine can echo back in error messages).
 	for (const auto &name : config.env_variables) {
 		con.context->config.SetUserVariable("env_" + name, duckdb::Value(env.Get(name.c_str())));
 	}
@@ -70,8 +66,7 @@ string CliErrorMessage(const std::exception &ex) {
 }
 
 string ReadSqlFile(const string &path, const string &what) {
-	// Rejecting a directory explicitly: an ifstream opened on one succeeds on some platforms
-	// and then reads nothing, which would silently turn a mistyped path into "no SQL to run".
+	// An ifstream on a directory can succeed and read nothing, silently running no SQL.
 	std::error_code ec;
 	if (std::filesystem::is_directory(path, ec)) {
 		throw InvalidInputException("%s \"%s\" is a directory, not a SQL file", what, path);
@@ -82,8 +77,7 @@ string ReadSqlFile(const string &path, const string &what) {
 	}
 	std::ostringstream buffer;
 	buffer << file.rdbuf();
-	// An ifstream that opened but failed mid-read (an unreadable mount, an I/O error) would
-	// otherwise hand back a silently truncated script.
+	// Otherwise a failed mid-read would hand back a silently truncated script.
 	if (file.bad()) {
 		throw InvalidInputException("Failed to read %s \"%s\"", what, path);
 	}
@@ -93,9 +87,7 @@ string ReadSqlFile(const string &path, const string &what) {
 }
 
 bool IsRemotePath(const string &path) {
-	// A scheme followed by "://" (s3://, gcss://, https://, az://, ...). Deliberately not a
-	// list of known schemes: any URI names an object store or a server, and none of them has
-	// local directories to create.
+	// Any scheme, not a list of known ones: no URI has local directories to create.
 	auto sep = path.find("://");
 	if (sep == string::npos || sep == 0) {
 		return false;

@@ -5,9 +5,7 @@
 
 namespace duckdb {
 
-// SQL literal/identifier quoting shared by the OTLP ingest server (otlp_server.cpp) and the
-// native daemon's mode-setup SQL generation (server_config.cpp, main.cpp). SQL escaping is an
-// injection surface, so it has exactly one definition rather than a hand-copied one per TU.
+// The one definition of SQL quoting for the extension and the daemon (an injection surface).
 inline string SqlEscape(const string &value) {
 	return StringUtil::Replace(value, "'", "''");
 }
@@ -20,8 +18,7 @@ inline string QuoteIdentifier(const string &identifier) {
 	return "\"" + StringUtil::Replace(identifier, "\"", "\"\"") + "\"";
 }
 
-//! Build a quoted `[catalog.]schema.table` reference. An empty catalog means the connection's
-//! default catalog; schema is assumed non-empty (the live-ingest catalog modes always set one).
+//! An empty catalog means the connection's default catalog; schema must be non-empty.
 inline string QualifiedTable(const string &catalog_name, const string &schema_name, const string &table_name) {
 	string qualified;
 	if (!catalog_name.empty()) {
@@ -31,12 +28,8 @@ inline string QualifiedTable(const string &catalog_name, const string &schema_na
 	return qualified;
 }
 
-//! The `parquet` mode's on-disk contract, in one place.
-//!
-//! The seal path writes `<root>/<table>/year=/month=/day=/` (otlp_server.cpp) and two readers
-//! have to match it exactly: the view the seal creates after each successful export, and the
-//! one the CLI creates for a dataset whose control database does not have it. Hand-copying the
-//! glob depth and the read_parquet options is how those two silently stopped agreeing.
+//! The `parquet` mode's on-disk layout, `<root>/<table>/year=/month=/day=/`: the seal writes it and
+//! every reader must match it, so the glob and read_parquet options live only here.
 inline string ParquetDatasetDirectory(const string &root, const string &table_name) {
 	if (root.empty()) {
 		return "";
@@ -50,18 +43,12 @@ inline string ParquetDatasetDirectory(const string &root, const string &table_na
 
 inline string ParquetDatasetGlob(const string &root, const string &table_name) {
 	auto directory = ParquetDatasetDirectory(root, table_name);
-	// An empty root must not compose into "/**/*.parquet", which would recursively glob the
-	// whole filesystem instead of matching nothing.
+	// An empty root must not become "/**/*.parquet", a glob of the whole filesystem.
 	return directory.empty() ? "" : directory + "/**/*.parquet";
 }
 
-//! `SELECT * FROM read_parquet(<glob>, ...)` over one signal's files.
-//!
-//! hive_partitioning=false is load-bearing: the COPY sets WRITE_PARTITION_COLUMNS false, so
-//! year/month/day exist only in the path, and letting read_parquet infer them would append
-//! three columns that the same signal's table in a catalog mode does not have.
-//! union_by_name=true so a schema that gained a column between seals still reads as one
-//! relation instead of failing on the first mismatched file.
+//! hive_partitioning=false: year/month/day live only in the path (WRITE_PARTITION_COLUMNS false) and
+//! must not become extra columns. union_by_name=true: a schema that gained a column still reads.
 inline string ParquetDatasetSelect(const string &root, const string &table_name) {
 	auto glob = ParquetDatasetGlob(root, table_name);
 	if (glob.empty()) {
