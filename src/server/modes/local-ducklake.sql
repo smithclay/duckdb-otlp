@@ -12,7 +12,8 @@
 --                      read back by the daemon
 --   -- @if A B ... / -- @end
 --                      keep the lines between only when one of A, B... is set, and then
---                      require all of them. `-- @if !A` keeps them only when A is unset.
+--                      require all of them. `-- @if !A` keeps them only when A is unset, and
+--                      `-- @if A^=prefix` only when A starts with prefix.
 -- Other comment lines are dropped. Every missing setting is reported in one error.
 --
 -- `--mode none --init-sql FILE` runs a file of your own instead.

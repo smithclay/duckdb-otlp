@@ -157,7 +157,7 @@ A mode is a preset: a SQL file ([`src/server/modes/`](https://github.com/smithcl
 | Mode | Catalog | Catalog store | Data files | Required settings |
 |------|---------|---------------|------------|-------------------|
 | `local-ducklake` *(default)* | DuckLake | local DuckDB file | local directory | *(none)* |
-| `parquet` | *(none)* | — | local directory or `s3://` | `S3_BUCKET`, `AWS_REGION` for S3 |
+| `parquet` | *(none)* | — | local directory or `s3://` | `AWS_REGION` for S3 |
 | `aws-ducklake` | DuckLake | local DuckDB file | `s3://` | `DUCKLAKE_DATA_PATH`, `AWS_REGION` |
 | `gcp-ducklake` | DuckLake | Postgres | `gcss://` | `DUCKLAKE_DATA_PATH`, `PGHOST`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` |
 | `r2-local-ducklake` | DuckLake | local DuckDB file | R2 | `R2_BUCKET`, `CLOUDFLARE_ACCOUNT_ID` |
@@ -184,8 +184,8 @@ One name per concept, across every mode that uses it.
 |---------|---------|-------|
 | `DUCKLAKE_DATA_PATH` | every DuckLake mode | where Parquet data files go |
 | `DUCKLAKE_CATALOG_PATH` | DuckLake modes with a local catalog | a `postgres:…` value moves the catalog to Postgres |
-| `PARQUET_EXPORT_PATH` | `parquet` | overrides the default path (`<data-dir>/parquet`, or `s3://bucket/prefix` with `S3_BUCKET`) |
-| `S3_BUCKET`, `S3_PREFIX` | `parquet` | write to `s3://bucket/prefix`. Setting `S3_BUCKET` is what loads the S3 filesystem and credential chain, so an `s3://` `PARQUET_EXPORT_PATH` needs it too |
+| `PARQUET_EXPORT_PATH` | `parquet` | local path or `s3://` (default `<data-dir>/parquet`); an `s3://` path loads the S3 filesystem and AWS credential chain |
+| `S3_BUCKET`, `S3_PREFIX` | `parquet` | composed into `s3://bucket/prefix` when `PARQUET_EXPORT_PATH` is unset |
 | `S3_ENDPOINT`, `S3_URL_STYLE` | `parquet` | for S3-compatible storage |
 | `S3_TABLES_BUCKET_ARN` | `s3-tables` | the table bucket's ARN |
 | `AWS_REGION`, `AWS_PROFILE` | every AWS mode | standard AWS variables; `AWS_DEFAULT_REGION` also accepted |

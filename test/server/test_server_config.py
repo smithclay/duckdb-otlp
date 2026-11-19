@@ -961,3 +961,15 @@ def test_a_missing_setting_inside_a_default_names_what_could_replace_it(tmp_path
     result = run({"DUCKDB_MODE": "r2-local-ducklake", "R2_BUCKET": "b", "R2_ACCESS_KEY_ID": "k"}, tmp_path)
     assert "CLOUDFLARE_ACCOUNT_ID  (or set R2_ENDPOINT)" in result.stderr
     assert "R2_SECRET_ACCESS_KEY  (required because R2_ACCESS_KEY_ID is set)" in result.stderr
+
+
+def test_an_s3_parquet_export_path_loads_s3_without_s3_bucket(tmp_path):
+    """The Parquet guide's primary S3 form sets only PARQUET_EXPORT_PATH."""
+    env = {"DUCKDB_MODE": "parquet", "PARQUET_EXPORT_PATH": "s3://bucket/otlp", "AWS_REGION": "us-west-2"}
+    result = run(env, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "CREATE OR REPLACE SECRET plain_s3_secret" in result.stdout
+    assert "parquet_export_path := 's3://bucket/otlp'" in result.stdout
+    local = run({"DUCKDB_MODE": "parquet"}, tmp_path)
+    assert local.returncode == 0, local.stderr
+    assert "INSTALL aws" not in local.stdout

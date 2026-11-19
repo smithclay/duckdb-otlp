@@ -213,10 +213,14 @@ private:
 	}
 
 	//! `-- @if A B ...`: keep the block when any of the names is set, and then require them all.
-	//! `-- @if !A`: keep it when A is unset.
+	//! `-- @if !A`: keep it when A is unset. `-- @if A^=prefix`: keep it when A starts with prefix.
 	bool If(const duckdb::vector<string> &words) {
 		if (words.size() == 2 && StringUtil::StartsWith(words[1], "!")) {
 			return Lookup(words[1].substr(1)).empty();
+		}
+		auto prefix = words.size() == 2 ? words[1].find("^=") : string::npos;
+		if (prefix != string::npos) {
+			return StringUtil::StartsWith(Lookup(words[1].substr(0, prefix)), words[1].substr(prefix + 2));
 		}
 		duckdb::vector<string> names(words.begin() + 1, words.end());
 		duckdb::vector<string> set;
