@@ -25,8 +25,31 @@ inline void ReleaseOtlpArrowBatch(OtlpArrowBatch &batch) {
 	batch.present = 0;
 }
 
+//! The batch holding metric shape `signal_type` (OTLP_SIGNAL_METRICS_GAUGE and after).
+inline OtlpArrowBatch &OtlpMetricShape(OtlpMetricsArrowBatches &batches, OtlpSignalType signal_type) {
+	OtlpArrowBatch *shapes[] = {&batches.gauge, &batches.sum, &batches.histogram, &batches.exp_histogram};
+	return *shapes[signal_type - OTLP_SIGNAL_METRICS_GAUGE];
+}
+
+//! Release every metric shape still present.
+inline void ReleaseOtlpMetricBatches(OtlpMetricsArrowBatches &batches) {
+	for (auto *batch : {&batches.gauge, &batches.sum, &batches.histogram, &batches.exp_histogram}) {
+		ReleaseOtlpArrowBatch(*batch);
+	}
+}
+
 //! One signal's columns as DuckDB's stock Arrow importer maps them. Every otlp2records call this
 //! extension makes requests OTLP_ARROW_PROFILE_DUCKDB, whose Arrow types the stock importer already
+//! Every signal the extension reads and ingests, in OtlpSignalType order (OTLP_SIGNAL_LOGS = 0 ...
+//! OTLP_SIGNAL_METRICS_EXP_HISTOGRAM = 5). The name is also the ingest table's, and the file reader
+//! is read_<name> for OTLP and read_otap_<name minus "otlp_"> for OTAP.
+constexpr OtlpSignalType OTLP_SIGNALS[] = {OTLP_SIGNAL_LOGS,          OTLP_SIGNAL_TRACES,
+                                           OTLP_SIGNAL_METRICS_GAUGE, OTLP_SIGNAL_METRICS_SUM,
+                                           OTLP_SIGNAL_METRICS_HISTOGRAM, OTLP_SIGNAL_METRICS_EXP_HISTOGRAM};
+constexpr const char *OTLP_SIGNAL_TABLES[] = {"otlp_logs",          "otlp_traces",
+                                              "otlp_metrics_gauge", "otlp_metrics_sum",
+                                              "otlp_metrics_histogram", "otlp_metrics_exp_histogram"};
+
 //! maps to the extension's column types: hex VARCHAR ids, BIGINT nanosecond duration, signed counters.
 struct OtlpArrowTable {
 	ArrowTableSchema arrow_table;

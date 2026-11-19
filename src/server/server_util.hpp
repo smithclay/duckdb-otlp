@@ -58,4 +58,10 @@ void CreateDirectory(const duckdb::string &path);
 //! A remote path is a no-op, for the same reason.
 void CreateParentDirectory(const duckdb::string &path);
 
+//! Probe a listener for `doctor`: true when <host>:<port> accepts a TCP connection within 2s
+//! and, with a non-empty `path`, answers GET <path> with a 2xx/3xx status. Plain sockets
+//! rather than httplib: compiling httplib into the daemon would give the linker a second,
+//! zlib-less copy of its inline functions (see the link-order note in CMakeLists.txt).
+bool ProbeListener(const duckdb::string &host, int port, const duckdb::string &path = "");
+
 } // namespace duckdb_otlp_server

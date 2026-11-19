@@ -22,13 +22,6 @@
 #include <thread>
 #include <vector>
 
-namespace duckdb {
-// Defined in otlp_server.cpp (linked into the daemon). Declared here rather than including
-// otlp_server.hpp, whose transitive includes are not on the daemon's include path.
-bool OtlpHttpStatusOk(const string &host, int port, const string &path);
-bool OtlpTcpConnectOk(const string &host, int port);
-} // namespace duckdb
-
 namespace {
 
 using duckdb_otlp_server::BindConfigEnvVariables;
@@ -311,7 +304,7 @@ void PrintQuackEndpoint(duckdb::Connection &con, const duckdb_otlp_server::Serve
 // and this binary carries no TLS client (no OpenSSL), so the request it could send would be
 // answered with a TLS alert -- the probe read every healthy TLS Quack as down.
 bool QuackProbe(const duckdb::string &addr) {
-	return duckdb::OtlpTcpConnectOk(HealthCheckHost(addr), PortFromAddr(addr, 9494));
+	return duckdb_otlp_server::ProbeListener(HealthCheckHost(addr), PortFromAddr(addr, 9494));
 }
 
 // One check's result. Collected rather than printed as it is found, so --json can emit one
@@ -358,8 +351,8 @@ int RunDoctor(const EnvSource &env, bool as_json) {
 		for (const auto &listener : duckdb_otlp_server::ListenersFromEnv(env)) {
 			duckdb::OtlpUri uri(listener.uri);
 			auto host = ReachableHost(uri.Host());
-			bool ok = listener.transport == "grpc" ? duckdb::OtlpTcpConnectOk(host, uri.Port())
-			                                       : duckdb::OtlpHttpStatusOk(host, uri.Port(), "/readyz");
+			// gRPC speaks HTTP/2 and has no /readyz, so a connect is all it can answer.
+			bool ok = duckdb_otlp_server::ProbeListener(host, uri.Port(), listener.transport == "grpc" ? "" : "/readyz");
 			checks.push_back({ListenerLabel(listener), host + ":" + std::to_string(uri.Port()), ok});
 		}
 	} catch (std::exception &ex) {

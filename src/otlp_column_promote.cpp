@@ -3,19 +3,12 @@
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/query_result.hpp"
 
+#include "otlp_arrow.hpp"
 #include "otlp_sql_util.hpp"
 
 namespace duckdb {
 
 namespace {
-
-//! The six signal tables every server creates; resource_attributes/scope_attributes exist on all.
-const char *const SIGNAL_TABLES[] = {"otlp_logs",
-                                     "otlp_traces",
-                                     "otlp_metrics_gauge",
-                                     "otlp_metrics_sum",
-                                     "otlp_metrics_histogram",
-                                     "otlp_metrics_exp_histogram"};
 
 void Exec(Connection &con, const string &sql) {
 	auto result = con.Query(sql);
@@ -105,7 +98,8 @@ void OtlpColumnPromoter::Initialize(Connection &con) {
 	// Add every promoted column on every signal table (idempotent). A fixed config means the first
 	// ALTER failure indicates the catalog cannot add columns (e.g. an Iceberg REST catalog without
 	// write support), so disable rather than retry per column/table.
-	for (auto *table : SIGNAL_TABLES) {
+	// Every signal table has resource_attributes and scope_attributes.
+	for (auto *table : OTLP_SIGNAL_TABLES) {
 		auto qualified = QualifiedTable(catalog_name, schema_name, table);
 		for (auto &c : columns) {
 			try {

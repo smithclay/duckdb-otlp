@@ -3,31 +3,12 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
 
+#include "otlp_arrow.hpp"
 #include "otlp_server.hpp"
 #include "otlp_storage.hpp"
 #include "otlp_uri.hpp"
 
 namespace duckdb {
-
-static LogicalType OtlpVarcharType() {
-	return LogicalType(LogicalTypeId::VARCHAR);
-}
-
-static LogicalType OtlpBooleanType() {
-	return LogicalType(LogicalTypeId::BOOLEAN);
-}
-
-static LogicalType OtlpUSmallIntType() {
-	return LogicalType(LogicalTypeId::USMALLINT);
-}
-
-static LogicalType OtlpUBigIntType() {
-	return LogicalType(LogicalTypeId::UBIGINT);
-}
-
-static LogicalType OtlpBigIntType() {
-	return LogicalType(LogicalTypeId::BIGINT);
-}
 
 struct OtlpStartStopFunctionData : public TableFunctionData {
 	// These lifecycle functions are side-effecting control-plane calls that also
@@ -60,6 +41,52 @@ static vector<string> StringOrStringList(const Value &value, const char *what) {
 	}
 	return result;
 }
+
+//! otlp_serve/otap_serve options that set one OtlpServerConfig field. Numeric ones must be > 0.
+struct ServeStringOption {
+	const char *name;
+	string OtlpServerConfig::*field;
+	bool required_non_empty;
+};
+static const ServeStringOption STRING_OPTIONS[] = {
+    {"token", &OtlpServerConfig::token, false},
+    // Empty = the connection's default catalog; otherwise an attached writable catalog.
+    {"catalog", &OtlpServerConfig::catalog_name, false},
+    {"schema", &OtlpServerConfig::schema_name, true},
+    {"parquet_export_path", &OtlpServerConfig::parquet_export_path, true},
+};
+struct ServeBoolOption {
+	const char *name;
+	bool OtlpServerConfig::*field;
+};
+static const ServeBoolOption BOOL_OPTIONS[] = {
+    // Opt-in anonymous ingest (no bearer/x-api-key check).
+    {"disable_auth", &OtlpServerConfig::disable_auth},
+    // Parquet mode: create the inspection view over the exported files.
+    {"parquet_views", &OtlpServerConfig::parquet_views},
+    {"create_tables", &OtlpServerConfig::create_tables},
+};
+struct ServeNumericOption {
+	const char *name;
+	idx_t OtlpServerConfig::*unsigned_field;
+	int64_t OtlpServerConfig::*signed_field;
+};
+static const ServeNumericOption NUMERIC_OPTIONS[] = {
+    {"max_body_bytes", &OtlpServerConfig::max_body_bytes, nullptr},
+    // Sizes the HTTP worker pool; accepted but unused by gRPC, whose runtime sizes itself.
+    {"http_threads", &OtlpServerConfig::http_threads, nullptr},
+    {"max_buffered_bytes", &OtlpServerConfig::max_buffered_bytes, nullptr},
+    {"seal_target_bytes", &OtlpServerConfig::seal_target_bytes, nullptr},
+    {"seal_max_age_ms", nullptr, &OtlpServerConfig::seal_max_age_ms},
+    {"target_file_size", &OtlpServerConfig::target_file_size, nullptr},
+    {"maintenance_retention_ms", nullptr, &OtlpServerConfig::maintenance_retention_ms},
+    {"maintenance_interval_ms", nullptr, &OtlpServerConfig::maintenance_interval_ms},
+};
+//! Comma-separated resource / scope attribute keys to promote into columns.
+static const std::pair<const char *, vector<string> OtlpPromoteConfig::*> PROMOTE_OPTIONS[] = {
+    {"promote_resource_attributes", &OtlpPromoteConfig::resource_keys},
+    {"promote_scope_attributes", &OtlpPromoteConfig::scope_keys},
+};
 
 static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableFunctionBindInput &input,
                                                   vector<LogicalType> &return_types, vector<Identifier> &names,
@@ -141,151 +168,83 @@ static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableF
 		bind_data->listeners.push_back(std::move(spec));
 	}
 
-	auto allow_other_hostname = input.named_parameters.find("allow_other_hostname") != input.named_parameters.end() &&
-	                            input.named_parameters["allow_other_hostname"].GetValue<bool>();
-	for (auto &spec : bind_data->listeners) {
-		if (!allow_other_hostname && !spec.uri.IsLocal()) {
-			throw InvalidInputException(
-			    "Only localhost is allowed as an OTLP hostname by default; set allow_other_hostname=true to override");
-		}
-	}
-
-	bind_data->config.disable_auth = input.named_parameters.find("disable_auth") != input.named_parameters.end() &&
-	                                 input.named_parameters["disable_auth"].GetValue<bool>();
-
-	if (input.named_parameters.find("token") != input.named_parameters.end()) {
-		bind_data->config.token = input.named_parameters["token"].GetValue<string>();
-	} else if (!bind_data->config.disable_auth) {
-		// Anonymous mode needs no token; only mint one when auth is enforced.
-		bind_data->config.token = OtlpServer::GenerateRandomToken(*context.db);
-	}
-	if (!bind_data->config.disable_auth) {
-		OtlpServer::ValidateToken(bind_data->config.token);
-	}
-
-	if (input.named_parameters.find("catalog") != input.named_parameters.end()) {
-		// Empty catalog = the connection's default catalog. A non-empty value targets
-		// an attached writable catalog (e.g. DuckLake or Iceberg) for lakehouse ingest.
-		bind_data->config.catalog_name = input.named_parameters["catalog"].GetValue<string>();
-	}
-	if (input.named_parameters.find("schema") != input.named_parameters.end()) {
-		bind_data->config.schema_name = input.named_parameters["schema"].GetValue<string>();
-		if (bind_data->config.schema_name.empty()) {
-			throw InvalidInputException("schema must not be empty");
-		}
-	}
-	if (input.named_parameters.find("parquet_export_path") != input.named_parameters.end()) {
-		bind_data->config.parquet_export_path = input.named_parameters["parquet_export_path"].GetValue<string>();
-		if (bind_data->config.parquet_export_path.empty()) {
-			throw InvalidInputException("parquet_export_path must not be empty");
-		}
-		// Parquet export is a standalone durable store (the Parquet files), not a mirror of
-		// a catalog table: it keeps no local table copy and is at-least-once. Combining it
-		// with a catalog target would be ambiguous, so the two are mutually exclusive.
-		if (!bind_data->config.catalog_name.empty()) {
-			throw InvalidInputException(
-			    "parquet_export_path cannot be combined with a catalog target; use a catalog "
-			    "mode for transactional ingest or parquet_export_path for plain Parquet export");
-		}
-	}
-	if (input.named_parameters.find("parquet_views") != input.named_parameters.end()) {
-		bind_data->config.parquet_views = input.named_parameters["parquet_views"].GetValue<bool>();
-	}
-	if (input.named_parameters.find("create_tables") != input.named_parameters.end()) {
-		bind_data->config.create_tables = input.named_parameters["create_tables"].GetValue<bool>();
-	}
-	if (input.named_parameters.find("max_body_bytes") != input.named_parameters.end()) {
-		bind_data->config.max_body_bytes = input.named_parameters["max_body_bytes"].GetValue<idx_t>();
-		if (bind_data->config.max_body_bytes == 0) {
-			throw InvalidInputException("max_body_bytes must be greater than zero");
-		}
-	}
-	if (input.named_parameters.find("http_threads") != input.named_parameters.end()) {
-		bind_data->config.http_threads = input.named_parameters["http_threads"].GetValue<idx_t>();
-		if (bind_data->config.http_threads == 0) {
-			throw InvalidInputException("http_threads must be greater than zero");
-		}
-	}
-	if (input.named_parameters.find("max_buffered_bytes") != input.named_parameters.end()) {
-		bind_data->config.max_buffered_bytes = input.named_parameters["max_buffered_bytes"].GetValue<idx_t>();
-		if (bind_data->config.max_buffered_bytes == 0) {
-			throw InvalidInputException("max_buffered_bytes must be greater than zero");
-		}
-	}
-	if (input.named_parameters.find("seal_target_bytes") != input.named_parameters.end()) {
-		bind_data->config.seal_target_bytes = input.named_parameters["seal_target_bytes"].GetValue<idx_t>();
-		if (bind_data->config.seal_target_bytes == 0) {
-			throw InvalidInputException("seal_target_bytes must be greater than zero");
-		}
-	}
-	if (input.named_parameters.find("seal_max_age_ms") != input.named_parameters.end()) {
-		bind_data->config.seal_max_age_ms = input.named_parameters["seal_max_age_ms"].GetValue<int64_t>();
-		if (bind_data->config.seal_max_age_ms <= 0) {
-			throw InvalidInputException("seal_max_age_ms must be greater than zero");
-		}
-	}
-	if (input.named_parameters.find("target_file_size") != input.named_parameters.end()) {
-		bind_data->config.target_file_size = input.named_parameters["target_file_size"].GetValue<idx_t>();
-		if (bind_data->config.target_file_size == 0) {
-			throw InvalidInputException("target_file_size must be greater than zero");
-		}
-	}
-	if (input.named_parameters.find("maintenance_retention_ms") != input.named_parameters.end()) {
-		bind_data->config.maintenance_retention_ms =
-		    input.named_parameters["maintenance_retention_ms"].GetValue<int64_t>();
-		if (bind_data->config.maintenance_retention_ms <= 0) {
-			throw InvalidInputException("maintenance_retention_ms must be greater than zero");
-		}
-	}
-	if (input.named_parameters.find("maintenance_interval_ms") != input.named_parameters.end()) {
-		bind_data->config.maintenance_interval_ms =
-		    input.named_parameters["maintenance_interval_ms"].GetValue<int64_t>();
-		if (bind_data->config.maintenance_interval_ms <= 0) {
-			throw InvalidInputException("maintenance_interval_ms must be greater than zero");
-		}
-	}
-	// Attribute promotion: comma-separated lists of resource / scope attribute keys to promote into
-	// first-class columns at ingest.
-	auto parse_attr_keys = [&](const char *param, vector<string> &out) {
-		auto it = input.named_parameters.find(param);
-		if (it == input.named_parameters.end()) {
-			return;
-		}
-		for (auto &part : StringUtil::Split(it->second.GetValue<string>(), ',')) {
-			auto key = part;
-			StringUtil::Trim(key);
-			if (!key.empty()) {
-				out.push_back(key);
+	auto &config = bind_data->config;
+	auto &params = input.named_parameters;
+	for (auto &option : STRING_OPTIONS) {
+		auto it = params.find(option.name);
+		if (it != params.end()) {
+			config.*option.field = it->second.GetValue<string>();
+			if (option.required_non_empty && (config.*option.field).empty()) {
+				throw InvalidInputException("%s must not be empty", option.name);
 			}
 		}
-	};
-	parse_attr_keys("promote_resource_attributes", bind_data->config.promote.resource_keys);
-	parse_attr_keys("promote_scope_attributes", bind_data->config.promote.scope_keys);
+	}
+	for (auto &option : BOOL_OPTIONS) {
+		auto it = params.find(option.name);
+		if (it != params.end()) {
+			config.*option.field = it->second.GetValue<bool>();
+		}
+	}
+	for (auto &option : NUMERIC_OPTIONS) {
+		auto it = params.find(option.name);
+		if (it == params.end()) {
+			continue;
+		}
+		auto value = it->second.GetValue<int64_t>();
+		if (value <= 0) {
+			throw InvalidInputException("%s must be greater than zero", option.name);
+		}
+		if (option.unsigned_field) {
+			config.*option.unsigned_field = static_cast<idx_t>(value);
+		} else {
+			config.*option.signed_field = value;
+		}
+	}
+	for (auto &option : PROMOTE_OPTIONS) {
+		auto it = params.find(option.first);
+		if (it == params.end()) {
+			continue;
+		}
+		for (auto key : StringUtil::Split(it->second.GetValue<string>(), ',')) {
+			StringUtil::Trim(key);
+			if (!key.empty()) {
+				(config.promote.*option.second).push_back(key);
+			}
+		}
+	}
 
-	names.emplace_back("listen_uri");
-	return_types.emplace_back(OtlpVarcharType());
-	names.emplace_back("listen_url");
-	return_types.emplace_back(OtlpVarcharType());
-	names.emplace_back("auth_token");
-	return_types.emplace_back(OtlpVarcharType());
-	names.emplace_back("schema_name");
-	return_types.emplace_back(OtlpVarcharType());
-	names.emplace_back("logs_table");
-	return_types.emplace_back(OtlpVarcharType());
-	names.emplace_back("traces_table");
-	return_types.emplace_back(OtlpVarcharType());
-	names.emplace_back("metrics_gauge_table");
-	return_types.emplace_back(OtlpVarcharType());
-	names.emplace_back("metrics_sum_table");
-	return_types.emplace_back(OtlpVarcharType());
-	names.emplace_back("metrics_histogram_table");
-	return_types.emplace_back(OtlpVarcharType());
-	names.emplace_back("metrics_exp_histogram_table");
-	return_types.emplace_back(OtlpVarcharType());
+	auto other_host = params.find("allow_other_hostname");
+	if (other_host == params.end() || !other_host->second.GetValue<bool>()) {
+		for (auto &spec : bind_data->listeners) {
+			if (!spec.uri.IsLocal()) {
+				throw InvalidInputException("Only localhost is allowed as an OTLP hostname by default; set "
+				                            "allow_other_hostname=true to override");
+			}
+		}
+	}
+	if (!config.disable_auth) {
+		// Anonymous mode needs no token; only mint one when auth is enforced and none was given.
+		if (params.find("token") == params.end()) {
+			config.token = OtlpServer::GenerateRandomToken(*context.db);
+		}
+		OtlpServer::ValidateToken(config.token);
+	}
+	// Parquet export is a standalone store, not a mirror of a catalog table, so the two targets
+	// are mutually exclusive.
+	if (!config.parquet_export_path.empty() && !config.catalog_name.empty()) {
+		throw InvalidInputException("parquet_export_path cannot be combined with a catalog target; use a catalog "
+		                            "mode for transactional ingest or parquet_export_path for plain Parquet export");
+	}
+
+	for (auto name : {"listen_uri", "listen_url", "auth_token", "schema_name"}) {
+		names.emplace_back(name);
+	}
+	for (auto *table : OTLP_SIGNAL_TABLES) {
+		names.emplace_back(string(table + strlen("otlp_")) + "_table");
+	}
 	names.emplace_back("catalog_name");
-	return_types.emplace_back(OtlpVarcharType());
 	names.emplace_back("transport");
-	return_types.emplace_back(OtlpVarcharType());
+	return_types.assign(names.size(), LogicalType::VARCHAR);
 
 	return std::move(bind_data);
 }
@@ -315,18 +274,15 @@ static void OtlpServe(ClientContext &context, TableFunctionInput &data_p, DataCh
 	// One row per listener; every listener feeds the same server.
 	idx_t row = 0;
 	for (auto &spec : bind_data.listeners) {
-		output.SetValue(0, row, spec.uri.Uri());
-		output.SetValue(1, row, spec.uri.Http());
-		output.SetValue(2, row, bind_data.config.token);
-		output.SetValue(3, row, bind_data.config.schema_name);
-		output.SetValue(4, row, "otlp_logs");
-		output.SetValue(5, row, "otlp_traces");
-		output.SetValue(6, row, "otlp_metrics_gauge");
-		output.SetValue(7, row, "otlp_metrics_sum");
-		output.SetValue(8, row, "otlp_metrics_histogram");
-		output.SetValue(9, row, "otlp_metrics_exp_histogram");
-		output.SetValue(10, row, bind_data.config.catalog_name);
-		output.SetValue(11, row, OtlpTransportName(spec.transport));
+		idx_t col = 0;
+		for (auto &value : {spec.uri.Uri(), spec.uri.Http(), bind_data.config.token, bind_data.config.schema_name}) {
+			output.SetValue(col++, row, value);
+		}
+		for (auto *table : OTLP_SIGNAL_TABLES) {
+			output.SetValue(col++, row, table);
+		}
+		output.SetValue(col++, row, bind_data.config.catalog_name);
+		output.SetValue(col++, row, OtlpTransportName(spec.transport));
 		row++;
 	}
 	output.SetChildCardinality(row);
@@ -338,40 +294,28 @@ static TableFunctionSet BuildServeFunctionSet(const string &name, table_function
 	auto make_overload = [&](const vector<LogicalType> &arguments) {
 		auto fun = TableFunction(Identifier(name), arguments, OtlpServe, bind);
 		fun.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
-			options
-			    .Add("token", OtlpVarcharType())
-			    // Opt-in anonymous ingest (no bearer/x-api-key check). Off by default.
-			    .Add("disable_auth", OtlpBooleanType())
-			    .Add("catalog", OtlpVarcharType())
-			    .Add("schema", OtlpVarcharType())
-			    .Add("parquet_export_path", OtlpVarcharType())
-			    // Parquet mode: create the inspection view over the exported files (default true).
-			    .Add("parquet_views", OtlpBooleanType())
-			    .Add("create_tables", OtlpBooleanType())
-			    .Add("allow_other_hostname", OtlpBooleanType())
-			    // otlp_serve: 'http' (default) or 'grpc' (OTLP/gRPC unary), as one value or a list parallel
-			    // to a list of listen URIs. otap_serve is gRPC-only (OTAP/Arrow): only 'grpc' or omission.
-			    .Add("transport", LogicalType::ANY)
-			    .Add("max_body_bytes", OtlpUBigIntType())
-			    // http_threads sizes the HTTP worker pool; ignored by the gRPC transport (the
-			    // tonic server sizes its own runtime), but accepted on both for a uniform surface.
-			    .Add("http_threads", OtlpUBigIntType())
-			    .Add("max_buffered_bytes", OtlpUBigIntType())
-			    .Add("seal_target_bytes", OtlpUBigIntType())
-			    .Add("seal_max_age_ms", OtlpBigIntType())
-			    .Add("target_file_size", OtlpUBigIntType())
-			    .Add("maintenance_retention_ms", OtlpBigIntType())
-			    .Add("maintenance_interval_ms", OtlpBigIntType())
-			    // Attribute promotion: comma-separated resource / scope attribute keys to promote.
-			    .Add("promote_resource_attributes", OtlpVarcharType())
-			    .Add("promote_scope_attributes", OtlpVarcharType());
+			for (auto &option : STRING_OPTIONS) {
+				options.Add(option.name, LogicalType::VARCHAR);
+			}
+			for (auto &option : BOOL_OPTIONS) {
+				options.Add(option.name, LogicalType::BOOLEAN);
+			}
+			options.Add("allow_other_hostname", LogicalType::BOOLEAN);
+			// 'http' (default) or 'grpc', as one value or a list parallel to the listen URIs.
+			options.Add("transport", LogicalType::ANY);
+			for (auto &option : NUMERIC_OPTIONS) {
+				options.Add(option.name, option.unsigned_field ? LogicalType::UBIGINT : LogicalType::BIGINT);
+			}
+			for (auto &option : PROMOTE_OPTIONS) {
+				options.Add(option.first, LogicalType::VARCHAR);
+			}
 		});
 		return fun;
 	};
 	TableFunctionSet set {Identifier(name)};
-	set.AddFunction(make_overload({OtlpVarcharType()}));
+	set.AddFunction(make_overload({LogicalType::VARCHAR}));
 	// Several listeners (e.g. HTTP + gRPC) feeding one server: one buffer set, one sealer.
-	set.AddFunction(make_overload({LogicalType::LIST(OtlpVarcharType())}));
+	set.AddFunction(make_overload({LogicalType::LIST(LogicalType::VARCHAR)}));
 	set.AddFunction(make_overload({}));
 	return set;
 }
@@ -417,12 +361,12 @@ static vector<FunctionDescription> ServeDescriptions(const ServeDocs &docs) {
 	                               docs.default_uri, docs.transport_note, durability),
 	            {StringUtil::Format("SELECT * FROM %s(token := 'replace-with-a-real-token');", docs.function_name)},
 	            categories));
-	descriptions.push_back(OtlpDoc({OtlpVarcharType()}, {},
+	descriptions.push_back(OtlpDoc({LogicalType::VARCHAR}, {},
 	                               StringUtil::Format("Start a live %s ingest server on one listen URI.%s%s",
 	                                                  docs.protocol, docs.transport_note, durability),
 	                               {docs.uri_example}, categories));
 	descriptions.push_back(
-	    OtlpDoc({LogicalType::LIST(OtlpVarcharType())}, {},
+	    OtlpDoc({LogicalType::LIST(LogicalType::VARCHAR)}, {},
 	            StringUtil::Format("Start a live %s ingest server fed by several listeners -- one buffer set and one "
 	                               "sealer behind all of them, so any one of the URIs names the whole server to "
 	                               "otlp_stop() and otlp_flush().%s%s",
@@ -488,11 +432,11 @@ static unique_ptr<FunctionData> OtlpStopBind(ClientContext &context, TableFuncti
 		bind_data->listen_uri = OtlpUri(uri_value.GetValue<string>());
 	}
 	names.emplace_back("status");
-	return_types.emplace_back(OtlpVarcharType());
+	return_types.emplace_back(LogicalType::VARCHAR);
 	// Rows still buffered after the final shutdown drain failed (dropped). 0 on a clean stop.
 	// Lets the daemon / an orchestrator detect a data-dropping shutdown (review finding M4).
 	names.emplace_back("dropped_rows");
-	return_types.emplace_back(OtlpUBigIntType());
+	return_types.emplace_back(LogicalType::UBIGINT);
 	return std::move(bind_data);
 }
 
@@ -554,7 +498,7 @@ CreateTableFunctionInfo OtlpStopFunction::GetFunction() {
 	// No argument: stop every server on this instance. Added alongside the URI form rather
 	// than replacing it because a targeted stop is still the common case.
 	set.AddFunction(TableFunction("otlp_stop", {}, OtlpStop, OtlpStopBind));
-	set.AddFunction(TableFunction("otlp_stop", {OtlpVarcharType()}, OtlpStop, OtlpStopBind));
+	set.AddFunction(TableFunction("otlp_stop", {LogicalType::VARCHAR}, OtlpStop, OtlpStopBind));
 	const vector<string> categories = {"opentelemetry", "ingest"};
 	return OtlpDocumented(
 	    std::move(set),
@@ -563,7 +507,7 @@ CreateTableFunctionInfo OtlpStopFunction::GetFunction() {
 	             "returning. One row per stopped server. Use this before closing a database you did not start "
 	             "every server on: a plain close drops buffered rows.",
 	             {"SELECT * FROM otlp_stop();"}, categories),
-	     OtlpDoc({OtlpVarcharType()}, {"listen_uri"},
+	     OtlpDoc({LogicalType::VARCHAR}, {"listen_uri"},
 	             "Stop the live ingest server that owns listener `listen_uri`, including its other listeners, "
 	             "committing its buffered rows before returning.",
 	             {"SELECT * FROM otlp_stop('otlp:localhost:4318');"}, categories)});
@@ -578,64 +522,64 @@ struct OtlpServerListFunctionData : public TableFunctionData {
 static unique_ptr<FunctionData> OtlpServerListBind(ClientContext &context, TableFunctionBindInput &input,
                                                    vector<LogicalType> &return_types, vector<Identifier> &names) {
 	names.emplace_back("listen_uri");
-	return_types.emplace_back(OtlpVarcharType());
+	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("listen_url");
-	return_types.emplace_back(OtlpVarcharType());
+	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("host");
-	return_types.emplace_back(OtlpVarcharType());
+	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("port");
-	return_types.emplace_back(OtlpUSmallIntType());
+	return_types.emplace_back(LogicalType::USMALLINT);
 	names.emplace_back("schema_name");
-	return_types.emplace_back(OtlpVarcharType());
+	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("active_requests");
-	return_types.emplace_back(OtlpUBigIntType());
+	return_types.emplace_back(LogicalType::UBIGINT);
 	names.emplace_back("total_requests");
-	return_types.emplace_back(OtlpUBigIntType());
+	return_types.emplace_back(LogicalType::UBIGINT);
 	names.emplace_back("total_rows");
-	return_types.emplace_back(OtlpUBigIntType());
+	return_types.emplace_back(LogicalType::UBIGINT);
 	names.emplace_back("is_listening");
-	return_types.emplace_back(OtlpBooleanType());
+	return_types.emplace_back(LogicalType::BOOLEAN);
 	names.emplace_back("last_error");
-	return_types.emplace_back(OtlpVarcharType());
+	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("catalog_name");
-	return_types.emplace_back(OtlpVarcharType());
+	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("buffered_rows");
-	return_types.emplace_back(OtlpUBigIntType());
+	return_types.emplace_back(LogicalType::UBIGINT);
 	names.emplace_back("admitted_bytes");
-	return_types.emplace_back(OtlpUBigIntType());
+	return_types.emplace_back(LogicalType::UBIGINT);
 	names.emplace_back("seal_target_bytes");
-	return_types.emplace_back(OtlpUBigIntType());
+	return_types.emplace_back(LogicalType::UBIGINT);
 	names.emplace_back("seal_max_age_ms");
-	return_types.emplace_back(OtlpBigIntType());
+	return_types.emplace_back(LogicalType::BIGINT);
 	names.emplace_back("oldest_buffered_age_ms");
-	return_types.emplace_back(OtlpBigIntType());
+	return_types.emplace_back(LogicalType::BIGINT);
 	names.emplace_back("last_seal_age_ms");
-	return_types.emplace_back(OtlpBigIntType());
+	return_types.emplace_back(LogicalType::BIGINT);
 	names.emplace_back("seals_total");
-	return_types.emplace_back(OtlpUBigIntType());
+	return_types.emplace_back(LogicalType::UBIGINT);
 	names.emplace_back("committed_rows_total");
-	return_types.emplace_back(OtlpUBigIntType());
+	return_types.emplace_back(LogicalType::UBIGINT);
 	names.emplace_back("seal_failures_total");
-	return_types.emplace_back(OtlpUBigIntType());
+	return_types.emplace_back(LogicalType::UBIGINT);
 	names.emplace_back("seal_last_error");
-	return_types.emplace_back(OtlpVarcharType());
+	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("maintenance_runs_total");
-	return_types.emplace_back(OtlpUBigIntType());
+	return_types.emplace_back(LogicalType::UBIGINT);
 	names.emplace_back("maintenance_failures_total");
-	return_types.emplace_back(OtlpUBigIntType());
+	return_types.emplace_back(LogicalType::UBIGINT);
 	names.emplace_back("last_maintenance_age_ms");
-	return_types.emplace_back(OtlpBigIntType());
+	return_types.emplace_back(LogicalType::BIGINT);
 	names.emplace_back("maintenance_last_error");
-	return_types.emplace_back(OtlpVarcharType());
+	return_types.emplace_back(LogicalType::VARCHAR);
 	// Appended (not inserted next to buffered_rows) so existing column positions are unchanged.
 	names.emplace_back("buffered_bytes");
-	return_types.emplace_back(OtlpUBigIntType());
+	return_types.emplace_back(LogicalType::UBIGINT);
 	names.emplace_back("promoted_columns_total");
-	return_types.emplace_back(OtlpUBigIntType());
+	return_types.emplace_back(LogicalType::UBIGINT);
 	names.emplace_back("transport");
-	return_types.emplace_back(OtlpVarcharType());
+	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("maintenance_contended_total");
-	return_types.emplace_back(OtlpUBigIntType());
+	return_types.emplace_back(LogicalType::UBIGINT);
 	return make_uniq<OtlpServerListFunctionData>();
 }
 
@@ -717,9 +661,9 @@ static unique_ptr<FunctionData> OtlpSealListBind(ClientContext &context, TableFu
 	         Identifier("admitted_bytes"),       Identifier("success"),
 	         Identifier("seals_total"),          Identifier("seal_failures_total"),
 	         Identifier("committed_rows_total"), Identifier("error")};
-	return_types = {OtlpVarcharType(), OtlpUBigIntType(), OtlpBigIntType(),  OtlpBigIntType(),  OtlpBigIntType(),
-	                OtlpBigIntType(),  OtlpBigIntType(),  OtlpUBigIntType(), OtlpUBigIntType(), OtlpBooleanType(),
-	                OtlpUBigIntType(), OtlpUBigIntType(), OtlpUBigIntType(), OtlpVarcharType()};
+	return_types = {LogicalType::VARCHAR, LogicalType::UBIGINT, LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::BIGINT,
+	                LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::UBIGINT, LogicalType::UBIGINT, LogicalType::BOOLEAN,
+	                LogicalType::UBIGINT, LogicalType::UBIGINT, LogicalType::UBIGINT, LogicalType::VARCHAR};
 	return make_uniq<OtlpSealListFunctionData>();
 }
 
@@ -779,13 +723,13 @@ static unique_ptr<FunctionData> OtlpFlushBind(ClientContext &context, TableFunct
 	}
 	bind_data->listen_uri = OtlpUri(uri_value.GetValue<string>());
 	names.emplace_back("status");
-	return_types.emplace_back(OtlpVarcharType());
+	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("sealed_rows");
-	return_types.emplace_back(OtlpUBigIntType());
+	return_types.emplace_back(LogicalType::UBIGINT);
 	names.emplace_back("seals_total");
-	return_types.emplace_back(OtlpUBigIntType());
+	return_types.emplace_back(LogicalType::UBIGINT);
 	names.emplace_back("error");
-	return_types.emplace_back(OtlpVarcharType());
+	return_types.emplace_back(LogicalType::VARCHAR);
 	return std::move(bind_data);
 }
 
@@ -813,8 +757,8 @@ static void OtlpFlush(ClientContext &context, TableFunctionInput &data_p, DataCh
 
 CreateTableFunctionInfo OtlpFlushFunction::GetFunction() {
 	return OtlpDocumented(
-	    TableFunction("otlp_flush", {OtlpVarcharType()}, OtlpFlush, OtlpFlushBind),
-	    {OtlpDoc({OtlpVarcharType()}, {"listen_uri"},
+	    TableFunction("otlp_flush", {LogicalType::VARCHAR}, OtlpFlush, OtlpFlushBind),
+	    {OtlpDoc({LogicalType::VARCHAR}, {"listen_uri"},
 	             "Force a synchronous seal (group-commit) on the live ingest server that owns listener "
 	             "`listen_uri`, so rows accepted so far become readable in the target catalog. The server keeps "
 	             "running.",

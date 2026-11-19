@@ -130,6 +130,26 @@ uint64_t ParsePositiveEnv(const EnvSource &env, const char *name, uint64_t fallb
 	return parsed;
 }
 
+//! Settings passed straight through to the otlp_serve option of the same name: DUCKDB_OTLP_<X>
+//! sets option <x>. The extension validates and defaults them, so the daemon only checks that a
+//! numeric one is a positive integer before rendering it into the generated SQL.
+struct ServeOption {
+	const char *variable;
+	bool numeric;
+};
+const ServeOption SERVE_OPTIONS[] = {
+    {"HTTP_THREADS", true},
+    {"MAX_BODY_BYTES", true},
+    {"MAX_BUFFERED_BYTES", true},
+    {"SEAL_TARGET_BYTES", true},
+    {"SEAL_MAX_AGE_MS", true},
+    {"TARGET_FILE_SIZE", true},
+    {"MAINTENANCE_RETENTION_MS", true},
+    {"MAINTENANCE_INTERVAL_MS", true},
+    {"PROMOTE_RESOURCE_ATTRIBUTES", false},
+    {"PROMOTE_SCOPE_ATTRIBUTES", false},
+};
+
 //! Expands a mode preset (src/server/modes/<mode>.sql) against the configuration. The syntax
 //! is documented at the top of local-ducklake.sql.
 class PresetExpander {
@@ -661,22 +681,21 @@ ServerConfig ServerConfig::FromEnv(const EnvSource &env) {
 	config.startup_timeout_secs = static_cast<int>(ParsePositiveEnv(env, "DUCKDB_OTLP_STARTUP_TIMEOUT",
 	                                                                static_cast<uint64_t>(config.startup_timeout_secs),
 	                                                                std::numeric_limits<int>::max()));
-	config.http_threads = ParsePositiveEnv(env, "DUCKDB_OTLP_HTTP_THREADS", config.http_threads);
-	config.max_body_bytes = ParsePositiveEnv(env, "DUCKDB_OTLP_MAX_BODY_BYTES", config.max_body_bytes);
-	config.max_buffered_bytes = ParsePositiveEnv(env, "DUCKDB_OTLP_MAX_BUFFERED_BYTES", config.max_buffered_bytes);
-	config.seal_target_bytes = ParsePositiveEnv(env, "DUCKDB_OTLP_SEAL_TARGET_BYTES", config.seal_target_bytes);
-	config.seal_max_age_ms = static_cast<int64_t>(
-	    ParsePositiveEnv(env, "DUCKDB_OTLP_SEAL_MAX_AGE_MS", static_cast<uint64_t>(config.seal_max_age_ms)));
-	config.target_file_size = ParsePositiveEnv(env, "DUCKDB_OTLP_TARGET_FILE_SIZE", config.target_file_size);
-	config.maintenance_retention_ms = static_cast<int64_t>(ParsePositiveEnv(
-	    env, "DUCKDB_OTLP_MAINTENANCE_RETENTION_MS", static_cast<uint64_t>(config.maintenance_retention_ms)));
+	for (const auto &option : SERVE_OPTIONS) {
+		auto variable = string("DUCKDB_OTLP_") + option.variable;
+		if (!env.Has(variable.c_str())) {
+			continue;
+		}
+		auto name = StringUtil::Lower(option.variable);
+		auto value = option.numeric ? std::to_string(ParsePositiveEnv(env, variable.c_str(), 0))
+		                            : SqlQuote(env.Get(variable.c_str()));
+		config.serve_options.emplace_back(name, value);
+	}
 	// An empty script is a no-op, so a templated file can render empty.
 	config.init_sql_path = env.Get("DUCKDB_OTLP_INIT_SQL", "");
 	if (!config.init_sql_path.empty()) {
 		config.init_sql = ReadSqlFile(config.init_sql_path, "--init-sql script");
 	}
-	config.promote_resource_attributes = env.Get("DUCKDB_OTLP_PROMOTE_RESOURCE_ATTRIBUTES", "");
-	config.promote_scope_attributes = env.Get("DUCKDB_OTLP_PROMOTE_SCOPE_ATTRIBUTES", "");
 
 	config.quack_token = env.Get("DUCKDB_QUACK_TOKEN");
 	if (config.quack_enabled && config.quack_token.empty()) {
@@ -724,67 +743,28 @@ ServerConfig ServerConfig::FromEnv(const EnvSource &env) {
 }
 
 string ServerConfig::StartOtlpSql() const {
-	bool any_http = false;
-	for (const auto &listener : listeners) {
-		any_http = any_http || listener.transport == "http";
+	string options_sql;
+	if (!parquet_export_path.empty()) {
+		options_sql += ",\n    parquet_export_path := " + SqlQuote(parquet_export_path);
+		// The inspection view reads every archived footer, so it is worth creating only when
+		// something can query it.
+		if (!quack_enabled) {
+			options_sql += ",\n    parquet_views := false";
+		}
 	}
-	auto thread_sql = http_threads == 0 || !any_http
-	                      ? string("")
-	                      : StringUtil::Format(",\n    http_threads := %llu", static_cast<uint64_t>(http_threads));
-	// These ingest limits are declared in three places that must stay in lockstep: the ServerConfig
-	// fields (server_config.hpp), the env parsing in FromEnv(), and this otlp_serve() param emission.
-	// Emit them from a single {name, value} table so a new limit is added in one place and the
-	// hand-aligned %llu/%lld format strings (whose mismatch against a field's type was a silent
-	// corruption surface) are gone. Every value is a non-negative integer rendered as plain decimal,
-	// so signedness does not affect the emitted text. Each entry contributes ",\n    <name> := <value>".
-	const std::pair<const char *, uint64_t> limits[] = {
-	    {"max_body_bytes", static_cast<uint64_t>(max_body_bytes)},
-	    {"max_buffered_bytes", static_cast<uint64_t>(max_buffered_bytes)},
-	    {"seal_target_bytes", static_cast<uint64_t>(seal_target_bytes)},
-	    {"seal_max_age_ms", static_cast<uint64_t>(seal_max_age_ms)},
-	    {"target_file_size", static_cast<uint64_t>(target_file_size)},
-	    {"maintenance_retention_ms", static_cast<uint64_t>(maintenance_retention_ms)},
-	};
-	string limits_sql;
-	for (const auto &limit : limits) {
-		limits_sql += StringUtil::Format(",\n    %s := %llu", limit.first, limit.second);
-	}
-	auto export_sql = parquet_export_path.empty()
-	                      ? string("")
-	                      : StringUtil::Format(",\n    parquet_export_path := %s", SqlQuote(parquet_export_path));
-	// The seal-time inspection view exists for Quack, the only way into the serving database.
-	// Binding it reads every archived file's footer, which a fresh control database pays on
-	// each restart.
-	if (!parquet_export_path.empty() && !quack_enabled) {
-		export_sql += ",\n    parquet_views := false";
-	}
-	// Attribute promotion params, emitted only when set so the common path is unchanged.
-	string promote_sql;
-	if (!promote_resource_attributes.empty()) {
-		promote_sql +=
-		    StringUtil::Format(",\n    promote_resource_attributes := %s", SqlQuote(promote_resource_attributes));
-	}
-	if (!promote_scope_attributes.empty()) {
-		promote_sql += StringUtil::Format(",\n    promote_scope_attributes := %s", SqlQuote(promote_scope_attributes));
+	for (const auto &option : serve_options) {
+		options_sql += ",\n    " + option.first + " := " + option.second;
 	}
 	auto schema_target =
 	    catalog.empty() ? QuoteIdentifier(schema) : QuoteIdentifier(catalog) + "." + QuoteIdentifier(schema);
-	// Every listener feeds one server (one buffer set, one sealer, one maintenance schedule),
-	// so the URIs and their transports are passed as parallel lists to a single call.
-	const char *serve_fn = listeners.front().otap ? "otap_serve" : "otlp_serve";
 	string uris_sql;
 	string transports_sql;
 	for (const auto &listener : listeners) {
 		uris_sql += (uris_sql.empty() ? "" : ", ") + SqlQuote(listener.uri);
 		transports_sql += (transports_sql.empty() ? "" : ", ") + SqlQuote(listener.transport);
 	}
-	// The token is read at execution time from a session variable (set via the C++ API in
-	// main.cpp) rather than interpolated as a literal, so it never appears in the generated
-	// SQL string (which DRY_RUN=1 prints to stdout and the engine can echo in error
-	// messages). With authentication disabled there is no token at all, and passing one
-	// alongside disable_auth would be misleading, so the parameters are mutually exclusive.
-	auto auth_sql = disable_auth ? string("    disable_auth := true")
-	                             : string("    token := getvariable('duckdb_otlp_effective_token')");
+	auto auth_sql = disable_auth ? string("disable_auth := true")
+	                             : string("token := getvariable('duckdb_otlp_effective_token')");
 	return StringUtil::Format(R"SQL(
 CREATE SCHEMA IF NOT EXISTS %s;
 SELECT listen_url, catalog_name, schema_name
@@ -793,12 +773,12 @@ FROM %s(
     transport := [%s],
     catalog := %s,
     schema := %s,
-%s,
-    allow_other_hostname := true%s%s%s%s
+    %s,
+    allow_other_hostname := true%s
 );
 )SQL",
-	                          schema_target, serve_fn, uris_sql, transports_sql, SqlQuote(catalog), SqlQuote(schema),
-	                          auth_sql, thread_sql, limits_sql, export_sql, promote_sql);
+	                          schema_target, listeners.front().otap ? "otap_serve" : "otlp_serve", uris_sql,
+	                          transports_sql, SqlQuote(catalog), SqlQuote(schema), auth_sql, options_sql);
 }
 
 string ServerConfig::StartQuackSql() const {

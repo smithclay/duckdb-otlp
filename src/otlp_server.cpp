@@ -26,29 +26,6 @@
 #include <cstdlib>
 #include <filesystem>
 
-#ifndef __EMSCRIPTEN__
-// Only for the host-aware `doctor` probes (OtlpHttpStatusOk / OtlpTcpConnectOk) at the bottom
-// of this file. The HTTP server itself lives in otlp_server_http.cpp; both TUs are in the same
-// archive, so the header-only library's inline symbols deduplicate at link time.
-#include "httplib.hpp"
-
-#include <cerrno>
-#ifdef _WIN32
-// Winsock is the Windows equivalent of the POSIX socket headers below. httplib.hpp (above)
-// already includes winsock2.h/ws2tcpip.h, links ws2_32, and owns the process-wide
-// WSAStartup/WSACleanup through its own static initializer, so these are include-order-safe
-// and no explicit WSAStartup is needed here. Including them anyway keeps the dependency
-// visible if the httplib vendoring ever changes.
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#else
-#include <fcntl.h>
-#include <netdb.h>
-#include <poll.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#endif
-#endif
 
 namespace duckdb {
 
@@ -62,20 +39,6 @@ namespace {
 
 static constexpr idx_t TOKEN_BYTES = 16;
 static constexpr idx_t APPEND_CHUNK_SIZE = STANDARD_VECTOR_SIZE;
-
-struct OtlpTargetTable {
-	OtlpSignalType signal_type;
-	const char *table_name;
-};
-
-static const OtlpTargetTable TARGET_TABLES[] = {
-    {OTLP_SIGNAL_LOGS, "otlp_logs"},
-    {OTLP_SIGNAL_TRACES, "otlp_traces"},
-    {OTLP_SIGNAL_METRICS_GAUGE, "otlp_metrics_gauge"},
-    {OTLP_SIGNAL_METRICS_SUM, "otlp_metrics_sum"},
-    {OTLP_SIGNAL_METRICS_HISTOGRAM, "otlp_metrics_histogram"},
-    {OTLP_SIGNAL_METRICS_EXP_HISTOGRAM, "otlp_metrics_exp_histogram"},
-};
 
 static string HexEncode(const data_t *bytes, idx_t n) {
 	string result(n * 2, '\0');
@@ -204,15 +167,15 @@ void OtlpServer::InitBuffers() {
 		throw InternalException("Database was closed");
 	}
 	auto &allocator = Allocator::Get(*db);
-	for (auto &target : TARGET_TABLES) {
-		auto arrow_table = OtlpArrowTable::ForSignal(*arrow_con->context, target.signal_type);
+	for (auto signal_type : OTLP_SIGNALS) {
+		auto arrow_table = OtlpArrowTable::ForSignal(*arrow_con->context, signal_type);
 		vector<LogicalType> types;
 		for (auto &type : arrow_table->types) {
 			types.push_back(BufferColumnType(type));
 		}
 		auto collection = make_uniq<ColumnDataCollection>(allocator, types);
 		vector<Identifier> identifiers(arrow_table->names.begin(), arrow_table->names.end());
-		signal_buffers.push_back(make_uniq<OtlpSignalBuffer>(target.signal_type, target.table_name, std::move(types),
+		signal_buffers.push_back(make_uniq<OtlpSignalBuffer>(signal_type, OTLP_SIGNAL_TABLES[signal_type], std::move(types),
 		                                                     std::move(identifiers), std::move(arrow_table),
 		                                                     std::move(collection)));
 	}
@@ -516,8 +479,8 @@ void OtlpServer::EnsureTargetTables() {
 	// Runs once at construction (single-threaded), so a throwaway connection is fine.
 	Connection con(*db);
 	con.context->config.enable_progress_bar = false;
-	for (auto &target : TARGET_TABLES) {
-		CreateOrValidateTable(con, target.signal_type, target.table_name);
+	for (auto signal_type : OTLP_SIGNALS) {
+		CreateOrValidateTable(con, signal_type, OTLP_SIGNAL_TABLES[signal_type]);
 	}
 }
 
@@ -632,12 +595,8 @@ OtlpIngestResult OtlpServer::Ingest(OtlpRequestKind kind, const string &content_
 }
 
 OtlpSignalBuffer &OtlpServer::BufferFor(OtlpSignalType signal_type) {
-	for (auto &buf : signal_buffers) {
-		if (buf->signal_type == signal_type) {
-			return *buf;
-		}
-	}
-	throw InternalException("No OTLP buffer for signal type");
+	// InitBuffers builds one buffer per OTLP_SIGNALS entry, in enum order.
+	return *signal_buffers[signal_type];
 }
 
 void OtlpServer::BufferSignal(OtlpSignalType signal_type, const string &body, OtlpInputFormat format,
@@ -683,15 +642,9 @@ void OtlpServer::BufferMetrics(const string &body, OtlpInputFormat format, OtlpI
 	OtlpStatus status = otlp_transform_metrics_all_with_profile(
 	    format, OTLP_ARROW_PROFILE_DUCKDB, reinterpret_cast<const uint8_t *>(body.data()), body.size(), &batches);
 
-	auto release_all = [&]() {
-		ReleaseOtlpArrowBatch(batches.gauge);
-		ReleaseOtlpArrowBatch(batches.sum);
-		ReleaseOtlpArrowBatch(batches.histogram);
-		ReleaseOtlpArrowBatch(batches.exp_histogram);
-	};
 
 	if (status != OTLP_OK) {
-		release_all();
+		ReleaseOtlpMetricBatches(batches);
 		throw OtlpHttpError(400, StringUtil::Format("OTLP parse failed for metrics: %s", otlp_status_message(status)));
 	}
 
@@ -702,47 +655,31 @@ void OtlpServer::BufferMetrics(const string &body, OtlpInputFormat format, OtlpI
 	// sub-signals that happened to convert before the failure (review finding H3).
 	vector<StagedSignal> staged;
 	try {
-		if (batches.gauge.present) {
-			auto stage = StageArrowBatch(OTLP_SIGNAL_METRICS_GAUGE, batches.gauge.array, batches.gauge.schema);
-			if (stage.rows > 0) {
-				staged.push_back(std::move(stage));
+		for (auto signal_type : OTLP_SIGNALS) {
+			if (signal_type < OTLP_SIGNAL_METRICS_GAUGE) {
+				continue;
 			}
-		}
+			auto &shape = OtlpMetricShape(batches, signal_type);
+			if (shape.present) {
+				auto stage = StageArrowBatch(signal_type, shape.array, shape.schema);
+				if (stage.rows > 0) {
+					staged.push_back(std::move(stage));
+				}
+			}
 #ifdef DUCKDB_OTLP_ENABLE_TEST_SEAM
-		// Test-only fault injection: throw AFTER the first sub-signal has converted into its local
-		// staging collection but BEFORE any sub-signal is moved into a live buffer, so the harness can
-		// assert that a mid-conversion failure leaves NO rows buffered and admission untouched. Null
-		// (and the whole branch absent) in production builds.
-		if (metrics_stage_fault_hook_for_test) {
-			metrics_stage_fault_hook_for_test();
-		}
+			// Fault injection after the first shape is staged and before anything reaches a live
+			// buffer, so the harness can assert a mid-conversion failure buffers nothing.
+			if (metrics_stage_fault_hook_for_test && signal_type == OTLP_SIGNAL_METRICS_GAUGE) {
+				metrics_stage_fault_hook_for_test();
+			}
 #endif
-		if (batches.sum.present) {
-			auto stage = StageArrowBatch(OTLP_SIGNAL_METRICS_SUM, batches.sum.array, batches.sum.schema);
-			if (stage.rows > 0) {
-				staged.push_back(std::move(stage));
-			}
-		}
-		if (batches.histogram.present) {
-			auto stage =
-			    StageArrowBatch(OTLP_SIGNAL_METRICS_HISTOGRAM, batches.histogram.array, batches.histogram.schema);
-			if (stage.rows > 0) {
-				staged.push_back(std::move(stage));
-			}
-		}
-		if (batches.exp_histogram.present) {
-			auto stage = StageArrowBatch(OTLP_SIGNAL_METRICS_EXP_HISTOGRAM, batches.exp_histogram.array,
-			                             batches.exp_histogram.schema);
-			if (stage.rows > 0) {
-				staged.push_back(std::move(stage));
-			}
 		}
 	} catch (...) {
 		// `staged` (local collections only) is discarded; the live buffers were never touched.
-		release_all();
+		ReleaseOtlpMetricBatches(batches);
 		throw;
 	}
-	release_all();
+	ReleaseOtlpMetricBatches(batches);
 
 	// Only the skipped-counters are advanced before the all-or-nothing commit; they describe what
 	// the Rust transform dropped during parse, not what we buffer, so they are safe to report even
@@ -1525,116 +1462,5 @@ idx_t OtlpServer::ShutdownIngest() {
 	}
 	return remaining_rows;
 }
-
-#ifndef __EMSCRIPTEN__
-// Host-aware HTTP probe backing the daemon's `doctor` subcommand. The loopback-only
-// OtlpLoopbackHttpStatusOk (otlp_server_http.cpp) cannot reach a server bound to an explicit
-// non-loopback interface (e.g. OTEL_HTTP_ADDR=192.168.x.x:4318), which made the container
-// HEALTHCHECK probe 127.0.0.1 and fail forever on a healthy server (review finding M5). This
-// lets the daemon probe the CONFIGURED host. httplib::Client lives in this TU (same archive as
-// otlp_server_http.cpp); it does not touch the request-side gzip decompressor, so the link-order
-// concern in CMakeLists does not apply here.
-bool OtlpHttpStatusOk(const string &host, int port, const string &path) {
-	duckdb_httplib::Client client(host, port);
-	client.set_connection_timeout(2, 0);
-	client.set_read_timeout(2, 0);
-	auto res = client.Get(path);
-	return res && res->status >= 200 && res->status < 400;
-}
-
-namespace {
-
-// Platform seam for the TCP-connect probe below. Winsock mirrors the POSIX socket API closely
-// enough that only the handle type, the non-blocking switch, the "connect still in flight" error
-// code, the poll entry point, and close() differ; everything else (getaddrinfo, socket, connect,
-// getsockopt) is spelled the same on both.
-#ifdef _WIN32
-using probe_socket_t = SOCKET;
-
-bool ProbeSocketValid(probe_socket_t fd) {
-	return fd != INVALID_SOCKET;
-}
-void ProbeSocketClose(probe_socket_t fd) {
-	::closesocket(fd);
-}
-void ProbeSocketSetNonBlocking(probe_socket_t fd) {
-	u_long non_blocking = 1;
-	::ioctlsocket(fd, FIONBIO, &non_blocking);
-}
-//! True if the last connect() returned "in progress" rather than a hard failure.
-bool ProbeConnectPending() {
-	return ::WSAGetLastError() == WSAEWOULDBLOCK;
-}
-bool ProbeWaitWritable(probe_socket_t fd, int timeout_ms) {
-	WSAPOLLFD pfd {};
-	pfd.fd = fd;
-	pfd.events = POLLWRNORM;
-	return ::WSAPoll(&pfd, 1, timeout_ms) > 0 && (pfd.revents & POLLWRNORM) != 0;
-}
-bool ProbeConnectSucceeded(probe_socket_t fd) {
-	int err = 0;
-	int len = static_cast<int>(sizeof(err));
-	return ::getsockopt(fd, SOL_SOCKET, SO_ERROR, reinterpret_cast<char *>(&err), &len) == 0 && err == 0;
-}
-#else
-using probe_socket_t = int;
-
-bool ProbeSocketValid(probe_socket_t fd) {
-	return fd >= 0;
-}
-void ProbeSocketClose(probe_socket_t fd) {
-	::close(fd);
-}
-void ProbeSocketSetNonBlocking(probe_socket_t fd) {
-	auto flags = ::fcntl(fd, F_GETFL, 0);
-	::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-}
-bool ProbeConnectPending() {
-	return errno == EINPROGRESS;
-}
-bool ProbeWaitWritable(probe_socket_t fd, int timeout_ms) {
-	struct pollfd pfd {};
-	pfd.fd = fd;
-	pfd.events = POLLOUT;
-	return ::poll(&pfd, 1, timeout_ms) > 0 && (pfd.revents & POLLOUT) != 0;
-}
-bool ProbeConnectSucceeded(probe_socket_t fd) {
-	int err = 0;
-	socklen_t len = sizeof(err);
-	return ::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) == 0 && err == 0;
-}
-#endif
-
-} // namespace
-
-// TCP-connect probe backing `doctor` for the gRPC (otap:) transport, which speaks
-// HTTP/2 and exposes no HTTP/1.1 /readyz endpoint. A successful connect confirms the tonic
-// listener is bound and accepting (the daemon binds synchronously before serving). 2s timeout.
-bool OtlpTcpConnectOk(const string &host, int port) {
-	struct addrinfo hints {};
-	hints.ai_family = AF_UNSPEC;
-	hints.ai_socktype = SOCK_STREAM;
-	struct addrinfo *res = nullptr;
-	if (getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res) != 0 || res == nullptr) {
-		return false;
-	}
-	bool ok = false;
-	for (auto *ai = res; ai != nullptr && !ok; ai = ai->ai_next) {
-		probe_socket_t fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-		if (!ProbeSocketValid(fd)) {
-			continue;
-		}
-		ProbeSocketSetNonBlocking(fd);
-		if (connect(fd, ai->ai_addr, static_cast<socklen_t>(ai->ai_addrlen)) == 0) {
-			ok = true; // connected immediately (loopback)
-		} else if (ProbeConnectPending() && ProbeWaitWritable(fd, 2000)) {
-			ok = ProbeConnectSucceeded(fd);
-		}
-		ProbeSocketClose(fd);
-	}
-	freeaddrinfo(res);
-	return ok;
-}
-#endif
 
 } // namespace duckdb

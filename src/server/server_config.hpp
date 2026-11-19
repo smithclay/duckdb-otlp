@@ -66,16 +66,8 @@ struct ServerConfig {
 	//! Which setting selected the transports, for the startup banner.
 	duckdb::string transport_selection;
 	int startup_timeout_secs = 60;
-	uint64_t http_threads = 0;
-	uint64_t max_body_bytes = otlp_limits::DEFAULT_MAX_BODY_BYTES;
-	uint64_t max_buffered_bytes = otlp_limits::DEFAULT_MAX_BUFFERED_BYTES;
-	uint64_t seal_target_bytes = otlp_limits::DEFAULT_SEAL_TARGET_BYTES;
-	int64_t seal_max_age_ms = otlp_limits::DEFAULT_SEAL_MAX_AGE_MS;
-	uint64_t target_file_size = otlp_limits::DEFAULT_TARGET_FILE_SIZE;
-	int64_t maintenance_retention_ms = otlp_limits::DEFAULT_MAINTENANCE_RETENTION_MS;
-	//! Comma-separated resource / scope attribute keys to promote into columns (opt-in).
-	duckdb::string promote_resource_attributes;
-	duckdb::string promote_scope_attributes;
+	//! otlp_serve options set from DUCKDB_OTLP_* settings, as (option, SQL literal) pairs.
+	std::vector<std::pair<duckdb::string, duckdb::string>> serve_options;
 
 	//! The mode preset, expanded.
 	duckdb::string mode_setup_sql;

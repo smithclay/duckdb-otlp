@@ -7,10 +7,18 @@
 #include "duckdb/main/query_result.hpp"
 
 #include <cctype>
+#include <cerrno>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <system_error>
+
+#include <fcntl.h>
+#include <netdb.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 namespace duckdb_otlp_server {
 
@@ -131,6 +139,69 @@ void CreateParentDirectory(const string &path) {
 		    "Failed to create parent directory \"%s\" for \"%s\": %s (check the mounted volume and permissions)",
 		    parent.string(), path, ec.message());
 	}
+}
+
+namespace {
+
+constexpr int PROBE_TIMEOUT_MS = 2000;
+
+bool WaitFor(int fd, short events) {
+	struct pollfd pfd {};
+	pfd.fd = fd;
+	pfd.events = events;
+	return ::poll(&pfd, 1, PROBE_TIMEOUT_MS) > 0 && (pfd.revents & events) != 0;
+}
+
+bool Connect(int fd, const struct addrinfo &ai) {
+	::fcntl(fd, F_SETFL, ::fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+	if (::connect(fd, ai.ai_addr, ai.ai_addrlen) == 0) {
+		return true;
+	}
+	int err = 0;
+	socklen_t len = sizeof(err);
+	return errno == EINPROGRESS && WaitFor(fd, POLLOUT) &&
+	       ::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) == 0 && err == 0;
+}
+
+//! Send GET `path` on a connected socket and read the status line ("HTTP/1.1 200 OK").
+bool HttpStatusOk(int fd, const duckdb::string &path) {
+	auto request = "GET " + path + " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+	if (!WaitFor(fd, POLLOUT) || ::send(fd, request.data(), request.size(), 0) != (ssize_t)request.size()) {
+		return false;
+	}
+	duckdb::string response;
+	char buffer[256];
+	while (response.size() < 12 && WaitFor(fd, POLLIN)) {
+		auto n = ::recv(fd, buffer, sizeof(buffer), 0);
+		if (n <= 0) {
+			break;
+		}
+		response.append(buffer, static_cast<size_t>(n));
+	}
+	return response.size() >= 12 && response.compare(0, 5, "HTTP/") == 0 && (response[9] == '2' || response[9] == '3');
+}
+
+} // namespace
+
+bool ProbeListener(const duckdb::string &host, int port, const duckdb::string &path) {
+	struct addrinfo hints {};
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_socktype = SOCK_STREAM;
+	struct addrinfo *res = nullptr;
+	if (::getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res) != 0) {
+		return false;
+	}
+	bool ok = false;
+	for (auto *ai = res; ai && !ok; ai = ai->ai_next) {
+		int fd = ::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+		if (fd < 0) {
+			continue;
+		}
+		ok = Connect(fd, *ai) && (path.empty() || HttpStatusOk(fd, path));
+		::close(fd);
+	}
+	::freeaddrinfo(res);
+	return ok;
 }
 
 } // namespace duckdb_otlp_server

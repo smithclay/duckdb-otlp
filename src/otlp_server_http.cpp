@@ -61,14 +61,6 @@ static idx_t DefaultHttpThreads() {
 	return std::min<idx_t>(32, std::max<idx_t>(4, static_cast<idx_t>(cores) * 4));
 }
 
-bool OtlpLoopbackHttpStatusOk(int port, const string &path) {
-	duckdb_httplib::Client client("127.0.0.1", port);
-	client.set_connection_timeout(2, 0);
-	client.set_read_timeout(2, 0);
-	auto res = client.Get(path);
-	return res && res->status >= 200 && res->status < 400;
-}
-
 class OtlpHttpListener final : public OtlpListener {
 public:
 	OtlpHttpListener(OtlpServer &server_p, const OtlpListenerSpec &spec_p) : OtlpListener(server_p, spec_p) {
