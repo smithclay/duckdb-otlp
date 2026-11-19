@@ -240,9 +240,8 @@ def configure_container_env(ctx: ScenarioContext) -> None:
             "DUCKDB_SCHEMA": ctx.schema,
             "DUCKDB_DATABASE": "/tmp/duckdb-otlp-bench-control.duckdb",
             "DUCKDB_OTLP_TOKEN": ctx.token,
-            "DUCKDB_QUACK_ENABLED": "1",
+            "DUCKDB_QUACK_PORT": "9494",
             "DUCKDB_QUACK_TOKEN": ctx.token + "-quack",
-            "OTEL_HTTP_ADDR": "0.0.0.0:4318",
         }
     )
 

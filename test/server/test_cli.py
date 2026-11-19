@@ -157,13 +157,6 @@ def test_explicit_port_selects_only_that_transport(tmp_path):
     assert "OTLP http:" not in result.stdout
 
 
-def test_zero_port_disables_a_transport(tmp_path):
-    result = run(["validate", "--http", "0", "--grpc", "4317"], home=tmp_path)
-    assert result.returncode == 0, result.stderr
-    assert "OTLP http:" not in result.stdout
-    assert "OTLP grpc:" in result.stdout
-
-
 @pytest.mark.parametrize(
     "off,stays_on",
     [("--grpc", "OTLP http:"), ("--http", "OTLP grpc:")],
@@ -205,34 +198,6 @@ def test_host_flag_moves_every_listener(tmp_path):
     assert "otlp:0.0.0.0:4317" in result.stdout
 
 
-def test_legacy_transport_list_still_works(tmp_path):
-    """The container image and existing deployments set these; they must keep working."""
-    result = run(
-        ["validate"],
-        env={
-            "DUCKDB_OTLP_TRANSPORTS": "http,grpc",
-            "OTEL_HTTP_ADDR": "127.0.0.1:5318",
-            "OTEL_GRPC_ADDR": "127.0.0.1:5317",
-        },
-        home=tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "otlp:127.0.0.1:5318" in result.stdout
-    assert "otlp:127.0.0.1:5317" in result.stdout
-
-
-def test_ports_supersede_the_legacy_transport_list(tmp_path):
-    """A container pins DUCKDB_OTLP_TRANSPORTS, so a --grpc flag has to win over it."""
-    result = run(
-        ["validate", "--grpc", "4317"],
-        env={"DUCKDB_OTLP_TRANSPORTS": "http"},
-        home=tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "OTLP grpc:" in result.stdout
-    assert "OTLP http:" not in result.stdout
-
-
 def test_duplicate_ports_are_rejected(tmp_path):
     result = run(["validate", "--http", "4317", "--grpc", "4317"], home=tmp_path)
     assert result.returncode == 1
@@ -255,17 +220,6 @@ def test_otap_alone_uses_otap_serve(tmp_path):
 # --------------------------------------------------------------------------------------
 # Standard OTLP environment variables
 # --------------------------------------------------------------------------------------
-
-
-def test_invalid_port_in_a_legacy_addr_is_rejected(tmp_path):
-    """A port that is present but out of range must fail, not silently fall back to the default."""
-    result = run(
-        ["validate"],
-        env={"OTEL_GRPC_ADDR": "0.0.0.0:70000", "DUCKDB_OTLP_TRANSPORTS": "grpc"},
-        home=tmp_path,
-    )
-    assert result.returncode == 1
-    assert "OTEL_GRPC_ADDR" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -330,7 +284,7 @@ def test_the_cli_never_mutates_the_process_environment():
         (["--host", "::1"], {}, "otlp:[::1]:4318"),
         (["--host", "[::1]"], {}, "otlp:[::1]:4318"),
         # The IPv6 wildcard is not loopback, so it needs auth opted out like 0.0.0.0 does.
-        (["--no-auth"], {"DUCKDB_OTLP_TRANSPORTS": "http", "OTEL_HTTP_ADDR": "[::]:4318"}, "otlp:[::]:4318"),
+        (["--no-auth"], {"DUCKDB_OTLP_HOST": "::"}, "otlp:[::]:4318"),
     ],
 )
 def test_ipv6_hosts_are_bracketed_in_the_listener_uri(args, env, expected, tmp_path):
@@ -343,36 +297,6 @@ def test_ipv6_hosts_are_bracketed_in_the_listener_uri(args, env, expected, tmp_p
     result = run(["validate", *args], env=env, home=tmp_path)
     assert result.returncode == 0, result.stderr
     assert expected in result.stdout
-
-
-def test_an_explicit_otel_addr_host_beats_an_inherited_duckdb_otlp_host(tmp_path):
-    """The image sets DUCKDB_OTLP_HOST=0.0.0.0; narrowing the bind must not be widened back.
-
-    Between two environment variables the more specific one wins, so a host spelled out in
-    OTEL_HTTP_ADDR beats the global DUCKDB_OTLP_HOST.
-    """
-    result = run(
-        ["validate"],
-        env={
-            "DUCKDB_OTLP_HOST": "0.0.0.0",
-            "DUCKDB_OTLP_TRANSPORTS": "http",
-            "OTEL_HTTP_ADDR": "127.0.0.1:4318",
-        },
-        home=tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "otlp:127.0.0.1:4318" in result.stdout
-
-
-def test_the_host_flag_still_moves_every_listener(tmp_path):
-    """--host is the most specific thing the user said, so it beats an OTEL_*_ADDR host too."""
-    result = run(
-        ["validate", "--host", "0.0.0.0", "--no-auth"],
-        env={"DUCKDB_OTLP_TRANSPORTS": "http", "OTEL_HTTP_ADDR": "127.0.0.1:4318"},
-        home=tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "otlp:0.0.0.0:4318" in result.stdout
 
 
 def test_quack_zero_disables_quack(tmp_path):
@@ -407,7 +331,7 @@ def test_an_unrecognizable_word_gets_no_guess(tmp_path):
 @pytest.mark.parametrize("command", ["doctor", "healthcheck"])
 def test_doctor_names_the_listener_it_could_not_reach(command, tmp_path):
     """`healthcheck` stays accepted: the container HEALTHCHECK and compose probes call it."""
-    result = run([command], env={"DUCKDB_OTLP_TRANSPORTS": "grpc"}, home=tmp_path, timeout=30)
+    result = run([command], env={"DUCKDB_OTLP_GRPC_PORT": "4317"}, home=tmp_path, timeout=30)
     assert result.returncode == 1
     assert "FAIL" in result.stdout and "4317" in result.stdout
 
@@ -437,7 +361,7 @@ def test_doctor_reports_each_check_that_passed(tmp_path):
         try:
             result = run(
                 ["doctor"],
-                env={"DUCKDB_OTLP_TRANSPORTS": "http", "OTEL_HTTP_ADDR": f"127.0.0.1:{httpd.server_port}"},
+                env={"DUCKDB_OTLP_HTTP_PORT": str(httpd.server_port)},
                 home=tmp_path,
                 timeout=30,
             )
@@ -488,8 +412,7 @@ def test_the_startup_banner_is_visible_while_the_server_runs(tmp_path):
         "DUCKDB_MODE": "parquet",
         "DUCKDB_DATABASE": ":memory:",
         "PARQUET_EXPORT_PATH": str(tmp_path / "pq"),
-        "DUCKDB_OTLP_TRANSPORTS": "http",
-        "OTEL_HTTP_ADDR": f"127.0.0.1:{free_port()}",
+        "DUCKDB_OTLP_HTTP_PORT": str(free_port()),
         "DUCKDB_OTLP_STARTUP_TIMEOUT": "30",
     }
     with log.open("w") as handle:
@@ -518,7 +441,7 @@ def test_the_startup_banner_is_visible_while_the_server_runs(tmp_path):
 def test_doctor_json_is_parseable_and_agrees_with_the_exit_code(tmp_path):
     import json
 
-    result = run(["doctor", "--json"], env={"DUCKDB_OTLP_TRANSPORTS": "grpc"}, home=tmp_path, timeout=30)
+    result = run(["doctor", "--json"], env={"DUCKDB_OTLP_GRPC_PORT": "4317"}, home=tmp_path, timeout=30)
     assert result.returncode == 1
     report = json.loads(result.stdout)
     assert report["healthy"] is False
@@ -574,5 +497,5 @@ def test_commands_reject_positional_arguments(command, tmp_path):
     ("args", "code"), [(["version"], 0), (["nonsense"], 2), (["doctor", "--bogus"], 2), (["doctor"], 1)]
 )
 def test_a_usage_error_exits_2_and_a_failure_exits_1(args, code, tmp_path):
-    result = run(args, env={"DUCKDB_OTLP_TRANSPORTS": "grpc"}, home=tmp_path, timeout=30)
+    result = run(args, env={"DUCKDB_OTLP_GRPC_PORT": "4317"}, home=tmp_path, timeout=30)
     assert result.returncode == code, result.stderr

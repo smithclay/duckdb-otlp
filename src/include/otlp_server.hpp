@@ -181,6 +181,13 @@ protected:
 };
 
 //! Transport constructors. Each returns an unstarted listener registered against `server`.
+//! One otlp_server_list() column and how to read it for one listener of a server.
+struct OtlpServerListColumn {
+	const char *name;
+	LogicalTypeId type;
+	Value (*get)(const OtlpServer &server, const OtlpListener &listener);
+};
+
 unique_ptr<OtlpListener> MakeOtlpHttpListener(OtlpServer &server, const OtlpListenerSpec &spec);
 unique_ptr<OtlpListener> MakeOtlpGrpcListener(OtlpServer &server, const OtlpListenerSpec &spec);
 
@@ -213,24 +220,8 @@ public:
 	const OtlpServerConfig &Config() const {
 		return config;
 	}
-	const string &Token() const {
-		return config.token;
-	}
-	const string &SchemaName() const {
-		return config.schema_name;
-	}
-	const string &CatalogName() const {
-		return config.catalog_name;
-	}
-	idx_t ActiveRequests() const {
-		return active_requests.load();
-	}
-	idx_t TotalRequests() const {
-		return total_requests.load();
-	}
-	idx_t TotalRows() const {
-		return total_rows.load();
-	}
+	//! otlp_server_list()'s columns, in output order.
+	static const vector<OtlpServerListColumn> &ListColumns();
 	idx_t BufferedRows() const;
 	//! Approximate decoded heap held by the in-memory buffers (sum of each signal's
 	//! ColumnDataCollection size). admitted_bytes bounds *input* bytes, not this; surfaced so
@@ -242,12 +233,6 @@ public:
 	bool SealStalled() const;
 	idx_t AdmittedBytes() const {
 		return admitted_bytes.load();
-	}
-	idx_t SealTargetBytes() const {
-		return config.seal_target_bytes;
-	}
-	int64_t SealMaxAgeMs() const {
-		return config.seal_max_age_ms;
 	}
 	//! Milliseconds since the oldest currently buffered row was admitted, or -1 if empty.
 	int64_t OldestBufferedAgeMs() const;

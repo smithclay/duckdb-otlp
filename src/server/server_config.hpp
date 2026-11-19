@@ -23,14 +23,12 @@ struct IngestListener {
 	bool otap = false;
 };
 
-//! Shared by startup and `doctor`; resolving listeners needs no storage credentials or I/O.
-//! When `selection_reason` is non-null it receives a short note naming the setting that
-//! selected the transports, for the startup banner.
-std::vector<IngestListener> ListenersFromEnv(const EnvSource &env, duckdb::string *selection_reason = nullptr);
+//! The ingest listeners --host and --http/--grpc/--otap select. Shared by startup and `doctor`;
+//! resolving them needs no storage credentials or I/O.
+std::vector<IngestListener> ListenersFromEnv(const EnvSource &env);
 
-//! Whether Quack is enabled, and the address it binds. Shared with `doctor` so the probe
-//! targets exactly what startup bound.
-bool QuackEnabledFromEnv(const EnvSource &env);
+//! The "host:port" Quack binds (--host, --quack PORT), or empty when Quack is off. Shared with
+//! `doctor` so the probe targets exactly what startup bound.
 duckdb::string QuackAddrFromEnv(const EnvSource &env);
 
 struct ServerConfig {
@@ -63,8 +61,6 @@ struct ServerConfig {
 	//! loopback (`auth_disabled_for_loopback`). A non-loopback bind with no token is an error.
 	bool disable_auth = false;
 	bool auth_disabled_for_loopback = false;
-	//! Which setting selected the transports, for the startup banner.
-	duckdb::string transport_selection;
 	int startup_timeout_secs = 60;
 	//! otlp_serve options set from DUCKDB_OTLP_* settings, as (option, SQL literal) pairs.
 	std::vector<std::pair<duckdb::string, duckdb::string>> serve_options;

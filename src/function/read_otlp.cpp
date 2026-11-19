@@ -342,14 +342,14 @@ void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
 	};
 	auto register_reader = [&](const string &name, shared_ptr<ReadOtlpInfo> info, string description,
 	                           vector<string> examples, const char *protocol) {
-		TableFunction func(name.c_str(), {LogicalType::VARCHAR}, ReadOTLPRustScan, ReadOTLPRustBind, ReadOTLPRustInitGlobal,
-		                   ReadOTLPRustInitLocal);
+		TableFunction func(name.c_str(), {LogicalType::VARCHAR}, ReadOTLPRustScan, ReadOTLPRustBind,
+		                   ReadOTLPRustInitGlobal, ReadOTLPRustInitLocal);
 		func.projection_pushdown = true;
 		func.filter_pushdown = false;
 		func.function_info = std::move(info);
-		loader.RegisterFunction(OtlpDocumented(std::move(func), {OtlpDoc({LogicalType::VARCHAR}, {"path"},
-		                                                                  std::move(description), std::move(examples),
-		                                                                  {"opentelemetry", protocol})}));
+		loader.RegisterFunction(
+		    OtlpDocumented(std::move(func), {OtlpDoc({LogicalType::VARCHAR}, {"path"}, std::move(description),
+		                                             std::move(examples), {"opentelemetry", protocol})}));
 	};
 	for (auto signal_type : OTLP_SIGNALS) {
 		const auto &doc = docs[signal_type];

@@ -58,39 +58,8 @@ public:
 
 	//! One row per listener. Listeners of the same server share every buffer/seal/maintenance
 	//! counter; is_listening/last_error/transport are per listener.
-	struct ServerSnapshot {
-		string listen_uri;
-		string transport;
-		string listen_url;
-		string host;
-		uint16_t port;
-		string catalog_name;
-		string schema_name;
-		idx_t active_requests;
-		idx_t total_requests;
-		idx_t total_rows;
-		bool is_listening;
-		string last_error;
-		idx_t buffered_rows;
-		idx_t buffered_bytes;
-		idx_t admitted_bytes;
-		idx_t seal_target_bytes;
-		int64_t seal_max_age_ms;
-		int64_t oldest_buffered_age_ms;
-		int64_t last_seal_age_ms;
-		idx_t seals_total;
-		idx_t committed_rows_total;
-		idx_t seal_failures_total;
-		string seal_last_error;
-		idx_t maintenance_runs_total;
-		idx_t maintenance_failures_total;
-		idx_t maintenance_contended_total;
-		int64_t last_maintenance_age_ms;
-		string maintenance_last_error;
-		idx_t promoted_columns_total;
-	};
-
-	vector<ServerSnapshot> ListServers();
+	//! One otlp_server_list() row per listener, in OtlpServer::ListColumns() order, sorted by URI.
+	vector<vector<Value>> ListServers();
 
 	//! Seal events are server-wide; listen_uri is the server's first (primary) listener.
 	struct SealSnapshot {

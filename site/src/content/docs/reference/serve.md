@@ -43,23 +43,22 @@ duckdb-otlp --host 0.0.0.0 --token "$TOKEN"  # a non-loopback bind requires a to
 
 ## Docker daemon transports
 
-The image starts HTTP by default. Choose standard OTLP
-listeners with `DUCKDB_OTLP_TRANSPORTS`, or with the `--http`/`--grpc` flags
-(and the matching `DUCKDB_OTLP_HTTP_PORT` / `DUCKDB_OTLP_GRPC_PORT` variables),
-which take precedence over the transport list:
+The image starts OTLP/HTTP on `0.0.0.0:4318` (`DUCKDB_OTLP_HTTP_PORT=4318`). Each
+port setting selects its listener; `0` turns one off:
 
-| Setting | Listeners |
+| Setting | Listener |
 | --- | --- |
-| `http` (default) | OTLP/HTTP on `OTEL_HTTP_ADDR` (default `0.0.0.0:4318`) |
-| `grpc` | Standard OTLP/gRPC on `OTEL_GRPC_ADDR` (default `0.0.0.0:4317`) |
-| `http,grpc` | Both, on separate ports |
+| `--http PORT` / `DUCKDB_OTLP_HTTP_PORT` | OTLP/HTTP |
+| `--grpc PORT` / `DUCKDB_OTLP_GRPC_PORT` | Standard OTLP/gRPC |
+| `--otap PORT` / `DUCKDB_OTLP_OTAP_PORT` | OTAP/Arrow (cannot be combined with the two above) |
 
-For example, accept both protocols into the same local DuckLake:
+All of them bind `--host` / `DUCKDB_OTLP_HOST`. For example, accept both protocols
+into the same local DuckLake:
 
 ```sh
 docker run --rm -p 4317:4317 -p 4318:4318 \
   -e DUCKDB_MODE=local-ducklake \
-  -e DUCKDB_OTLP_TRANSPORTS=http,grpc \
+  -e DUCKDB_OTLP_GRPC_PORT=4317 \
   -e DUCKDB_OTLP_TOKEN=replace-with-a-private-token \
   -v otlp-data:/data ghcr.io/smithclay/duckdb-otlp:latest
 ```
@@ -69,16 +68,8 @@ buffers, writer, and maintenance schedule. `DUCKDB_OTLP_MAX_BUFFERED_BYTES` and
 `DUCKDB_OTLP_SEAL_TARGET_BYTES` apply to the whole process, not to each
 listener. Startup must succeed for every listener. On shutdown the daemon stops
 every listener, then drains the shared buffers once. If a later listener cannot
-start, the earlier ones are closed and the daemon exits with an error. Duplicate/unknown transports, empty list entries, and matching HTTP/gRPC
-ports are rejected. Whitespace around list entries is allowed.
-
-`DUCKDB_OTLP_LISTEN_URI` remains a single-listener override, and cannot be
-combined with `--http`/`--grpc`/`--otap`. With `grpc`, use an
-`otlp:` URI (for example `otlp:0.0.0.0:4317`); the transport setting selects gRPC.
-Do not combine this URI override with `http,grpc`; use the two bind-address
-variables instead. The existing `otap:` URI mode still starts OTAP/Arrow when
-`DUCKDB_OTLP_TRANSPORTS` is unset. OTAP/Arrow is distinct from standard OTLP/gRPC,
-and cannot be combined with the transport list.
+start, the earlier ones are closed and the daemon exits with an error. Two
+listeners on the same port are rejected.
 
 The image's `doctor` command (also accepted as `healthcheck`) checks every enabled listener, using HTTP
 `/readyz` for HTTP and TCP connect for gRPC. A TCP check confirms a bound socket,
@@ -87,10 +78,10 @@ server, the HTTP `/readyz` reports the commit health of rows from both
 transports. `DUCKDB_OTLP_HTTP_THREADS` applies
 only to the HTTP listener. Quack remains a separate opt-in administrative endpoint.
 
-For Cloud Run, select `grpc`, expose its port as `h2c`, and use a compatible
+For Cloud Run, set `DUCKDB_OTLP_GRPC_PORT` and `DUCKDB_OTLP_HTTP_PORT=0`, expose its port as `h2c`, and use a compatible
 probe instead of HTTP `/readyz` on that port. Cloud Run terminates TLS and
 forwards cleartext HTTP/2 to the container. Its single ingress port does not
-expose both daemon ports; running `http,grpc` does not multiplex the protocols
+expose both daemon ports; running both does not multiplex the protocols
 onto one port. See [Cloud Run HTTP/2 configuration](https://docs.cloud.google.com/run/docs/configuring/http2).
 
 ## Functions

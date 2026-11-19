@@ -9,6 +9,8 @@
 #include "duckdb.hpp"
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/logging/log_manager.hpp"
+#include "duckdb/logging/log_storage.hpp"
 #include "duckdb/main/database_manager.hpp"
 #include "duckdb/main/query_result.hpp"
 
@@ -20,6 +22,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -80,40 +83,20 @@ bool TryExecuteOtlpShutdown(duckdb::Connection &con, const duckdb::string &sql, 
 }
 
 struct OtlpHealth {
-	bool found = false;
 	bool listening = false;
 	duckdb::string last_error;
-	uint64_t seal_failures = 0;
-	duckdb::string seal_last_error;
-	uint64_t maintenance_runs = 0;
-	uint64_t maintenance_failures = 0;
-	duckdb::string maintenance_last_error;
-	uint64_t maintenance_contended = 0;
 };
 
 OtlpHealth QueryOtlpHealth(duckdb::Connection &con, const duckdb_otlp_server::IngestListener &listener) {
 	auto result =
-	    con.Query("SELECT is_listening, coalesce(last_error, ''), seal_failures_total, coalesce(seal_last_error, ''), "
-	              "maintenance_runs_total, maintenance_failures_total, coalesce(maintenance_last_error, ''), "
-	              "maintenance_contended_total "
-	              "FROM otlp_server_list() WHERE listen_uri = " +
-	              duckdb::SqlQuote(listener.uri) + " LIMIT 1");
+	    con.Query("SELECT is_listening, coalesce(last_error, '') FROM otlp_server_list() WHERE listen_uri = " +
+	              duckdb::SqlQuote(listener.uri));
 	CheckResult(*result, "otlp readiness");
 	auto chunk = result->Fetch();
 	if (!chunk || chunk->size() == 0) {
-		return {};
+		return {false, "listener is not registered"};
 	}
-	OtlpHealth health;
-	health.found = true;
-	health.listening = chunk->GetValue(0, 0).GetValue<bool>();
-	health.last_error = chunk->GetValue(1, 0).GetValue<duckdb::string>();
-	health.seal_failures = chunk->GetValue(2, 0).GetValue<uint64_t>();
-	health.seal_last_error = chunk->GetValue(3, 0).GetValue<duckdb::string>();
-	health.maintenance_runs = chunk->GetValue(4, 0).GetValue<uint64_t>();
-	health.maintenance_failures = chunk->GetValue(5, 0).GetValue<uint64_t>();
-	health.maintenance_last_error = chunk->GetValue(6, 0).GetValue<duckdb::string>();
-	health.maintenance_contended = chunk->GetValue(7, 0).GetValue<uint64_t>();
-	return health;
+	return {chunk->GetValue(0, 0).GetValue<bool>(), chunk->GetValue(1, 0).GetValue<duckdb::string>()};
 }
 
 bool WaitForReady(duckdb::Connection &con, const duckdb_otlp_server::ServerConfig &config) {
@@ -122,7 +105,7 @@ bool WaitForReady(duckdb::Connection &con, const duckdb_otlp_server::ServerConfi
 		bool ready = true;
 		for (const auto &listener : config.listeners) {
 			auto health = QueryOtlpHealth(con, listener);
-			ready = ready && health.found && health.listening;
+			ready = ready && health.listening;
 			if (!health.last_error.empty()) {
 				throw std::runtime_error("OTLP listener " + listener.uri +
 				                         " failed during startup: " + health.last_error);
@@ -136,75 +119,61 @@ bool WaitForReady(duckdb::Connection &con, const duckdb_otlp_server::ServerConfi
 	return false;
 }
 
+//! Block until a signal arrives, checking once a second that every listener is still up. Seal
+//! failures and catalog maintenance outcomes are not watched here: the server logs them itself
+//! (see OtlpEventsToStderr).
 bool WaitForShutdownOrListenerFailure(duckdb::Connection &con, const duckdb_otlp_server::ServerConfig &config) {
-	duckdb::idx_t ticks = 0;
-	// Every listener feeds one server, so the seal and maintenance counters are server-wide:
-	// each listener's otlp_server_list() row repeats them. Read them once (from the first
-	// listener) so each outcome is logged once, not once per transport.
-	//
-	// Seal failures are surfaced as WARNINGs rather than a process exit: a failed seal
-	// re-buffers its rows and retries on the next trigger, so a transient backend outage
-	// should not crash the daemon. /readyz degrades only once the stall persists, so without
-	// this log a credential/backend problem would be invisible until the buffer fills.
-	uint64_t last_seal_failures = 0;
-	// Catalog maintenance (CHECKPOINT) is what flushes DuckLake-inlined rows out of the metadata
-	// catalog into Parquet and compacts small files. It runs on the sealer thread and only logs
-	// to duckdb_logs, so a failing (or auto-disabled) checkpoint was silent: rows kept committing
-	// into the catalog while no Parquet appeared. Print every outcome so it is visible in logs.
-	uint64_t last_maintenance_runs = 0;
-	uint64_t last_maintenance_failures = 0;
-	// A contended pass means another process sharing the catalog (e.g. a second receiver during a
-	// deploy) checkpointed first. Informational: it is not a failure and must not trip alerts.
-	uint64_t last_maintenance_contended = 0;
-	while (!shutdown_requested) {
+	for (duckdb::idx_t ticks = 1; !shutdown_requested; ticks++) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(250));
-		if (++ticks % 4 != 0) {
+		if (ticks % 4 != 0) {
 			continue;
 		}
-		OtlpHealth server_health;
 		for (const auto &listener : config.listeners) {
 			auto health = QueryOtlpHealth(con, listener);
-			if (!health.found || !health.listening) {
+			if (!health.listening) {
 				std::cerr << "ERROR: OTLP listener " << listener.uri << " stopped or disappeared: " << health.last_error
 				          << '\n';
 				return false;
 			}
-			if (&listener == &config.listeners.front()) {
-				server_health = health;
-			}
-		}
-		if (server_health.seal_failures > last_seal_failures) {
-			last_seal_failures = server_health.seal_failures;
-			std::cerr << "WARNING: buffered rows are not committing (catalog=" << config.catalog
-			          << ", seal_failures_total=" << server_health.seal_failures << ")";
-			if (!server_health.seal_last_error.empty()) {
-				std::cerr << ": " << server_health.seal_last_error;
-			}
-			std::cerr << '\n';
-		}
-		if (server_health.maintenance_failures > last_maintenance_failures) {
-			last_maintenance_failures = server_health.maintenance_failures;
-			std::cerr << "WARNING: catalog maintenance CHECKPOINT failed; inlined rows are not being flushed "
-			             "to Parquet (catalog="
-			          << config.catalog << ", maintenance_failures_total=" << server_health.maintenance_failures << ")";
-			if (!server_health.maintenance_last_error.empty()) {
-				std::cerr << ": " << server_health.maintenance_last_error;
-			}
-			std::cerr << '\n';
-		}
-		if (server_health.maintenance_contended > last_maintenance_contended) {
-			last_maintenance_contended = server_health.maintenance_contended;
-			std::cerr << "catalog maintenance CHECKPOINT skipped: another writer checkpointed first (catalog="
-			          << config.catalog << ", maintenance_contended_total=" << server_health.maintenance_contended
-			          << ")\n";
-		}
-		if (server_health.maintenance_runs > last_maintenance_runs) {
-			last_maintenance_runs = server_health.maintenance_runs;
-			std::cerr << "catalog maintenance CHECKPOINT succeeded (catalog=" << config.catalog
-			          << ", maintenance_runs_total=" << server_health.maintenance_runs << ")\n";
 		}
 	}
 	return true;
+}
+
+//! A DuckDB log storage that prints entries to stderr. The daemon routes the extension's OTLP log
+//! type here, so seal failures, catalog maintenance outcomes and listener errors reach the
+//! process log (`docker logs`) as they happen.
+class StderrLogStorage : public duckdb::LogStorage {
+public:
+	static constexpr const char *NAME = "duckdb_otlp_stderr";
+	const duckdb::string GetStorageName() override {
+		return NAME;
+	}
+	void WriteLogEntry(duckdb::timestamp_t, duckdb::LogLevel level, const duckdb::string &,
+	                   const duckdb::string &message, const duckdb::RegisteredLoggingContext &) override {
+		std::cerr << (level >= duckdb::LogLevel::LOG_WARNING ? "WARNING: " : "") << message << '\n';
+	}
+	void WriteLogEntries(duckdb::DataChunk &, const duckdb::RegisteredLoggingContext &) override {
+	}
+	void FlushAll() override {
+	}
+	void Flush(duckdb::LoggingTargetTable) override {
+	}
+	bool IsEnabled(duckdb::LoggingTargetTable) override {
+		return true;
+	}
+};
+
+void OtlpEventsToStderr(duckdb::DatabaseInstance &db) {
+	auto &log_manager = db.GetLogManager();
+	duckdb::shared_ptr<duckdb::LogStorage> storage = duckdb::make_shared_ptr<StderrLogStorage>();
+	log_manager.RegisterLogStorage(StderrLogStorage::NAME, storage);
+	log_manager.SetLogStorage(db, StderrLogStorage::NAME);
+	std::unordered_set<duckdb::string> types {"OTLP"};
+	log_manager.SetEnabledLogTypes(&types);
+	log_manager.SetLogMode(duckdb::LogMode::ENABLE_SELECTED);
+	log_manager.SetLogLevel(duckdb::LogLevel::LOG_INFO);
+	log_manager.SetEnableLogging(true);
 }
 
 int PortFromAddr(const duckdb::string &addr, int fallback) {
@@ -352,7 +321,8 @@ int RunDoctor(const EnvSource &env, bool as_json) {
 			duckdb::OtlpUri uri(listener.uri);
 			auto host = ReachableHost(uri.Host());
 			// gRPC speaks HTTP/2 and has no /readyz, so a connect is all it can answer.
-			bool ok = duckdb_otlp_server::ProbeListener(host, uri.Port(), listener.transport == "grpc" ? "" : "/readyz");
+			bool ok =
+			    duckdb_otlp_server::ProbeListener(host, uri.Port(), listener.transport == "grpc" ? "" : "/readyz");
 			checks.push_back({ListenerLabel(listener), host + ":" + std::to_string(uri.Port()), ok});
 		}
 	} catch (std::exception &ex) {
@@ -361,10 +331,8 @@ int RunDoctor(const EnvSource &env, bool as_json) {
 		std::cerr << "ERROR: " << CliErrorMessage(ex) << '\n';
 		return 1;
 	}
-	if (duckdb_otlp_server::QuackEnabledFromEnv(env)) {
-		// Resolved by the same function startup uses, so the probe cannot target a different
-		// port than the server bound.
-		auto quack_addr = duckdb_otlp_server::QuackAddrFromEnv(env);
+	auto quack_addr = duckdb_otlp_server::QuackAddrFromEnv(env);
+	if (!quack_addr.empty()) {
 		checks.push_back({"Quack", quack_addr, QuackProbe(quack_addr)});
 	}
 	// Derived rather than tracked: a check appended without a companion `healthy &&= ok` would
@@ -403,12 +371,6 @@ int RunServe(const EnvSource &env) {
 		for (const auto &listener : config.listeners) {
 			std::cout << ListenerLabel(listener) << ": " << listener.uri << '\n';
 		}
-		// Say WHICH setting chose the listener set. Without this a narrowed set (for example a
-		// stray OTEL_EXPORTER_OTLP_PROTOCOL in the shell turning off the gRPC listener) looks
-		// like the server simply ignored a flag.
-		if (!config.transport_selection.empty()) {
-			std::cout << "Listeners selected by: " << config.transport_selection << '\n';
-		}
 		if (config.auth_disabled_for_loopback) {
 			std::cout << "\nAuthentication is DISABLED: no token was configured and every listener is bound to "
 			             "loopback, so only this machine can reach them. Set DUCKDB_OTLP_TOKEN (or --token) to "
@@ -440,6 +402,7 @@ int RunServe(const EnvSource &env) {
 		                          duckdb::Value::BOOLEAN(config.allow_unsigned_extensions));
 		duckdb::DuckDB db(config.database, &db_config);
 		db.LoadStaticExtension<duckdb::OtlpExtension>();
+		OtlpEventsToStderr(*db.instance);
 		duckdb::Connection con(db);
 		// Bind the tokens as session variables rather than interpolating them into the
 		// startup SQL, so the secrets never appear in the generated SQL text (which

@@ -153,12 +153,12 @@ COPY --from=deps /staging/bin/ /usr/local/bin/
 
 # Container-shaped defaults live HERE, not in the C++ defaults, which are laptop-shaped
 # (loopback bind, XDG data dir, both transports). Keeping the split explicit means there is
-# no "am I in a container" detection at runtime, and these four lines are the complete
-# description of how the image differs from running the CLI directly.
+# no "am I in a container" detection at runtime, and these lines are the complete
+# description of how the image differs from running the CLI directly. Setting the HTTP port
+# selects HTTP alone; add DUCKDB_OTLP_GRPC_PORT=4317 for gRPC, DUCKDB_QUACK_PORT=9494 for Quack.
 ENV DUCKDB_OTLP_DATA_DIR=/data \
     DUCKDB_OTLP_HOST=0.0.0.0 \
-    DUCKDB_OTLP_TRANSPORTS=http \
-    DUCKDB_QUACK_ADDR=0.0.0.0:9494
+    DUCKDB_OTLP_HTTP_PORT=4318
 
 LABEL org.opencontainers.image.title="duckdb-otlp server" \
       org.opencontainers.image.description="DuckDB OTLP HTTP/gRPC ingest server with mode-based DuckDB catalog initialization" \
@@ -170,7 +170,7 @@ VOLUME ["/data"]
 # subcommand probes every enabled listener: HTTP /readyz, gRPC TCP connect, and
 # Quack when enabled, printing a line per check that Docker keeps in the container's
 # health log. `healthcheck` remains an accepted spelling for existing probes.
-# The daemon also logs a WARNING if seals stop committing.
+# The daemon also logs a WARNING whenever a seal or catalog maintenance fails.
 # timeout must exceed the worst case: `doctor` now probes EVERY listener rather than
 # returning at the first failure, and an unresponsive (as opposed to closed) port costs 2s
 # each, so up to four checks can take ~8s. At the old 3s Docker killed the probe before it

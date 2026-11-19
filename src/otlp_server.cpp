@@ -26,7 +26,6 @@
 #include <cstdlib>
 #include <filesystem>
 
-
 namespace duckdb {
 
 static int64_t NowUnixMs();
@@ -175,9 +174,9 @@ void OtlpServer::InitBuffers() {
 		}
 		auto collection = make_uniq<ColumnDataCollection>(allocator, types);
 		vector<Identifier> identifiers(arrow_table->names.begin(), arrow_table->names.end());
-		signal_buffers.push_back(make_uniq<OtlpSignalBuffer>(signal_type, OTLP_SIGNAL_TABLES[signal_type], std::move(types),
-		                                                     std::move(identifiers), std::move(arrow_table),
-		                                                     std::move(collection)));
+		signal_buffers.push_back(make_uniq<OtlpSignalBuffer>(signal_type, OTLP_SIGNAL_TABLES[signal_type],
+		                                                     std::move(types), std::move(identifiers),
+		                                                     std::move(arrow_table), std::move(collection)));
 	}
 	parquet_view_settled.assign(signal_buffers.size(), false);
 }
@@ -356,6 +355,60 @@ OtlpServer::OtlpServer(ClientContext &context, const vector<OtlpListenerSpec> &l
 	}
 #endif
 }
+
+static Value NullIfEmpty(const string &value) {
+	return value.empty() ? Value(LogicalType::VARCHAR) : Value(value);
+}
+
+//! Ages are -1 until the event first happens.
+static Value NullIfNegative(int64_t value) {
+	return value < 0 ? Value(LogicalType::BIGINT) : Value::BIGINT(value);
+}
+
+#define OTLP_COLUMN(name, type, expr)                                                                                  \
+	{                                                                                                                  \
+		name, LogicalTypeId::type, [](const OtlpServer &s, const OtlpListener &l) -> Value {                           \
+			return expr;                                                                                               \
+		}                                                                                                              \
+	}
+
+const vector<OtlpServerListColumn> &OtlpServer::ListColumns() {
+	// New columns go at the end, so existing positions stay stable for callers that read by index.
+	static const vector<OtlpServerListColumn> columns = {
+	    OTLP_COLUMN("listen_uri", VARCHAR, Value(l.Uri().Uri())),
+	    OTLP_COLUMN("listen_url", VARCHAR, Value(l.Uri().Http())),
+	    OTLP_COLUMN("host", VARCHAR, Value(l.Uri().Host())),
+	    OTLP_COLUMN("port", USMALLINT, Value::USMALLINT(l.Uri().Port())),
+	    OTLP_COLUMN("schema_name", VARCHAR, Value(s.config.schema_name)),
+	    OTLP_COLUMN("active_requests", UBIGINT, Value::UBIGINT(s.active_requests.load())),
+	    OTLP_COLUMN("total_requests", UBIGINT, Value::UBIGINT(s.total_requests.load())),
+	    OTLP_COLUMN("total_rows", UBIGINT, Value::UBIGINT(s.total_rows.load())),
+	    OTLP_COLUMN("is_listening", BOOLEAN, Value::BOOLEAN(l.IsListening())),
+	    OTLP_COLUMN("last_error", VARCHAR, NullIfEmpty(l.LastError())),
+	    OTLP_COLUMN("catalog_name", VARCHAR, Value(s.config.catalog_name)),
+	    OTLP_COLUMN("buffered_rows", UBIGINT, Value::UBIGINT(s.BufferedRows())),
+	    OTLP_COLUMN("admitted_bytes", UBIGINT, Value::UBIGINT(s.AdmittedBytes())),
+	    OTLP_COLUMN("seal_target_bytes", UBIGINT, Value::UBIGINT(s.config.seal_target_bytes)),
+	    OTLP_COLUMN("seal_max_age_ms", BIGINT, Value::BIGINT(s.config.seal_max_age_ms)),
+	    OTLP_COLUMN("oldest_buffered_age_ms", BIGINT, NullIfNegative(s.OldestBufferedAgeMs())),
+	    OTLP_COLUMN("last_seal_age_ms", BIGINT, NullIfNegative(s.LastSealAgeMs())),
+	    OTLP_COLUMN("seals_total", UBIGINT, Value::UBIGINT(s.SealsTotal())),
+	    OTLP_COLUMN("committed_rows_total", UBIGINT, Value::UBIGINT(s.CommittedRowsTotal())),
+	    OTLP_COLUMN("seal_failures_total", UBIGINT, Value::UBIGINT(s.SealFailuresTotal())),
+	    OTLP_COLUMN("seal_last_error", VARCHAR, NullIfEmpty(s.SealLastError())),
+	    OTLP_COLUMN("maintenance_runs_total", UBIGINT, Value::UBIGINT(s.MaintenanceRunsTotal())),
+	    OTLP_COLUMN("maintenance_failures_total", UBIGINT, Value::UBIGINT(s.MaintenanceFailuresTotal())),
+	    OTLP_COLUMN("last_maintenance_age_ms", BIGINT, NullIfNegative(s.LastMaintenanceAgeMs())),
+	    OTLP_COLUMN("maintenance_last_error", VARCHAR, NullIfEmpty(s.MaintenanceLastError())),
+	    OTLP_COLUMN("buffered_bytes", UBIGINT, Value::UBIGINT(s.BufferedBytes())),
+	    OTLP_COLUMN("promoted_columns_total", UBIGINT, Value::UBIGINT(s.PromotedColumnsTotal())),
+	    OTLP_COLUMN("transport", VARCHAR, Value(OtlpTransportName(l.Transport()))),
+	    OTLP_COLUMN("maintenance_contended_total", UBIGINT, Value::UBIGINT(s.MaintenanceContendedTotal())),
+	};
+	return columns;
+}
+
+#undef OTLP_COLUMN
 
 const OtlpUri &OtlpServer::PrimaryUri() const {
 	return listeners.front()->Uri();
@@ -641,7 +694,6 @@ void OtlpServer::BufferMetrics(const string &body, OtlpInputFormat format, OtlpI
 	OtlpMetricsArrowBatches batches = {};
 	OtlpStatus status = otlp_transform_metrics_all_with_profile(
 	    format, OTLP_ARROW_PROFILE_DUCKDB, reinterpret_cast<const uint8_t *>(body.data()), body.size(), &batches);
-
 
 	if (status != OTLP_OK) {
 		ReleaseOtlpMetricBatches(batches);
@@ -1142,8 +1194,10 @@ OtlpIngestResult OtlpServer::SealOnce() {
 	}
 
 	ReleaseAdmission(plan.sealed_admission_bytes);
+	// Routine, so DEBUG: otlp_seal_list() keeps the history.
 	LogServerEvent(StringUtil::Format("seal: target=%s rows=%llu batches=%llu", SealTargetDescription(),
-	                                  static_cast<uint64_t>(result.rows), static_cast<uint64_t>(result.batches)));
+	                                  static_cast<uint64_t>(result.rows), static_cast<uint64_t>(result.batches)),
+	               LogLevel::LOG_DEBUG);
 	RecordSealOutcome(true, result.rows, plan.sealed_admission_bytes, seal_started_unix_ms, append_duration_ms,
 	                  commit_duration_ms, "");
 	catalog_maintenance_due = true;

@@ -150,6 +150,8 @@ duckdb-otlp serve [flags]
 
 Passing a token as a flag makes it visible in the process list; prefer `DUCKDB_OTLP_TOKEN` outside of local use.
 
+The [`otlp_serve` tuning options](../serve/) are daemon settings too, named `DUCKDB_OTLP_` plus the option in upper case: `DUCKDB_OTLP_HTTP_THREADS`, `DUCKDB_OTLP_MAX_BODY_BYTES`, `DUCKDB_OTLP_MAX_BUFFERED_BYTES`, `DUCKDB_OTLP_SEAL_TARGET_BYTES`, `DUCKDB_OTLP_SEAL_MAX_AGE_MS`, `DUCKDB_OTLP_TARGET_FILE_SIZE`, `DUCKDB_OTLP_MAINTENANCE_RETENTION_MS`, `DUCKDB_OTLP_MAINTENANCE_INTERVAL_MS`, `DUCKDB_OTLP_PROMOTE_RESOURCE_ATTRIBUTES` and `DUCKDB_OTLP_PROMOTE_SCOPE_ATTRIBUTES`. An unset one keeps the extension's default.
+
 ### Destinations (`--mode`)
 
 A mode is a preset: a SQL file ([`src/server/modes/`](https://github.com/smithclay/duckdb-otlp/tree/main/src/server/modes)) compiled into the binary, which installs extensions, creates secrets and attaches the catalog. `duckdb-otlp validate --mode MODE` prints it expanded. Each one is a point in a grid of three independent choices — the catalog kind, where that catalog lives, and where the data files go.
@@ -306,15 +308,13 @@ duckdb-otlp --host ::1                      # OTLP http: otlp:[::1]:4318
 duckdb-otlp --host :: --token "$TOKEN"      # every interface, IPv6
 ```
 
-`OTEL_HTTP_ADDR` and `OTEL_GRPC_ADDR` set one transport's address each. Between the two environment variables the more specific one wins, so a host spelled out there beats `DUCKDB_OTLP_HOST` — which matters in the container, where the image sets `DUCKDB_OTLP_HOST=0.0.0.0` and `OTEL_HTTP_ADDR=127.0.0.1:4318` has to actually narrow the bind. A `--host` flag is the most specific thing you can say, so it still moves every listener.
+Every listener, Quack included, binds the one `--host`. The earlier per-transport settings (`OTEL_HTTP_ADDR`, `OTEL_GRPC_ADDR`, `DUCKDB_OTLP_TRANSPORTS`, `DUCKDB_OTLP_LISTEN_URI`, `DUCKDB_QUACK_ENABLED`, `DUCKDB_QUACK_ADDR`) are rejected at startup with the flag that replaces them.
 
 OTAP/Arrow is a different protocol served by `otap_serve`, so it cannot be combined with standard OTLP listeners in one process:
 
 ```sh
 duckdb-otlp --otap 4317 --http 0 --grpc 0
 ```
-
-The startup banner prints which setting chose the listener set, so a narrowed or unexpected set is never silent.
 
 ### Authentication
 
@@ -331,14 +331,13 @@ OpenTelemetry specifies environment variables for **exporters**, not receivers. 
 
 | Variable | Treatment |
 |----------|-----------|
-| `OTEL_EXPORTER_OTLP_PROTOCOL` | Selects the transport (`grpc`, `http/protobuf`, `http/json`) — but only when no port has been set explicitly. |
 | `OTEL_EXPORTER_OTLP_HEADERS` | An `Authorization=Bearer <token>` entry supplies the expected token. Other entries are ignored. |
 | `OTEL_EXPORTER_OTLP_TIMEOUT`, `OTEL_EXPORTER_OTLP_COMPRESSION` | Accepted and ignored (client-side only; compressed bodies are always accepted). |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | **Not read at all.** |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL` | **Not read at all.** |
 | `OTEL_EXPORTER_OTLP_{TRACES,LOGS,METRICS}_ENDPOINT` | **Rejected at startup.** |
 | `OTEL_EXPORTER_OTLP_{CERTIFICATE,CLIENT_KEY,CLIENT_CERTIFICATE}` | **Rejected at startup.** |
 
-`OTEL_EXPORTER_OTLP_ENDPOINT` is ignored deliberately. It is usually already set in a developer's shell, pointing at their real collector; treating it as a *bind* address would either fail confusingly or silently move the listener somewhere unintended. Use `--host` and `--http`/`--grpc`.
+`OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_PROTOCOL` are ignored deliberately. They are usually already set in a developer's shell for their application's exporter; reading them as *bind* settings would silently move or narrow the listeners. Use `--host` and `--http`/`--grpc`.
 
 The TLS and per-signal-endpoint variables are rejected rather than ignored for the same reason in reverse: this server does not terminate TLS and serves every signal on one listener, so accepting those settings silently would leave you believing something untrue about your deployment. Put a TLS-terminating proxy in front instead.
 
@@ -371,9 +370,10 @@ The image runs the same binary, with container-shaped defaults set in the image 
 ```
 DUCKDB_OTLP_DATA_DIR=/data
 DUCKDB_OTLP_HOST=0.0.0.0
-DUCKDB_OTLP_TRANSPORTS=http
-DUCKDB_QUACK_ADDR=0.0.0.0:9494
+DUCKDB_OTLP_HTTP_PORT=4318
 ```
+
+Setting the HTTP port selects HTTP alone; add `DUCKDB_OTLP_GRPC_PORT=4317` for gRPC and `DUCKDB_QUACK_PORT=9494` (with `DUCKDB_QUACK_TOKEN`) for Quack.
 
 Because the image binds `0.0.0.0`, it requires a token:
 

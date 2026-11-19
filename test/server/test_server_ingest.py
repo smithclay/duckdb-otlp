@@ -17,7 +17,7 @@ import grpc
 import pytest
 
 from test_server_config import free_port, pytestmark  # noqa: F401
-from test_server_transports import TOKEN, configuration, daemon, wait_ready
+from test_server_transports import TOKEN, configuration, daemon, http_addr, wait_ready
 
 DATA = Path(__file__).resolve().parents[1] / 'data' / 'otap'
 METRIC_TABLES = ['otlp_metrics_gauge', 'otlp_metrics_sum', 'otlp_metrics_histogram', 'otlp_metrics_exp_histogram']
@@ -26,7 +26,7 @@ METRIC_TABLES = ['otlp_metrics_gauge', 'otlp_metrics_sum', 'otlp_metrics_histogr
 def post(env, path, body, content_type='application/x-protobuf', headers=None):
     """POST and return the status code, including error statuses."""
     request = urllib.request.Request(
-        f"http://{env['OTEL_HTTP_ADDR']}{path}",
+        f"http://{http_addr(env)}{path}",
         data=body,
         headers={'Content-Type': content_type, **(headers or {})},
     )

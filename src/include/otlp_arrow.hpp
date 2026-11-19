@@ -43,12 +43,18 @@ inline void ReleaseOtlpMetricBatches(OtlpMetricsArrowBatches &batches) {
 //! Every signal the extension reads and ingests, in OtlpSignalType order (OTLP_SIGNAL_LOGS = 0 ...
 //! OTLP_SIGNAL_METRICS_EXP_HISTOGRAM = 5). The name is also the ingest table's, and the file reader
 //! is read_<name> for OTLP and read_otap_<name minus "otlp_"> for OTAP.
-constexpr OtlpSignalType OTLP_SIGNALS[] = {OTLP_SIGNAL_LOGS,          OTLP_SIGNAL_TRACES,
-                                           OTLP_SIGNAL_METRICS_GAUGE, OTLP_SIGNAL_METRICS_SUM,
-                                           OTLP_SIGNAL_METRICS_HISTOGRAM, OTLP_SIGNAL_METRICS_EXP_HISTOGRAM};
-constexpr const char *OTLP_SIGNAL_TABLES[] = {"otlp_logs",          "otlp_traces",
-                                              "otlp_metrics_gauge", "otlp_metrics_sum",
-                                              "otlp_metrics_histogram", "otlp_metrics_exp_histogram"};
+constexpr OtlpSignalType OTLP_SIGNALS[] = {OTLP_SIGNAL_LOGS,
+                                           OTLP_SIGNAL_TRACES,
+                                           OTLP_SIGNAL_METRICS_GAUGE,
+                                           OTLP_SIGNAL_METRICS_SUM,
+                                           OTLP_SIGNAL_METRICS_HISTOGRAM,
+                                           OTLP_SIGNAL_METRICS_EXP_HISTOGRAM};
+constexpr const char *OTLP_SIGNAL_TABLES[] = {"otlp_logs",
+                                              "otlp_traces",
+                                              "otlp_metrics_gauge",
+                                              "otlp_metrics_sum",
+                                              "otlp_metrics_histogram",
+                                              "otlp_metrics_exp_histogram"};
 
 //! maps to the extension's column types: hex VARCHAR ids, BIGINT nanosecond duration, signed counters.
 struct OtlpArrowTable {

@@ -52,8 +52,7 @@ PGUSER=tracelake_catalog
 PGPASSWORD=<catalog-user-password>
 PGSSLMODE=disable
 
-DUCKDB_QUACK_ENABLED=1
-DUCKDB_QUACK_ADDR=0.0.0.0:9494
+DUCKDB_QUACK_PORT=9494
 DUCKDB_QUACK_TOKEN=<separate-private-admin-token>
 ```
 
@@ -141,8 +140,8 @@ the catalog.
 Small commits are inlined into the PostgreSQL catalog until a DuckLake
 `CHECKPOINT` flushes them to Parquet in GCS; the daemon runs one every 5 minutes
 (`maintenance_interval_ms`) while rows are being committed and prints each outcome
-(`catalog maintenance CHECKPOINT succeeded` / `WARNING: catalog maintenance
-CHECKPOINT failed ...`) to stderr, so alert on the warning. Set
+(`catalog maintenance checkpoint succeeded` / `WARNING: catalog maintenance
+checkpoint failed ...`) to stderr, so alert on the warning. Set
 `DUCKLAKE_DATA_INLINING_ROW_LIMIT=0` to write Parquet on every commit instead.
 
 If startup fails, check PostgreSQL connectivity and grants, ADC availability in

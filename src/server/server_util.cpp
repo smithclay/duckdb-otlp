@@ -159,8 +159,8 @@ bool Connect(int fd, const struct addrinfo &ai) {
 	}
 	int err = 0;
 	socklen_t len = sizeof(err);
-	return errno == EINPROGRESS && WaitFor(fd, POLLOUT) &&
-	       ::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) == 0 && err == 0;
+	return errno == EINPROGRESS && WaitFor(fd, POLLOUT) && ::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) == 0 &&
+	       err == 0;
 }
 
 //! Send GET `path` on a connected socket and read the status line ("HTTP/1.1 200 OK").

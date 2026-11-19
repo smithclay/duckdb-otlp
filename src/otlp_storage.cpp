@@ -242,53 +242,24 @@ void OtlpStorageExtensionInfo::StopAllServers() {
 	to_destroy.clear();
 }
 
-vector<OtlpStorageExtensionInfo::ServerSnapshot> OtlpStorageExtensionInfo::ListServers() {
-	vector<ServerSnapshot> result;
+vector<vector<Value>> OtlpStorageExtensionInfo::ListServers() {
+	vector<vector<Value>> rows;
 	std::lock_guard<std::mutex> lock(servers_mutex);
 	EnsureNotShutDown();
-	for (auto &server_ptr : DistinctServers()) {
-		auto &server = *server_ptr;
-		// Server-wide state, read once and shared by every listener row.
-		ServerSnapshot shared;
-		shared.catalog_name = server.CatalogName();
-		shared.schema_name = server.SchemaName();
-		shared.active_requests = server.ActiveRequests();
-		shared.total_requests = server.TotalRequests();
-		shared.total_rows = server.TotalRows();
-		shared.buffered_rows = server.BufferedRows();
-		shared.buffered_bytes = server.BufferedBytes();
-		shared.admitted_bytes = server.AdmittedBytes();
-		shared.seal_target_bytes = server.SealTargetBytes();
-		shared.seal_max_age_ms = server.SealMaxAgeMs();
-		shared.oldest_buffered_age_ms = server.OldestBufferedAgeMs();
-		shared.last_seal_age_ms = server.LastSealAgeMs();
-		shared.seals_total = server.SealsTotal();
-		shared.committed_rows_total = server.CommittedRowsTotal();
-		shared.seal_failures_total = server.SealFailuresTotal();
-		shared.seal_last_error = server.SealLastError();
-		shared.maintenance_runs_total = server.MaintenanceRunsTotal();
-		shared.maintenance_failures_total = server.MaintenanceFailuresTotal();
-		shared.maintenance_contended_total = server.MaintenanceContendedTotal();
-		shared.last_maintenance_age_ms = server.LastMaintenanceAgeMs();
-		shared.maintenance_last_error = server.MaintenanceLastError();
-		shared.promoted_columns_total = server.PromotedColumnsTotal();
-		for (auto &listener : server.Listeners()) {
-			auto &uri = listener->Uri();
-			auto snap = shared;
-			snap.listen_uri = uri.Uri();
-			snap.transport = OtlpTransportName(listener->Transport());
-			snap.listen_url = uri.Http();
-			snap.host = uri.Host();
-			snap.port = uri.Port();
-			snap.is_listening = listener->IsListening();
-			snap.last_error = listener->LastError();
-			result.push_back(std::move(snap));
+	for (auto &server : DistinctServers()) {
+		for (auto &listener : server->Listeners()) {
+			vector<Value> row;
+			for (auto &column : OtlpServer::ListColumns()) {
+				row.push_back(column.get(*server, *listener));
+			}
+			rows.push_back(std::move(row));
 		}
 	}
-	// Sort for deterministic output order.
-	std::sort(result.begin(), result.end(),
-	          [](const ServerSnapshot &a, const ServerSnapshot &b) { return a.listen_uri < b.listen_uri; });
-	return result;
+	// Column 0 is listen_uri.
+	std::sort(rows.begin(), rows.end(), [](const vector<Value> &a, const vector<Value> &b) {
+		return StringValue::Get(a[0]) < StringValue::Get(b[0]);
+	});
+	return rows;
 }
 
 vector<OtlpStorageExtensionInfo::SealSnapshot> OtlpStorageExtensionInfo::ListSeals() {

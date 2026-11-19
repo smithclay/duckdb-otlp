@@ -516,121 +516,31 @@ CreateTableFunctionInfo OtlpStopFunction::GetFunction() {
 struct OtlpServerListFunctionData : public TableFunctionData {
 	bool initialized = false;
 	idx_t offset = 0;
-	vector<OtlpStorageExtensionInfo::ServerSnapshot> snapshots;
+	vector<vector<Value>> rows;
 };
 
 static unique_ptr<FunctionData> OtlpServerListBind(ClientContext &context, TableFunctionBindInput &input,
                                                    vector<LogicalType> &return_types, vector<Identifier> &names) {
-	names.emplace_back("listen_uri");
-	return_types.emplace_back(LogicalType::VARCHAR);
-	names.emplace_back("listen_url");
-	return_types.emplace_back(LogicalType::VARCHAR);
-	names.emplace_back("host");
-	return_types.emplace_back(LogicalType::VARCHAR);
-	names.emplace_back("port");
-	return_types.emplace_back(LogicalType::USMALLINT);
-	names.emplace_back("schema_name");
-	return_types.emplace_back(LogicalType::VARCHAR);
-	names.emplace_back("active_requests");
-	return_types.emplace_back(LogicalType::UBIGINT);
-	names.emplace_back("total_requests");
-	return_types.emplace_back(LogicalType::UBIGINT);
-	names.emplace_back("total_rows");
-	return_types.emplace_back(LogicalType::UBIGINT);
-	names.emplace_back("is_listening");
-	return_types.emplace_back(LogicalType::BOOLEAN);
-	names.emplace_back("last_error");
-	return_types.emplace_back(LogicalType::VARCHAR);
-	names.emplace_back("catalog_name");
-	return_types.emplace_back(LogicalType::VARCHAR);
-	names.emplace_back("buffered_rows");
-	return_types.emplace_back(LogicalType::UBIGINT);
-	names.emplace_back("admitted_bytes");
-	return_types.emplace_back(LogicalType::UBIGINT);
-	names.emplace_back("seal_target_bytes");
-	return_types.emplace_back(LogicalType::UBIGINT);
-	names.emplace_back("seal_max_age_ms");
-	return_types.emplace_back(LogicalType::BIGINT);
-	names.emplace_back("oldest_buffered_age_ms");
-	return_types.emplace_back(LogicalType::BIGINT);
-	names.emplace_back("last_seal_age_ms");
-	return_types.emplace_back(LogicalType::BIGINT);
-	names.emplace_back("seals_total");
-	return_types.emplace_back(LogicalType::UBIGINT);
-	names.emplace_back("committed_rows_total");
-	return_types.emplace_back(LogicalType::UBIGINT);
-	names.emplace_back("seal_failures_total");
-	return_types.emplace_back(LogicalType::UBIGINT);
-	names.emplace_back("seal_last_error");
-	return_types.emplace_back(LogicalType::VARCHAR);
-	names.emplace_back("maintenance_runs_total");
-	return_types.emplace_back(LogicalType::UBIGINT);
-	names.emplace_back("maintenance_failures_total");
-	return_types.emplace_back(LogicalType::UBIGINT);
-	names.emplace_back("last_maintenance_age_ms");
-	return_types.emplace_back(LogicalType::BIGINT);
-	names.emplace_back("maintenance_last_error");
-	return_types.emplace_back(LogicalType::VARCHAR);
-	// Appended (not inserted next to buffered_rows) so existing column positions are unchanged.
-	names.emplace_back("buffered_bytes");
-	return_types.emplace_back(LogicalType::UBIGINT);
-	names.emplace_back("promoted_columns_total");
-	return_types.emplace_back(LogicalType::UBIGINT);
-	names.emplace_back("transport");
-	return_types.emplace_back(LogicalType::VARCHAR);
-	names.emplace_back("maintenance_contended_total");
-	return_types.emplace_back(LogicalType::UBIGINT);
+	for (auto &column : OtlpServer::ListColumns()) {
+		names.emplace_back(column.name);
+		return_types.emplace_back(column.type);
+	}
 	return make_uniq<OtlpServerListFunctionData>();
 }
 
 static void OtlpServerList(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
 	auto &bind_data = data_p.bind_data->CastNoConst<OtlpServerListFunctionData>();
-	// Snapshot once on the first call, then page out STANDARD_VECTOR_SIZE rows per
-	// scan so a large server count never overflows a single DataChunk.
+	// Snapshot once, then page out STANDARD_VECTOR_SIZE rows per scan.
 	if (!bind_data.initialized) {
-		bind_data.snapshots = OtlpStorageExtensionInfo::GetState(*context.db).ListServers();
+		bind_data.rows = OtlpStorageExtensionInfo::GetState(*context.db).ListServers();
 		bind_data.initialized = true;
 	}
 	idx_t row = 0;
-	while (bind_data.offset < bind_data.snapshots.size() && row < STANDARD_VECTOR_SIZE) {
-		auto &s = bind_data.snapshots[bind_data.offset];
-		output.SetValue(0, row, Value(s.listen_uri));
-		output.SetValue(1, row, Value(s.listen_url));
-		output.SetValue(2, row, Value(s.host));
-		output.SetValue(3, row, Value::USMALLINT(s.port));
-		output.SetValue(4, row, Value(s.schema_name));
-		output.SetValue(5, row, Value::UBIGINT(s.active_requests));
-		output.SetValue(6, row, Value::UBIGINT(s.total_requests));
-		output.SetValue(7, row, Value::UBIGINT(s.total_rows));
-		output.SetValue(8, row, Value::BOOLEAN(s.is_listening));
-		output.SetValue(9, row, s.last_error.empty() ? Value(LogicalType::VARCHAR) : Value(s.last_error));
-		output.SetValue(10, row, Value(s.catalog_name));
-		output.SetValue(11, row, Value::UBIGINT(s.buffered_rows));
-		output.SetValue(12, row, Value::UBIGINT(s.admitted_bytes));
-		output.SetValue(13, row, Value::UBIGINT(s.seal_target_bytes));
-		output.SetValue(14, row, Value::BIGINT(s.seal_max_age_ms));
-		output.SetValue(15, row,
-		                s.oldest_buffered_age_ms < 0 ? Value(LogicalType::BIGINT)
-		                                             : Value::BIGINT(s.oldest_buffered_age_ms));
-		output.SetValue(16, row,
-		                s.last_seal_age_ms < 0 ? Value(LogicalType::BIGINT) : Value::BIGINT(s.last_seal_age_ms));
-		output.SetValue(17, row, Value::UBIGINT(s.seals_total));
-		output.SetValue(18, row, Value::UBIGINT(s.committed_rows_total));
-		output.SetValue(19, row, Value::UBIGINT(s.seal_failures_total));
-		output.SetValue(20, row, s.seal_last_error.empty() ? Value(LogicalType::VARCHAR) : Value(s.seal_last_error));
-		output.SetValue(21, row, Value::UBIGINT(s.maintenance_runs_total));
-		output.SetValue(22, row, Value::UBIGINT(s.maintenance_failures_total));
-		output.SetValue(23, row,
-		                s.last_maintenance_age_ms < 0 ? Value(LogicalType::BIGINT)
-		                                              : Value::BIGINT(s.last_maintenance_age_ms));
-		output.SetValue(
-		    24, row, s.maintenance_last_error.empty() ? Value(LogicalType::VARCHAR) : Value(s.maintenance_last_error));
-		output.SetValue(25, row, Value::UBIGINT(s.buffered_bytes));
-		output.SetValue(26, row, Value::UBIGINT(s.promoted_columns_total));
-		output.SetValue(27, row, Value(s.transport));
-		output.SetValue(28, row, Value::UBIGINT(s.maintenance_contended_total));
-		row++;
-		bind_data.offset++;
+	for (; bind_data.offset < bind_data.rows.size() && row < STANDARD_VECTOR_SIZE; bind_data.offset++, row++) {
+		auto &values = bind_data.rows[bind_data.offset];
+		for (idx_t col = 0; col < values.size(); col++) {
+			output.SetValue(col, row, values[col]);
+		}
 	}
 	output.SetChildCardinality(row);
 }
@@ -661,9 +571,10 @@ static unique_ptr<FunctionData> OtlpSealListBind(ClientContext &context, TableFu
 	         Identifier("admitted_bytes"),       Identifier("success"),
 	         Identifier("seals_total"),          Identifier("seal_failures_total"),
 	         Identifier("committed_rows_total"), Identifier("error")};
-	return_types = {LogicalType::VARCHAR, LogicalType::UBIGINT, LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::BIGINT,
-	                LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::UBIGINT, LogicalType::UBIGINT, LogicalType::BOOLEAN,
-	                LogicalType::UBIGINT, LogicalType::UBIGINT, LogicalType::UBIGINT, LogicalType::VARCHAR};
+	return_types = {LogicalType::VARCHAR, LogicalType::UBIGINT, LogicalType::BIGINT,  LogicalType::BIGINT,
+	                LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::UBIGINT,
+	                LogicalType::UBIGINT, LogicalType::BOOLEAN, LogicalType::UBIGINT, LogicalType::UBIGINT,
+	                LogicalType::UBIGINT, LogicalType::VARCHAR};
 	return make_uniq<OtlpSealListFunctionData>();
 }
 
