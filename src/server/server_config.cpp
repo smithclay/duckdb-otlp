@@ -8,7 +8,6 @@
 #include "otlp_uri.hpp"
 #include "server_util.hpp"
 
-#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <limits>
@@ -51,11 +50,11 @@ string BearerTokenFromOtelHeaders(const string &headers) {
 		auto value = entry.substr(eq + 1);
 		StringUtil::Trim(key);
 		StringUtil::Trim(value);
-		if (StringUtil::Lower(key) != "authorization") {
+		if (!StringUtil::CIEquals(key, "authorization")) {
 			continue;
 		}
 		auto space = value.find(' ');
-		if (space != string::npos && StringUtil::Lower(value.substr(0, space)) == "bearer") {
+		if (space != string::npos && StringUtil::CIEquals(value.substr(0, space), "bearer")) {
 			value = value.substr(space + 1);
 			StringUtil::Trim(value);
 		}
@@ -125,7 +124,7 @@ uint64_t ParsePositiveEnv(const EnvSource &env, const char *name, uint64_t fallb
 	} catch (...) {
 		pos = 0;
 	}
-	if (pos == 0 || pos != value.size() || value[0] == '-' || parsed == 0 || parsed > max) {
+	if (pos != value.size() || value[0] == '-' || parsed == 0 || parsed > max) {
 		throw InvalidInputException("%s must be a positive integer", name);
 	}
 	return parsed;
@@ -146,7 +145,8 @@ public:
 		for (const auto &line : StringUtil::Split(preset, '\n')) {
 			auto trimmed = line;
 			StringUtil::Trim(trimmed);
-			bool keep = std::find(active.begin(), active.end(), false) == active.end();
+			// Each entry already folds in the blocks around it.
+			bool keep = active.empty() || active.back();
 			if (StringUtil::StartsWith(trimmed, "-- @")) {
 				auto words = StringUtil::Split(trimmed.substr(4), ' ');
 				auto directive = words.empty() ? string() : words[0];
@@ -154,9 +154,12 @@ public:
 					active.pop_back();
 				} else if (directive == "if") {
 					active.push_back(keep && If(words));
+				} else if (directive == "else" && !active.empty()) {
+					bool parent = active.size() < 2 || active[active.size() - 2];
+					active.back() = parent && !active.back();
 				} else if (directive == "set" && words.size() >= 2) {
 					if (keep) {
-						auto value = trimmed.substr(4 + 4 + words[1].size());
+						auto value = trimmed.substr(trimmed.find(words[1]) + words[1].size());
 						StringUtil::Trim(value);
 						vars[words[1]] = Substitute(value, false);
 					}
@@ -212,29 +215,17 @@ private:
 		missing.emplace_back(name, note);
 	}
 
-	//! `-- @if A B ...`: keep the block when any of the names is set, and then require them all.
-	//! `-- @if !A`: keep it when A is unset. `-- @if A^=prefix`: keep it when A starts with prefix.
+	//! `-- @if A B ...`: keep the block when any of the names is set (the getenv() lines inside
+	//! then require the rest). `-- @if A^=prefix`: keep it when A starts with prefix.
 	bool If(const duckdb::vector<string> &words) {
-		if (words.size() == 2 && StringUtil::StartsWith(words[1], "!")) {
-			return Lookup(words[1].substr(1)).empty();
-		}
-		auto prefix = words.size() == 2 ? words[1].find("^=") : string::npos;
-		if (prefix != string::npos) {
-			return StringUtil::StartsWith(Lookup(words[1].substr(0, prefix)), words[1].substr(prefix + 2));
-		}
-		duckdb::vector<string> names(words.begin() + 1, words.end());
-		duckdb::vector<string> set;
-		for (const auto &name : names) {
-			if (!Lookup(name).empty()) {
-				set.push_back(name);
+		for (idx_t i = 1; i < words.size(); i++) {
+			auto prefix = words[i].find("^=");
+			auto value = Lookup(words[i].substr(0, prefix));
+			if (prefix == string::npos ? !value.empty() : StringUtil::StartsWith(value, words[i].substr(prefix + 2))) {
+				return true;
 			}
 		}
-		for (const auto &name : names) {
-			if (!set.empty() && Lookup(name).empty()) {
-				Missing(name, "required because " + StringUtil::Join(set, ", ") + " is set");
-			}
-		}
-		return !set.empty();
+		return false;
 	}
 
 	//! getenv('NAME') -> getvariable('env_NAME'). getenv() exists only in the DuckDB CLI, and
@@ -299,7 +290,7 @@ private:
 			} else if (value.empty()) {
 				Missing(name, outer.empty() ? "" : "or set " + outer);
 			}
-			out += sql ? StringUtil::Replace(value, "'", "''") : value;
+			out += sql ? duckdb::SqlEscape(value) : value;
 		}
 		return out;
 	}
@@ -667,9 +658,10 @@ ServerConfig ServerConfig::FromEnv(const EnvSource &env) {
 	config.quack_http_addr = QuackAddrFromEnv(env);
 	config.quack_listen_uri = env.Get("DUCKDB_QUACK_LISTEN_URI", "quack:" + config.quack_http_addr);
 	config.dry_run = IsTruthy(env.Get("DRY_RUN", "0"));
-	config.startup_timeout_secs =
-	    static_cast<int>(ParsePositiveEnv(env, "DUCKDB_OTLP_STARTUP_TIMEOUT", 60, std::numeric_limits<int>::max()));
-	config.http_threads = ParsePositiveEnv(env, "DUCKDB_OTLP_HTTP_THREADS", 0);
+	config.startup_timeout_secs = static_cast<int>(ParsePositiveEnv(env, "DUCKDB_OTLP_STARTUP_TIMEOUT",
+	                                                                static_cast<uint64_t>(config.startup_timeout_secs),
+	                                                                std::numeric_limits<int>::max()));
+	config.http_threads = ParsePositiveEnv(env, "DUCKDB_OTLP_HTTP_THREADS", config.http_threads);
 	config.max_body_bytes = ParsePositiveEnv(env, "DUCKDB_OTLP_MAX_BODY_BYTES", config.max_body_bytes);
 	config.max_buffered_bytes = ParsePositiveEnv(env, "DUCKDB_OTLP_MAX_BUFFERED_BYTES", config.max_buffered_bytes);
 	config.seal_target_bytes = ParsePositiveEnv(env, "DUCKDB_OTLP_SEAL_TARGET_BYTES", config.seal_target_bytes);

@@ -392,7 +392,7 @@ def test_quack_port_enables_quack(tmp_path):
 # Ergonomics: a mistake must not start a server
 #
 # A bare `duckdb-otlp` means serve, and unrecognized argv used to fall through to it — so
-# `duckdb-otlp covert traces.pb` bound ports and created a DuckLake instead of reporting a
+# `duckdb-otlp srve` bound ports and created a DuckLake instead of reporting a
 # typo, and the two stray words were never mentioned.
 # --------------------------------------------------------------------------------------
 

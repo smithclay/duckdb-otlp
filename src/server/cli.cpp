@@ -103,7 +103,7 @@ bool ParseCommand(const string &arg, Command &command) {
 }
 
 //! A first word that is neither a flag nor a command is a mistake, never an argument to serve:
-//! falling through used to start a listener for `duckdb-otlp covert traces.pb`.
+//! falling through used to start a listener for `duckdb-otlp srve`.
 [[noreturn]] void ThrowUnknownCommand(const string &word) {
 	// Two edits is a typo; more than that is a different word, and a wrong guess is worse than
 	// none. (StringUtil::TopNLevenshtein always keeps its best match, however poor.)
@@ -177,7 +177,8 @@ string ModeList() {
 
 Command CommandFromName(const string &name) {
 	Command command = Command::HELP;
-	return ParseCommand(name, command) ? command : Command::HELP;
+	ParseCommand(name, command);
+	return command;
 }
 
 CliOptions ParseCli(int argc, char **argv) {

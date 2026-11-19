@@ -484,8 +484,7 @@ private:
 	                       const string &error);
 	void RequestSeal();
 	bool SealAgeDue() const;
-	//! CHECKPOINT the catalog when rows were sealed and maintenance_interval_ms has passed since
-	//! the last attempt. Called by the sealer thread; takes writer_mutex.
+	//! CHECKPOINT the catalog when it is due (see catalog_maintenance_due). Sealer thread only.
 	void MaybeRunCatalogMaintenance();
 	bool CatalogMaintenanceEnabled() const;
 	//! After a successful CHECKPOINT, delete DuckLake data files the catalog does not track and
@@ -562,8 +561,10 @@ private:
 
 	enum class CatalogMaintenanceState { PENDING, SUPPORTED, DISABLED };
 	CatalogMaintenanceState catalog_maintenance_state = CatalogMaintenanceState::PENDING;
-	//! Rows were sealed since the last maintenance attempt. Starts true so rows a previous process
-	//! left inlined in the catalog are checkpointed too (shutdown drains skip maintenance).
+	//! Maintenance (CHECKPOINT: flush DuckLake-inlined rows, merge files, expire snapshots) runs at
+	//! most once per maintenance_interval_ms, and only when rows were sealed since the last
+	//! attempt. Starts true so rows a previous process left inlined are flushed too (shutdown
+	//! drains skip maintenance). catalog_maintenance_last_attempt is sealer-thread only.
 	bool catalog_maintenance_due = true;
 	std::chrono::steady_clock::time_point catalog_maintenance_last_attempt = std::chrono::steady_clock::now();
 	// Catalog-maintenance telemetry (written by the sealer thread, read by ListServers).

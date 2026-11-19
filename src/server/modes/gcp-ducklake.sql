@@ -9,15 +9,14 @@ INSTALL ducklake;
 INSTALL postgres;
 LOAD ducklake;
 LOAD postgres;
--- @if !DUCKDB_OTLP_GCS_EXTENSION_PATH
-INSTALL gcs FROM community;
-LOAD gcs;
--- @end
 -- @if DUCKDB_OTLP_GCS_EXTENSION_PATH
 -- A local gcs build: the community one prints a failed upload finalize instead of raising it,
 -- so DuckLake would commit data files that were never written. It is unsigned.
 -- @set ALLOW_UNSIGNED_EXTENSIONS true
 LOAD '${DUCKDB_OTLP_GCS_EXTENSION_PATH}';
+-- @else
+INSTALL gcs FROM community;
+LOAD gcs;
 -- @end
 CREATE OR REPLACE SECRET gcp_storage (
   TYPE gcp,

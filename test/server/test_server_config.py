@@ -960,7 +960,7 @@ def test_a_missing_setting_inside_a_default_names_what_could_replace_it(tmp_path
     assert "AWS_REGION  (or AWS_DEFAULT_REGION)" in result.stderr
     result = run({"DUCKDB_MODE": "r2-local-ducklake", "R2_BUCKET": "b", "R2_ACCESS_KEY_ID": "k"}, tmp_path)
     assert "CLOUDFLARE_ACCOUNT_ID  (or set R2_ENDPOINT)" in result.stderr
-    assert "R2_SECRET_ACCESS_KEY  (required because R2_ACCESS_KEY_ID is set)" in result.stderr
+    assert "R2_SECRET_ACCESS_KEY" in result.stderr
 
 
 def test_an_s3_parquet_export_path_loads_s3_without_s3_bucket(tmp_path):

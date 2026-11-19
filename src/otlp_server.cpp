@@ -1258,13 +1258,15 @@ bool OtlpServer::CatalogMaintenanceEnabled() const {
 }
 
 void OtlpServer::MaybeRunCatalogMaintenance() {
-	// CHECKPOINT flushes DuckLake-inlined rows to Parquet, merges small files and expires old
-	// snapshots. It runs at most once per maintenance_interval_ms, and only after rows were
-	// sealed (the flag starts set, so rows a previous process left inlined are flushed too).
-	std::lock_guard<std::mutex> writer_lock(writer_mutex);
+	// Checked before taking writer_mutex, which this runs on every sealer tick: the target is
+	// fixed at construction and only the sealer thread touches the last-attempt time.
 	auto now = std::chrono::steady_clock::now();
-	if (!catalog_maintenance_due || !CatalogMaintenanceEnabled() ||
+	if (config.catalog_name.empty() || !config.parquet_export_path.empty() ||
 	    now - catalog_maintenance_last_attempt < std::chrono::milliseconds(config.maintenance_interval_ms)) {
+		return;
+	}
+	std::lock_guard<std::mutex> writer_lock(writer_mutex);
+	if (!catalog_maintenance_due || !CatalogMaintenanceEnabled()) {
 		return;
 	}
 	// Reset before the attempt, so a contended or failed pass waits a full interval too.
