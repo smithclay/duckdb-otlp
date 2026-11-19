@@ -6,10 +6,9 @@
 # Coverage note: SQLLogicTest cannot issue HTTP POSTs, so this file covers only
 # the lifecycle/bind surface (serve/list/stop, validation, hostname gating,
 # schema/column validation, the is_listening/last_error columns). The ingest hot
-# path -- auth (Bearer/x-api-key), content-type/encoding errors, 413, concurrent
-# 503 backpressure, metrics fan-out, stop-under-load, flush/stop races, and
-# Arrow -> DuckDB conversion under concurrency -- is exercised end-to-end by
-# test/manual/otlp_serve_concurrency.py (run manually, ideally under TSan/ASan).
+# path -- auth (Bearer/x-api-key), content-type/encoding errors, 413, 503
+# backpressure, metrics fan-out and the drain on stop -- is exercised end-to-end
+# against the daemon by test/server/test_server_ingest.py.
 
 require otlp
 
@@ -141,8 +140,7 @@ WHERE listen_uri = 'otlp:127.0.0.1:55439';
 
 # disable_auth opt-in: anonymous serve mints no token (auth_token is empty) and
 # skips the >= 16 char token floor. Used by tokenless producers (e.g. the
-# otel-arrow OTAP exporter, which cannot attach a bearer token). See
-# test/manual/otap_serve_df_engine.py.
+# otel-arrow OTAP exporter, which cannot attach a bearer token).
 query TT
 SELECT listen_uri, auth_token
 FROM otap_serve('otap:127.0.0.1:55445', disable_auth := true);
@@ -208,9 +206,8 @@ Stopped listening on otlp:127.0.0.1:55444
 # --- gRPC transport control plane ---
 # Two gRPC entry points, each strictly bound to its scheme: otap_serve('otap:...')
 # serves OTAP/Arrow streaming; otlp_serve('otlp:...', transport := 'grpc') serves
-# OTLP/gRPC unary Export. The data paths are exercised by test/manual/otlp_serve_grpc.py
-# (unary) and otap_serve_arrow_stream.py (streaming) -- SQLLogicTest cannot drive a gRPC
-# client. The canonical URI keeps its scheme, so each is a distinct registry key.
+# OTLP/gRPC unary Export. The data paths are exercised by test/server (the daemon's
+# transport and ingest tests) -- SQLLogicTest cannot drive a gRPC client. The canonical URI keeps its scheme, so each is a distinct registry key.
 
 query TT
 SELECT listen_uri, schema_name

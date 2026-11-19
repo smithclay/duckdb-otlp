@@ -29,8 +29,6 @@ import sys
 import tempfile
 import threading
 import time
-import urllib.parse
-import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -38,7 +36,6 @@ from typing import Any
 
 DEFAULT_IMAGE = "ghcr.io/smithclay/duckdb-otlp:latest"
 DEFAULT_TOKEN = "duckdb-otlp-benchmark-token"
-DEFAULT_AWS_PROFILE = "cli-dev"
 DEFAULT_RATE = 50_000
 DEFAULT_RATE_SWEEP = "10000,25000,50000,75000,100000"
 DEFAULT_BATCH_SIZE = 5_000
@@ -55,13 +52,9 @@ DEFAULT_TABLES = (
     "otlp_metrics_histogram",
     "otlp_metrics_exp_histogram",
 )
-SCENARIOS = (
-    "local-ducklake",
-    "r2-data-catalog",
-    "s3-tables",
-    "r2-neon-ducklake",
-    "r2-local-ducklake",
-)
+# Cloud backends are configured the same way (DUCKDB_MODE plus its settings); the harness
+# measures the receiver itself, so it runs against the local DuckLake mode only.
+SCENARIOS = ("local-ducklake",)
 
 
 class BenchError(RuntimeError):
@@ -97,9 +90,7 @@ class ScenarioContext:
     catalog: str = "lake"
     schema: str = "otlp"
     docker_env: dict[str, str] = field(default_factory=dict)
-    docker_volumes: list[tuple[str, str, str]] = field(default_factory=list)
     resources: dict[str, Any] = field(default_factory=dict)
-    cleanup: list[tuple[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -114,194 +105,9 @@ def eprint(message: str) -> None:
     print(message, file=sys.stderr, flush=True)
 
 
-def load_env_file(path: Path) -> dict[str, str]:
-    env: dict[str, str] = {}
-    if not path.exists():
-        return env
-    for raw in path.read_text().splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        if line.startswith("export "):
-            line = line.removeprefix("export ").strip()
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip("'").strip('"')
-        if key:
-            env[key] = value
-    return env
-
-
-def merged_env(env_file: Path) -> dict[str, str]:
-    env = dict(os.environ)
-    env.update(load_env_file(env_file))
-    return env
-
-
 def require_program(name: str) -> None:
     if shutil.which(name) is None:
         raise BenchError(f"required executable not found on PATH: {name}")
-
-
-def require_env(env: dict[str, str], *names: str) -> None:
-    missing = [name for name in names if not env.get(name)]
-    if missing:
-        raise BenchError(f"missing required environment variable(s): {', '.join(missing)}")
-
-
-def wrangler_env(env: dict[str, str]) -> dict[str, str]:
-    clean = dict(env)
-    clean.pop("CLOUDFLARE_API_TOKEN", None)
-    return clean
-
-
-def wrangler_cmd(ctx: ScenarioContext, *args: str, check: bool = True) -> CommandResult:
-    return run_cmd(["wrangler", *args, "--env-file", "/dev/null"], env=wrangler_env(ctx.env), check=check)
-
-
-def first_env(env: dict[str, str], *names: str) -> str | None:
-    for name in names:
-        value = env.get(name)
-        if value:
-            return value
-    return None
-
-
-def r2_access_key(env: dict[str, str]) -> str | None:
-    return first_env(
-        env,
-        "R2_ACCESS_KEY_ID",
-        "R2_ACCESS_KEY_ID",
-        "R2_ACCESS_KEY_ID",
-        "R2_ACCESS_KEY_ID",
-        "R2_ACCESS_KEY_ID",
-    )
-
-
-def r2_secret_key(env: dict[str, str]) -> str | None:
-    return first_env(
-        env,
-        "R2_SECRET_ACCESS_KEY",
-        "R2_SECRET_ACCESS_KEY",
-        "R2_SECRET_ACCESS_KEY",
-        "R2_SECRET_ACCESS_KEY",
-        "R2_SECRET_ACCESS_KEY",
-    )
-
-
-def aws_cli_base(env: dict[str, str], profile: str | None = None, region: str | None = None) -> list[str]:
-    args = ["aws"]
-    active_profile = profile or env.get("AWS_PROFILE") or DEFAULT_AWS_PROFILE
-    if active_profile:
-        args.extend(["--profile", active_profile])
-    active_region = region or env.get("AWS_REGION") or env.get("AWS_DEFAULT_REGION")
-    if active_region:
-        args.extend(["--region", active_region])
-    return args
-
-
-def aws_cli(
-    env: dict[str, str], service: str, operation: str, *args: str, profile: str | None = None, region: str | None = None
-) -> list[str]:
-    return [*aws_cli_base(env, profile, region), service, operation, *args]
-
-
-def aws_region(env: dict[str, str], profile: str | None = None) -> str:
-    configured = env.get("AWS_REGION") or env.get("AWS_DEFAULT_REGION")
-    if configured:
-        return configured
-    result = run_cmd(
-        [*aws_cli_base(env, profile), "configure", "get", "region"],
-        env=env,
-        check=False,
-    )
-    region = result.stdout.strip()
-    if region:
-        return region
-    raise BenchError("could not determine AWS region from AWS_REGION/AWS_DEFAULT_REGION or aws configure")
-
-
-def cloudflare_account_id(ctx: ScenarioContext) -> str:
-    if ctx.env.get("CLOUDFLARE_ACCOUNT_ID"):
-        return ctx.env["CLOUDFLARE_ACCOUNT_ID"]
-    require_program("wrangler")
-    result = wrangler_cmd(ctx, "whoami")
-    match = re.search(r"\b[a-f0-9]{32}\b", result.stdout)
-    if not match:
-        raise BenchError("could not infer CLOUDFLARE_ACCOUNT_ID from wrangler whoami")
-    account_id = match.group(0)
-    ctx.env["CLOUDFLARE_ACCOUNT_ID"] = account_id
-    return account_id
-
-
-def r2_s3_endpoint(ctx: ScenarioContext) -> str:
-    host = first_env(ctx.env, "R2_ENDPOINT", "R2_ENDPOINT")
-    if host:
-        return host if host.startswith("http://") or host.startswith("https://") else f"https://{host}"
-    return f"https://{cloudflare_account_id(ctx)}.r2.cloudflarestorage.com"
-
-
-def r2_s3_cli_env(ctx: ScenarioContext) -> dict[str, str]:
-    access_key = r2_access_key(ctx.env)
-    secret_key = r2_secret_key(ctx.env)
-    if not access_key or not secret_key:
-        raise BenchError(
-            "missing R2 S3 credentials; set R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY "
-            "or R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY"
-        )
-    env = dict(ctx.env)
-    for key in (
-        "AWS_PROFILE",
-        "AWS_DEFAULT_PROFILE",
-        "AWS_SESSION_TOKEN",
-        "AWS_SECURITY_TOKEN",
-    ):
-        env.pop(key, None)
-    env["AWS_ACCESS_KEY_ID"] = access_key
-    env["AWS_SECRET_ACCESS_KEY"] = secret_key
-    env["AWS_REGION"] = "auto"
-    env["AWS_DEFAULT_REGION"] = "auto"
-    return env
-
-
-def r2_s3api(ctx: ScenarioContext, *args: str, check: bool = True) -> CommandResult:
-    return run_cmd(
-        ["aws", "s3api", "--endpoint-url", r2_s3_endpoint(ctx), *args],
-        env=r2_s3_cli_env(ctx),
-        check=check,
-    )
-
-
-def preflight_r2_s3_write(ctx: ScenarioContext, bucket: str, prefix: str) -> None:
-    if ctx.dry_run:
-        return
-    probe = ctx.output_dir / f"{slug(ctx.name)}-r2-preflight.txt"
-    probe.write_text("duckdb-otlp benchmark preflight\n")
-    key = f"{prefix.rstrip('/')}/_duckdb_otlp_preflight.txt" if prefix else "_duckdb_otlp_preflight.txt"
-    result = r2_s3api(ctx, "put-object", "--bucket", bucket, "--key", key, "--body", str(probe), check=False)
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
-        raise BenchError(
-            "R2 S3 credentials cannot write to the disposable bucket. "
-            "Create/update the R2 S3 access key with object write permission for newly-created benchmark buckets, "
-            "then rerun. "
-            f"Bucket: {bucket}. AWS CLI error: {detail}"
-        )
-    r2_s3api(ctx, "delete-object", "--bucket", bucket, "--key", key, check=False)
-
-
-def neon_project_id(ctx: ScenarioContext) -> str:
-    if ctx.env.get("NEON_PROJECT_ID"):
-        return ctx.env["NEON_PROJECT_ID"]
-    require_program("neonctl")
-    result = run_cmd(["neonctl", "projects", "list", "--output", "json"], env=ctx.env)
-    payload = json.loads(result.stdout)
-    projects = payload.get("projects") or []
-    if len(projects) != 1:
-        raise BenchError("set NEON_PROJECT_ID or make neonctl projects list return exactly one project")
-    project_id = projects[0]["id"]
-    ctx.env["NEON_PROJECT_ID"] = project_id
-    return project_id
 
 
 def run_cmd(
@@ -403,160 +209,6 @@ def build_producer(output_dir: Path, configured: Path | None) -> Path:
     return producer
 
 
-def cf_api(
-    ctx: ScenarioContext,
-    method: str,
-    path: str,
-    *,
-    body: bytes | None = None,
-    ok: tuple[int, ...] = (200,),
-) -> Any:
-    require_env(ctx.env, "CLOUDFLARE_API_TOKEN")
-    url = f"https://api.cloudflare.com/client/v4{path}"
-    req = urllib.request.Request(url, data=body, method=method)
-    req.add_header("Authorization", f"Bearer {ctx.env['CLOUDFLARE_API_TOKEN']}")
-    if body is not None:
-        req.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(req, timeout=60) as response:
-            payload = response.read().decode()
-            if response.status not in ok:
-                raise BenchError(f"Cloudflare API returned {response.status}: {payload}")
-            return json.loads(payload) if payload else {}
-    except urllib.error.HTTPError as exc:
-        payload = exc.read().decode(errors="replace")
-        if exc.code not in ok:
-            raise BenchError(f"Cloudflare API returned {exc.code}: {payload}") from exc
-        return json.loads(payload) if payload else {}
-
-
-def r2_object_keys(ctx: ScenarioContext, bucket: str) -> list[str]:
-    account_id = cloudflare_account_id(ctx)
-    keys: list[str] = []
-    cursor = ""
-    while True:
-        query = "?per_page=1000"
-        if cursor:
-            query += "&cursor=" + urllib.parse.quote(cursor)
-        payload = cf_api(ctx, "GET", f"/accounts/{account_id}/r2/buckets/{bucket}/objects{query}")
-        result = payload.get("result", [])
-        if isinstance(result, dict):
-            objects = result.get("objects", [])
-            cursor = result.get("cursor") or ""
-            truncated = bool(result.get("truncated"))
-        else:
-            objects = result
-            cursor = ""
-            truncated = False
-        keys.extend(obj["key"] for obj in objects if obj.get("key"))
-        if not truncated and not cursor:
-            return keys
-
-
-def r2_object_summary(ctx: ScenarioContext, bucket: str) -> dict[str, Any]:
-    if r2_access_key(ctx.env) and r2_secret_key(ctx.env):
-        result = r2_s3api(ctx, "list-objects-v2", "--bucket", bucket, "--output", "json", check=False)
-        if result.returncode == 0:
-            payload = json.loads(result.stdout or "{}")
-            objects = payload.get("Contents", [])
-            keys = [obj["Key"] for obj in objects if obj.get("Key")]
-            return {
-                "bucket": bucket,
-                "objects": len(keys),
-                "parquet_files": sum(1 for key in keys if key.endswith(".parquet")),
-                "metadata_files": sum(1 for key in keys if "metadata" in key or key.endswith(".json")),
-                "bytes": sum(int(obj.get("Size") or 0) for obj in objects),
-                "listing_api": "s3",
-            }
-        if not ctx.env.get("CLOUDFLARE_API_TOKEN"):
-            return {"bucket": bucket, "error": result.stderr.strip(), "listing_api": "s3"}
-    account_id = cloudflare_account_id(ctx)
-    keys = r2_object_keys(ctx, bucket)
-    sizes: dict[str, int] = {}
-    for key in keys:
-        encoded = urllib.parse.quote(key, safe="")
-        with contextlib.suppress(Exception):
-            payload = cf_api(ctx, "GET", f"/accounts/{account_id}/r2/buckets/{bucket}/objects/{encoded}")
-            result = payload.get("result") or {}
-            sizes[key] = int(result.get("size") or 0)
-    return {
-        "bucket": bucket,
-        "objects": len(keys),
-        "parquet_files": sum(1 for key in keys if key.endswith(".parquet")),
-        "metadata_files": sum(1 for key in keys if "metadata" in key or key.endswith(".json")),
-        "bytes": sum(sizes.values()) if sizes else None,
-        "listing_api": "cloudflare",
-    }
-
-
-def delete_r2_objects(ctx: ScenarioContext, bucket: str) -> None:
-    if r2_access_key(ctx.env) and r2_secret_key(ctx.env):
-        keys = r2_object_keys_s3(ctx, bucket)
-        if keys is not None:
-            for key in keys:
-                r2_s3api(ctx, "delete-object", "--bucket", bucket, "--key", key, check=False)
-            return
-    account_id = cloudflare_account_id(ctx)
-    for key in r2_object_keys(ctx, bucket):
-        encoded = urllib.parse.quote(key, safe="")
-        cf_api(ctx, "DELETE", f"/accounts/{account_id}/r2/buckets/{bucket}/objects/{encoded}", ok=(200, 204))
-
-
-def delete_r2_bucket(ctx: ScenarioContext, bucket: str) -> None:
-    if r2_access_key(ctx.env) and r2_secret_key(ctx.env):
-        result = r2_s3api(ctx, "delete-bucket", "--bucket", bucket, check=False)
-        if result.returncode == 0:
-            return
-    wrangler_cmd(ctx, "r2", "bucket", "delete", bucket, check=False)
-
-
-def r2_object_keys_s3(ctx: ScenarioContext, bucket: str) -> list[str] | None:
-    result = r2_s3api(ctx, "list-objects-v2", "--bucket", bucket, "--output", "json", check=False)
-    if result.returncode != 0:
-        return None
-    payload = json.loads(result.stdout or "{}")
-    return [obj["Key"] for obj in payload.get("Contents", []) if obj.get("Key")]
-
-
-def create_r2_bucket(ctx: ScenarioContext, purpose: str) -> str:
-    bucket = unique_name("duckdb-otlp-bench", ctx.run_id, purpose)
-    if ctx.dry_run:
-        return bucket
-    if r2_access_key(ctx.env) and r2_secret_key(ctx.env):
-        result = r2_s3api(ctx, "create-bucket", "--bucket", bucket, check=False)
-        if result.returncode == 0:
-            ctx.cleanup.append(("r2_bucket", bucket))
-            return bucket
-        eprint(f"[{ctx.name}] R2 S3 create-bucket failed; falling back to Wrangler OAuth")
-    cloudflare_account_id(ctx)
-    require_program("wrangler")
-    wrangler_cmd(ctx, "r2", "bucket", "create", bucket)
-    ctx.cleanup.append(("r2_bucket", bucket))
-    return bucket
-
-
-def r2_data_catalog_setup(ctx: ScenarioContext) -> None:
-    bucket = create_r2_bucket(ctx, "r2catalog")
-    if not ctx.dry_run:
-        wrangler_cmd(ctx, "r2", "bucket", "catalog", "enable", bucket)
-        ctx.cleanup.append(("r2_catalog", bucket))
-    account_id = cloudflare_account_id(ctx)
-    catalog_uri = f"https://catalog.cloudflarestorage.com/{account_id}/{bucket}"
-    warehouse = f"{account_id}_{bucket}"
-    ctx.resources.update({"r2_bucket": bucket, "r2_catalog_uri": catalog_uri, "r2_warehouse": warehouse})
-    r2_storage_secret_sql(ctx)
-    ctx.docker_env.update(
-        {
-            "DUCKDB_MODE": "r2-data-catalog",
-            "CLOUDFLARE_ACCOUNT_ID": account_id,
-            "R2_BUCKET": bucket,
-            "CLOUDFLARE_CATALOG_URI": catalog_uri,
-            "CLOUDFLARE_API_TOKEN": ctx.env["CLOUDFLARE_API_TOKEN"],
-            "CLOUDFLARE_WAREHOUSE": warehouse,
-        }
-    )
-
-
 def local_ducklake_setup(ctx: ScenarioContext) -> None:
     metadata_path = "/tmp/duckdb-otlp-bench.ducklake"
     data_path = "/tmp/duckdb-otlp-bench-files/"
@@ -569,324 +221,6 @@ def local_ducklake_setup(ctx: ScenarioContext) -> None:
             "DUCKLAKE_DATA_PATH": data_path,
         }
     )
-
-
-def pass_aws_credentials_to_container(ctx: ScenarioContext, profile: str | None, region: str) -> None:
-    ctx.docker_env["AWS_REGION"] = region
-    ctx.docker_env["AWS_DEFAULT_REGION"] = region
-    if profile:
-        if not ctx.dry_run:
-            ctx.docker_env.update(aws_export_credentials(ctx.env, profile))
-        return
-
-    for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_SECURITY_TOKEN"):
-        if ctx.env.get(key):
-            ctx.docker_env[key] = ctx.env[key]
-
-
-def aws_export_credentials(env: dict[str, str], profile: str | None = None) -> dict[str, str]:
-    result = run_cmd([*aws_cli_base(env, profile), "configure", "export-credentials", "--format", "env"], env=env)
-    creds: dict[str, str] = {}
-    for line in result.stdout.splitlines():
-        line = line.strip()
-        if line.startswith("export "):
-            line = line.removeprefix("export ")
-        if "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        creds[key] = value.strip().strip("'").strip('"')
-    return {key: value for key, value in creds.items() if key.startswith("AWS_") and value}
-
-
-def s3_tables_template() -> str:
-    return """AWSTemplateFormatVersion: '2010-09-09'
-Description: Disposable Amazon S3 Tables resources for duckdb-otlp benchmarks.
-Parameters:
-  TableBucketName:
-    Type: String
-  NamespaceName:
-    Type: String
-    Default: otlp
-Resources:
-  OtlpTableBucket:
-    Type: AWS::S3Tables::TableBucket
-    Properties:
-      TableBucketName: !Ref TableBucketName
-      Tags:
-        - Key: project
-          Value: duckdb-otlp
-        - Key: purpose
-          Value: benchmark
-  OtlpNamespace:
-    Type: AWS::S3Tables::Namespace
-    Properties:
-      TableBucketARN: !GetAtt OtlpTableBucket.TableBucketARN
-      Namespace: !Ref NamespaceName
-Outputs:
-  TableBucketName:
-    Value: !Ref TableBucketName
-  TableBucketArn:
-    Value: !GetAtt OtlpTableBucket.TableBucketARN
-  NamespaceName:
-    Value: !Ref NamespaceName
-"""
-
-
-def s3_tables_setup(ctx: ScenarioContext) -> None:
-    profile = ctx.env.get("AWS_PROFILE") or DEFAULT_AWS_PROFILE
-    region = aws_region(ctx.env, profile)
-    if ctx.dry_run:
-        account = ctx.env.get("AWS_ACCOUNT_ID", "000000000000")
-    else:
-        require_program("aws")
-        account = run_cmd(
-            aws_cli(
-                ctx.env,
-                "sts",
-                "get-caller-identity",
-                "--query",
-                "Account",
-                "--output",
-                "text",
-                profile=profile,
-            ),
-            env=ctx.env,
-        ).stdout.strip()
-    stack = unique_name("duckdb-otlp-bench", ctx.run_id, "s3tables")
-    table_bucket = unique_name("duckdb-otlp-bench", ctx.run_id, f"s3tables-{account}-{region}")
-    template = ctx.output_dir / f"{stack}.yaml"
-    template.write_text(s3_tables_template())
-    if ctx.dry_run:
-        table_bucket_arn = f"arn:aws:s3tables:{region}:{account}:bucket/{table_bucket}"
-    else:
-        run_cmd(
-            aws_cli(
-                ctx.env,
-                "cloudformation",
-                "deploy",
-                "--stack-name",
-                stack,
-                "--template-file",
-                str(template),
-                "--parameter-overrides",
-                f"TableBucketName={table_bucket}",
-                "NamespaceName=otlp",
-                profile=profile,
-                region=region,
-            ),
-            env=ctx.env,
-        )
-        ctx.cleanup.append(("cloudformation_stack", {"stack": stack, "profile": profile, "region": region}))
-        table_bucket_arn = run_cmd(
-            aws_cli(
-                ctx.env,
-                "cloudformation",
-                "describe-stacks",
-                "--stack-name",
-                stack,
-                "--query",
-                "Stacks[0].Outputs[?OutputKey=='TableBucketArn'].OutputValue | [0]",
-                "--output",
-                "text",
-                profile=profile,
-                region=region,
-            ),
-            env=ctx.env,
-        ).stdout.strip()
-        # Empty the table bucket before the stack delete (registered after the stack so the
-        # reversed() cleanup runs it first), otherwise CloudFormation can't delete the
-        # populated bucket and it leaks.
-        ctx.cleanup.append(("s3_tables_bucket", {"arn": table_bucket_arn, "profile": profile, "region": region}))
-    ctx.resources.update(
-        {
-            "aws_profile": profile or "default",
-            "aws_region": region,
-            "s3_tables_stack": stack,
-            "s3_tables_bucket": table_bucket,
-            "s3_tables_bucket_arn": table_bucket_arn,
-        }
-    )
-    pass_aws_credentials_to_container(ctx, profile, region)
-    ctx.docker_env.update(
-        {
-            "DUCKDB_MODE": "s3-tables",
-            "S3_TABLES_BUCKET_ARN": table_bucket_arn,
-        }
-    )
-
-
-def r2_storage_secret_sql(ctx: ScenarioContext) -> str:
-    access_key = r2_access_key(ctx.env)
-    secret_key = r2_secret_key(ctx.env)
-    if not access_key or not secret_key:
-        raise BenchError(
-            "missing R2 S3 credentials; set R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY "
-            "or R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY"
-        )
-    ctx.docker_env["R2_ACCESS_KEY_ID"] = access_key
-    ctx.docker_env["R2_SECRET_ACCESS_KEY"] = secret_key
-    ctx.docker_env["R2_ACCESS_KEY_ID"] = access_key
-    ctx.docker_env["R2_SECRET_ACCESS_KEY"] = secret_key
-    ctx.docker_env["R2_ENDPOINT"] = r2_s3_endpoint(ctx)
-    return ""
-
-
-def neon_connection_string(ctx: ScenarioContext) -> tuple[str, str | None]:
-    if ctx.env.get("NEON_DATABASE_URL"):
-        return ctx.env["NEON_DATABASE_URL"], None
-    project_id = neon_project_id(ctx)
-    branch_name = unique_name("duckdb-otlp-bench", ctx.run_id, "neon")
-    if ctx.dry_run:
-        return "postgresql://user:password@host.neon.tech/neondb?sslmode=require", branch_name
-    require_program("neonctl")
-    create = run_cmd(
-        [
-            "neonctl",
-            "branches",
-            "create",
-            "--project-id",
-            project_id,
-            "--name",
-            branch_name,
-            "--output",
-            "json",
-        ],
-        env=ctx.env,
-    )
-    payload = json.loads(create.stdout)
-    branch = payload.get("branch") or payload
-    branch_id = branch.get("id") or branch.get("branch_id") or branch_name
-    ctx.cleanup.append(("neon_branch", branch_id))
-    database, role = neon_database_and_role(ctx, project_id, branch_id)
-    conn = run_cmd(
-        [
-            "neonctl",
-            "connection-string",
-            "--project-id",
-            project_id,
-            "--branch",
-            branch_id,
-            "--database-name",
-            database,
-            "--role-name",
-            role,
-        ],
-        env=ctx.env,
-    ).stdout.strip()
-    return conn, branch_id
-
-
-def neon_database_and_role(ctx: ScenarioContext, project_id: str, branch_id: str) -> tuple[str, str]:
-    configured_database = ctx.env.get("NEON_DATABASE")
-    configured_role = ctx.env.get("NEON_ROLE")
-    if configured_database and configured_role:
-        return configured_database, configured_role
-
-    databases_result = run_cmd(
-        [
-            "neonctl",
-            "databases",
-            "list",
-            "--project-id",
-            project_id,
-            "--branch",
-            branch_id,
-            "--output",
-            "json",
-        ],
-        env=ctx.env,
-    )
-    databases = json.loads(databases_result.stdout or "[]")
-    if not databases:
-        raise BenchError(f"no Neon databases found on branch {branch_id}")
-    database_row = next((db for db in databases if db.get("name") == configured_database), databases[0])
-    database = configured_database or database_row["name"]
-    role = configured_role or database_row.get("owner_name")
-    if role:
-        return database, role
-
-    roles_result = run_cmd(
-        [
-            "neonctl",
-            "roles",
-            "list",
-            "--project-id",
-            project_id,
-            "--branch",
-            branch_id,
-            "--output",
-            "json",
-        ],
-        env=ctx.env,
-    )
-    roles = json.loads(roles_result.stdout or "[]")
-    if not roles:
-        raise BenchError(f"no Neon roles found on branch {branch_id}")
-    return database, roles[0]["name"]
-
-
-def r2_neon_ducklake_setup(ctx: ScenarioContext) -> None:
-    bucket = create_r2_bucket(ctx, "ducklake-neon")
-    prefix = f"bench/{ctx.run_id}/"
-    ctx.resources.update({"r2_bucket": bucket, "r2_prefix": prefix})
-    preflight_r2_s3_write(ctx, bucket, prefix)
-    postgres_url, branch_id = neon_connection_string(ctx)
-    pg = parse_postgres_url(postgres_url)
-    ctx.resources.update({"neon_branch_id": branch_id})
-    ctx.docker_env.update(
-        {
-            "DUCKDB_MODE": "r2-neon-ducklake",
-            "R2_BUCKET": bucket,
-            "R2_PREFIX": prefix,
-            "PGHOST": pg["host"],
-            "PGPORT": pg["port"],
-            "PGDATABASE": pg["database"],
-            "PGUSER": pg["user"],
-            "PGPASSWORD": pg["password"],
-            "PGSSLMODE": pg["sslmode"],
-        }
-    )
-    r2_storage_secret_sql(ctx)
-
-
-def parse_postgres_url(url: str) -> dict[str, str]:
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme not in {"postgres", "postgresql"}:
-        raise BenchError("Neon connection string must use postgres:// or postgresql://")
-    query = urllib.parse.parse_qs(parsed.query)
-    return {
-        "host": parsed.hostname or "",
-        "port": str(parsed.port or 5432),
-        "database": parsed.path.lstrip("/") or "neondb",
-        "user": urllib.parse.unquote(parsed.username or ""),
-        "password": urllib.parse.unquote(parsed.password or ""),
-        "sslmode": query.get("sslmode", ["require"])[0],
-    }
-
-
-def r2_local_ducklake_setup(ctx: ScenarioContext) -> None:
-    bucket = create_r2_bucket(ctx, "ducklake-local")
-    prefix = f"bench/{ctx.run_id}/"
-    ctx.resources.update({"r2_bucket": bucket, "r2_prefix": prefix})
-    preflight_r2_s3_write(ctx, bucket, prefix)
-    r2_storage_secret_sql(ctx)
-    ctx.docker_env.update(
-        {
-            "DUCKDB_MODE": "r2-local-ducklake",
-            "R2_BUCKET": bucket,
-            "R2_PREFIX": prefix,
-            "DUCKLAKE_CATALOG_PATH": "/tmp/duckdb-otlp-bench.ducklake",
-        }
-    )
-
-
-SETUP_BY_SCENARIO = {
-    "local-ducklake": local_ducklake_setup,
-    "r2-data-catalog": r2_data_catalog_setup,
-    "s3-tables": s3_tables_setup,
-    "r2-neon-ducklake": r2_neon_ducklake_setup,
-    "r2-local-ducklake": r2_local_ducklake_setup,
-}
 
 
 def start_container(ctx: ScenarioContext) -> None:
@@ -927,8 +261,6 @@ def docker_run_args(ctx: ScenarioContext) -> list[str]:
     ]
     if ctx.platform:
         args[2:2] = ["--platform", ctx.platform]
-    for source, target, mode in ctx.docker_volumes:
-        args.extend(["-v", f"{source}:{target}:{mode}"])
     for key, value in sorted(ctx.docker_env.items()):
         if value:
             args.extend(["-e", f"{key}={value}"])
@@ -1338,194 +670,23 @@ def stop_container(ctx: ScenarioContext) -> None:
     run_cmd(["docker", "rm", "-f", ctx.container_name], check=False)
 
 
-def s3_tables_summary(ctx: ScenarioContext) -> dict[str, Any]:
-    profile = ctx.resources.get("aws_profile")
-    if profile == "default":
-        profile = None
-    region = ctx.resources.get("aws_region")
-    bucket_arn = ctx.resources.get("s3_tables_bucket_arn")
-    if not (profile and region and bucket_arn):
-        return {}
-    result = run_cmd(
-        aws_cli(
-            ctx.env,
-            "s3tables",
-            "list-tables",
-            "--table-bucket-arn",
-            bucket_arn,
-            "--namespace",
-            "otlp",
-            "--output",
-            "json",
-            profile=profile,
-            region=region,
-        ),
-        env=ctx.env,
-        check=False,
-    )
-    if result.returncode != 0:
-        return {"error": result.stderr.strip()}
-    payload = json.loads(result.stdout or "{}")
-    return {"table_count": len(payload.get("tables", [])), "tables": payload.get("tables", [])}
-
-
 def storage_summary(ctx: ScenarioContext) -> dict[str, Any]:
-    if ctx.name == "local-ducklake":
-        data_path = ctx.resources.get("data_path")
-        if not data_path:
-            return {}
-        # Distroless image has no shell/find; list files via the daemon's own glob() over Quack.
-        glob_pattern = data_path.rstrip("/") + "/**"
-        try:
-            rows = query_json(ctx, f"SELECT file FROM glob({sql_quote(glob_pattern)})", "storage-files")
-        except BenchError as exc:
-            return {"error": str(exc)}
-        files = [row["file"] for row in rows if row.get("file")]
-        return {
-            "path": data_path,
-            "objects": len(files),
-            "parquet_files": sum(1 for path in files if path.endswith(".parquet")),
-            "files": files[:50],
-        }
-    if ctx.name.startswith("r2-") or ctx.name == "r2-data-catalog":
-        bucket = ctx.resources.get("r2_bucket")
-        return r2_object_summary(ctx, bucket) if bucket else {}
-    if ctx.name == "s3-tables":
-        return s3_tables_summary(ctx)
-    return {"note": "object files are managed by the provider and are not enumerated by this harness"}
-
-
-def empty_s3_tables_bucket(ctx: ScenarioContext, arn: str, profile: str | None, region: str) -> None:
-    """Delete every table and namespace in an S3 Tables bucket so CloudFormation can delete the
-    (now-empty) bucket. CloudFormation delete-stack fails on a populated table bucket, which
-    otherwise leaks the bucket and leaves the stack in DELETE_FAILED."""
-    ns_result = run_cmd(
-        aws_cli(
-            ctx.env,
-            "s3tables",
-            "list-namespaces",
-            "--table-bucket-arn",
-            arn,
-            "--query",
-            "namespaces[].namespace[0]",
-            "--output",
-            "text",
-            profile=profile,
-            region=region,
-        ),
-        env=ctx.env,
-        check=False,
-    )
-    namespaces = ns_result.stdout.split() if ns_result.returncode == 0 else []
-    for namespace in namespaces:
-        tbl_result = run_cmd(
-            aws_cli(
-                ctx.env,
-                "s3tables",
-                "list-tables",
-                "--table-bucket-arn",
-                arn,
-                "--namespace",
-                namespace,
-                "--query",
-                "tables[].name",
-                "--output",
-                "text",
-                profile=profile,
-                region=region,
-            ),
-            env=ctx.env,
-            check=False,
-        )
-        for name in tbl_result.stdout.split() if tbl_result.returncode == 0 else []:
-            run_cmd(
-                aws_cli(
-                    ctx.env,
-                    "s3tables",
-                    "delete-table",
-                    "--table-bucket-arn",
-                    arn,
-                    "--namespace",
-                    namespace,
-                    "--name",
-                    name,
-                    profile=profile,
-                    region=region,
-                ),
-                env=ctx.env,
-                check=False,
-            )
-        run_cmd(
-            aws_cli(
-                ctx.env,
-                "s3tables",
-                "delete-namespace",
-                "--table-bucket-arn",
-                arn,
-                "--namespace",
-                namespace,
-                profile=profile,
-                region=region,
-            ),
-            env=ctx.env,
-            check=False,
-        )
-
-
-def cleanup_resource(ctx: ScenarioContext, item: tuple[str, Any]) -> None:
-    kind, value = item
-    if kind == "r2_catalog":
-        wrangler_cmd(ctx, "r2", "bucket", "catalog", "disable", value, check=False)
-    elif kind == "r2_bucket":
-        with contextlib.suppress(Exception):
-            delete_r2_objects(ctx, value)
-        delete_r2_bucket(ctx, value)
-    elif kind == "cloudformation_stack":
-        profile = value.get("profile")
-        run_cmd(
-            aws_cli(
-                ctx.env,
-                "cloudformation",
-                "delete-stack",
-                "--stack-name",
-                value["stack"],
-                profile=profile,
-                region=value["region"],
-            ),
-            env=ctx.env,
-            check=False,
-        )
-        run_cmd(
-            aws_cli(
-                ctx.env,
-                "cloudformation",
-                "wait",
-                "stack-delete-complete",
-                "--stack-name",
-                value["stack"],
-                profile=profile,
-                region=value["region"],
-            ),
-            env=ctx.env,
-            check=False,
-        )
-    elif kind == "s3_tables_bucket":
-        empty_s3_tables_bucket(ctx, value["arn"], value.get("profile"), value["region"])
-    elif kind == "neon_branch" and value:
-        project_id = ctx.env.get("NEON_PROJECT_ID") or neon_project_id(ctx)
-        run_cmd(
-            [
-                "neonctl",
-                "branches",
-                "delete",
-                str(value),
-                "--project-id",
-                project_id,
-                "--yes",
-            ],
-            env=ctx.env,
-            check=False,
-        )
+    data_path = ctx.resources.get("data_path")
+    if not data_path:
+        return {}
+    # Distroless image has no shell/find; list files via the daemon's own glob() over Quack.
+    glob_pattern = data_path.rstrip("/") + "/**"
+    try:
+        rows = query_json(ctx, f"SELECT file FROM glob({sql_quote(glob_pattern)})", "storage-files")
+    except BenchError as exc:
+        return {"error": str(exc)}
+    files = [row["file"] for row in rows if row.get("file")]
+    return {
+        "path": data_path,
+        "objects": len(files),
+        "parquet_files": sum(1 for path in files if path.endswith(".parquet")),
+        "files": files[:50],
+    }
 
 
 def cleanup(ctx: ScenarioContext, *, drop: bool) -> None:
@@ -1534,9 +695,6 @@ def cleanup(ctx: ScenarioContext, *, drop: bool) -> None:
             drop_tables(ctx)
     if not ctx.keep:
         stop_container(ctx)
-        for item in reversed(ctx.cleanup):
-            with contextlib.suppress(Exception):
-                cleanup_resource(ctx, item)
 
 
 def run_scenario(
@@ -1574,14 +732,13 @@ def run_scenario(
     }
     try:
         eprint(f"[{name} t{run.trial} r{run.rate:,}] preparing disposable resources")
-        SETUP_BY_SCENARIO[name](ctx)
+        local_ducklake_setup(ctx)
         configure_container_env(ctx)
         if args.dry_run:
             result.update(
                 {
                     "status": "dry-run",
                     "docker_env": json.loads(redact_text(json.dumps(ctx.docker_env, sort_keys=True), ctx.env)),
-                    "docker_volumes": ctx.docker_volumes,
                     "resources": ctx.resources,
                 }
             )
@@ -1828,7 +985,6 @@ def format_number(value: Any) -> str:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scenario", action="append", choices=SCENARIOS + ("all",), default=None)
-    parser.add_argument("--env-file", type=Path, default=Path(".env"))
     parser.add_argument("--image", default=os.environ.get("DUCKDB_OTLP_BENCH_IMAGE", DEFAULT_IMAGE))
     parser.add_argument(
         "--platform",
@@ -1894,7 +1050,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=0, help="Host port. Defaults to an available local port.")
     parser.add_argument("--token", default=DEFAULT_TOKEN)
     parser.add_argument("--output-dir", type=Path, default=Path("output/catalog-benchmarks"))
-    parser.add_argument("--keep", action="store_true", help="Keep containers and cloud resources for debugging.")
+    parser.add_argument("--keep", action="store_true", help="Keep containers for debugging.")
     parser.add_argument(
         "--dry-run", action="store_true", help="Prepare scenario SQL/resources plan without starting load."
     )
@@ -1972,7 +1128,7 @@ def build_trial_runs(
 def main() -> int:
     args = parse_args()
     validate_args(args)
-    env = merged_env(args.env_file)
+    env = dict(os.environ)
     run_id = make_run_id()
     output_dir = args.output_dir / run_id
     output_dir.mkdir(parents=True, exist_ok=True)

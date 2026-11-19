@@ -478,22 +478,12 @@ The project tracks a future durable raw-spool journal for at-least-once delivery
 
 ## Verifying ingest under load
 
-`make test` cannot issue HTTP POSTs, so the SQL logic tests cover only the lifecycle functions. To exercise the ingest hot path, run the manual concurrency harness. It covers auth, content-type handling, the metrics fan-out, buffering and batch commits, and Arrow → DuckDB conversion under concurrency:
+`make test` cannot issue HTTP POSTs, so the SQL logic tests cover only the lifecycle functions. The ingest path is tested against the real daemon in `test/server/`, which CI runs on every pull request: auth (bearer and `x-api-key`), content-type and content-encoding handling, `413`, `503` backpressure, the metrics fan-out, OTLP/HTTP and OTLP/gRPC, OTAP/Arrow streams with dictionary reuse, and the drain on SIGTERM. `test/cpp/test_seal_harness.cpp` drives the seal path directly: failure and re-buffer, Parquet partial exports, catalog maintenance, and promoted columns.
 
 ```bash
-uv run --script test/manual/otlp_serve_concurrency.py
-
-# Override the payload / concurrency:
-OTLP_PAYLOAD=test/data/logs_simple.jsonl OTLP_CONCURRENCY=64 \
-    uv run --script test/manual/otlp_serve_concurrency.py
-
-# Exercise the DuckLake path (writes Parquet under the given dir and checks the
-# automatic catalog-maintenance event):
-OTLP_DUCKLAKE_DIR=/tmp/otlp_lake \
-    uv run --script test/manual/otlp_serve_concurrency.py
+DUCKDB_OTLP_SERVER_BIN=build/release/extension/otlp/duckdb-otlp \
+  uv run --with pytest --with grpcio --with opentelemetry-proto --with duckdb==2.0.0 pytest test/server
 ```
-
-It covers auth and validation errors, low-buffer backpressure, metrics fanout, stop-under-load, concurrent flush/stop, and the optional local DuckLake maintenance checkpoint event, then reconciles accepted rows against committed row counts. Run it against a TSan/ASan build to catch races.
 
 ## See also
 
