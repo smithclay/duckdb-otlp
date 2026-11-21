@@ -408,7 +408,7 @@ Both share everything below the wire: the same parameters, catalog/Parquet targe
 
 Notes:
 
-- **Auth** is the bearer token in the gRPC `authorization` metadata (`Bearer <token>`); a bad token is rejected with `UNAUTHENTICATED`, unless [`disable_auth`](#disabling-authentication) is set. Backpressure surfaces as `RESOURCE_EXHAUSTED` (the gRPC equivalent of HTTP `503`).
+- **Auth** is the bearer token in the gRPC `authorization` metadata (`Bearer <token>`); a bad token is rejected with `UNAUTHENTICATED`, unless [`disable_auth`](#disabling-authentication) is set. Backpressure surfaces as `RESOURCE_EXHAUSTED` (the gRPC equivalent of HTTP `503`), a batch that fails to convert as `INVALID_ARGUMENT` (HTTP `400`), and a server-side failure as `INTERNAL` (HTTP `500`, also written to `duckdb_logs`).
 - **OTAP streaming** keeps one stateful decoder per stream, so later messages can reuse the Arrow dictionaries/schemas established by earlier ones. The server returns one `BatchStatus` per received `BatchArrowRecords`. A message that fails to decode is nacked and the stream is closed (the decoder is poisoned); a message nacked for backpressure leaves the stream open.
 - **Metrics** decode into up to four shapes per message, each buffered independently — a backpressure nack partway through a metrics message can leave earlier shapes buffered.
 - The gRPC stack (tokio + tonic) is statically linked into the extension; it adds no new shared-library dependencies and, like the HTTP server, is native-only (absent from WASM builds).

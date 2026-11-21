@@ -15,9 +15,10 @@ from pathlib import Path
 import duckdb
 import grpc
 import pytest
+from opentelemetry.proto.collector.trace.v1 import trace_service_pb2_grpc
 
 from test_server_config import free_port, pytestmark  # noqa: F401
-from test_server_transports import TOKEN, configuration, daemon, http_addr, wait_ready
+from test_server_transports import TOKEN, configuration, daemon, grpc_addr, http_addr, trace_request, wait_ready
 
 DATA = Path(__file__).resolve().parents[1] / 'data' / 'otap'
 METRIC_TABLES = ['otlp_metrics_gauge', 'otlp_metrics_sum', 'otlp_metrics_histogram', 'otlp_metrics_exp_histogram']
@@ -67,6 +68,8 @@ def test_http_auth_content_type_and_encoding(tmp_path):
         assert post(env, '/v1/logs', logs, headers={'x-api-key': 'wrong-token'}) == 401
         assert post(env, '/v1/logs', logs, content_type='text/plain', headers=bearer()) == 415
         assert post(env, '/v1/logs', logs, headers={**bearer(), 'Content-Encoding': 'br'}) == 415
+        assert post(env, '/v1/logs', b'\xff\xff', headers=bearer()) == 400
+        assert post(env, '/v1/logs', b'{not json', content_type='application/json', headers=bearer()) == 400
         for encoding, compressed in (('gzip', gzip.compress(logs)), ('deflate', zlib.compress(logs))):
             assert post(env, '/v1/logs', compressed, headers={**bearer(), 'Content-Encoding': encoding}) == 202
 
@@ -90,6 +93,25 @@ def test_oversized_body_is_413_and_a_full_buffer_is_503(tmp_path):
 
     run_daemon(tmp_path, env, body)
     assert table_rows(tmp_path, 'otlp_logs') == 3
+
+
+def test_http_and_grpc_share_one_admission_budget(tmp_path):
+    logs = (DATA / 'logs-initial.otlp').read_bytes()
+    env = configuration(tmp_path, 'http,grpc')
+    # Room for one HTTP request; what is left is under the 1024-byte minimum a gRPC batch reserves.
+    env['DUCKDB_OTLP_MAX_BUFFERED_BYTES'] = str(max(len(logs), 1024) + 512)
+
+    def body(env):
+        assert post(env, '/v1/logs', logs, headers=bearer()) == 202
+        with grpc.insecure_channel(grpc_addr(env)) as channel:
+            stub = trace_service_pb2_grpc.TraceServiceStub(channel)
+            with pytest.raises(grpc.RpcError) as refused:
+                stub.Export(trace_request(1), metadata=[('authorization', f'Bearer {TOKEN}')], timeout=5)
+            assert refused.value.code() == grpc.StatusCode.RESOURCE_EXHAUSTED
+
+    run_daemon(tmp_path, env, body)
+    assert table_rows(tmp_path, 'otlp_logs') == 3
+    assert table_rows(tmp_path, 'otlp_traces') == 0
 
 
 def test_one_metrics_request_fans_out_to_every_shape_table(tmp_path):

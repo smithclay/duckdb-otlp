@@ -91,6 +91,31 @@ struct OtlpIngestResult {
 	}
 };
 
+//! Why the server refused an ingest call. The server decides; each transport only maps the
+//! refusal to its own wire status (OtlpHttpListener: an HTTP status, the gRPC bridge: an
+//! OtlpIngestStatus), so both report the same failure the same way.
+enum class OtlpIngestRefusal : uint8_t {
+	NONE,              //!< accepted: the rows are buffered
+	PAYLOAD_TOO_LARGE, //!< body over max_body_bytes; permanent
+	UNSUPPORTED_MEDIA, //!< content type or content encoding the server does not decode; permanent
+	MALFORMED,         //!< the payload did not parse or convert; permanent
+	BUFFER_FULL,       //!< admission would exceed max_buffered_bytes; retry with backoff
+	INTERNAL           //!< a server-side failure, logged as an OTLP event
+};
+
+//! The result of one ingest call, whichever transport carried it.
+struct OtlpIngestOutcome {
+	OtlpIngestRefusal refusal = OtlpIngestRefusal::NONE;
+	//! Why the call was refused; empty when accepted.
+	string message;
+	//! What was buffered; all zero when refused.
+	OtlpIngestResult counts;
+
+	bool Accepted() const {
+		return refusal == OtlpIngestRefusal::NONE;
+	}
+};
+
 struct OtlpSealEvent {
 	idx_t seal_sequence = 0;
 	int64_t started_unix_ms = 0;
@@ -249,8 +274,8 @@ public:
 	// --- test-only seam for test/cpp/test_seal_harness.cpp, which drives the buffer/seal path
 	// without a socket. Every hook defaults to unset, which is a no-op. ---
 #ifdef DUCKDB_OTLP_ENABLE_TEST_SEAM
-	OtlpIngestResult IngestForTest(OtlpRequestKind kind, const string &content_type, const string &content_encoding,
-	                               const string &body) {
+	OtlpIngestOutcome IngestForTest(OtlpRequestKind kind, const string &content_type, const string &content_encoding,
+	                                const string &body) {
 		return Ingest(kind, content_type, content_encoding, body);
 	}
 	//! Runs immediately before the catalog seal's COMMIT; a throw takes the rollback/re-buffer path.
@@ -261,8 +286,8 @@ public:
 	void SetParquetSealFaultHookForTest(std::function<void(idx_t)> hook) {
 		parquet_seal_fault_hook_for_test = std::move(hook);
 	}
-	//! Runs in BufferMetrics after the first metric shape is staged, before anything reaches the live
-	//! buffers; a throw must leave the buffers and admission untouched.
+	//! Runs in StageMetrics after the first metric shape is staged, before anything reaches the live
+	//! buffers; a throw must refuse the request and leave the buffers and admission untouched.
 	void SetMetricsStageFaultHookForTest(std::function<void()> hook) {
 		metrics_stage_fault_hook_for_test = std::move(hook);
 	}
@@ -275,10 +300,10 @@ public:
 	// --- gRPC transport bridge: public only because the C-linkage callback in
 	// otlp_server_grpc.cpp cannot be a member. Not part of the general API. ---
 
-	//! Buffer one decoded Arrow batch through the same admission/stage path as HTTP. `input_bytes`
+	//! Buffer one decoded Arrow batch through the same admission path as HTTP (Admit). `input_bytes`
 	//! is the wire size charged against admission. The array/schema are borrowed, never released.
-	OtlpIngestStatus IngestDecodedArrowBatch(OtlpSignalType signal_type, idx_t input_bytes, ArrowArray &array,
-	                                         ArrowSchema &schema);
+	OtlpIngestOutcome IngestDecodedArrowBatch(OtlpSignalType signal_type, idx_t input_bytes, ArrowArray &array,
+	                                          ArrowSchema &schema);
 	bool CheckGrpcAuth(const string &authorization) const;
 
 private:
@@ -286,8 +311,9 @@ private:
 	friend class OtlpListener;
 
 	bool CheckAuth(const string &authorization, const string &api_key) const;
-	OtlpIngestResult Ingest(OtlpRequestKind kind, const string &content_type, const string &content_encoding,
-	                        const string &body);
+	//! An OTLP/HTTP request body: checks its size, content type and encoding, then Admit.
+	OtlpIngestOutcome Ingest(OtlpRequestKind kind, const string &content_type, const string &content_encoding,
+	                         const string &body);
 	void EnsureTargetTables();
 	//! Stop the sealer and seal remaining rows before the writer connection / database go away.
 	//! Idempotent. Returns the rows dropped by a failed final drain (0 on every later call).
@@ -311,9 +337,16 @@ private:
 		idx_t rows = 0;
 		idx_t batches = 0;
 	};
-	void BufferSignal(OtlpSignalType signal_type, const string &body, OtlpInputFormat format, OtlpIngestResult &result,
-	                  idx_t &admission_bytes);
-	void BufferMetrics(const string &body, OtlpInputFormat format, OtlpIngestResult &result, idx_t &admission_bytes);
+	//! Converts a request into staged signals off to the side; may add to `counts` (skipped values).
+	using StageFn = std::function<vector<StagedSignal>(OtlpIngestResult &counts)>;
+	//! The one admission sequence every transport goes through: reserve `input_bytes` against
+	//! max_buffered_bytes, stage, move the staged rows into the live buffers, release whatever the
+	//! buffers did not claim. A throw from `stage` becomes a refusal (see RefusalFromException).
+	OtlpIngestOutcome Admit(idx_t input_bytes, const StageFn &stage);
+	//! Classify the in-flight exception as a refusal, logging internal failures.
+	OtlpIngestOutcome RefusalFromException() const;
+	vector<StagedSignal> StageSignal(OtlpSignalType signal_type, const string &body, OtlpInputFormat format);
+	vector<StagedSignal> StageMetrics(const string &body, OtlpInputFormat format, OtlpIngestResult &counts);
 	StagedSignal StageArrowBatch(OtlpSignalType signal_type, ArrowArray &array, ArrowSchema &schema);
 	void StageAppend(ColumnDataCollection &collection, DataChunk &chunk);
 	//! Move staged signals into the live buffers and attribute `admission_bytes` across them by

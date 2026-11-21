@@ -134,6 +134,51 @@ OtlpServerConfig ParquetHarnessConfig(const std::string &export_path) {
 
 } // namespace
 
+// Ingest reports every failure as a refusal value rather than a throw, so each transport only maps
+// it to its own wire status. A refusal must leave the buffers and the admission budget untouched.
+TEST_CASE("seal harness: ingest refusals are classified and release their admission", "[seal_harness]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto config = HarnessConfig();
+	config.max_body_bytes = 64 * 1024;
+	config.max_buffered_bytes = 4096;
+	auto server = MakeServer(*con.context, config);
+
+	auto expect_refusal = [&](const OtlpIngestOutcome &outcome, OtlpIngestRefusal refusal) {
+		REQUIRE_FALSE(outcome.Accepted());
+		REQUIRE(outcome.refusal == refusal);
+		REQUIRE_FALSE(outcome.message.empty());
+		REQUIRE(outcome.counts.rows == 0);
+		REQUIRE(server->BufferedRows() == 0);
+		REQUIRE(server->AdmittedBytes() == 0);
+	};
+
+	expect_refusal(server->IngestForTest(OtlpRequestKind::LOGS, "application/json", "",
+	                                     std::string(config.max_body_bytes + 1, ' ')),
+	               OtlpIngestRefusal::PAYLOAD_TOO_LARGE);
+	expect_refusal(server->IngestForTest(OtlpRequestKind::LOGS, "text/plain", "", MakeLogsJson(1)),
+	               OtlpIngestRefusal::UNSUPPORTED_MEDIA);
+	expect_refusal(server->IngestForTest(OtlpRequestKind::LOGS, "application/json", "br", MakeLogsJson(1)),
+	               OtlpIngestRefusal::UNSUPPORTED_MEDIA);
+	expect_refusal(server->IngestForTest(OtlpRequestKind::LOGS, "application/json", "", "{not json"),
+	               OtlpIngestRefusal::MALFORMED);
+	expect_refusal(server->IngestForTest(OtlpRequestKind::METRICS, "application/x-protobuf", "", "\xff\xff"),
+	               OtlpIngestRefusal::MALFORMED);
+	// Under max_body_bytes but over the whole admission budget.
+	expect_refusal(server->IngestForTest(OtlpRequestKind::LOGS, "application/json", "",
+	                                     std::string(config.max_buffered_bytes + 1, ' ')),
+	               OtlpIngestRefusal::BUFFER_FULL);
+
+	// Refusals leave the server able to accept.
+	auto accepted = server->IngestForTest(OtlpRequestKind::LOGS, "application/json", "", MakeLogsJson(2));
+	REQUIRE(accepted.Accepted());
+	REQUIRE(accepted.message.empty());
+	REQUIRE(accepted.counts.rows == 2);
+	REQUIRE(server->FlushNow().rows == 2);
+	REQUIRE(server->AdmittedBytes() == 0);
+	server->Close();
+}
+
 TEST_CASE("seal harness: happy-path flush commits all rows and drains buffers", "[seal_harness]") {
 	DuckDB db(nullptr);
 	Connection con(db);
@@ -144,8 +189,10 @@ TEST_CASE("seal harness: happy-path flush commits all rows and drains buffers", 
 
 	auto logs = server->IngestForTest(OtlpRequestKind::LOGS, "application/json", "", MakeLogsJson(kLogRows));
 	auto metrics = server->IngestForTest(OtlpRequestKind::METRICS, "application/json", "", MakeGaugeJson(kGaugeRows));
-	REQUIRE(logs.rows == kLogRows);
-	REQUIRE(metrics.rows == kGaugeRows);
+	REQUIRE(logs.Accepted());
+	REQUIRE(logs.counts.rows == kLogRows);
+	REQUIRE(metrics.Accepted());
+	REQUIRE(metrics.counts.rows == kGaugeRows);
 
 	REQUIRE(server->BufferedRows() == kLogRows + kGaugeRows);
 	REQUIRE(server->AdmittedBytes() > 0);
@@ -506,7 +553,11 @@ TEST_CASE("seal harness: failed metrics staging buffers nothing, retry buffers e
 	// Fault fires after the gauge converts into staging, before the sum converts.
 	server->SetMetricsStageFaultHookForTest([]() { throw std::runtime_error("injected metrics staging failure"); });
 
-	REQUIRE_THROWS(server->IngestForTest(OtlpRequestKind::METRICS, "application/json", "", payload));
+	auto refused = server->IngestForTest(OtlpRequestKind::METRICS, "application/json", "", payload);
+	REQUIRE(refused.refusal == OtlpIngestRefusal::INTERNAL);
+	REQUIRE(refused.message == "injected metrics staging failure");
+	REQUIRE(refused.counts.rows == 0);
+	REQUIRE(refused.counts.skipped_summaries == 0);
 
 	REQUIRE(server->BufferedRows() == 0);
 	REQUIRE(TableCount(con, "otlp_metrics_gauge") == 0);
@@ -515,7 +566,8 @@ TEST_CASE("seal harness: failed metrics staging buffers nothing, retry buffers e
 
 	server->SetMetricsStageFaultHookForTest(nullptr);
 	auto ingested = server->IngestForTest(OtlpRequestKind::METRICS, "application/json", "", payload);
-	REQUIRE(ingested.rows == kTotal);
+	REQUIRE(ingested.Accepted());
+	REQUIRE(ingested.counts.rows == kTotal);
 	REQUIRE(server->BufferedRows() == kTotal);
 	REQUIRE(server->AdmittedBytes() > 0);
 

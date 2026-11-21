@@ -11,18 +11,19 @@
 
 namespace duckdb {
 
-//! HTTP-status-carrying exception thrown on the ingest path (otlp_server.cpp) and translated
-//! into a response by the HTTP handler (otlp_server_http.cpp).
-class OtlpHttpError : public std::exception {
+//! Thrown while staging a request the server refuses for a known reason (a payload that does not
+//! parse). OtlpServer::Admit turns it into an OtlpIngestOutcome; it never reaches a transport.
+class OtlpIngestRefused : public std::exception {
 public:
-	OtlpHttpError(int status_p, string message_p) : status(status_p), message(std::move(message_p)) {
+	OtlpIngestRefused(OtlpIngestRefusal refusal_p, string message_p)
+	    : refusal(refusal_p), message(std::move(message_p)) {
 	}
 
 	const char *what() const noexcept override {
 		return message.c_str();
 	}
 
-	int status;
+	OtlpIngestRefusal refusal;
 	string message;
 };
 
