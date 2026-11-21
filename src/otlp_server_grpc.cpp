@@ -8,32 +8,17 @@ namespace duckdb {
 
 // Entry points the gRPC FFI callbacks reach; they share the HTTP path's admission and seal machinery.
 
-OtlpIngestStatus OtlpServer::IngestDecodedArrowBatch(OtlpSignalType signal_type, idx_t input_bytes, ArrowArray &array,
-                                                     ArrowSchema &schema) {
-	// Reserve up front, as Ingest() does, so concurrent streams cannot overshoot max_buffered_bytes.
-	auto reservation_bytes = MaxValue<idx_t>(input_bytes, 1024);
-	idx_t admitted_before = 0;
-	if (!TryReserveAdmission(reservation_bytes, admitted_before)) {
-		return OTLP_INGEST_RESOURCE_EXHAUSTED;
-	}
-
-	OtlpIngestResult result;
-	idx_t unclaimed_admission = reservation_bytes;
-	try {
+OtlpIngestOutcome OtlpServer::IngestDecodedArrowBatch(OtlpSignalType signal_type, idx_t input_bytes, ArrowArray &array,
+                                                      ArrowSchema &schema) {
+	return Admit(input_bytes, [&](OtlpIngestResult &) {
 		// array/schema are borrowed from Rust: StageArrowBatch copies the rows and never releases them.
 		vector<StagedSignal> staged;
 		auto stage = StageArrowBatch(signal_type, array, schema);
 		if (stage.rows > 0) {
 			staged.push_back(std::move(stage));
 		}
-		CommitStaged(staged, result, unclaimed_admission);
-	} catch (...) {
-		ReleaseAdmission(unclaimed_admission);
-		return OTLP_INGEST_INTERNAL;
-	}
-	ReleaseAdmission(unclaimed_admission);
-	total_rows.fetch_add(result.rows);
-	return OTLP_INGEST_OK;
+		return staged;
+	});
 }
 
 bool OtlpServer::CheckGrpcAuth(const string &authorization) const {
@@ -43,6 +28,23 @@ bool OtlpServer::CheckGrpcAuth(const string &authorization) const {
 #ifndef __EMSCRIPTEN__
 
 namespace {
+
+//! The gRPC status for an ingest outcome. The HTTP-only refusals never arise from a decoded batch.
+static OtlpIngestStatus GrpcIngestStatus(OtlpIngestRefusal refusal) {
+	switch (refusal) {
+	case OtlpIngestRefusal::NONE:
+		return OTLP_INGEST_OK;
+	case OtlpIngestRefusal::BUFFER_FULL:
+		return OTLP_INGEST_RESOURCE_EXHAUSTED;
+	case OtlpIngestRefusal::PAYLOAD_TOO_LARGE:
+	case OtlpIngestRefusal::UNSUPPORTED_MEDIA:
+	case OtlpIngestRefusal::MALFORMED:
+		return OTLP_INGEST_INVALID;
+	case OtlpIngestRefusal::INTERNAL:
+		break;
+	}
+	return OTLP_INGEST_INTERNAL;
+}
 
 // C-linkage thunks for the otlp2records gRPC server; an exception must never cross back into Rust.
 extern "C" {
@@ -57,7 +59,8 @@ static OtlpIngestStatus OtlpGrpcBatchThunk(void *user_data, OtlpSignalType signa
 		return OTLP_INGEST_INVALID;
 	}
 	try {
-		return server->IngestDecodedArrowBatch(signal_type, static_cast<idx_t>(input_bytes), *array, *schema);
+		return GrpcIngestStatus(
+		    server->IngestDecodedArrowBatch(signal_type, static_cast<idx_t>(input_bytes), *array, *schema).refusal);
 	} catch (...) {
 		return OTLP_INGEST_INTERNAL;
 	}

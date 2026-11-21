@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <thread>
+#include <utility>
 
 namespace duckdb {
 
@@ -51,6 +52,24 @@ static void SetJson(duckdb_httplib::Response &res, int status, const string &jso
 
 static void SetError(duckdb_httplib::Response &res, int status, const string &reason, const string &message) {
 	SetJson(res, status, "{\"error\":\"" + JsonEscape(reason) + "\",\"message\":\"" + JsonEscape(message) + "\"}");
+}
+
+//! The HTTP status and `error` reason for a refused ingest call.
+static std::pair<int, const char *> HttpRefusal(OtlpIngestRefusal refusal) {
+	switch (refusal) {
+	case OtlpIngestRefusal::PAYLOAD_TOO_LARGE:
+		return {413, "request_failed"};
+	case OtlpIngestRefusal::UNSUPPORTED_MEDIA:
+		return {415, "request_failed"};
+	case OtlpIngestRefusal::MALFORMED:
+		return {400, "bad_request"};
+	case OtlpIngestRefusal::BUFFER_FULL:
+		return {503, "request_failed"};
+	case OtlpIngestRefusal::NONE:
+	case OtlpIngestRefusal::INTERNAL:
+		break;
+	}
+	return {500, "internal_error"};
 }
 
 static idx_t DefaultHttpThreads() {
@@ -126,8 +145,14 @@ void OtlpHttpListener::Start() {
 				if (!server.CheckAuth(req.get_header_value("Authorization"), req.get_header_value("x-api-key"))) {
 					SetError(res, 401, "unauthorized", "missing or invalid Authorization bearer token or x-api-key");
 				} else {
-					auto result = server.Ingest(kind, req.get_header_value("Content-Type"),
-					                            req.get_header_value("Content-Encoding"), req.body);
+					auto outcome = server.Ingest(kind, req.get_header_value("Content-Type"),
+					                             req.get_header_value("Content-Encoding"), req.body);
+					if (!outcome.Accepted()) {
+						auto status = HttpRefusal(outcome.refusal);
+						SetError(res, status.first, status.second, outcome.message);
+						return;
+					}
+					auto &result = outcome.counts;
 					// 202: buffered in memory, not yet durable until the next seal.
 					auto response =
 					    StringUtil::Format("{\"status\":\"buffered\",\"rows\":%llu,\"batches\":%llu",
@@ -144,14 +169,8 @@ void OtlpHttpListener::Start() {
 					response += "}";
 					SetJson(res, 202, response);
 				}
-			} catch (OtlpHttpError &ex) {
-				SetError(res, ex.status, "request_failed", ex.what());
-			} catch (InvalidInputException &ex) {
-				SetError(res, 400, "bad_request", ex.what());
-			} catch (IOException &ex) {
-				server.LogServerEvent(StringUtil::Format("ingest I/O error: %s", ex.what()), LogLevel::LOG_WARNING);
-				SetError(res, 500, "internal_error", ex.what());
 			} catch (std::exception &ex) {
+				// Ingest reports its own failures as refusals; this is auth or building the response.
 				server.LogServerEvent(StringUtil::Format("ingest internal error: %s", ex.what()),
 				                      LogLevel::LOG_WARNING);
 				SetError(res, 500, "internal_error", ex.what());
