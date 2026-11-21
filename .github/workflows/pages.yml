@@ -2,7 +2,7 @@ name: Pages
 #
 # GitHub Pages is configured for the "GitHub Actions" source. Pages artifact
 # deploys are whole-site snapshots, so this workflow is the only Pages deployer
-# and always assembles the Astro site plus the extension repository before
+# and always assembles the mdBook site plus the extension repository before
 # uploading one final Pages artifact.
 
 on:
@@ -11,6 +11,7 @@ on:
     paths:
       - 'site/**'
       - '.github/workflows/pages.yml'
+      - '.github/actions/setup-mdbook/**'
       - 'scripts/pages_extension_repository.py'
   release:
     types: [published]
@@ -91,7 +92,7 @@ jobs:
             # brotli-compressed with `Content-Encoding: br`, but GitHub Pages cannot set
             # that header, so publish the wasm binary UNCOMPRESSED: the browser fetch then
             # hands raw wasm to the loader, exactly like the in-repo wasm demo
-            # (site/public/wasm-demo/) does today.
+            # (site/src/wasm-demo/) does today.
             if [[ "$arch" == wasm* ]]; then
               src="${dir}${EXT_NAME}.duckdb_extension.wasm"
               if [ ! -f "$src" ]; then
@@ -187,22 +188,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Setup Node
-        uses: actions/setup-node@v7
-        with:
-          node-version: 26
-          cache: npm
-          cache-dependency-path: site/package-lock.json
-
-      - name: Install dependencies
-        working-directory: site
-        run: npm ci
+      - name: Setup mdBook
+        uses: ./.github/actions/setup-mdbook
 
       - name: Build site
         working-directory: site
-        env:
-          ASTRO_TELEMETRY_DISABLED: 1
-        run: npm run check && npm run build
+        run: mdbook build
 
       - name: Download extension repository from this run
         if: needs.extension-package.result == 'success'

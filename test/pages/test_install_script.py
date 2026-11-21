@@ -1,4 +1,4 @@
-"""Tests for site/public/install.sh, the `curl ... | sh` installer.
+"""Tests for site/src/install.sh, the `curl ... | sh` installer.
 
 The script is published verbatim as https://smithclay.github.io/duckdb-otlp/install.sh,
 so a broken one-liner is a broken release page. These tests run the real script
@@ -20,7 +20,7 @@ import tempfile
 import threading
 import unittest
 
-SCRIPT = Path(__file__).resolve().parents[2] / "site" / "public" / "install.sh"
+SCRIPT = Path(__file__).resolve().parents[2] / "site" / "src" / "install.sh"
 TAG = "v9.9.9"
 PAYLOAD = "#!/bin/sh\necho duckdb-otlp 9.9.9-fixture\n"
 

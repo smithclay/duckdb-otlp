@@ -1,0 +1,348 @@
+# How to Stream OTLP to Parquet
+
+Use the `duckdb-otlp` Docker image in `parquet` mode to stream OTLP/HTTP exports into partitioned Parquet files.
+
+Use this when you want ordinary DuckDB-readable files instead of a lakehouse catalog. The Parquet dataset is the **only** durable store — the daemon keeps no local copy of the data. Each seal writes the buffered rows to the configured Parquet root:
+
+```text
+<export-root>/<table>/year=YYYY/month=MM/day=DD/*.parquet
+```
+
+`PARQUET_EXPORT_PATH` can be a local path such as `/data/otlp-parquet` or a DuckDB-writable URI such as `s3://bucket/prefix`.
+
+Live ingestion uses OTLP/HTTP on port `4318`. WASM builds do not include the ingest server.
+
+> [!WARNING]
+> **Parquet export is at-least-once**
+>
+> A Parquet `COPY` is a file write, not a catalog transaction, so it cannot be rolled back. The server never re-writes a signal that already exported, but if a single seal's `COPY` fails part-way through (for example a transient S3 error) the next attempt re-exports that signal's rows, leaving duplicates under the same partition. Deduplicate downstream (for example by a unique attribute) if you need exactly-once semantics. For transactional, exactly-once ingest use a [DuckLake](../stream-to-local-ducklake/) or catalog mode instead.
+
+## Configure local Parquet
+
+Create `parquet.env`:
+
+```ini
+DUCKDB_MODE=parquet
+DUCKDB_OTLP_TOKEN=dev-token-123456
+DUCKDB_SCHEMA=otlp
+
+PARQUET_EXPORT_PATH=/data/otlp-parquet
+
+DUCKDB_QUACK_PORT=9494
+DUCKDB_QUACK_TOKEN=dev-quack-token-123456
+```
+
+If you omit `PARQUET_EXPORT_PATH`, the daemon writes to `/data/parquet`.
+
+## Configure S3 Parquet
+
+For S3, set `PARQUET_EXPORT_PATH` to an `s3://` URI and provide AWS credentials through DuckDB's credential chain:
+
+```ini
+DUCKDB_MODE=parquet
+DUCKDB_OTLP_TOKEN=dev-token-123456
+DUCKDB_SCHEMA=otlp
+
+PARQUET_EXPORT_PATH=s3://duckdb-otlp-telemetry/otlp
+AWS_REGION=us-west-2
+AWS_PROFILE=cli-dev
+
+DUCKDB_QUACK_PORT=9494
+DUCKDB_QUACK_TOKEN=dev-quack-token-123456
+```
+
+You can also use `S3_BUCKET` and `S3_PREFIX` instead of `PARQUET_EXPORT_PATH`; those resolve to `s3://$S3_BUCKET/$S3_PREFIX`.
+
+## Start the server
+
+Prefer to run manually in the DuckDB shell? See [Run manually](#run-manually).
+
+For local Parquet output:
+
+```bash
+mkdir -p data
+
+docker run --rm --name duckdb-otlp \
+  --env-file parquet.env \
+  -p 4318:4318 \
+  -p 9494:9494 \
+  -v "$(pwd)/data:/data" \
+  ghcr.io/smithclay/duckdb-otlp:latest
+```
+
+For S3 output, mount your AWS config read-only:
+
+```bash
+docker run --rm --name duckdb-otlp \
+  --env-file parquet.env \
+  -p 4318:4318 \
+  -p 9494:9494 \
+  -v "$(pwd)/data:/data" \
+  -v "$HOME/.aws:/root/.aws:ro" \
+  ghcr.io/smithclay/duckdb-otlp:latest
+```
+
+Each seal writes only to Parquet. For convenient inspection over Quack, the daemon lazily creates a read-only **view** over the exported files for each signal — `otlp.otlp_logs`, `otlp.otlp_traces`, `otlp.otlp_metrics_gauge`, `otlp.otlp_metrics_sum`, `otlp.otlp_metrics_histogram`, `otlp.otlp_metrics_exp_histogram`. These views read the Parquet dataset directly (so they reflect exactly what is durable, including any at-least-once duplicates) and appear after the first seal for that signal. They store no data. Logs and metrics partition by `time_unix_nano`; traces partition by `start_time_unix_nano`.
+
+## POST a log record
+
+In another terminal:
+
+```bash
+curl -sS http://localhost:4318/v1/logs \
+  -H 'Authorization: Bearer dev-token-123456' \
+  -H 'Content-Type: application/json' \
+  -d '{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"parquet-demo"}},{"key":"deployment.environment","value":{"stringValue":"docs"}}]},"scopeLogs":[{"scope":{"name":"duckdb-otlp-guide"},"logRecords":[{"timeUnixNano":"1704067200000000000","observedTimeUnixNano":"1704067200123456789","severityNumber":9,"severityText":"INFO","body":{"stringValue":"hello from Parquet mode"},"attributes":[{"key":"guide","value":{"stringValue":"stream-to-parquet"}}]}]}]}]}'
+```
+
+**Response:**
+
+```json
+{"status":"buffered","rows":1,"batches":1}
+```
+
+Rows are accepted before they are durable. They commit automatically in the
+background, on graceful shutdown, or immediately after an explicit flush.
+
+## Flush and inspect
+
+Flush through Quack from a local DuckDB process:
+
+```bash
+duckdb -unsigned -c "
+INSTALL quack;
+LOAD quack;
+
+CREATE SECRET duckdb_otlp_quack (
+  TYPE quack,
+  SCOPE 'quack:localhost:9494',
+  TOKEN 'dev-quack-token-123456'
+);
+
+ATTACH 'quack:localhost:9494' AS otel (TYPE quack, SSL_FINGERPRINT '<fingerprint>'); -- printed by the container at startup
+CONNECT otel;
+SELECT * FROM otlp_flush('otlp:0.0.0.0:4318');
+DISCONNECT;
+"
+```
+
+The example log record uses `2024-01-01`, so local output lands under this path:
+
+```bash
+find data/otlp-parquet/otlp_logs/year=2024/month=01/day=01 -name '*.parquet'
+```
+
+For S3 output:
+
+```bash
+aws s3 ls \
+  "s3://duckdb-otlp-telemetry/otlp/otlp_logs/year=2024/month=01/day=01/" \
+  --profile cli-dev \
+  --region us-west-2 \
+  --recursive
+```
+
+To query the exported rows through the inspection view inside the running daemon (this reads the Parquet files, not a local copy). The daemon creates these views only when Quack is enabled, because creating one reads the footer of every file already exported:
+
+```bash
+duckdb -unsigned -c "
+INSTALL quack;
+LOAD quack;
+
+CREATE SECRET duckdb_otlp_quack (
+  TYPE quack,
+  SCOPE 'quack:localhost:9494',
+  TOKEN 'dev-quack-token-123456'
+);
+
+ATTACH 'quack:localhost:9494' AS otel (TYPE quack, SSL_FINGERPRINT '<fingerprint>'); -- printed by the container at startup
+CONNECT otel;
+
+SELECT time_unix_nano, service_name, severity_text, body
+FROM otlp.otlp_logs
+WHERE service_name = 'parquet-demo'
+ORDER BY time_unix_nano DESC
+LIMIT 5;
+
+DISCONNECT;
+"
+```
+
+To query local Parquet files directly:
+
+```sql
+SELECT service_name, severity_text, body
+FROM read_parquet(
+  'data/otlp-parquet/otlp_logs/**/*.parquet',
+  hive_partitioning = true
+)
+WHERE year = '2024' AND month = '01' AND day = '01';
+```
+
+For S3 Parquet, create an S3 secret first:
+
+```sql
+INSTALL httpfs;
+LOAD httpfs;
+
+CREATE OR REPLACE SECRET plain_s3_secret (
+  TYPE s3,
+  PROVIDER credential_chain,
+  CHAIN config,
+  PROFILE 'cli-dev',
+  REGION 'us-west-2'
+);
+
+SELECT service_name, severity_text, body
+FROM read_parquet(
+  's3://duckdb-otlp-telemetry/otlp/otlp_logs/**/*.parquet',
+  hive_partitioning = true
+)
+WHERE year = '2024' AND month = '01' AND day = '01';
+```
+
+## Stop cleanly
+
+If you plan to delete the Parquet resources immediately, skip this
+step and use [Clean up](#clean-up) instead.
+
+```bash
+docker stop duckdb-otlp
+```
+
+The image sends `otlp_stop('otlp:0.0.0.0:4318')` during shutdown,
+so remaining buffered rows are committed before the process exits.
+
+## Clean up
+
+For local output:
+
+```bash
+rm -rf data
+```
+
+For S3 output:
+
+```bash
+aws s3 rm "s3://duckdb-otlp-telemetry/otlp/" \
+  --profile cli-dev \
+  --region us-west-2 \
+  --recursive
+```
+
+## Run manually
+
+To run this configuration in a DuckDB 2.0+ shell instead of the daemon, execute the SQL below. Replace bracketed values with the corresponding values from this guide. Keep the shell open while clients send telemetry.
+
+```bash
+duckdb duckdb-otlp-control.duckdb
+```
+
+### Local Parquet
+
+```sql
+-- The daemon embeds otlp statically; the shell loads the extension explicitly.
+INSTALL otlp FROM community;
+LOAD otlp;
+
+-- Local Parquet needs no storage extension setup.
+
+-- Create the target schema before starting ingestion.
+CREATE SCHEMA IF NOT EXISTS otlp;
+
+-- Start OTLP/HTTP. Seal cadence, file sizes, and buffer limits use defaults;
+-- override only as needed — see the Live Ingest Reference:
+-- https://smithclay.github.io/duckdb-otlp/reference/serve/
+SELECT listen_url, catalog_name, schema_name
+FROM otlp_serve(
+  'otlp:0.0.0.0:4318',
+  catalog := '',
+  schema := 'otlp',
+  token := 'dev-token-123456',
+  allow_other_hostname := true,
+  parquet_export_path := 'data/otlp-parquet'
+);
+
+-- The guide's daemon configuration also enables Quack.
+INSTALL quack;
+LOAD quack;
+SELECT listen_uri
+FROM quack_serve(
+  'quack:0.0.0.0:9494',
+  token := 'dev-quack-token-123456',
+  allow_other_hostname := true
+);
+```
+
+### S3 Parquet
+
+Use the profile, region, and export URI configured earlier in this guide.
+
+```sql
+-- The daemon embeds otlp statically; the shell loads the extension explicitly.
+INSTALL otlp FROM community;
+LOAD otlp;
+
+-- Configure the AWS credential chain used by the S3 variant.
+INSTALL aws;
+INSTALL httpfs;
+LOAD aws;
+LOAD httpfs;
+CREATE OR REPLACE SECRET plain_s3_secret (
+  TYPE s3,
+  PROVIDER credential_chain,
+  CHAIN config,
+  PROFILE 'cli-dev',
+  REGION 'us-west-2'
+);
+
+-- Create the target schema before starting ingestion.
+CREATE SCHEMA IF NOT EXISTS otlp;
+
+-- Start OTLP/HTTP. Seal cadence, file sizes, and buffer limits use defaults;
+-- override only as needed — see the Live Ingest Reference:
+-- https://smithclay.github.io/duckdb-otlp/reference/serve/
+SELECT listen_url, catalog_name, schema_name
+FROM otlp_serve(
+  'otlp:0.0.0.0:4318',
+  catalog := '',
+  schema := 'otlp',
+  token := 'dev-token-123456',
+  allow_other_hostname := true,
+  parquet_export_path := 's3://duckdb-otlp-telemetry/otlp'
+);
+
+-- The guide's daemon configuration also enables Quack.
+INSTALL quack;
+LOAD quack;
+SELECT listen_uri
+FROM quack_serve(
+  'quack:0.0.0.0:9494',
+  token := 'dev-quack-token-123456',
+  allow_other_hostname := true
+);
+```
+
+Before closing DuckDB, stop both listeners cleanly:
+
+```sql
+-- Stop Quack, then commit buffered telemetry and stop OTLP.
+CALL quack_stop('quack:0.0.0.0:9494');
+SELECT status, dropped_rows
+FROM otlp_stop('otlp:0.0.0.0:4318');
+```
+
+## Troubleshooting
+
+- If S3 startup cannot find credentials, confirm `AWS_PROFILE` in `parquet.env` matches a profile in the mounted `$HOME/.aws` directory.
+- If S3 writes fail, confirm the profile can write objects under `PARQUET_EXPORT_PATH`.
+- If no files appear after a `202` response, run `otlp_flush` before listing the output path.
+- Plain Parquet object writes are not catalog transactions (see the at-least-once caution above). A signal that already exported is never re-written, but if a single seal's `COPY` fails part-way through and the server retries, that signal's rows can be duplicated under the same partition. Deduplicate downstream, or use a catalog mode for exactly-once.
+
+## See also
+
+- [How to stream to local DuckLake](../stream-to-local-ducklake/)
+- [How to stream to Amazon S3 Tables](../stream-to-s3-tables/)
+- [How to stream to Vortex](../stream-to-vortex/)
+- [Query with Quack](../query-with-quack/)
+- [Live Ingest Reference](../../reference/serve/)
