@@ -1,0 +1,26 @@
+name: Set up mdBook
+description: >-
+  Install the pinned mdBook release binary and verify its SHA-256 before it runs.
+  The documentation site has no other build dependency. To upgrade, change both
+  values below from the release page (https://github.com/rust-lang/mdBook/releases):
+  `sha256sum mdbook-<version>-x86_64-unknown-linux-musl.tar.gz`.
+
+runs:
+  using: composite
+  steps:
+    - name: Install mdBook
+      shell: bash
+      env:
+        MDBOOK_VERSION: v0.5.4
+        MDBOOK_SHA256: 5222beabd3e37dc5be0d18ff99b79058469354db5c220153a1b92db5ba12be89
+      run: |
+        set -euo pipefail
+        archive="mdbook-${MDBOOK_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+        dir="${RUNNER_TEMP}/mdbook"
+        mkdir -p "$dir"
+        curl -fsSL --retry 3 -o "${dir}/${archive}" \
+          "https://github.com/rust-lang/mdBook/releases/download/${MDBOOK_VERSION}/${archive}"
+        echo "${MDBOOK_SHA256}  ${dir}/${archive}" | sha256sum -c -
+        tar -xzf "${dir}/${archive}" -C "$dir" mdbook
+        echo "$dir" >> "$GITHUB_PATH"
+        "${dir}/mdbook" --version

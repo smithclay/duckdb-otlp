@@ -1,19 +1,23 @@
 # DuckDB OpenTelemetry Extension Site
 
-Astro/Starlight documentation site for the DuckDB OpenTelemetry Extension.
+[mdBook](https://rust-lang.github.io/mdBook/) documentation site for the DuckDB OpenTelemetry Extension.
 
-Docs live directly in `src/content/docs/`. The embedded WASM demo lives in `public/wasm-demo/`.
+Pages live in `src/`, one directory per page (`src/guides/stream-to-parquet/index.md`
+publishes as `/guides/stream-to-parquet/`). `src/SUMMARY.md` is the sidebar, and a
+page it does not list is not built. Every other file in `src/` is copied to the site
+verbatim: `install.sh`, the WASM demo in `src/wasm-demo/`, and example configs.
+
+The only build dependency is the `mdbook` binary. CI installs the version pinned
+in `../.github/actions/setup-mdbook/action.yml`; install the same one locally from
+the [mdBook releases](https://github.com/rust-lang/mdBook/releases).
 
 ```bash
-npm ci
-npm run dev
-npm run check
-npm run build
+mdbook serve --open                      # live preview at http://localhost:3000/
+mdbook build                             # writes dist/
+python3 ../scripts/check_site_links.py dist   # fails on broken internal links
 ```
 
-CI uses Node 24. Documentation PRs run a clean lockfile install, `astro check`,
-and a production build before merge. Upgrade Astro and Starlight together; Renovate
-groups their updates. TypeScript stays below 7 until `@astrojs/check` supports it.
+Documentation PRs run the build and the link check before merge (`site-check.yml`).
 
 ## Pages publishing
 

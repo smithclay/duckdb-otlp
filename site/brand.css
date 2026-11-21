@@ -1,0 +1,21 @@
+/* duckdb-otlp colors layered over mdBook's built-in themes. */
+.light,
+.rust {
+  --links: #006b7a;
+  --sidebar-active: #006b7a;
+  --inline-code-color: #00545f;
+  --quote-border: #0097a7;
+}
+
+.navy,
+.coal,
+.ayu {
+  --links: #80dbe4;
+  --sidebar-active: #80dbe4;
+  --inline-code-color: #80dbe4;
+  --quote-border: #0097a7;
+}
+
+.menu-title {
+  font-weight: 750;
+}

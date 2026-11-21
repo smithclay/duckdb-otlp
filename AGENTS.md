@@ -243,9 +243,11 @@ test/
 └── data/              # Test data (OTLP JSON/protobuf files)
 
 site/
-├── src/content/docs/  # Astro/Starlight documentation pages
-├── public/install.sh  # `curl ... | sh` installer for the duckdb-otlp CLI
-└── public/wasm-demo/  # Browser demo, WASM extension, and sample OTLP files
+├── book.toml          # mdBook configuration
+├── src/SUMMARY.md     # Sidebar: every page must be listed here to be built
+├── src/<page>/index.md # One directory per page, so URLs stay `/<page>/`
+├── src/install.sh     # `curl ... | sh` installer for the duckdb-otlp CLI
+└── src/wasm-demo/     # Browser demo, WASM extension, and sample OTLP files
 
 docker/
 └── duckdb-otlp-server/ # Native daemon Docker image assets
@@ -258,12 +260,14 @@ scripts/
 
 Follow the Diátaxis documentation framework and keep docs lean:
 
-- **Tutorials**: `README.md`, `site/src/content/docs/get-started.md`, and focused quickstarts such as `site/src/content/docs/quickstart/serve.md`.
-- **How-to guides**: task-oriented docs under `site/src/content/docs/guides/` (for example traces, logs, metrics, Parquet, lakehouse ingest, errors). Do not add a separate "cookbook" section.
-- **Reference**: exact API, schema, server contract, and operational limits under `site/src/content/docs/reference/`.
-- **Explanation**: architecture and design context in `site/src/content/docs/architecture.md`.
+- **Tutorials**: `README.md`, `site/src/get-started/index.md`, and focused quickstarts such as `site/src/quickstart/serve/index.md`.
+- **How-to guides**: task-oriented docs under `site/src/guides/` (for example traces, logs, metrics, Parquet, lakehouse ingest, errors). Do not add a separate "cookbook" section.
+- **Reference**: exact API, schema, server contract, and operational limits under `site/src/reference/`.
+- **Explanation**: architecture and design context in `site/src/architecture/index.md`.
 
-The CLI installer lives at `site/public/install.sh` rather than in `scripts/`, because that path *is* its URL: Astro copies `site/public/` into the Pages artifact verbatim, so `https://smithclay.github.io/duckdb-otlp/install.sh` and the file in this repository cannot drift. It installs the release tarballs that `daemon-release` attaches (`duckdb-otlp-<tag>-<platform>.tar.gz` + `SHA256SUMS`), so a change to that naming is a change to the installer. It follows the CLI's own conventions — `flag > env > default`, exit `2` for a bad command line, messaging on stderr — and refuses to install anything whose checksum does not match.
+The site is built with **mdBook**, a single binary pinned by version and SHA-256 in `.github/actions/setup-mdbook/action.yml` — there is no npm toolchain, and it was chosen over Astro/Starlight to stop the dependency churn, so do not add preprocessors or a `package.json`. Upgrade by changing both values in that action. Pages are plain CommonMark plus GitHub-style alerts (`> [!WARNING]`); there are no components, so a repeated snippet is written out where it is used. Each page is `site/src/<path>/index.md` so its URL stays `/<path>/` (the URLs the Starlight site published), and a page is built only if `site/src/SUMMARY.md` lists it. `scripts/check_site_links.py site/dist` fails on any broken internal link or anchor; `site-check.yml` runs it after `mdbook build`.
+
+The CLI installer lives at `site/src/install.sh` rather than in `scripts/`, because that path *is* its URL: mdBook copies every non-Markdown file under `site/src/` into the Pages artifact verbatim, so `https://smithclay.github.io/duckdb-otlp/install.sh` and the file in this repository cannot drift. It installs the release tarballs that `daemon-release` attaches (`duckdb-otlp-<tag>-<platform>.tar.gz` + `SHA256SUMS`), so a change to that naming is a change to the installer. It follows the CLI's own conventions — `flag > env > default`, exit `2` for a bad command line, messaging on stderr — and refuses to install anything whose checksum does not match.
 
 Prefer one canonical page per topic and link to it instead of duplicating examples. Since this is an early-stage project, do not add backwards-compatibility redirect pages or migration stubs unless explicitly requested.
 

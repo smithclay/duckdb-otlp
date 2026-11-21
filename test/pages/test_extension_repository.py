@@ -53,11 +53,11 @@ class ExtensionRepositoryTests(unittest.TestCase):
     ):
         first = self.root / "first"
         first.mkdir()
-        (first / "index.html").write_text("new Astro site")
+        (first / "index.html").write_text("new docs site")
         assemble(first, base_url=self.base_url)
         for path in self.paths:
             self.assertEqual((first / path).read_bytes(), b"extension fixture")
-        self.assertEqual((first / "index.html").read_text(), "new Astro site")
+        self.assertEqual((first / "index.html").read_text(), "new docs site")
         # Future docs deploys need only the durable archive, not Actions history.
         (self.published / ARCHIVE).write_bytes((first / ARCHIVE).read_bytes())
         for path in self.paths:
