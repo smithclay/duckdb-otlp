@@ -107,7 +107,7 @@ Each span is emitted once, even if multiple files are scanned. Use standard Duck
 
 | Column | Type | Description |
 | --- | --- | --- |
-| `aggregation_temporality` | INTEGER | Aggregation temporality (1=delta, 2=cumulative) |
+| `aggregation_temporality` | INTEGER | Aggregation temporality (1=delta, 2=cumulative; 0=unspecified, also used for any out-of-spec value) |
 | `is_monotonic` | BOOLEAN | Whether the sum is monotonic (counter vs. up-down counter) |
 
 All gauge columns are included, plus the two sum-specific columns above.
@@ -139,7 +139,7 @@ All gauge columns are included, plus the two sum-specific columns above.
 | `metric_attributes` | VARCHAR | Data point attributes as JSON string |
 | `flags` | INTEGER | Data point flags |
 | `exemplars_json` | VARCHAR | Exemplars as JSON array |
-| `aggregation_temporality` | INTEGER | Aggregation temporality (1=delta, 2=cumulative) |
+| `aggregation_temporality` | INTEGER | Aggregation temporality (1=delta, 2=cumulative; 0=unspecified, also used for any out-of-spec value) |
 
 ### Exponential Histogram Metrics (`read_otlp_metrics_exp_histogram`)
 
@@ -173,7 +173,7 @@ All gauge columns are included, plus the two sum-specific columns above.
 | `metric_attributes` | VARCHAR | Data point attributes as JSON string |
 | `flags` | INTEGER | Data point flags |
 | `exemplars_json` | VARCHAR | Exemplars as JSON array |
-| `aggregation_temporality` | INTEGER | Aggregation temporality (1=delta, 2=cumulative) |
+| `aggregation_temporality` | INTEGER | Aggregation temporality (1=delta, 2=cumulative; 0=unspecified, also used for any out-of-spec value) |
 
 ## Type system notes
 
