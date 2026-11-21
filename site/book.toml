@@ -1,0 +1,20 @@
+[book]
+title = "DuckDB OpenTelemetry Extension"
+description = "duckdb-otlp: query OpenTelemetry traces, logs, and metrics with DuckDB."
+language = "en"
+src = "src"
+
+[build]
+build-dir = "dist"
+# A SUMMARY.md entry without a file is a mistake, not a page to create.
+create-missing = false
+
+[output.html]
+# Pages serves the site under /duckdb-otlp/; this also makes 404.html's links absolute.
+site-url = "/duckdb-otlp/"
+git-repository-url = "https://github.com/smithclay/duckdb-otlp"
+edit-url-template = "https://github.com/smithclay/duckdb-otlp/edit/main/site/{path}"
+additional-css = ["brand.css"]
+default-theme = "light"
+preferred-dark-theme = "navy"
+no-section-label = true

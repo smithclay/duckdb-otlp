@@ -22,10 +22,8 @@ __pycache__/
 .ccache
 .cache
 
-# Astro docs site
-site/.astro/
+# mdBook docs site
 site/dist/
-site/node_modules/
 
 # Internal review/tracking notes (kept locally, not committed)
 docs/internal/
