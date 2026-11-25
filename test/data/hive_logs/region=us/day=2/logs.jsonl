@@ -1,0 +1,3 @@
+{"resourceLogs": [{"scopeLogs": [{"logRecords": [{"timeUnixNano": "1640000000000000000", "severityNumber": 9, "severityText": "INFO", "body": {"stringValue": "minimal log"}}]}]}]}
+{"resourceLogs": [{"scopeLogs": [{"logRecords": [{"timeUnixNano": "1640000000000000000", "severityNumber": 0, "body": {"stringValue": "no trace context"}, "traceId": "", "spanId": ""}]}]}]}
+{"resourceLogs": [{"scopeLogs": [{"logRecords": [{"timeUnixNano": "1640000000000000000", "severityNumber": 9, "body": {}}]}]}]}

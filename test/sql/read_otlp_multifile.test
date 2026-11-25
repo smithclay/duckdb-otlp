@@ -1,0 +1,110 @@
+# name: test/sql/read_otlp_multifile.test
+# description: the read_ot* readers take DuckDB's multi-file options
+# group: [sql]
+
+require otlp
+
+# A list of files is read as one table, like a glob.
+query I
+SELECT count(*) FROM read_otlp_logs(['test/data/logs_simple.jsonl', 'test/data/logs_nulls.jsonl']);
+----
+6
+
+# filename names the file each row came from.
+query II
+SELECT parse_filename(filename), count(*)
+FROM read_otlp_logs(['test/data/logs_simple.jsonl', 'test/data/logs_nulls.jsonl'], filename = true)
+GROUP BY ALL ORDER BY ALL;
+----
+logs_nulls.jsonl	3
+logs_simple.jsonl	3
+
+# The filename virtual column is there without the option, too.
+query I
+SELECT count(DISTINCT filename) FROM read_otlp_logs('test/data/hive_logs/**/*.jsonl');
+----
+2
+
+# file_row_number numbers the rows of each file from zero.
+query II
+SELECT file_row_number, severity_text
+FROM read_otlp_logs('test/data/logs_simple.jsonl', file_row_number = true)
+ORDER BY file_row_number;
+----
+0	INFO
+1	WARN
+2	ERROR
+
+query I
+SELECT file_row_number FROM read_otlp_logs('test/data/logs_simple.jsonl', file_row_number = true)
+WHERE file_row_number > 1;
+----
+2
+
+# Hive partitions become columns...
+query IIII
+SELECT region, day, count(*), list(DISTINCT service_name)
+FROM read_otlp_logs('test/data/hive_logs/**/*.jsonl', hive_partitioning = true)
+GROUP BY ALL ORDER BY ALL;
+----
+eu	1	3	[test-service]
+us	2	3	[unknown]
+
+# Partitioned paths are detected without the option.
+query II
+SELECT region, count(*) FROM read_otlp_logs('test/data/hive_logs/**/*.jsonl') GROUP BY ALL ORDER BY ALL;
+----
+eu	3
+us	3
+
+# A filter on a partition column skips the other partitions' files entirely.
+query II
+EXPLAIN ANALYZE SELECT count(*)
+FROM read_otlp_logs('test/data/hive_logs/**/*.jsonl', hive_partitioning = true)
+WHERE region = 'eu';
+----
+analyzed_plan	<REGEX>:.*Scanning Files: 1/2.*
+
+query I
+SELECT count(*) FROM read_otlp_logs('test/data/hive_logs/**/*.jsonl', hive_partitioning = true)
+WHERE region = 'eu';
+----
+3
+
+# Every file of a signal has the same columns, so union_by_name changes nothing.
+query I
+SELECT count(*) FROM read_otlp_logs('test/data/hive_logs/**/*.jsonl', union_by_name = true);
+----
+6
+
+# allow_empty turns "no files" into an empty result.
+query I
+SELECT count(*) FROM read_otlp_logs('test/data/does_not_exist/*.jsonl', allow_empty = true);
+----
+0
+
+statement error
+SELECT count(*) FROM read_otlp_logs('test/data/does_not_exist/*.jsonl');
+----
+No files found that match the pattern
+
+# The OTAP readers are multi-file readers too.
+query II
+SELECT parse_filename(filename), count(*)
+FROM read_otap_logs(['test/data/otap/logs-initial.bar', 'test/data/otap/logs-zstd.bar'], filename = true)
+GROUP BY ALL ORDER BY ALL;
+----
+logs-initial.bar	3
+logs-zstd.bar	3
+
+# Metric readers keep their own shape per file.
+query I
+SELECT count(*) FROM read_otlp_metrics_gauge(['test/data/metrics_simple.jsonl', 'test/data/otlp_metrics.pb']);
+----
+2
+
+# An option the readers do not have is still an error.
+statement error
+SELECT count(*) FROM read_otlp_logs('test/data/logs_simple.jsonl', no_such_option = true);
+----
+no_such_option
