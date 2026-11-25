@@ -71,7 +71,7 @@ void OtlpArrowScan(ClientContext &context, const OtlpArrowTable &table, shared_p
 		                  static_cast<uint64_t>(table.types.size()));
 	}
 	for (auto column_id : column_ids) {
-		if (column_id >= table.types.size()) {
+		if (column_id >= table.types.size() && column_id != COLUMN_IDENTIFIER_ROW_ID) {
 			throw InternalException("OTLP Arrow scan: column id %llu out of range", static_cast<uint64_t>(column_id));
 		}
 	}

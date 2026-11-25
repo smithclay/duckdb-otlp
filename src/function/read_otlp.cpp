@@ -28,15 +28,12 @@ struct OtapDecoderDeleter {
 };
 using OtapDecoderPtr = unique_ptr<OtlpOtapDecoder, OtapDecoderDeleter>;
 
-//! What one read_ot* function reads: a signal, and whether its files are OTAP. A function that is
-//! registered only to point callers elsewhere carries the error it raises instead.
+//! What one read_ot* function reads: a signal, and whether its files are OTAP.
 struct ReadOtlpInfo : public TableFunctionInfo {
-	ReadOtlpInfo(OtlpSignalType signal_type_p, bool is_otap_p, string unsupported_p = "")
-	    : signal_type(signal_type_p), is_otap(is_otap_p), unsupported(std::move(unsupported_p)) {
+	ReadOtlpInfo(OtlpSignalType signal_type_p, bool is_otap_p) : signal_type(signal_type_p), is_otap(is_otap_p) {
 	}
 	OtlpSignalType signal_type;
 	bool is_otap;
-	string unsupported;
 
 	//! The signal's columns, resolved on first use and shared by every file of every scan: a multi-file
 	//! scan binds once per file, and the schema never depends on the file.
@@ -51,6 +48,13 @@ struct ReadOtlpInfo : public TableFunctionInfo {
 private:
 	mutex table_lock;
 	shared_ptr<const OtlpArrowTable> table;
+};
+
+//! A function registered only to point callers elsewhere: the error it raises.
+struct ReadOtlpUnsupportedInfo : public TableFunctionInfo {
+	explicit ReadOtlpUnsupportedInfo(string message_p) : message(std::move(message_p)) {
+	}
+	string message;
 };
 
 //! Bind data of the single-file reader: one file of a multi-file scan. Globbing, file lists and the
@@ -81,10 +85,9 @@ struct ReadOtlpFileBindData : public TableFunctionData {
 //! One file's scan. The function has no local state, so the multi-file framework gives each file to
 //! a single thread and parallelizes across files.
 struct ReadOtlpFileGlobalState : public GlobalTableFunctionState {
-	//! The signal columns to convert, and the output column each one fills.
-	vector<column_t> arrow_column_ids;
-	vector<idx_t> arrow_positions;
-	vector<LogicalType> arrow_types;
+	//! The signal column each output column converts from; COLUMN_IDENTIFIER_ROW_ID (which the Arrow
+	//! importer skips) where it carries file_row_number instead.
+	vector<column_t> column_ids;
 	//! Output columns that carry file_row_number (a virtual column of the multi-file scan).
 	vector<idx_t> row_number_positions;
 	bool decoded = false;
@@ -101,7 +104,7 @@ struct ReadOtlpFileGlobalState : public GlobalTableFunctionState {
 
 static unique_ptr<FunctionData> ReadOtlpUnsupportedBind(ClientContext &context, TableFunctionBindInput &input,
                                                         vector<LogicalType> &return_types, vector<Identifier> &names) {
-	throw NotImplementedException(input.info->Cast<ReadOtlpInfo>().unsupported);
+	throw NotImplementedException(input.info->Cast<ReadOtlpUnsupportedInfo>().message);
 }
 
 static void ReadOtlpUnsupportedScan(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
@@ -125,7 +128,6 @@ static unique_ptr<FunctionData> ReadOtlpFileBind(ClientContext &context, TableFu
 
 static unique_ptr<GlobalTableFunctionState> ReadOtlpFileInitGlobal(ClientContext &context,
                                                                    TableFunctionInitInput &input) {
-	auto &bind_data = input.bind_data->Cast<ReadOtlpFileBindData>();
 	auto &file_input = TableFunctionFileInitInput::Get(input);
 	auto result = make_uniq<ReadOtlpFileGlobalState>();
 	for (idx_t position = 0; position < input.column_ids.size(); position++) {
@@ -139,14 +141,11 @@ static unique_ptr<GlobalTableFunctionState> ReadOtlpFileInitGlobal(ClientContext
 		}
 		if (column_id == MultiFileReader::COLUMN_IDENTIFIER_FILE_ROW_NUMBER) {
 			result->row_number_positions.push_back(position);
-			continue;
-		}
-		if (IsVirtualColumn(column_id)) {
+			column_id = COLUMN_IDENTIFIER_ROW_ID;
+		} else if (IsVirtualColumn(column_id)) {
 			throw InternalException("read_otlp: unsupported virtual column %llu", static_cast<uint64_t>(column_id));
 		}
-		result->arrow_column_ids.push_back(column_id);
-		result->arrow_positions.push_back(position);
-		result->arrow_types.push_back(bind_data.table->types[column_id]);
+		result->column_ids.push_back(column_id);
 	}
 	return std::move(result);
 }
@@ -242,16 +241,14 @@ static shared_ptr<ArrowArrayWrapper> DecodeFile(ClientContext &context, const Re
 		throw IOException("File %s is too large (%llu bytes). Maximum supported size is 100MB.", path,
 		                  static_cast<uint64_t>(file_size));
 	}
-	string buffer;
-	buffer.resize(file_size);
-	auto bytes_read = handle->Read(&buffer[0], file_size);
+	auto buffer = Allocator::Get(context).Allocate(file_size);
+	auto bytes_read = handle->Read(buffer.get(), file_size);
 	if (bytes_read != static_cast<idx_t>(file_size)) {
 		throw IOException("Short read on file %s: expected %lld bytes, got %llu", path, static_cast<int64_t>(file_size),
 		                  static_cast<uint64_t>(bytes_read));
 	}
 
-	ArrowArray array =
-	    DecodeFileToArray(bind_data, reinterpret_cast<const uint8_t *>(buffer.data()), buffer.size(), path);
+	ArrowArray array = DecodeFileToArray(bind_data, buffer.get(), file_size, path);
 	if (array.length < 0) {
 		if (array.release) {
 			array.release(&array);
@@ -282,20 +279,9 @@ static void ReadOtlpFileScan(ClientContext &context, TableFunctionInput &data, D
 	}
 	const auto count = MinValue<idx_t>(STANDARD_VECTOR_SIZE, gstate.row_count - gstate.offset);
 	// Projection pushdown only skips conversion: the FFI has no column mask, so Rust builds every column.
-	if (gstate.row_number_positions.empty()) {
-		OtlpArrowScan(context, *bind_data.table, gstate.batch, gstate.arrow_column_ids, gstate.offset, count, output);
-	} else {
-		DataChunk arrow_chunk;
-		arrow_chunk.Initialize(Allocator::Get(context), gstate.arrow_types);
-		OtlpArrowScan(context, *bind_data.table, gstate.batch, gstate.arrow_column_ids, gstate.offset, count,
-		              arrow_chunk);
-		for (idx_t i = 0; i < gstate.arrow_positions.size(); i++) {
-			output.data[gstate.arrow_positions[i]].Reference(arrow_chunk.data[i]);
-		}
-		for (auto position : gstate.row_number_positions) {
-			output.data[position].Sequence(static_cast<int64_t>(gstate.offset), 1, count);
-		}
-		output.SetChildCardinality(count);
+	OtlpArrowScan(context, *bind_data.table, gstate.batch, gstate.column_ids, gstate.offset, count, output);
+	for (auto position : gstate.row_number_positions) {
+		output.data[position].Sequence(static_cast<int64_t>(gstate.offset), 1, count);
 	}
 	gstate.offset += count;
 	if (gstate.offset >= gstate.row_count) {
@@ -351,28 +337,24 @@ void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
 	    {"explicit-bucket histogram data points", 22, " with bucket bounds and counts"},
 	    {"exponential histogram data points", 27, " with scale, zero bucket and positive/negative buckets"},
 	};
-	//! One description per overload of the multi-file set: a path or glob, a list of them, or a file struct.
-	auto overload_docs = [](const string &description, const vector<string> &examples, const char *protocol) {
-		vector<FunctionDescription> result;
-		const pair<LogicalType, const char *> overloads[] = {{LogicalType::VARCHAR, "path"},
-		                                                     {LogicalType::LIST(LogicalType::ANY), "paths"},
-		                                                     {LogicalType::VARIANT(), "path"}};
-		for (auto &overload : overloads) {
-			result.push_back(
-			    OtlpDoc({overload.first}, {overload.second}, description, examples, {"opentelemetry", protocol}));
-		}
-		return result;
-	};
 	auto register_reader = [&](const string &name, shared_ptr<ReadOtlpInfo> info, const string &description,
 	                           const vector<string> &examples, const char *protocol) {
-		loader.RegisterFunction(
-		    OtlpDocumented(ReadOtlpFunctionSet(name, std::move(info)), overload_docs(description, examples, protocol)));
+		auto set = ReadOtlpFunctionSet(name, std::move(info));
+		// One description per overload DuckDB's multi-file set has (a path or glob, a list, a file struct),
+		// matched on the type of its file parameter.
+		vector<FunctionDescription> docs;
+		for (auto &overload : set.functions) {
+			auto &file = overload->GetSignature().GetParameter(0);
+			docs.push_back(OtlpDoc({file.GetType()}, {file.GetName().GetIdentifierName()}, description, examples,
+			                       {"opentelemetry", protocol}));
+		}
+		loader.RegisterFunction(OtlpDocumented(std::move(set), std::move(docs)));
 	};
 	//! Registered only to raise and point at the working readers.
-	auto register_unsupported = [&](const string &name, shared_ptr<ReadOtlpInfo> info, string description) {
+	auto register_unsupported = [&](const string &name, string message, string description) {
 		TableFunction func(Identifier(name), FunctionSignature().AddPositionalOnly("path", LogicalType::VARCHAR),
 		                   ReadOtlpUnsupportedScan, ReadOtlpUnsupportedBind);
-		func.function_info = std::move(info);
+		func.function_info = make_shared_ptr<ReadOtlpUnsupportedInfo>(std::move(message));
 		loader.RegisterFunction(OtlpDocumented(
 		    std::move(func),
 		    {OtlpDoc({LogicalType::VARCHAR}, {"path"}, std::move(description), {}, {"opentelemetry", "otlp"})}));
@@ -406,20 +388,15 @@ void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
 
 	// Registered only to raise and point at the working readers; no examples, since every call raises.
 	register_unsupported("read_otlp_metrics",
-	                     make_shared_ptr<ReadOtlpInfo>(OTLP_SIGNAL_METRICS_GAUGE, false,
-	                                                   "read_otlp_metrics() is not supported yet because OTLP metrics "
-	                                                   "have multiple shape-specific schemas. Use "
-	                                                   "read_otlp_metrics_gauge(), read_otlp_metrics_sum(), "
-	                                                   "read_otlp_metrics_histogram(), or "
-	                                                   "read_otlp_metrics_exp_histogram()."),
+	                     "read_otlp_metrics() is not supported yet because OTLP metrics have multiple "
+	                     "shape-specific schemas. Use read_otlp_metrics_gauge(), read_otlp_metrics_sum(), "
+	                     "read_otlp_metrics_histogram(), or read_otlp_metrics_exp_histogram().",
 	                     "Not implemented: every call raises. OTLP metrics have shape-specific schemas, so read one of "
 	                     "read_otlp_metrics_gauge, read_otlp_metrics_sum, read_otlp_metrics_histogram or "
 	                     "read_otlp_metrics_exp_histogram instead.");
 	register_unsupported(
 	    "read_otlp_metrics_summary",
-	    make_shared_ptr<ReadOtlpInfo>(OTLP_SIGNAL_METRICS_GAUGE, false,
-	                                  "Summary metrics not yet supported. Use read_otlp_metrics_gauge() "
-	                                  "or read_otlp_metrics_sum() instead."),
+	    "Summary metrics not yet supported. Use read_otlp_metrics_gauge() or read_otlp_metrics_sum() instead.",
 	    "Not implemented: every call raises. OTLP summary data points are not decoded; the other "
 	    "read_otlp_metrics_* readers count them as skipped.");
 }
