@@ -29,7 +29,7 @@ WHERE service_name = 'api-gateway'
   AND duration_time_unix_nano > 1000000000;
 ```
 
-The file readers support projection pushdown. They skip filter pushdown for OTLP scans today, so narrower files and Parquet conversion matter for large repeated scans.
+The file readers support projection pushdown. They skip filter pushdown for OTLP scans today, so narrower files and Parquet conversion matter for large repeated scans. Lay files out in Hive partitions (`service=api-gateway/2026-05-30.pb`) and read with `hive_partitioning = true`: a filter on a partition column skips other partitions' files without opening them.
 
 ## Keep Files Reasonable
 

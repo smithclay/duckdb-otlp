@@ -1,6 +1,6 @@
 # API Reference
 
-The DuckDB OpenTelemetry Extension API includes file readers and live-ingest functions. The OTLP file readers accept a path or glob pattern and detect OTLP JSON, JSONL, and protobuf; the separate OTAP readers decode the columnar Arrow encoding (`BatchArrowRecords`). Native builds also support live ingest.
+The DuckDB OpenTelemetry Extension API includes file readers and live-ingest functions. The OTLP file readers accept a path, a glob pattern, or a list of them and detect OTLP JSON, JSONL, and protobuf; the separate OTAP readers decode the columnar Arrow encoding (`BatchArrowRecords`). Native builds also support live ingest.
 
 ## Table Functions
 
@@ -13,7 +13,27 @@ Use these table functions to read OTLP data:
 Streams trace spans with identifiers, attributes, events, and links. See the [schema reference](../schemas/#traces-read_otlp_traces) for all 24 columns.
 
 **Parameters:**
-- `path` (VARCHAR): File path or glob pattern. DuckDB file systems provide local, S3, HTTP(S), Azure, and GCS access.
+- `path` (VARCHAR or VARCHAR[]): A file path, a glob pattern, or a list of either. DuckDB file systems provide local, S3, HTTP(S), Azure, and GCS access.
+
+The readers are DuckDB multi-file readers, so they take the same file options as `read_parquet` and `read_csv`:
+
+| Option | Effect |
+|---|---|
+| `filename` | Adds a `filename` column naming each row's file. The `filename` virtual column is selectable without the option. |
+| `file_row_number` | Adds a `file_row_number` column (BIGINT), the row's position within its file, from 0. |
+| `hive_partitioning` | Reads `key=value` directories in the path as columns. A filter on one skips other partitions' files without opening them. Detected automatically when every path is partitioned. |
+| `hive_types`, `hive_types_autocast` | Type the partition columns. |
+| `union_by_name` | Accepted. Every file of a signal has the same columns, so it changes nothing. |
+| `allow_empty` | Returns an empty result instead of an error when no file matches. |
+
+```sql
+SELECT service, count(*)
+FROM read_otlp_traces('s3://bucket/traces/service=*/*.pb', hive_partitioning = true, filename = true)
+WHERE service = 'checkout'
+GROUP BY ALL;
+```
+
+Files are read in parallel, one thread per file. A file is decoded as a whole, so a single large file does not parallelize.
 
 ### Logs
 
@@ -56,7 +76,7 @@ OTAP is the columnar Arrow encoding of OpenTelemetry data (canonical `BatchArrow
 - **`read_otap_metrics_histogram(path)`**
 - **`read_otap_metrics_exp_histogram(path)`**
 
-**Parameters:** Same as `read_otlp_traces` (a path or glob).
+**Parameters:** Same as `read_otlp_traces` (a path, glob or list, and the multi-file options).
 
 Because OTAP and OTLP mean different things, they are separate functions rather than a format flag — pick the reader that matches your input encoding. Each file must be a self-contained `BatchArrowRecords` message; one file is decoded with one decoder. Streams that span multiple files relying on cross-message Arrow dictionary reuse are not supported by the file readers.
 
