@@ -29,7 +29,13 @@ WHERE service_name = 'api-gateway'
   AND duration_time_unix_nano > 1000000000;
 ```
 
-The file readers support projection pushdown. They skip filter pushdown for OTLP scans today, so narrower files and Parquet conversion matter for large repeated scans. Lay files out in Hive partitions (`service=api-gateway/2026-05-30.pb`) and read with `hive_partitioning = true`: a filter on a partition column skips other partitions' files without opening them.
+The file readers push projections and filters into the decoder:
+
+- **Columns you do not select are never built.** Attribute, body, event, link and exemplar JSON is most of the decoding cost, so `SELECT count(*)` or a few scalar columns is cheaper than `SELECT *`.
+- **Filters on `service_name` and on timestamp columns drop rows before their columns are built.** Any filter on `service_name` (`=`, `IN`, `LIKE`, ...) is decided once per resource, and a resource whose service is filtered out costs nothing beyond decoding it. Timestamp filters prune by their range: comparisons, `BETWEEN` and `IN`.
+- **Every file is still read and decoded in full.** OTLP files carry no index, so a filter cannot skip a file's bytes, and decoding the protobuf or JSON is a fixed cost per file.
+
+Narrower files and Parquet conversion still matter for large repeated scans. Lay files out in Hive partitions (`service=api-gateway/2026-05-30.pb`) and read with `hive_partitioning = true`: a filter on a partition column skips other partitions' files without opening them.
 
 ## Keep Files Reasonable
 

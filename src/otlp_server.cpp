@@ -769,7 +769,8 @@ OtlpServer::StagedSignal OtlpServer::StageArrowBatch(OtlpSignalType signal_type,
 		auto count = MinValue<idx_t>(APPEND_CHUNK_SIZE, static_cast<idx_t>(array.length) - offset);
 		imported.Reset();
 		chunk.Reset();
-		OtlpArrowScan(*arrow_con->context, table, batch, buf.identity_column_ids, offset, count, imported);
+		OtlpArrowScan(*arrow_con->context, table.arrow_table.GetColumns(), batch, buf.identity_column_ids, offset,
+		              count, imported);
 		for (idx_t col = 0; col < chunk.ColumnCount(); col++) {
 			if (imported.data[col].GetType() == chunk.data[col].GetType()) {
 				chunk.data[col].Reference(imported.data[col]);

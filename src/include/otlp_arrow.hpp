@@ -72,10 +72,11 @@ shared_ptr<ArrowArrayWrapper> OtlpOwnArrowBatch(ArrowArray &array);
 //! it is in use (e.g. until those rows have been appended into a ColumnDataCollection).
 shared_ptr<ArrowArrayWrapper> OtlpBorrowArrowBatch(const ArrowArray &array);
 
-//! Convert rows [offset, offset + count) of `batch` into `output`; `column_ids[i]` fills output column i,
+//! Convert rows [offset, offset + count) of `batch`, whose children `columns` describes, into `output`;
+//! the batch child `column_ids[i]` fills output column i,
 //! except that COLUMN_IDENTIFIER_ROW_ID leaves its output column for the caller to fill.
 //! Zero-copy where possible; the vectors keep `batch` alive.
-void OtlpArrowScan(ClientContext &context, const OtlpArrowTable &table, shared_ptr<ArrowArrayWrapper> batch,
+void OtlpArrowScan(ClientContext &context, const arrow_column_map_t &columns, shared_ptr<ArrowArrayWrapper> batch,
                    const vector<column_t> &column_ids, idx_t offset, idx_t count, DataChunk &output);
 
 } // namespace duckdb
