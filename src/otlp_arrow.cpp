@@ -59,19 +59,19 @@ shared_ptr<ArrowArrayWrapper> OtlpBorrowArrowBatch(const ArrowArray &array) {
 	return wrapper;
 }
 
-void OtlpArrowScan(ClientContext &context, const OtlpArrowTable &table, shared_ptr<ArrowArrayWrapper> batch,
+void OtlpArrowScan(ClientContext &context, const arrow_column_map_t &columns, shared_ptr<ArrowArrayWrapper> batch,
                    const vector<column_t> &column_ids, idx_t offset, idx_t count, DataChunk &output) {
 	if (column_ids.size() != output.ColumnCount()) {
 		throw InternalException("OTLP Arrow scan: %llu column ids for %llu output columns",
 		                        static_cast<uint64_t>(column_ids.size()), static_cast<uint64_t>(output.ColumnCount()));
 	}
 	auto &array = batch->arrow_array;
-	if (array.n_children != static_cast<int64_t>(table.types.size())) {
+	if (array.n_children != static_cast<int64_t>(columns.size())) {
 		throw IOException("OTLP Arrow batch has %lld columns, expected %llu", static_cast<int64_t>(array.n_children),
-		                  static_cast<uint64_t>(table.types.size()));
+		                  static_cast<uint64_t>(columns.size()));
 	}
 	for (auto column_id : column_ids) {
-		if (column_id >= table.types.size() && column_id != COLUMN_IDENTIFIER_ROW_ID) {
+		if (column_id >= columns.size() && column_id != COLUMN_IDENTIFIER_ROW_ID) {
 			throw InternalException("OTLP Arrow scan: column id %llu out of range", static_cast<uint64_t>(column_id));
 		}
 	}
@@ -83,9 +83,8 @@ void OtlpArrowScan(ClientContext &context, const OtlpArrowTable &table, shared_p
 	state.chunk = std::move(batch);
 	state.chunk_offset = offset;
 	state.column_ids = column_ids;
-	// The batch carries every column, so column_ids index the Arrow children directly.
-	ArrowTableFunction::ArrowToDuckDB(state, table.arrow_table.GetColumns(), output,
-	                                  /*arrow_scan_is_projected=*/false);
+	// column_ids index the batch's children, which `columns` describes.
+	ArrowTableFunction::ArrowToDuckDB(state, columns, output, /*arrow_scan_is_projected=*/false);
 }
 
 } // namespace duckdb
