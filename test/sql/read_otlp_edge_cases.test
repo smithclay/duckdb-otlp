@@ -67,6 +67,7 @@ SELECT COUNT(*) FROM read_otlp_traces('test/data/empty.jsonl');
 statement error
 SELECT COUNT(*) FROM read_otlp_traces('test/data/whitespace.jsonl');
 ----
+OTLP parse error on test/data/whitespace.jsonl: Parse failed
 
 ### Single Record Files ###
 

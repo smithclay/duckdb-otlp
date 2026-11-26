@@ -107,4 +107,4 @@ SELECT count(*) FROM read_otlp_metrics_gauge(['test/data/metrics_simple.jsonl', 
 statement error
 SELECT count(*) FROM read_otlp_logs('test/data/logs_simple.jsonl', no_such_option = true);
 ----
-no_such_option
+Invalid named parameter "no_such_option" for function read_otlp_logs

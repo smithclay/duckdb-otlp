@@ -1,83 +1,34 @@
 # name: test/sql/read_otlp_metrics_histogram.test
-# description: verify read_otlp_metrics_histogram table function
+# description: Read histograms in mixed and histogram-only NDJSON files
 # group: [sql]
 
 require otlp
 
-# Test basic query and row count
+foreach file metrics_all_types.jsonl metrics_histogram_ndjson.jsonl
+
 query I
-SELECT COUNT(*) FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
+SELECT COUNT(*) FROM read_otlp_metrics_histogram('test/data/{file}');
 ----
 1
 
-# Test metric name
-query I
-SELECT name FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
+query TTTIRTTTTTT
+SELECT name, description, unit, count, sum, bucket_counts, explicit_bounds, service_name, metric_attributes,
+       typeof(count), typeof(bucket_counts)
+FROM read_otlp_metrics_histogram('test/data/{file}');
 ----
-latency.hist
+latency.hist	Latency	ms	50	250.0	[5, 10, 15, 12, 8]	[5.0, 10.0, 20.0, 50.0]	test-service	{"endpoint":"/health"}	BIGINT	BIGINT[]
 
-# Test metric description
-query I
-SELECT description FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
-----
-Latency
+endloop
 
-# Test unit
-query I
-SELECT unit FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
-----
-ms
+# metrics_simple.jsonl also contains a histogram.
+statement ok
+SELECT * FROM read_otlp_metrics_histogram('test/data/metrics_simple.jsonl');
 
-# Test count value
-query I
-SELECT count FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
-----
-50
-
-# Test unsigned OTLP counts are exposed as signed SQL integers for catalog compatibility
-query II
-SELECT typeof(count), typeof(bucket_counts)
-FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
-----
-BIGINT	BIGINT[]
-
-# Test sum value
-query R
-SELECT sum FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
-----
-250.0
-
-# Test bucket_counts (typed UBIGINT list in 0.8)
-query I
-SELECT bucket_counts FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
-----
-[5, 10, 15, 12, 8]
-
-# Test explicit_bounds (typed DOUBLE list in 0.8)
-query I
-SELECT explicit_bounds FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
-----
-[5.0, 10.0, 20.0, 50.0]
-
-# Test service_name extraction
-query I
-SELECT service_name FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
-----
-test-service
-
-# Test metric_attributes
-query I
-SELECT metric_attributes FROM read_otlp_metrics_histogram('test/data/metrics_all_types.jsonl');
-----
-{"endpoint":"/health"}
-
-# Test result for metrics_simple.jsonl (contains http.server.duration histogram)
 query I
 SELECT COUNT(*) FROM read_otlp_metrics_histogram('test/data/metrics_simple.jsonl');
 ----
 1
 
-# Test empty result for logs data
 query I
 SELECT COUNT(*) FROM read_otlp_metrics_histogram('test/data/logs_simple.jsonl');
 ----

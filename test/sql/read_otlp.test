@@ -1,0 +1,232 @@
+# name: test/sql/read_otlp.test
+# description: OTLP reader formats, content, projection, and materialization
+# group: [sql]
+
+require otlp
+
+# Traces
+
+query I
+SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_simple.jsonl');
+----
+3
+
+query I
+SELECT COUNT(*) FROM read_otlp_traces('test/data/otlp_traces.pb');
+----
+1
+
+foreach file traces_simple.jsonl otlp_traces.pb
+
+statement ok
+SELECT * FROM read_otlp_traces('test/data/{file}') LIMIT 1;
+
+query TTTTTT
+SELECT typeof(start_time_unix_nano), typeof(trace_id), typeof(span_id),
+       typeof(name), typeof(service_name), typeof(duration_time_unix_nano)
+FROM read_otlp_traces('test/data/{file}') LIMIT 1;
+----
+TIMESTAMP_NS	VARCHAR	VARCHAR	VARCHAR	VARCHAR	BIGINT
+
+endloop
+
+query III
+SELECT length(trace_id) > 0, length(span_id) > 0, service_name = 'test-service'
+FROM read_otlp_traces('test/data/traces_simple.jsonl') LIMIT 1;
+----
+true	true	true
+
+query IIII
+SELECT start_time_unix_nano IS NOT NULL, service_name IN ('test-service', 'trace-service'),
+       length(trace_id) > 0, length(span_id) > 0
+FROM read_otlp_traces('test/data/otlp_traces.pb');
+----
+true	true	true	true
+
+query I
+SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_simple.jsonl') WHERE name LIKE '%users%';
+----
+2
+
+query I
+SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_simple.jsonl') WHERE duration_time_unix_nano > 0;
+----
+3
+
+query TT
+SELECT typeof(dropped_attributes_count), typeof(flags)
+FROM read_otlp_traces('test/data/traces_simple.jsonl') LIMIT 1;
+----
+INTEGER	INTEGER
+
+foreach file traces_large_attrs.jsonl traces_deep_nesting.jsonl
+
+query I
+SELECT COUNT(*) FROM read_otlp_traces('test/data/{file}');
+----
+1
+
+endloop
+
+query I
+SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_nulls.jsonl') WHERE duration_time_unix_nano = 0;
+----
+3
+
+# Logs
+
+query I
+SELECT COUNT(*) FROM read_otlp_logs('test/data/logs_simple.jsonl');
+----
+3
+
+query I
+SELECT COUNT(*) FROM read_otlp_logs('test/data/otlp_logs.pb');
+----
+1
+
+foreach file logs_simple.jsonl otlp_logs.pb
+
+statement ok
+SELECT * FROM read_otlp_logs('test/data/{file}') LIMIT 1;
+
+query TTTT
+SELECT typeof(time_unix_nano), typeof(service_name), typeof(severity_text), typeof(body)
+FROM read_otlp_logs('test/data/{file}') LIMIT 1;
+----
+TIMESTAMP_NS	VARCHAR	VARCHAR	VARCHAR
+
+endloop
+
+query II
+SELECT service_name = 'test-service', length(body) > 0
+FROM read_otlp_logs('test/data/logs_simple.jsonl') LIMIT 1;
+----
+true	true
+
+query II
+SELECT service_name IN ('test-service', 'logs-service', 'log-service'), length(body) > 0
+FROM read_otlp_logs('test/data/otlp_logs.pb');
+----
+true	true
+
+query I
+SELECT COUNT(*) FROM read_otlp_logs('test/data/logs_simple.jsonl') WHERE severity_text IN ('INFO', 'WARN', 'ERROR');
+----
+3
+
+# The multi-line JSON document yields exactly one row.
+query TT
+SELECT service_name, body FROM read_otlp_logs('test/data/logs_document.json');
+----
+my.service	Example log record
+
+query T
+SELECT body FROM read_otlp_logs('test/data/logs_simple.jsonl') ORDER BY body LIMIT 1;
+----
+Application started
+
+# Regression: Arrow FFI batches can be larger than DuckDB's vector size.
+statement ok
+COPY (
+    SELECT '{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"test-service"}},{"key":"host.name","value":{"stringValue":"test-host"}}]},"scopeLogs":[{"scope":{"name":"test-logger"},"logRecords":[{"timeUnixNano":"1640000000000000000","severityNumber":9,"severityText":"INFO","body":{"stringValue":"Application started"},"attributes":[{"key":"event.name","value":{"stringValue":"startup"}}],"traceId":"5B8EFFF798038103D269B633813FC60C","spanId":"EEE19B7EC3C1B174"}]}]}]}' AS line
+    FROM range(2049)
+) TO '{TEST_DIR}/duckdb_otlp_many_logs.jsonl' (FORMAT csv, HEADER false, DELIMITER '\n', QUOTE '', ESCAPE '');
+
+query I
+SELECT COUNT(*) FROM read_otlp_logs('{TEST_DIR}/duckdb_otlp_many_logs.jsonl');
+----
+2049
+
+# Gauges and sums
+
+foreach shape gauge sum
+
+statement ok
+SELECT * FROM read_otlp_metrics_{shape}('test/data/metrics_simple.jsonl') LIMIT 1;
+
+query I
+SELECT COUNT(*) FROM read_otlp_metrics_{shape}('test/data/metrics_simple.jsonl');
+----
+1
+
+endloop
+
+query I
+SELECT CAST(double_value AS BIGINT) FROM read_otlp_metrics_gauge('test/data/metrics_simple.jsonl');
+----
+524288000
+
+query IITT
+SELECT int_value, is_monotonic, typeof(aggregation_temporality), typeof(is_monotonic)
+FROM read_otlp_metrics_sum('test/data/metrics_simple.jsonl');
+----
+42	true	INTEGER	BOOLEAN
+
+query I
+SELECT COUNT(*) FROM read_otlp_metrics_gauge('test/data/logs_simple.jsonl');
+----
+0
+
+# Globs and correlation across signals
+
+query I
+SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_*.jsonl');
+----
+8
+
+query I
+SELECT COUNT(DISTINCT name) FROM read_otlp_traces('test/data/traces_*.jsonl');
+----
+8
+
+query I
+SELECT COUNT(*) FROM read_otlp_logs('test/data/logs_*.jsonl');
+----
+6
+
+query I
+SELECT COUNT(*)
+FROM read_otlp_traces('test/data/traces_simple.jsonl') t
+JOIN read_otlp_logs('test/data/logs_simple.jsonl') l ON t.trace_id = l.trace_id;
+----
+6
+
+# Materialize projected columns.
+
+statement ok
+CREATE TABLE archive_gauge AS
+SELECT time_unix_nano, service_name, name, description, unit,
+       resource_attributes, scope_name, scope_version, metric_attributes, int_value, double_value
+FROM read_otlp_metrics_gauge('test/data/metrics_simple.jsonl');
+
+query II
+SELECT COUNT(*), MAX(CAST(double_value AS BIGINT)) FROM archive_gauge;
+----
+1	524288000
+
+statement ok
+CREATE TABLE archive_sum AS
+SELECT time_unix_nano, service_name, name, description, unit,
+       resource_attributes, scope_name, scope_version, metric_attributes, int_value, double_value,
+       aggregation_temporality, is_monotonic
+FROM read_otlp_metrics_sum('test/data/metrics_simple.jsonl');
+
+query II
+SELECT COUNT(*), BOOL_AND(is_monotonic) FROM archive_sum;
+----
+1	true
+
+statement ok
+CREATE TABLE archive_logs AS
+SELECT time_unix_nano, severity_text, body FROM read_otlp_logs('test/data/logs_simple.jsonl');
+
+statement ok
+CREATE TABLE archive_traces AS
+SELECT start_time_unix_nano, name, service_name, duration_time_unix_nano
+FROM read_otlp_traces('test/data/traces_simple.jsonl');
+
+query II
+SELECT (SELECT COUNT(*) FROM archive_logs), (SELECT COUNT(*) FROM archive_traces);
+----
+3	3
