@@ -76,13 +76,6 @@ void RejectUnsupportedOtelEnv(const EnvSource &env) {
 	    {"OTEL_EXPORTER_OTLP_CERTIFICATE", tls},
 	    {"OTEL_EXPORTER_OTLP_CLIENT_KEY", tls},
 	    {"OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE", tls},
-	    // Removed settings: ignoring them would silently change the bind.
-	    {"OTEL_HTTP_ADDR", "it was removed; use --host and --http PORT (DUCKDB_OTLP_HOST, DUCKDB_OTLP_HTTP_PORT)"},
-	    {"OTEL_GRPC_ADDR", "it was removed; use --host and --grpc PORT (DUCKDB_OTLP_HOST, DUCKDB_OTLP_GRPC_PORT)"},
-	    {"DUCKDB_OTLP_TRANSPORTS", "it was removed; select listeners with --http/--grpc PORT (0 disables one)"},
-	    {"DUCKDB_OTLP_LISTEN_URI", "it was removed; use --host with --http/--grpc PORT"},
-	    {"DUCKDB_QUACK_ENABLED", "it was removed; enable Quack with --quack PORT (DUCKDB_QUACK_PORT)"},
-	    {"DUCKDB_QUACK_ADDR", "it was removed; use --host and --quack PORT (DUCKDB_QUACK_PORT)"},
 	};
 	for (const auto &entry : unsupported) {
 		if (env.Has(entry.first)) {
@@ -402,13 +395,12 @@ ServerConfig ServerConfig::FromEnv(const EnvSource &env) {
 	config.host = listen_host.Host();
 	config.listeners = ListenersFromEnv(env, config.host);
 	// Most specific first; OTEL_EXPORTER_OTLP_HEADERS lets one variable configure exporter and receiver.
-	config.token = env.Get("OTEL_AUTH_TOKEN", env.Get("DUCKDB_OTLP_TOKEN"));
+	config.token = env.Get("DUCKDB_OTLP_TOKEN");
 	if (config.token.empty() && env.Has("OTEL_EXPORTER_OTLP_HEADERS")) {
 		config.token = BearerTokenFromOtelHeaders(env.Get("OTEL_EXPORTER_OTLP_HEADERS"));
 	}
 	config.disable_auth = IsTruthy(env.Get("DUCKDB_OTLP_DISABLE_AUTH", "0"));
 	config.quack_port = QuackPortFromEnv(env);
-	config.dry_run = IsTruthy(env.Get("DRY_RUN", "0"));
 	for (const auto &[name, type] : duckdb::OtlpServeTuningOptions()) {
 		auto variable = "DUCKDB_OTLP_" + StringUtil::Upper(name);
 		auto value = env.Get(variable.c_str());

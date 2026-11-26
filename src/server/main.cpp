@@ -247,11 +247,11 @@ int RunDoctor(const EnvSource &env, bool as_json) {
 	return healthy ? 0 : 1;
 }
 
-int RunServe(const EnvSource &env) {
+int RunServe(const EnvSource &env, bool validate) {
 	try {
 		auto config = duckdb_otlp_server::ServerConfig::FromEnv(env);
 
-		std::cout << (config.dry_run ? "Checking duckdb-otlp configuration\n\n" : "Starting duckdb-otlp server\n\n");
+		std::cout << (validate ? "Checking duckdb-otlp configuration\n\n" : "Starting duckdb-otlp server\n\n");
 		std::cout << "Mode: " << config.mode << "\n";
 		if (!config.data_location.empty()) {
 			std::cout << "Data: " << config.data_location << "\n";
@@ -285,8 +285,7 @@ int RunServe(const EnvSource &env) {
 		}
 		std::cout << '\n';
 
-		if (config.dry_run) {
-			std::cout << "DRY_RUN=1; planned initialization only.\n\n";
+		if (validate) {
 			std::cout << "Generated initialization SQL:\n";
 			for (const auto &step : config.SetupSteps()) {
 				std::cout << step.sql;
@@ -306,7 +305,7 @@ int RunServe(const EnvSource &env) {
 		OtlpEventsToStderr(*db.instance);
 		duckdb::Connection con(db);
 		// Tokens and the preset's env vars are bound as session variables (read back with
-		// getvariable()), so secrets never appear in the generated SQL that DRY_RUN prints and errors echo.
+		// getvariable()), so secrets never appear in the generated SQL that validate prints and errors echo.
 		con.context->config.SetUserVariable("duckdb_otlp_effective_token", duckdb::Value(config.token));
 		con.context->config.SetUserVariable("duckdb_quack_effective_token", duckdb::Value(config.quack_token));
 		BindConfigEnvVariables(con, config, env);
@@ -429,9 +428,8 @@ int main(int argc, char **argv) {
 	case Command::DOCTOR:
 		return RunDoctor(env, options.json_output);
 	case Command::VALIDATE:
-	// `validate` is `serve` with DRY_RUN (set by ParseCli), so it prints exactly what serve would run.
 	case Command::SERVE:
 	default:
-		return RunServe(env);
+		return RunServe(env, options.command == Command::VALIDATE);
 	}
 }

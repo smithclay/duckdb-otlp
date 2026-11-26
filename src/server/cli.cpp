@@ -53,7 +53,6 @@ const FlagDef FLAGS[] = {
     {"no-auth", '\0', ALL_CMDS, "DUCKDB_OTLP_DISABLE_AUTH", true},
     {"quack", '\0', ALL_CMDS, "DUCKDB_QUACK_PORT", false},
     {"quack-token", '\0', ALL_CMDS, "DUCKDB_QUACK_TOKEN", false},
-    {"dry-run", '\0', SERVE_CMDS, "DRY_RUN", true},
     {"json", '\0', Bit(Command::DOCTOR), nullptr, true},
 };
 
@@ -224,9 +223,6 @@ CliOptions ParseCli(int argc, char **argv) {
 			options.json_output = true;
 		}
 	}
-	if (options.command == Command::VALIDATE) {
-		options.env_overrides.emplace_back("DRY_RUN", "1");
-	}
 	return options;
 }
 
@@ -291,7 +287,6 @@ Serve flags (each overrides the matching environment variable):
       --no-auth               accept unauthenticated requests
       --quack PORT            enable the Quack SQL endpoint on PORT
       --quack-token TOKEN     Quack bearer token (required with --quack)
-      --dry-run               alias for `validate`
 
 With no token and a loopback bind, authentication is disabled automatically and a
 notice is printed. Binding a non-loopback host requires --token or --no-auth.

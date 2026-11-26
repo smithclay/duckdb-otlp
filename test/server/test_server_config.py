@@ -1,13 +1,13 @@
 """Config-generation tests for the duckdb-otlp-server daemon.
 
-These exercise the pure ``env -> ServerConfig -> boot SQL`` path via ``DRY_RUN=1``
+These exercise the pure ``env -> ServerConfig -> boot SQL`` path via ``validate``
 (no DB is opened, no listener starts), so they are fast and need only the daemon
 binary — not Docker. The highest-value invariants here:
 
   * mode validation fails early with an actionable message;
   * the auth token is referenced via ``getvariable(...)`` and never appears as a literal;
-  * backend secrets are referenced via ``getenv(...)`` and never appear as literals
-    (DRY_RUN prints the generated SQL, and the engine can echo it in errors).
+  * backend secrets are referenced via ``getvariable(...)`` and never appear as literals
+    (validate prints the generated SQL, and the engine can echo it in errors).
 
 Point the tests at a binary with DUCKDB_OTLP_SERVER_BIN, or rely on the default
 ``build/release`` path. If the binary is missing the whole module is skipped.
@@ -35,23 +35,22 @@ pytestmark = pytest.mark.skipif(
     reason=f"daemon binary not found at {SERVER_BIN}; build with `make server-release`",
 )
 
-# A sentinel secret value: if any of these ever appear in DRY_RUN output, a secret is
+# If this sentinel appears in validate output, a secret is
 # being interpolated as a literal instead of referenced via getenv()/getvariable().
 SECRET = "PLAINTEXT-SECRET-SHOULD-NEVER-APPEAR"
 
 
 def run(env: dict, data_dir: Path) -> subprocess.CompletedProcess:
-    """Run the daemon in DRY_RUN mode with a temp data dir and return the result."""
+    """Run validate with a temp data dir and return the result."""
     full_env = {
         # Keep PATH so the dynamic loader works; drop the rest for a clean slate.
         "PATH": os.environ.get("PATH", ""),
-        "DRY_RUN": "1",
         "DUCKDB_OTLP_DATA_DIR": str(data_dir),
         "DUCKDB_DATABASE": str(data_dir / "control.duckdb"),
     }
     full_env.update(env)
     return subprocess.run(
-        [str(SERVER_BIN)],
+        [str(SERVER_BIN), "validate"],
         env=full_env,
         capture_output=True,
         text=True,
@@ -516,12 +515,9 @@ def test_ports_select_listeners_for_one_otlp_serve_call(tmp_path, ports, expecte
         ({"DUCKDB_OTLP_HTTP_PORT": "9000", "DUCKDB_OTLP_GRPC_PORT": "9000"}, "different ports"),
         ({"DUCKDB_OTLP_GRPC_PORT": "70000"}, "port between 0 and 65535"),
         ({"DUCKDB_OTLP_HTTP_PORT": "0", "DUCKDB_OTLP_GRPC_PORT": "0"}, "Every listener is disabled"),
-        ({"OTEL_HTTP_ADDR": "0.0.0.0:4318"}, "--http PORT"),
-        ({"DUCKDB_OTLP_TRANSPORTS": "http"}, "--http/--grpc PORT"),
-        ({"DUCKDB_QUACK_ENABLED": "1"}, "--quack PORT"),
     ],
 )
-def test_conflicting_invalid_or_removed_listener_settings(tmp_path, env, complaint):
+def test_conflicting_or_invalid_listener_settings(tmp_path, env, complaint):
     result = run({"DUCKDB_MODE": "parquet", **env}, tmp_path)
     assert result.returncode == 1
     assert complaint in result.stderr
@@ -530,7 +526,7 @@ def test_conflicting_invalid_or_removed_listener_settings(tmp_path, env, complai
 # --- --init-sql / DUCKDB_OTLP_INIT_SQL -------------------------------------------------
 #
 # The escape hatch for DuckDB configuration the modes do not model. Resolved to contents
-# during config resolution, so DRY_RUN both validates the path and prints the SQL -- which
+# during config resolution, so validate both checks the path and prints the SQL -- which
 # is what makes these tests possible without opening a database.
 
 

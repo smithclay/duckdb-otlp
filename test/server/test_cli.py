@@ -452,7 +452,6 @@ def test_an_ipv6_host_is_bracketed_in_the_quack_address_too(tmp_path):
     [
         (["doctor", "--init-sql", "x.sql"], "serve, validate"),
         (["validate", "--json"], "doctor"),
-        (["doctor", "--dry-run"], "serve, validate"),
     ],
 )
 def test_a_flag_of_another_command_is_rejected_by_name(args, belongs_to, tmp_path):

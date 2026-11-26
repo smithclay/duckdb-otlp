@@ -111,7 +111,7 @@ The banner and reports go to stdout; warnings and errors go to stderr. The `serv
 
 Command-line flag, then environment variable, then built-in default. Every flag that maps onto a setting overrides the matching variable, so `--http 4318` wins over `DUCKDB_OTLP_HTTP_PORT=9999`. A flag is layered over the environment rather than written into it, so its value — a `--token` above all — stays inside the configuration and is never published to the rest of the process.
 
-Each command accepts only the flags that apply to it. `doctor` takes every `serve` flag except `--init-sql` and `--dry-run`, and `--json` belongs to `doctor` alone. Naming a flag outside its command is an error that says where the flag does belong:
+Each command accepts only the flags that apply to it. `doctor` takes every `serve` flag except `--init-sql`, and `--json` belongs to `doctor` alone. The error names the commands that accept a misplaced flag.
 
 ```
 $ duckdb-otlp doctor --init-sql init.sql
@@ -311,7 +311,7 @@ duckdb-otlp --host ::1                      # OTLP http: otlp:[::1]:4318
 duckdb-otlp --host :: --token "$TOKEN"      # every interface, IPv6
 ```
 
-Every listener, Quack included, binds the one `--host`. The earlier per-transport settings (`OTEL_HTTP_ADDR`, `OTEL_GRPC_ADDR`, `DUCKDB_OTLP_TRANSPORTS`, `DUCKDB_OTLP_LISTEN_URI`, `DUCKDB_QUACK_ENABLED`, `DUCKDB_QUACK_ADDR`) are rejected at startup with the flag that replaces them.
+Every listener, Quack included, binds the one `--host`.
 
 The gRPC port accepts OTLP unary exports and OTAP/Arrow streams into the same tables.
 
