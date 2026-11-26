@@ -42,3 +42,6 @@ ATTACH 'ducklake:ducklake_secret' AS "${CATALOG}"
   (DATA_INLINING_ROW_LIMIT ${DUCKLAKE_DATA_INLINING_ROW_LIMIT})
 -- @end
 ;
+CALL "${CATALOG}".set_option('target_file_size', '${DUCKDB_OTLP_TARGET_FILE_SIZE:-256MB}');
+CALL "${CATALOG}".set_option('expire_older_than', '${DUCKDB_OTLP_MAINTENANCE_RETENTION:-900s}');
+CALL "${CATALOG}".set_option('delete_older_than', '${DUCKDB_OTLP_MAINTENANCE_RETENTION:-900s}');

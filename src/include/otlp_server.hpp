@@ -65,10 +65,6 @@ struct OtlpServerConfig {
 	int64_t seal_max_age_ms = otlp_limits::DEFAULT_SEAL_MAX_AGE_MS;   //! seal when the oldest buffered row is this old
 	//! Catalog maintenance: the sealer runs `CHECKPOINT <catalog>` at most once per
 	//! maintenance_interval_ms, after rows were sealed (never from otlp_flush or shutdown drains).
-	//! target_file_size is the OUTPUT file size the merge packs toward (seal_target_bytes is input
-	//! bytes); maintenance_retention_ms is the age before snapshots/files are expired and deleted.
-	idx_t target_file_size = otlp_limits::DEFAULT_TARGET_FILE_SIZE;
-	int64_t maintenance_retention_ms = otlp_limits::DEFAULT_MAINTENANCE_RETENTION_MS;
 	int64_t maintenance_interval_ms = otlp_limits::DEFAULT_MAINTENANCE_INTERVAL_MS;
 	//! Backpressure cap (over it -> 503) on admitted request-body bytes (max(body_size, 1024)
 	//! each), not decoded buffer heap: a throughput proxy, not a precise memory bound.
@@ -359,11 +355,9 @@ private:
 	//! Sealer thread only.
 	void MaybeRunCatalogMaintenance();
 	bool CatalogMaintenanceEnabled() const;
-	//! Delete untracked DuckLake files older than maintenance_retention_ms (left by a losing concurrent
-	//! checkpoint or a crashed seal). Best-effort; DuckLake only. Caller holds writer_mutex.
+	//! Delete untracked files left by a losing checkpoint or crashed seal using DuckLake's retention.
+	//! Best-effort. Caller holds writer_mutex.
 	void SweepOrphanedFiles();
-	//! Best-effort: non-DuckLake catalogs throw and are ignored.
-	void ConfigureCatalogMaintenanceOptions();
 
 	void CreateOrValidateTable(const OtlpSignal &signal);
 	//! The importer's type, except TIMESTAMP_NS narrows to the tables' TIMESTAMP (us).

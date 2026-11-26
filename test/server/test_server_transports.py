@@ -233,8 +233,9 @@ def test_init_sql_adds_a_parquet_destination_next_to_the_ducklake_catalog(tmp_pa
     lake_dir = tmp_path / 'lake'
     parquet_dir = tmp_path / 'parquet-side'
     script = tmp_path / 'init.sql'
-    # A distinct ingest target, which is what the one-server-per-target rule requires.
+    # Override the preset's snapshot retention before starting the distinct Parquet target.
     script.write_text(
+        "CALL otel.set_option('expire_older_than', '12 hours');\n"
         f"SELECT 1 FROM otlp_serve('otlp:127.0.0.1:{parquet_port}', "
         f"parquet_export_path := '{parquet_dir}', token := '{TOKEN}');\n"
     )
@@ -281,3 +282,6 @@ def test_init_sql_adds_a_parquet_destination_next_to_the_ducklake_catalog(tmp_pa
         connection.execute('INSTALL ducklake; LOAD ducklake;')
         connection.execute(f"ATTACH 'ducklake:{catalog}' AS lake (READ_ONLY)")
         assert connection.execute('SELECT name FROM lake.main.otlp_traces').fetchall() == [('transport-1',)]
+        assert connection.execute(
+            "SELECT value FROM ducklake_options('lake') WHERE option_name = 'expire_older_than'"
+        ).fetchall() == [('12 hours',)]

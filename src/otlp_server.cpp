@@ -319,8 +319,6 @@ OtlpServer::OtlpServer(ClientContext &context, const vector<OtlpListenerSpec> &l
 	writer_con = make_uniq<Connection>(*db);
 	writer_con->context->config.enable_progress_bar = false;
 	EnsureTargetTables();
-	// Before the sealer can fire.
-	ConfigureCatalogMaintenanceOptions();
 	// Parquet-export mode has no table to ALTER.
 	if (config.parquet_export_path.empty()) {
 		string failure;
@@ -1149,14 +1147,8 @@ void OtlpServer::SweepOrphanedFiles() {
 				return;
 			}
 		}
-		// Same retention window as expire_older_than/delete_older_than, so an in-flight seal or
-		// checkpoint's Parquet (here or in another process) is never a candidate.
-		auto retention_s = std::max<int64_t>(1, config.maintenance_retention_ms / 1000);
-		auto result = RunSQL(
-		    *writer_con,
-		    StringUtil::Format(
-		        "SELECT count(*) FROM ducklake_delete_orphaned_files(%s, older_than => now() - INTERVAL %lld SECOND)",
-		        SqlQuote(config.catalog_name), static_cast<int64_t>(retention_s)));
+		auto result = RunSQL(*writer_con, "SELECT count(*) FROM ducklake_delete_orphaned_files(" +
+		                                      SqlQuote(config.catalog_name) + ")");
 		auto chunk = result->Fetch();
 		auto deleted = chunk && chunk->size() > 0 ? chunk->GetValue(0, 0).GetValue<int64_t>() : 0;
 		if (deleted > 0) {
@@ -1174,33 +1166,6 @@ void OtlpServer::SweepOrphanedFiles() {
 		LogServerEvent(StringUtil::Format("catalog maintenance orphan sweep failed: catalog=%s error=%s",
 		                                  config.catalog_name, msg),
 		               LogLevel::LOG_WARNING);
-	}
-}
-
-void OtlpServer::ConfigureCatalogMaintenanceOptions() {
-	// target_file_size bounds merge output (at-target files are left alone, so O(new) per cycle).
-	if (config.catalog_name.empty() || !writer_con) {
-		return;
-	}
-	auto target_mb = std::max<idx_t>(1, config.target_file_size / (1024ULL * 1024ULL));
-	auto retention_s = std::max<int64_t>(1, config.maintenance_retention_ms / 1000);
-	auto quoted = QuoteIdentifier(config.catalog_name);
-	try {
-		RunSQL(*writer_con, StringUtil::Format("CALL %s.set_option('target_file_size', '%lluMB')", quoted,
-		                                       static_cast<uint64_t>(target_mb)));
-		RunSQL(*writer_con, StringUtil::Format("CALL %s.set_option('expire_older_than', '%llds')", quoted,
-		                                       static_cast<long long>(retention_s)));
-		RunSQL(*writer_con, StringUtil::Format("CALL %s.set_option('delete_older_than', '%llds')", quoted,
-		                                       static_cast<long long>(retention_s)));
-		LogServerEvent(StringUtil::Format(
-		    "catalog maintenance options set: catalog=%s target_file_size=%lluMB retention=%llds", config.catalog_name,
-		    static_cast<uint64_t>(target_mb), static_cast<long long>(retention_s)));
-	} catch (...) {
-		// Not DuckLake: keep defaults; maintenance DISABLEs itself if CHECKPOINT fails. catch(...) so a
-		// non-std throw cannot escape this startup path.
-		auto msg = CurrentExceptionMessage("catalog maintenance option setup");
-		LogServerEvent(
-		    StringUtil::Format("catalog maintenance options not applied for catalog=%s: %s", config.catalog_name, msg));
 	}
 }
 

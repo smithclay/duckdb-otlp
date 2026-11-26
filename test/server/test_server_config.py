@@ -149,8 +149,7 @@ def test_otlp_limits_are_configurable(tmp_path):
             "DUCKDB_OTLP_MAX_BUFFERED_BYTES": "2147483648",
             "DUCKDB_OTLP_SEAL_TARGET_BYTES": "134217728",
             "DUCKDB_OTLP_SEAL_MAX_AGE_MS": "3000",
-            "DUCKDB_OTLP_TARGET_FILE_SIZE": "268435456",
-            "DUCKDB_OTLP_MAINTENANCE_RETENTION_MS": "600000",
+            "DUCKDB_OTLP_MAINTENANCE_INTERVAL_MS": "600000",
         },
         tmp_path,
     )
@@ -160,8 +159,24 @@ def test_otlp_limits_are_configurable(tmp_path):
     assert "max_buffered_bytes := 2147483648" in result.stdout
     assert "seal_target_bytes := 134217728" in result.stdout
     assert "seal_max_age_ms := 3000" in result.stdout
-    assert "target_file_size := 268435456" in result.stdout
-    assert "maintenance_retention_ms := 600000" in result.stdout
+    assert "maintenance_interval_ms := 600000" in result.stdout
+
+
+def test_ducklake_preset_renders_catalog_maintenance_overrides(tmp_path):
+    result = run(
+        {
+            "DUCKDB_MODE": "local-ducklake",
+            "DUCKDB_CATALOG": "custom_lake",
+            "DUCKDB_OTLP_TARGET_FILE_SIZE": "128MiB",
+            "DUCKDB_OTLP_MAINTENANCE_RETENTION": "2 hours",
+        },
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    sql = result.stdout
+    assert """CALL "custom_lake".set_option('target_file_size', '128MiB');""" in sql
+    assert """CALL "custom_lake".set_option('expire_older_than', '2 hours');""" in sql
+    assert """CALL "custom_lake".set_option('delete_older_than', '2 hours');""" in sql
 
 
 def test_promotion_params_emitted_when_set(tmp_path):
@@ -891,6 +906,15 @@ def test_every_mode_renders_with_its_minimal_settings(mode, tmp_path):
     assert "INSTALL otlp" not in sql
     for name in re.findall(r"^LOAD ([a-z0-9_]+);", sql, re.M):
         assert re.search(rf"^INSTALL {name}( FROM community)?;", sql, re.M), name
+    if env["DUCKDB_MODE"].endswith("-ducklake"):
+        attach = re.search(r"""^ATTACH 'ducklake:[^']+' AS ("[^"]+")""", sql, re.M)
+        assert attach
+        catalog = attach[1]
+        assert sql.index(f"CALL {catalog}.set_option('target_file_size', '256MB');") > attach.end()
+        assert f"CALL {catalog}.set_option('expire_older_than', '900s');" in sql
+        assert f"CALL {catalog}.set_option('delete_older_than', '900s');" in sql
+    else:
+        assert ".set_option(" not in sql
 
 
 def test_a_missing_setting_inside_a_default_names_what_could_replace_it(tmp_path):

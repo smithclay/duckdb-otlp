@@ -107,8 +107,6 @@ static const ServeNumericOption NUMERIC_OPTIONS[] = {
     {"max_buffered_bytes", &OtlpServerConfig::max_buffered_bytes, nullptr},
     {"seal_target_bytes", &OtlpServerConfig::seal_target_bytes, nullptr},
     {"seal_max_age_ms", nullptr, &OtlpServerConfig::seal_max_age_ms},
-    {"target_file_size", &OtlpServerConfig::target_file_size, nullptr},
-    {"maintenance_retention_ms", nullptr, &OtlpServerConfig::maintenance_retention_ms},
     {"maintenance_interval_ms", nullptr, &OtlpServerConfig::maintenance_interval_ms},
 };
 //! Comma-separated resource / scope attribute keys to promote into columns.

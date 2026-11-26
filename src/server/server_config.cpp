@@ -146,8 +146,6 @@ const ServeOption SERVE_OPTIONS[] = {
     {"MAX_BUFFERED_BYTES", true},
     {"SEAL_TARGET_BYTES", true},
     {"SEAL_MAX_AGE_MS", true},
-    {"TARGET_FILE_SIZE", true},
-    {"MAINTENANCE_RETENTION_MS", true},
     {"MAINTENANCE_INTERVAL_MS", true},
     {"PROMOTE_RESOURCE_ATTRIBUTES", false},
     {"PROMOTE_SCOPE_ATTRIBUTES", false},

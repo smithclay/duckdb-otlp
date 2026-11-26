@@ -37,16 +37,6 @@ CALL otlp_serve('otlp:127.0.0.1:55439', token := 'dev-token-123456', seal_max_ag
 seal_max_age_ms must be greater than zero
 
 statement error
-CALL otlp_serve('otlp:127.0.0.1:55439', token := 'dev-token-123456', target_file_size := 0);
-----
-target_file_size must be greater than zero
-
-statement error
-CALL otlp_serve('otlp:127.0.0.1:55439', token := 'dev-token-123456', maintenance_retention_ms := 0);
-----
-maintenance_retention_ms must be greater than zero
-
-statement error
 CALL otlp_flush('otlp:127.0.0.1:55439', checkpoint := true);
 ----
 Invalid named parameter "checkpoint"
@@ -64,8 +54,7 @@ Invalid named parameter "checkpoint_interval"
 query TTTTTT
 SELECT *
 FROM otlp_serve('otlp:127.0.0.1:55439', token := 'dev-token-123456', schema := 'main', create_tables := true,
-                seal_target_bytes := 1048576, seal_max_age_ms := 2500,
-                target_file_size := 134217728, maintenance_retention_ms := 600000);
+                seal_target_bytes := 1048576, seal_max_age_ms := 2500, maintenance_interval_ms := 600000);
 ----
 otlp:127.0.0.1:55439	http://127.0.0.1:55439	dev-token-123456	main	(empty)	http
 

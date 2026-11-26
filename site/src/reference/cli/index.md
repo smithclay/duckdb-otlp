@@ -148,7 +148,7 @@ duckdb-otlp serve [flags]
 
 Passing a token as a flag makes it visible in the process list; prefer `DUCKDB_OTLP_TOKEN` outside of local use.
 
-The [`otlp_serve` tuning options](../serve/) are daemon settings too, named `DUCKDB_OTLP_` plus the option in upper case: `DUCKDB_OTLP_HTTP_THREADS`, `DUCKDB_OTLP_MAX_BODY_BYTES`, `DUCKDB_OTLP_MAX_BUFFERED_BYTES`, `DUCKDB_OTLP_SEAL_TARGET_BYTES`, `DUCKDB_OTLP_SEAL_MAX_AGE_MS`, `DUCKDB_OTLP_TARGET_FILE_SIZE`, `DUCKDB_OTLP_MAINTENANCE_RETENTION_MS`, `DUCKDB_OTLP_MAINTENANCE_INTERVAL_MS`, `DUCKDB_OTLP_PROMOTE_RESOURCE_ATTRIBUTES` and `DUCKDB_OTLP_PROMOTE_SCOPE_ATTRIBUTES`. An unset one keeps the extension's default.
+The [`otlp_serve` tuning options](../serve/) are daemon settings too, named `DUCKDB_OTLP_` plus the option in upper case: `DUCKDB_OTLP_HTTP_THREADS`, `DUCKDB_OTLP_MAX_BODY_BYTES`, `DUCKDB_OTLP_MAX_BUFFERED_BYTES`, `DUCKDB_OTLP_SEAL_TARGET_BYTES`, `DUCKDB_OTLP_SEAL_MAX_AGE_MS`, `DUCKDB_OTLP_MAINTENANCE_INTERVAL_MS`, `DUCKDB_OTLP_PROMOTE_RESOURCE_ATTRIBUTES` and `DUCKDB_OTLP_PROMOTE_SCOPE_ATTRIBUTES`. An unset one keeps the extension's default.
 
 ### Destinations (`--mode`)
 
@@ -165,6 +165,13 @@ A mode is a preset: a SQL file ([`src/server/modes/`](https://github.com/smithcl
 | `r2-data-catalog` | Iceberg REST | Cloudflare | R2 (catalog-managed) | `R2_BUCKET`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` |
 | `s3-tables` | Iceberg REST | AWS | S3 (catalog-managed) | `S3_TABLES_BUCKET_ARN`, `AWS_REGION` |
 | `none` | *(whatever `--init-sql` attaches)* | — | — | *(none)* |
+
+DuckLake presets set these catalog-wide options after attaching the lake. `duckdb-otlp validate` prints the statements. To set the options individually, use `--init-sql`, which runs after the preset.
+
+| Setting | Default | DuckLake options |
+|---------|---------|------------------|
+| `DUCKDB_OTLP_TARGET_FILE_SIZE` | `256MB` | `target_file_size` for compaction. Include a size unit, such as `128MiB`. |
+| `DUCKDB_OTLP_MAINTENANCE_RETENTION` | `900s` (15 minutes) | `expire_older_than` and `delete_older_than` for snapshot and file cleanup. Supply a DuckDB interval, such as `2 hours`. |
 
 Missing settings are reported together, in one run:
 
