@@ -14,15 +14,14 @@ true
 # Verify specific table functions exist
 query I
 SELECT COUNT(DISTINCT function_name) FROM duckdb_functions()
-WHERE function_name IN ('read_otlp_traces', 'read_otlp_logs', 'read_otlp_metrics');
+WHERE function_name IN ('read_otlp_traces', 'read_otlp_logs');
 ----
-3
+2
 
 # Verify helper functions for typed metrics exist
 query I
 SELECT COUNT(DISTINCT function_name) FROM duckdb_functions()
 WHERE function_name IN ('read_otlp_metrics_gauge', 'read_otlp_metrics_sum',
-                        'read_otlp_metrics_histogram', 'read_otlp_metrics_exp_histogram',
-                        'read_otlp_metrics_summary');
+                        'read_otlp_metrics_histogram', 'read_otlp_metrics_exp_histogram');
 ----
-5
+4

@@ -15,9 +15,3 @@ statement error
 SELECT * FROM read_otlp_logs('nonexistent_file.jsonl');
 ----
 No files found that match the pattern
-
-# read_otlp_metrics() is intentionally unsupported before it performs file I/O.
-statement error
-SELECT * FROM read_otlp_metrics('nonexistent_file.jsonl');
-----
-read_otlp_metrics() is not supported yet

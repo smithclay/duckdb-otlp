@@ -4,12 +4,6 @@
 
 require otlp
 
-# Test that table functions exist
-query I
-SELECT COUNT(DISTINCT function_name) FROM duckdb_functions() WHERE function_name IN ('read_otlp_traces', 'read_otlp_logs', 'read_otlp_metrics');
-----
-3
-
 #
 # Traces Tests
 #

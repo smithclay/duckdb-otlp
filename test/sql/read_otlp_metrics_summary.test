@@ -31,10 +31,3 @@ query I
 SELECT COUNT(*) FROM read_otlp_metrics_exp_histogram('test/data/metrics_summary_only.jsonl');
 ----
 0
-
-# read_otlp_metrics_summary throws NotImplementedException at bind time regardless
-# of file contents — the file argument never reaches the scan function.
-statement error
-SELECT * FROM read_otlp_metrics_summary('test/data/metrics_summary_only.jsonl');
-----
-Summary metrics not yet supported

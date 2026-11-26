@@ -221,6 +221,7 @@ Early-stage and **single-node** (one daemon, one writer — no HA or horizontal 
 - **Durability is the seal, not the `202`.** Live ingest buffers in memory and commits on a periodic group-commit ("seal"); a `202` means *accepted*, not durable. Call `otlp_flush`/`otlp_stop` before shutting down — a hard kill drops un-sealed rows (there is no WAL).
 - **Keep queries time-bounded.** Data lands roughly time-ordered, so queries scoped by `timestamp` (and `service_name`) prune well; unbounded scans are slow. There is **no full-text index** — `body` substring/regex search and `trace_id` point lookups are brute-force scans: cheap over a short window, expensive over a wide one.
 - **File reads** cap individual files at **100 MB**. On native builds, `otlp_serve` limits request bodies and applies `max_buffered_bytes` backpressure with HTTP `503` or gRPC `RESOURCE_EXHAUSTED`. [Live Ingest Reference](https://smithclay.github.io/duckdb-otlp/reference/serve/#responses-and-status-codes)
+- Summary metrics are not supported.
 
 ## Need Help?
 

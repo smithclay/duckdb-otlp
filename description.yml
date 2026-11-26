@@ -85,7 +85,7 @@ docs:
 
     - The live server runs on native builds with OTLP/HTTP, OTLP/gRPC, and OTAP/Arrow streaming.
     - File reads are capped at 100 MB each.
-    - Summary metrics and the unified `read_otlp_metrics()` are not implemented yet.
+    - Summary metrics are not supported.
 
     ## References
 

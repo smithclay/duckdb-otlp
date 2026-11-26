@@ -14,8 +14,7 @@ WHERE (function_name LIKE 'read_ot%' OR function_name LIKE 'otlp\_%' ESCAPE '\'
 ORDER BY function_name;
 ----
 
-# Every function has an example except the two readers that are registered only to raise a
-# not-implemented error -- an example that always throws would be worse than none.
+# Every function has an example.
 query I
 SELECT function_name FROM duckdb_functions()
 WHERE (function_name LIKE 'read_ot%' OR function_name LIKE 'otlp\_%' ESCAPE '\'
@@ -23,8 +22,6 @@ WHERE (function_name LIKE 'read_ot%' OR function_name LIKE 'otlp\_%' ESCAPE '\'
   AND len(examples) = 0
 ORDER BY function_name;
 ----
-read_otlp_metrics
-read_otlp_metrics_summary
 
 # The function signatures name every argument shown by duckdb_functions().
 query I

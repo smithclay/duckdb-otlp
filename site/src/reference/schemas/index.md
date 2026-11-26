@@ -11,8 +11,6 @@ The extension emits typed tables based on the [OpenTelemetry ClickHouse exporter
 | `read_otlp_metrics_exp_histogram` | 27 | Exponential histogram metrics with bucket data |
 | `read_otlp_metrics_histogram` | 22 | Standard histogram metrics with explicit bucket bounds |
 
-`read_otlp_metrics` (union schema) and `read_otlp_metrics_summary` are registered placeholders.
-
 ## Traces (`read_otlp_traces`)
 
 24 columns total:

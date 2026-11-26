@@ -59,13 +59,6 @@ private:
 	shared_ptr<const OtlpArrowTable> table;
 };
 
-//! A function registered only to point callers elsewhere: the error it raises.
-struct ReadOtlpUnsupportedInfo : public TableFunctionInfo {
-	explicit ReadOtlpUnsupportedInfo(string message_p) : message(std::move(message_p)) {
-	}
-	string message;
-};
-
 //! Bind data of the single-file reader: one file of a multi-file scan. Globbing, file lists and the
 //! multi-file options (filename, hive_partitioning, union_by_name, ...) belong to DuckDB's multi-file
 //! framework, which binds this once per file.
@@ -195,15 +188,6 @@ struct ReadOtlpFileGlobalState : public GlobalTableFunctionState {
 		return 1;
 	}
 };
-
-static unique_ptr<FunctionData> ReadOtlpUnsupportedBind(ClientContext &context, TableFunctionBindInput &input,
-                                                        vector<LogicalType> &return_types, vector<Identifier> &names) {
-	throw NotImplementedException(input.info->Cast<ReadOtlpUnsupportedInfo>().message);
-}
-
-static void ReadOtlpUnsupportedScan(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
-	throw InternalException("an unsupported read_otlp_* reader was scanned");
-}
 
 static unique_ptr<FunctionData> ReadOtlpFileBind(ClientContext &context, TableFunctionBindInput &input,
                                                  vector<LogicalType> &return_types, vector<Identifier> &names) {
@@ -631,15 +615,6 @@ void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
 		}
 		loader.RegisterFunction(OtlpDocumented(std::move(set), std::move(docs)));
 	};
-	//! Registered only to raise and point at the working readers.
-	auto register_unsupported = [&](const string &name, string message, string description) {
-		TableFunction func(Identifier(name), FunctionSignature().AddPositionalOnly("path", LogicalType::VARCHAR),
-		                   ReadOtlpUnsupportedScan, ReadOtlpUnsupportedBind);
-		func.function_info = make_shared_ptr<ReadOtlpUnsupportedInfo>(std::move(message));
-		loader.RegisterFunction(OtlpDocumented(
-		    std::move(func),
-		    {OtlpDoc({LogicalType::VARCHAR}, {"path"}, std::move(description), {}, {"opentelemetry", "otlp"})}));
-	};
 	for (auto signal_type : OTLP_SIGNALS) {
 		const auto &doc = docs[signal_type];
 		const string table = OTLP_SIGNAL_TABLES[signal_type];
@@ -666,20 +641,6 @@ void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
 		                                   doc.rows, doc.columns, otlp_name, common),
 		                {StringUtil::Format("SELECT * FROM %s('%s.bar');", otap_name, file)}, "otap");
 	}
-
-	// Registered only to raise and point at the working readers; no examples, since every call raises.
-	register_unsupported("read_otlp_metrics",
-	                     "read_otlp_metrics() is not supported yet because OTLP metrics have multiple "
-	                     "shape-specific schemas. Use read_otlp_metrics_gauge(), read_otlp_metrics_sum(), "
-	                     "read_otlp_metrics_histogram(), or read_otlp_metrics_exp_histogram().",
-	                     "Not implemented: every call raises. OTLP metrics have shape-specific schemas, so read one of "
-	                     "read_otlp_metrics_gauge, read_otlp_metrics_sum, read_otlp_metrics_histogram or "
-	                     "read_otlp_metrics_exp_histogram instead.");
-	register_unsupported(
-	    "read_otlp_metrics_summary",
-	    "Summary metrics not yet supported. Use read_otlp_metrics_gauge() or read_otlp_metrics_sum() instead.",
-	    "Not implemented: every call raises. OTLP summary data points are not decoded; the other "
-	    "read_otlp_metrics_* readers count them as skipped.");
 }
 
 } // namespace duckdb

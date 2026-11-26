@@ -23,11 +23,6 @@ statement error
 SELECT * FROM read_otlp_logs('test/data/does_not_exist.jsonl');
 ----
 
-# Test nonexistent file with metrics
-statement error
-SELECT * FROM read_otlp_metrics('test/data/does_not_exist.jsonl');
-----
-
 ### Error Handling with Different Data Types ###
 
 # Test malformed traces
@@ -38,9 +33,4 @@ SELECT * FROM read_otlp_traces('test/data/malformed.jsonl');
 # Test malformed logs
 statement error
 SELECT * FROM read_otlp_logs('test/data/malformed.jsonl');
-----
-
-# Test malformed metrics
-statement error
-SELECT * FROM read_otlp_metrics('test/data/malformed.jsonl');
 ----

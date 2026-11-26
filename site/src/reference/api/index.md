@@ -63,7 +63,7 @@ Returns exponential histogram metrics (27 columns) with scale, zero bucket, posi
 
 **Parameters:** Same as `read_otlp_traces`
 
-`read_otlp_metrics(path)` and `read_otlp_metrics_summary(path)` are registered placeholders. Use the shape-specific metric readers above.
+Summary metrics are not supported.
 
 ### OpenTelemetry Arrow Protocol (OTAP)
 
@@ -108,7 +108,7 @@ FROM duckdb_functions()
 WHERE list_contains(categories, 'opentelemetry');
 ```
 
-The `categories` column separates the two wire protocols (`otlp` vs `otap`) from the live-ingest functions (`ingest`, `monitoring`). `read_otlp_metrics` and `read_otlp_metrics_summary` are described but carry no example, because every call to them raises a not-implemented error.
+The `categories` column separates the two wire protocols (`otlp` vs `otap`) from the live-ingest functions (`ingest`, `monitoring`).
 
 ## Examples
 
