@@ -1,14 +1,13 @@
 #include "otlp_server.hpp"
 
-#include "duckdb/main/client_context.hpp"
-#include "duckdb/main/connection.hpp"
-#include "duckdb/main/database.hpp"
+#include "duckdb/common/string_util.hpp"
 
 #ifndef __EMSCRIPTEN__
 #include "httplib.hpp"
 #endif
 
 #include <algorithm>
+#include <exception>
 #include <thread>
 #include <utility>
 
@@ -16,41 +15,13 @@ namespace duckdb {
 
 #ifndef __EMSCRIPTEN__
 
-static string JsonEscape(const string &input) {
-	string result;
-	result.reserve(input.size() + 8);
-	for (auto c : input) {
-		switch (c) {
-		case '\\':
-			result += "\\\\";
-			break;
-		case '"':
-			result += "\\\"";
-			break;
-		case '\n':
-			result += "\\n";
-			break;
-		case '\r':
-			result += "\\r";
-			break;
-		case '\t':
-			result += "\\t";
-			break;
-		default:
-			result += c;
-			break;
-		}
-	}
-	return result;
-}
-
 static void SetJson(duckdb_httplib::Response &res, int status, const string &json) {
 	res.status = status;
 	res.set_content(json, "application/json");
 }
 
 static void SetError(duckdb_httplib::Response &res, int status, const string &reason, const string &message) {
-	SetJson(res, status, "{\"error\":\"" + JsonEscape(reason) + "\",\"message\":\"" + JsonEscape(message) + "\"}");
+	SetJson(res, status, StringUtil::ToJSONMap({{"error", reason}, {"message", message}}));
 }
 
 //! The HTTP status and `error` reason for a refused ingest call.
@@ -127,43 +98,48 @@ void OtlpHttpListener::Start() {
 		}
 	});
 
-	auto post_handler = [&](OtlpRequestKind kind) {
+	http->set_exception_handler(
+	    [this](const duckdb_httplib::Request &, duckdb_httplib::Response &res, std::exception_ptr error) {
+		    string message = "unknown error";
+		    try {
+			    std::rethrow_exception(error);
+		    } catch (const std::exception &ex) {
+			    message = ex.what();
+		    } catch (...) {
+		    }
+		    server.LogServerEvent(StringUtil::Format("ingest internal error: %s", message), LogLevel::LOG_WARNING);
+		    SetError(res, 500, "internal_error", message);
+	    });
+
+	auto post_handler = [this](OtlpRequestKind kind) {
 		return [this, kind](const duckdb_httplib::Request &req, duckdb_httplib::Response &res) {
 			OtlpServer::RequestGuard request_guard(server);
-			try {
-				if (!server.CheckAuth(req.get_header_value("Authorization"), req.get_header_value("x-api-key"))) {
-					SetError(res, 401, "unauthorized", "missing or invalid Authorization bearer token or x-api-key");
-				} else {
-					auto outcome = server.Ingest(kind, req.get_header_value("Content-Type"),
-					                             req.get_header_value("Content-Encoding"), req.body);
-					if (!outcome.Accepted()) {
-						auto status = HttpRefusal(outcome.refusal);
-						SetError(res, status.first, status.second, outcome.message);
-						return;
-					}
-					auto &result = outcome.counts;
-					// 202: buffered in memory, not yet durable until the next seal.
-					auto response =
-					    StringUtil::Format("{\"status\":\"buffered\",\"rows\":%llu,\"batches\":%llu",
-					                       static_cast<uint64_t>(result.rows), static_cast<uint64_t>(result.batches));
-					if (kind == OtlpRequestKind::METRICS || result.HasSkipped()) {
-						response += StringUtil::Format(
-						    ",\"skipped\":{\"summaries\":%llu,\"nan_values\":%llu,\"infinity_values\":%llu,"
-						    "\"missing_values\":%llu}",
-						    static_cast<uint64_t>(result.skipped_summaries),
-						    static_cast<uint64_t>(result.skipped_nan_values),
-						    static_cast<uint64_t>(result.skipped_infinity_values),
-						    static_cast<uint64_t>(result.skipped_missing_values));
-					}
-					response += "}";
-					SetJson(res, 202, response);
-				}
-			} catch (std::exception &ex) {
-				// Ingest reports its own failures as refusals; this is auth or building the response.
-				server.LogServerEvent(StringUtil::Format("ingest internal error: %s", ex.what()),
-				                      LogLevel::LOG_WARNING);
-				SetError(res, 500, "internal_error", ex.what());
+			if (!server.CheckAuth(req.get_header_value("Authorization"), req.get_header_value("x-api-key"))) {
+				SetError(res, 401, "unauthorized", "missing or invalid Authorization bearer token or x-api-key");
+				return;
 			}
+			auto outcome = server.Ingest(kind, req.get_header_value("Content-Type"),
+			                             req.get_header_value("Content-Encoding"), req.body);
+			if (!outcome.Accepted()) {
+				auto status = HttpRefusal(outcome.refusal);
+				SetError(res, status.first, status.second, outcome.message);
+				return;
+			}
+			auto &result = outcome.counts;
+			// 202: buffered in memory, not yet durable until the next seal.
+			auto response =
+			    StringUtil::Format("{\"status\":\"buffered\",\"rows\":%llu,\"batches\":%llu",
+			                       static_cast<uint64_t>(result.rows), static_cast<uint64_t>(result.batches));
+			if (kind == OtlpRequestKind::METRICS || result.HasSkipped()) {
+				response += StringUtil::Format(
+				    ",\"skipped\":{\"summaries\":%llu,\"nan_values\":%llu,\"infinity_values\":%llu,"
+				    "\"missing_values\":%llu}",
+				    static_cast<uint64_t>(result.skipped_summaries), static_cast<uint64_t>(result.skipped_nan_values),
+				    static_cast<uint64_t>(result.skipped_infinity_values),
+				    static_cast<uint64_t>(result.skipped_missing_values));
+			}
+			response += "}";
+			SetJson(res, 202, response);
 		};
 	};
 
