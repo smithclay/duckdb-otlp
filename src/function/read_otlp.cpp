@@ -421,38 +421,6 @@ static virtual_column_map_t ReadOtlpFileVirtualColumns(ClientContext &context, o
 	return result;
 }
 
-// The returned schema is released here (conversion uses the bind-time types); the caller owns the array.
-static ArrowArray DecodeFileToArray(const ReadOtlpFileBindData &bind_data, OtlpReadRequest &request,
-                                    const uint8_t *input_bytes, idx_t input_len, const string &path) {
-	auto options = request.Options();
-	ArrowArray array;
-	ArrowSchema schema;
-	OtlpStatus status;
-	if (bind_data.is_otap) {
-		// One decoder per file: a file must be a self-contained message (no cross-file dictionary reuse).
-		OtapDecoderPtr decoder(otlp_otap_decoder_new_with_profile(OTLP_ARROW_PROFILE_DUCKDB));
-		if (!decoder) {
-			throw IOException("Failed to allocate OTAP decoder for %s", path);
-		}
-		status = otlp_otap_decode_with_options(decoder.get(), bind_data.signal_type, &options, input_bytes, input_len,
-		                                       &array, &schema);
-		if (status != OTLP_OK) {
-			throw IOException("OTAP decode error on %s: %s", path, otlp_status_message(status));
-		}
-	} else {
-		// A metric signal builds only its own shape; a file without it is an empty batch.
-		status = otlp_transform_with_options(bind_data.signal_type, OTLP_FORMAT_AUTO, OTLP_ARROW_PROFILE_DUCKDB,
-		                                     &options, input_bytes, input_len, &array, &schema);
-		if (status != OTLP_OK) {
-			throw IOException("OTLP parse error on %s: %s", path, otlp_status_message(status));
-		}
-	}
-	if (schema.release) {
-		schema.release(&schema);
-	}
-	return array;
-}
-
 //! Reads and decodes the whole file into one ArrowArray (null if no row of it is wanted).
 static shared_ptr<ArrowArrayWrapper> DecodeFile(ClientContext &context, const ReadOtlpFileBindData &bind_data,
                                                 OtlpReadRequest &request) {
@@ -477,21 +445,37 @@ static shared_ptr<ArrowArrayWrapper> DecodeFile(ClientContext &context, const Re
 		                  static_cast<uint64_t>(bytes_read));
 	}
 
-	ArrowArray array = DecodeFileToArray(bind_data, request, buffer.get(), file_size, path);
-	if (array.length < 0) {
-		if (array.release) {
-			array.release(&array);
+	auto options = request.Options();
+	auto batch = make_shared_ptr<ArrowArrayWrapper>();
+	ArrowSchemaWrapper schema;
+	if (bind_data.is_otap) {
+		// One decoder per file: a file must be a self-contained message (no cross-file dictionary reuse).
+		OtapDecoderPtr decoder(otlp_otap_decoder_new_with_profile(OTLP_ARROW_PROFILE_DUCKDB));
+		if (!decoder) {
+			throw IOException("Failed to allocate OTAP decoder for %s", path);
 		}
+		auto status = otlp_otap_decode_with_options(decoder.get(), bind_data.signal_type, &options, buffer.get(),
+		                                            file_size, &batch->arrow_array, &schema.arrow_schema);
+		if (status != OTLP_OK) {
+			throw IOException("OTAP decode error on %s: %s", path, otlp_status_message(status));
+		}
+	} else {
+		// A metric signal builds only its own shape; a file without it is an empty batch.
+		auto status =
+		    otlp_transform_with_options(bind_data.signal_type, OTLP_FORMAT_AUTO, OTLP_ARROW_PROFILE_DUCKDB, &options,
+		                                buffer.get(), file_size, &batch->arrow_array, &schema.arrow_schema);
+		if (status != OTLP_OK) {
+			throw IOException("OTLP parse error on %s: %s", path, otlp_status_message(status));
+		}
+	}
+
+	if (batch->arrow_array.length < 0) {
 		throw IOException("Invalid Arrow batch: negative row count");
 	}
-	if (!array.release) {
+	if (!batch->arrow_array.release || batch->arrow_array.length == 0) {
 		return nullptr;
 	}
-	if (array.length == 0) {
-		array.release(&array);
-		return nullptr;
-	}
-	return OtlpOwnArrowBatch(array);
+	return batch;
 }
 
 //! Converts the next rows of the decoded file into `output`; returns how many.

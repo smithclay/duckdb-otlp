@@ -65,9 +65,6 @@ struct OtlpArrowTable {
 	void CheckBatchSchema(const ArrowSchema &schema) const;
 };
 
-//! Takes ownership of `array` (its release callback is cleared); the wrapper releases it once no
-//! vector produced from it is alive.
-shared_ptr<ArrowArrayWrapper> OtlpOwnArrowBatch(ArrowArray &array);
 //! Wraps `array` without taking ownership. The caller keeps it alive while any vector produced from
 //! it is in use (e.g. until those rows have been appended into a ColumnDataCollection).
 shared_ptr<ArrowArrayWrapper> OtlpBorrowArrowBatch(const ArrowArray &array);

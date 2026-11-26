@@ -6,19 +6,13 @@
 namespace duckdb {
 
 unique_ptr<OtlpArrowTable> OtlpArrowTable::ForSignal(ClientContext &context, OtlpSignalType signal_type) {
-	ArrowSchema schema;
-	OtlpStatus status = otlp_get_schema_with_profile(signal_type, OTLP_ARROW_PROFILE_DUCKDB, &schema);
+	ArrowSchemaWrapper schema;
+	OtlpStatus status = otlp_get_schema_with_profile(signal_type, OTLP_ARROW_PROFILE_DUCKDB, &schema.arrow_schema);
 	if (status != OTLP_OK) {
 		throw IOException("Failed to get OTLP schema: %s", otlp_status_message(status));
 	}
 	auto result = make_uniq<OtlpArrowTable>();
-	try {
-		ArrowTableFunction::PopulateArrowTableSchema(context, result->arrow_table, schema);
-	} catch (...) {
-		schema.release(&schema);
-		throw;
-	}
-	schema.release(&schema);
+	ArrowTableFunction::PopulateArrowTableSchema(context, result->arrow_table, schema.arrow_schema);
 
 	result->types = result->arrow_table.GetTypes();
 	result->names = result->arrow_table.GetNames();
@@ -42,13 +36,6 @@ void OtlpArrowTable::CheckBatchSchema(const ArrowSchema &schema) const {
 			                  child && child->name ? child->name : "", names[i]);
 		}
 	}
-}
-
-shared_ptr<ArrowArrayWrapper> OtlpOwnArrowBatch(ArrowArray &array) {
-	auto wrapper = make_shared_ptr<ArrowArrayWrapper>();
-	wrapper->arrow_array = array;
-	array.release = nullptr;
-	return wrapper;
 }
 
 shared_ptr<ArrowArrayWrapper> OtlpBorrowArrowBatch(const ArrowArray &array) {
