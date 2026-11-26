@@ -5,17 +5,13 @@ name: Main Extension Distribution Pipeline
 on:
   push:
     paths-ignore:
-      - 'docs/**'
       - 'demo/**'
       - 'site/**'
-      - 'notebooks/**'
       - 'README.md'
   pull_request:
     paths-ignore:
-      - 'docs/**'
       - 'demo/**'
       - 'site/**'
-      - 'notebooks/**'
       - 'README.md'
   workflow_dispatch:
 
