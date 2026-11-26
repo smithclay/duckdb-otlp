@@ -98,11 +98,7 @@ If pre-built binaries aren't available for your platform, [build from source](ht
 
 ### Live Ingest in WASM
 
-```
-Error: otlp_serve is not implemented for the wasm platform
-```
-
-Use a native DuckDB build for live ingestion.
+Use a native DuckDB build for `otlp_serve` and the other live ingest functions.
 
 ## See Also
 

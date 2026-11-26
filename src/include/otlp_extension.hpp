@@ -1,5 +1,14 @@
 #pragma once
 
-// Forwarding header for DuckDB's build system
-// The actual implementation is in src/storage/otlp_extension.hpp
-#include "../storage/otlp_extension.hpp"
+#include "duckdb.hpp"
+
+namespace duckdb {
+
+class OtlpExtension : public Extension {
+public:
+	void Load(ExtensionLoader &db) override;
+	std::string Name() override;
+	std::string Version() const override;
+};
+
+} // namespace duckdb

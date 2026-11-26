@@ -4,8 +4,8 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "env_source.hpp"
+#include "otlp_control.hpp"
 #include "otlp_sql_util.hpp"
-#include "otlp_start_stop.hpp"
 #include "otlp_uri.hpp"
 #include "server_util.hpp"
 

@@ -1,5 +1,7 @@
 #include "otlp_uri.hpp"
 
+#include "otlp_function_docs.hpp"
+
 #include <charconv>
 
 namespace duckdb {
@@ -95,7 +97,7 @@ static void OtlpUriParser(const DataChunk &args, ExpressionState &, Vector &resu
 	result.SetVectorType(VectorType::CONSTANT_VECTOR);
 }
 
-CreateScalarFunctionInfo OtlpUriParserFunction::GetFunction() {
+void RegisterOtlpUriFunction(ExtensionLoader &loader) {
 	// Copies, not references: binding a reference to the static constexpr LogicalType members
 	// ODR-uses them and the GNU linker then reports a multiple definition.
 	LogicalType varchar_type(LogicalType::VARCHAR);
@@ -112,13 +114,13 @@ CreateScalarFunctionInfo OtlpUriParserFunction::GetFunction() {
 	auto function = ScalarFunction("otlp_uri_parser", {FunctionParameter(Identifier("listen_uri"), varchar_type)},
 	                               LogicalType::STRUCT(std::move(struct_children)), OtlpUriParser);
 	function.SetFallible();
-	return OtlpDocumented(
+	loader.RegisterFunction(OtlpDocumented(
 	    std::move(function),
 	    {OtlpDoc({varchar_type}, {"listen_uri"},
 	             "Parse an otlp: listen URI into a struct of host, port, ipv6 and the derived http:// URL. "
 	             "The host defaults to localhost and the port to 4318. "
 	             "The argument must be constant.",
-	             {"otlp_uri_parser('otlp:localhost:4318')"}, {"opentelemetry", "utility"})});
+	             {"otlp_uri_parser('otlp:localhost:4318')"}, {"opentelemetry", "utility"})}));
 }
 
 } // namespace duckdb

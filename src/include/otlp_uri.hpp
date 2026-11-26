@@ -1,7 +1,6 @@
 #pragma once
 
 #include "duckdb.hpp"
-#include "otlp_function_docs.hpp"
 
 namespace duckdb {
 
@@ -53,9 +52,6 @@ private:
 	string uri;
 };
 
-class OtlpUriParserFunction {
-public:
-	static CreateScalarFunctionInfo GetFunction();
-};
+void RegisterOtlpUriFunction(ExtensionLoader &loader);
 
 } // namespace duckdb

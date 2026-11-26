@@ -40,6 +40,24 @@ paths	ANY[]
 path	VARCHAR
 path	VARIANT
 
+# The scalar function's example is a runnable expression.
+query I
+SELECT otlp_uri_parser('otlp:localhost:4318').url;
+----
+http://localhost:4318
+
+# Categories put a reader on the right side of the OTLP/OTAP split.
+query II
+SELECT DISTINCT function_name, list_sort(categories) FROM duckdb_functions()
+WHERE function_name IN ('read_otlp_logs', 'read_otap_logs')
+ORDER BY function_name;
+----
+read_otap_logs	[opentelemetry, otap]
+read_otlp_logs	[opentelemetry, otlp]
+
+# Only the native builds register live ingest functions.
+require 64bit
+
 # Each overload of a function set gets its own description, matched on its positional
 # argument types.
 query TI
@@ -62,18 +80,3 @@ query I
 SELECT count(DISTINCT description) FROM duckdb_functions() WHERE function_name = 'otlp_serve';
 ----
 3
-
-# The scalar function's example is a runnable expression.
-query I
-SELECT otlp_uri_parser('otlp:localhost:4318').url;
-----
-http://localhost:4318
-
-# Categories put a reader on the right side of the OTLP/OTAP split.
-query II
-SELECT DISTINCT function_name, list_sort(categories) FROM duckdb_functions()
-WHERE function_name IN ('read_otlp_logs', 'read_otap_logs')
-ORDER BY function_name;
-----
-read_otap_logs	[opentelemetry, otap]
-read_otlp_logs	[opentelemetry, otlp]

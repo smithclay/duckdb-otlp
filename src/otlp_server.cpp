@@ -304,9 +304,6 @@ OtlpServer::OtlpServer(ClientContext &context, const vector<OtlpListenerSpec> &l
                        const OtlpServerConfig &config_p)
     : db_ptr(context.db), config(config_p),
       maintains_catalog(!config.catalog_name.empty() && config.parquet_export_path.empty()) {
-#ifdef __EMSCRIPTEN__
-	throw NotImplementedException("otlp_serve is not implemented for the wasm platform");
-#else
 	if (!config.disable_auth) {
 		ValidateToken(config.token);
 	}
@@ -360,7 +357,6 @@ OtlpServer::OtlpServer(ClientContext &context, const vector<OtlpListenerSpec> &l
 		ShutdownIngest();
 		throw;
 	}
-#endif
 }
 
 static Value NullIfEmpty(const string &value) {

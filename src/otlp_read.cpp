@@ -1,10 +1,9 @@
 /**
- * @file read_otlp.cpp
- * @brief DuckDB table functions using Rust otlp2records backend
- *
  * This file implements read_otlp_logs, read_otlp_traces, etc. Each is a single-file reader over the
  * Rust otlp2records library, wrapped by DuckDB's multi-file framework.
  */
+
+#include "otlp_read.hpp"
 
 #include "duckdb.hpp"
 #include "duckdb/function/table_function.hpp"
@@ -515,7 +514,7 @@ static TableFunctionSet ReadOtlpFunctionSet(const string &name, shared_ptr<ReadO
 	                                                        std::move(settings));
 }
 
-void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
+void RegisterOtlpReadFunctions(ExtensionLoader &loader) {
 	//! Per signal, in OTLP_SIGNALS order: what a row is and any detail worth naming.
 	struct SignalDoc {
 		const char *rows;

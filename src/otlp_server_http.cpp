@@ -2,9 +2,7 @@
 
 #include "duckdb/common/string_util.hpp"
 
-#ifndef __EMSCRIPTEN__
 #include "httplib.hpp"
-#endif
 
 #include <algorithm>
 #include <exception>
@@ -12,8 +10,6 @@
 #include <utility>
 
 namespace duckdb {
-
-#ifndef __EMSCRIPTEN__
 
 static void SetJson(duckdb_httplib::Response &res, int status, const string &json) {
 	res.status = status;
@@ -190,13 +186,5 @@ void OtlpHttpListener::ListenLoop() {
 unique_ptr<OtlpListener> MakeOtlpHttpListener(OtlpServer &server, const OtlpListenerSpec &spec) {
 	return make_uniq<OtlpHttpListener>(server, spec);
 }
-
-#else
-
-unique_ptr<OtlpListener> MakeOtlpHttpListener(OtlpServer &server, const OtlpListenerSpec &spec) {
-	throw NotImplementedException("otlp_serve is not implemented for the wasm platform");
-}
-
-#endif
 
 } // namespace duckdb

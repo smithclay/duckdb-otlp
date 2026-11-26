@@ -1,9 +1,13 @@
-#include "otlp_start_stop.hpp"
+#include "otlp_control.hpp"
 
 #include "duckdb/common/error_data.hpp"
+#include "duckdb/logging/log_manager.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
 
+#include "otlp_function_docs.hpp"
+#include "otlp_log.hpp"
 #include "otlp_registry.hpp"
 #include "otlp_sql_util.hpp"
 #include "otlp_server.hpp"
@@ -130,10 +134,6 @@ const vector<std::pair<string, LogicalType>> &OtlpServeTuningOptions() {
 
 static unique_ptr<FunctionData> OtlpServeBind(ClientContext &context, TableFunctionBindInput &input,
                                               vector<LogicalType> &return_types, vector<Identifier> &names) {
-#ifdef __EMSCRIPTEN__
-	throw NotImplementedException("live OTLP ingest is not implemented for the wasm platform");
-#endif
-
 	vector<OtlpListenerSpec> listeners;
 	vector<string> listen_uris {"otlp:localhost:4318"};
 	if (!input.inputs.empty()) {
@@ -265,7 +265,7 @@ static unique_ptr<FunctionData> OtlpServeBind(ClientContext &context, TableFunct
 	    });
 }
 
-CreateTableFunctionInfo OtlpServeFunction::GetFunction() {
+static CreateTableFunctionInfo OtlpServeInfo() {
 	// Options are a typed **kwargs schema: an omitted option is not passed, so the bind keeps its defaults.
 	auto make_overload = [](FunctionSignature signature) {
 		auto fun = OtlpControlFunction("otlp_serve", std::move(signature), OtlpServeBind);
@@ -384,7 +384,7 @@ static unique_ptr<FunctionData> OtlpStopBind(ClientContext &, TableFunctionBindI
 	});
 }
 
-CreateTableFunctionInfo OtlpStopFunction::GetFunction() {
+static CreateTableFunctionInfo OtlpStopInfo() {
 	const vector<string> categories = {"opentelemetry", "ingest"};
 	return OtlpDocumented(
 	    OptionalUriFunctions("otlp_stop", OtlpStopBind),
@@ -423,7 +423,7 @@ static unique_ptr<FunctionData> OtlpServerListBind(ClientContext &, TableFunctio
 	});
 }
 
-CreateTableFunctionInfo OtlpServerListFunction::GetFunction() {
+static CreateTableFunctionInfo OtlpServerListInfo() {
 	return OtlpDocumented(
 	    OtlpControlFunction("otlp_server_list", {}, OtlpServerListBind),
 	    {OtlpDoc({}, {},
@@ -462,7 +462,7 @@ static unique_ptr<FunctionData> OtlpFlushBind(ClientContext &, TableFunctionBind
 	});
 }
 
-CreateTableFunctionInfo OtlpFlushFunction::GetFunction() {
+static CreateTableFunctionInfo OtlpFlushInfo() {
 	const vector<string> categories = {"opentelemetry", "ingest"};
 	return OtlpDocumented(
 	    OptionalUriFunctions("otlp_flush", OtlpFlushBind),
@@ -475,6 +475,19 @@ CreateTableFunctionInfo OtlpFlushFunction::GetFunction() {
 	             "`listen_uri`, so rows accepted so far become readable in the target catalog. The server keeps "
 	             "running. An unknown URI raises an error.",
 	             {"SELECT * FROM otlp_flush('otlp:localhost:4318');"}, categories)});
+}
+
+void RegisterOtlpControlFunctions(ExtensionLoader &loader) {
+	loader.RegisterFunction(OtlpServeInfo());
+	loader.RegisterFunction(OtlpStopInfo());
+	loader.RegisterFunction(OtlpServerListInfo());
+	loader.RegisterFunction(OtlpFlushInfo());
+
+	auto &db = loader.GetDatabaseInstance();
+	db.GetLogManager().RegisterLogType(make_uniq<OtlpLogType>());
+	auto ext = make_shared_ptr<StorageExtension>();
+	ext->storage_info = make_uniq<OtlpServerRegistry>();
+	StorageExtension::Register(db.config, OtlpServerRegistry::STORAGE_EXTENSION_KEY, ext);
 }
 
 } // namespace duckdb

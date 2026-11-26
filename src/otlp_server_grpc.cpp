@@ -6,8 +6,6 @@
 
 namespace duckdb {
 
-#ifndef __EMSCRIPTEN__
-
 namespace {
 
 //! The gRPC status for an ingest outcome. The HTTP-only refusals never arise from a decoded batch.
@@ -111,13 +109,5 @@ private:
 unique_ptr<OtlpListener> MakeOtlpGrpcListener(OtlpServer &server, const OtlpListenerSpec &spec) {
 	return make_uniq<OtlpGrpcListener>(server, spec);
 }
-
-#else
-
-unique_ptr<OtlpListener> MakeOtlpGrpcListener(OtlpServer &server, const OtlpListenerSpec &spec) {
-	throw NotImplementedException("gRPC ingest is not implemented for the wasm platform");
-}
-
-#endif
 
 } // namespace duckdb

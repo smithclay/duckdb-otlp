@@ -1,8 +1,8 @@
 #include "cli.hpp"
 #include "env_source.hpp"
+#include "otlp_extension.hpp"
 #include "server_config.hpp"
 #include "server_util.hpp"
-#include "storage/otlp_extension.hpp"
 #include "otlp_sql_util.hpp"
 #include "otlp_uri.hpp"
 
