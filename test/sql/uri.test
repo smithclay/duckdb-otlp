@@ -46,6 +46,11 @@ select unnest(otlp_uri_parser('otlp:[::1]:1234'));
 ----
 ::1	1234	true	http://[::1]:1234
 
+query IIII
+select unnest(otlp_uri_parser('  otlp://[::1]:1234  '));
+----
+::1	1234	true	http://[::1]:1234
+
 # an empty host after the scheme defaults to localhost
 query IIII
 select unnest(otlp_uri_parser('otlp:'));
@@ -72,6 +77,11 @@ needs to start with 'otlp:'
 
 statement error
 select unnest(otlp_uri_parser('asdf'));
+----
+needs to start with 'otlp:'
+
+statement error
+select unnest(otlp_uri_parser('otap://localhost'));
 ----
 needs to start with 'otlp:'
 

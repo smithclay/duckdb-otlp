@@ -74,8 +74,8 @@ public:
 
 	void Start() override {
 		auto &uri = spec.uri;
-		string addr = uri.IPv6() ? "[" + uri.Host() + "]:" + std::to_string(uri.Port())
-		                         : uri.Host() + ":" + std::to_string(uri.Port());
+		// Preserve the parser's bracketing, including on inputs the socket binder will reject.
+		auto addr = uri.Http().substr(sizeof("http://") - 1);
 		char err_buf[256] = {0};
 		// max_body_bytes caps one gRPC message, so both transports share one size bound (not tonic's 4 MiB).
 		handle = otlp_grpc_server_start_with_profile(

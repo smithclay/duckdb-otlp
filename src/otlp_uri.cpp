@@ -24,9 +24,6 @@ static void ValidateHost(const string &host, bool is_ipv6) {
 }
 
 static uint16_t ParsePort(const string &port_str) {
-	if (port_str.empty()) {
-		throw InvalidInputException("Invalid OTLP listen port");
-	}
 	int raw_port = 0;
 	auto begin = port_str.data();
 	auto end = begin + port_str.size();
@@ -41,44 +38,41 @@ static uint16_t ParsePort(const string &port_str) {
 
 OtlpUri::OtlpUri(string uri_p) : uri(std::move(uri_p)) {
 	StringUtil::Trim(uri);
-	string remainder;
-	if (StringUtil::StartsWith(uri, "otlp://")) {
-		remainder = uri.substr(strlen("otlp://"));
-	} else if (StringUtil::StartsWith(uri, "otlp:")) {
-		remainder = uri.substr(strlen("otlp:"));
-	} else {
+	if (!StringUtil::StartsWith(uri, "otlp:")) {
 		throw InvalidInputException("Invalid OTLP listen URI, needs to start with 'otlp:'");
+	}
+	auto remainder = uri.substr(sizeof("otlp:") - 1);
+	if (StringUtil::StartsWith(remainder, "//")) {
+		remainder.erase(0, 2);
 	}
 	if (remainder.empty()) {
 		remainder = "localhost";
 	}
 
-	if (StringUtil::StartsWith(remainder, "[")) {
-		if (!StringUtil::Contains(remainder, ']')) {
+	ipv6 = remainder.front() == '[';
+	auto host_end = remainder.find(ipv6 ? ']' : ':');
+	if (ipv6) {
+		if (host_end == string::npos) {
 			throw InvalidInputException("Invalid IPv6 OTLP URI, missing ']'");
 		}
-		ipv6 = true;
-		auto pos = remainder.find(']');
-		host = remainder.substr(1, pos - 1);
+		host = remainder.substr(1, host_end - 1);
 		if (host.empty()) {
 			throw InvalidInputException("Missing IPv6 address");
 		}
 		ValidateHost(host, true);
-		remainder = remainder.substr(pos + 1);
-		if (StringUtil::StartsWith(remainder, ":")) {
-			remainder = remainder.substr(1);
-		}
-		if (!remainder.empty()) {
-			port = ParsePort(remainder);
-		}
 	} else {
-		if (StringUtil::Contains(remainder, ':')) {
-			auto pos = remainder.find(':');
-			auto port_str = remainder.substr(pos + 1);
-			port = ParsePort(port_str);
-			remainder = remainder.substr(0, pos);
+		host = remainder.substr(0, host_end);
+	}
+	if (host_end != string::npos) {
+		auto port_start = host_end + 1;
+		if (ipv6 && port_start < remainder.size() && remainder[port_start] == ':') {
+			port_start++;
 		}
-		host = remainder;
+		if (!ipv6 || port_start < remainder.size()) {
+			port = ParsePort(remainder.substr(port_start));
+		}
+	}
+	if (!ipv6) {
 		if (host.empty()) {
 			throw InvalidInputException("Missing OTLP listen hostname");
 		}
@@ -121,8 +115,8 @@ CreateScalarFunctionInfo OtlpUriParserFunction::GetFunction() {
 	return OtlpDocumented(
 	    std::move(function),
 	    {OtlpDoc({varchar_type}, {"listen_uri"},
-	             "Parse an OTLP/OTAP listen URI into a struct of host, port, ipv6 and the http:// URL a "
-	             "listener would bind. Use the otlp: scheme. The host defaults to localhost and the port to 4318. "
+	             "Parse an otlp: listen URI into a struct of host, port, ipv6 and the derived http:// URL. "
+	             "The host defaults to localhost and the port to 4318. "
 	             "The argument must be constant.",
 	             {"otlp_uri_parser('otlp:localhost:4318')"}, {"opentelemetry", "utility"})});
 }
