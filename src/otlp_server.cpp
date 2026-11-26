@@ -302,7 +302,8 @@ void OtlpListener::RecordFailure(const string &error) {
 
 OtlpServer::OtlpServer(ClientContext &context, const vector<OtlpListenerSpec> &listener_specs,
                        const OtlpServerConfig &config_p)
-    : db_ptr(context.db), config(config_p) {
+    : db_ptr(context.db), config(config_p),
+      maintains_catalog(!config.catalog_name.empty() && config.parquet_export_path.empty()) {
 #ifdef __EMSCRIPTEN__
 	throw NotImplementedException("otlp_serve is not implemented for the wasm platform");
 #else
@@ -319,6 +320,18 @@ OtlpServer::OtlpServer(ClientContext &context, const vector<OtlpListenerSpec> &l
 	writer_con = make_uniq<Connection>(*db);
 	writer_con->context->config.enable_progress_bar = false;
 	EnsureTargetTables();
+	if (maintains_catalog) {
+		try {
+			auto result = RunSQL(*writer_con, "SELECT 1 FROM duckdb_databases() WHERE type = 'ducklake' AND "
+			                                  "database_name COLLATE NOCASE = " +
+			                                      SqlQuote(config.catalog_name));
+			is_ducklake = result->RowCount() > 0;
+		} catch (...) {
+			LogServerEvent(StringUtil::Format("catalog type lookup failed for catalog=%s: %s", config.catalog_name,
+			                                  CurrentExceptionMessage("catalog type lookup")),
+			               LogLevel::LOG_WARNING);
+		}
+	}
 	// Parquet-export mode has no table to ALTER.
 	if (config.parquet_export_path.empty()) {
 		string failure;
@@ -1066,20 +1079,15 @@ void OtlpServer::EnsureParquetView(OtlpSignal &signal) {
 	}
 }
 
-bool OtlpServer::CatalogMaintenanceEnabled() const {
-	return !config.catalog_name.empty() && config.parquet_export_path.empty() &&
-	       catalog_maintenance_state != CatalogMaintenanceState::DISABLED && writer_con;
-}
-
 void OtlpServer::MaybeRunCatalogMaintenance() {
-	// Checked before taking writer_mutex: the target is fixed and only this thread touches the time.
+	// The target is fixed, and only the sealer thread changes the schedule and support flag.
 	auto now = std::chrono::steady_clock::now();
-	if (config.catalog_name.empty() || !config.parquet_export_path.empty() ||
+	if (!maintains_catalog || maintenance_unsupported ||
 	    now - catalog_maintenance_last_attempt < std::chrono::milliseconds(config.maintenance_interval_ms)) {
 		return;
 	}
 	std::lock_guard<std::mutex> writer_lock(writer_mutex);
-	if (!catalog_maintenance_due || !CatalogMaintenanceEnabled()) {
+	if (!catalog_maintenance_due || !writer_con) {
 		return;
 	}
 	// Reset before the attempt, so a contended or failed pass waits a full interval too.
@@ -1092,7 +1100,6 @@ void OtlpServer::MaybeRunCatalogMaintenance() {
 		}
 #endif
 		RunSQL(*writer_con, "CHECKPOINT " + QuoteIdentifier(config.catalog_name));
-		catalog_maintenance_state = CatalogMaintenanceState::SUPPORTED;
 		maintenance_runs_total.fetch_add(1);
 		last_maintenance_unix_ms.store(NowUnixMs());
 		{
@@ -1100,7 +1107,9 @@ void OtlpServer::MaybeRunCatalogMaintenance() {
 			maintenance_last_error.clear();
 		}
 		LogServerEvent(StringUtil::Format("catalog maintenance checkpoint succeeded: catalog=%s", config.catalog_name));
-		SweepOrphanedFiles();
+		if (is_ducklake) {
+			SweepOrphanedFiles();
+		}
 	} catch (...) {
 		auto msg = CurrentExceptionMessage("catalog maintenance checkpoint");
 		if (IsContendedCatalogMaintenanceError(msg)) {
@@ -1116,7 +1125,7 @@ void OtlpServer::MaybeRunCatalogMaintenance() {
 			maintenance_last_error = msg;
 		}
 		if (IsUnsupportedCatalogMaintenanceError(msg)) {
-			catalog_maintenance_state = CatalogMaintenanceState::DISABLED;
+			maintenance_unsupported = true;
 			LogServerEvent(
 			    StringUtil::Format("catalog maintenance checkpoint unsupported for catalog=%s; disabling automatic "
 			                       "catalog maintenance for this server: %s",
@@ -1130,23 +1139,8 @@ void OtlpServer::MaybeRunCatalogMaintenance() {
 }
 
 void OtlpServer::SweepOrphanedFiles() {
-	if (orphan_sweep_state == CatalogMaintenanceState::DISABLED) {
-		return;
-	}
 	// Only after a successful CHECKPOINT; a sweep error is logged, never counted as a failure.
 	try {
-		if (orphan_sweep_state == CatalogMaintenanceState::PENDING) {
-			// Other catalogs that accept CHECKPOINT (e.g. a plain DuckDB file) never sweep.
-			auto result = RunSQL(*writer_con, "SELECT type FROM duckdb_databases() WHERE database_name = " +
-			                                      SqlQuote(config.catalog_name));
-			auto chunk = result->Fetch();
-			bool is_ducklake =
-			    chunk && chunk->size() > 0 && StringUtil::Lower(chunk->GetValue(0, 0).ToString()) == "ducklake";
-			orphan_sweep_state = is_ducklake ? CatalogMaintenanceState::SUPPORTED : CatalogMaintenanceState::DISABLED;
-			if (!is_ducklake) {
-				return;
-			}
-		}
 		auto result = RunSQL(*writer_con, "SELECT count(*) FROM ducklake_delete_orphaned_files(" +
 		                                      SqlQuote(config.catalog_name) + ")");
 		auto chunk = result->Fetch();

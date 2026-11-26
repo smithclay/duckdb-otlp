@@ -354,7 +354,6 @@ private:
 	bool SealAgeDue() const;
 	//! Sealer thread only.
 	void MaybeRunCatalogMaintenance();
-	bool CatalogMaintenanceEnabled() const;
 	//! Delete untracked files left by a losing checkpoint or crashed seal using DuckLake's retention.
 	//! Best-effort. Caller holds writer_mutex.
 	void SweepOrphanedFiles();
@@ -366,6 +365,8 @@ private:
 private:
 	weak_ptr<DatabaseInstance> db_ptr;
 	OtlpServerConfig config;
+	const bool maintains_catalog;
+	bool is_ducklake = false; // Resolved before the sealer starts.
 	//! Start order. Immutable after construction.
 	vector<unique_ptr<OtlpListener>> listeners;
 
@@ -401,10 +402,9 @@ private:
 	mutable mutex seal_error_mutex;
 	string seal_last_error;
 
-	enum class CatalogMaintenanceState { PENDING, SUPPORTED, DISABLED };
-	CatalogMaintenanceState catalog_maintenance_state = CatalogMaintenanceState::PENDING;
+	bool maintenance_unsupported = false; // Sealer thread only.
 	//! Rows were sealed since the last attempt. Starts true so rows a previous process left inlined
-	//! are flushed too. Both fields are sealer-thread only.
+	//! are flushed too. Guarded by writer_mutex.
 	bool catalog_maintenance_due = true;
 	std::chrono::steady_clock::time_point catalog_maintenance_last_attempt = std::chrono::steady_clock::now();
 	std::atomic<idx_t> maintenance_runs_total {0};
@@ -412,8 +412,6 @@ private:
 	std::atomic<idx_t> maintenance_contended_total {0};
 	std::atomic<int64_t> last_maintenance_unix_ms {0};
 	string maintenance_last_error; // guarded by seal_error_mutex
-	//! SUPPORTED only for DuckLake catalogs; resolved on the first sweep.
-	CatalogMaintenanceState orphan_sweep_state = CatalogMaintenanceState::PENDING;
 
 #ifdef DUCKDB_OTLP_ENABLE_TEST_SEAM
 	//! Test-only fault hooks (see the Set*FaultHookForTest setters).
