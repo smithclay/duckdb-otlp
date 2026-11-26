@@ -244,7 +244,7 @@ public:
 	}
 
 	//! Synchronous seal of all buffered rows (otlp_flush).
-	OtlpIngestResult FlushNow();
+	idx_t SealOnce();
 
 	//! Rows dropped because the final shutdown drain failed; 0 on a clean shutdown. Read after
 	//! Close() so otlp_stop / the daemon can surface a data-dropping shutdown.
@@ -329,8 +329,8 @@ private:
 	OtlpIngestOutcome RefusalFromException() const;
 	vector<StagedSignal> StageSignal(OtlpSignalType signal_type, const string &body, OtlpInputFormat format);
 	vector<StagedSignal> StageMetrics(const string &body, OtlpInputFormat format, OtlpIngestResult &counts);
-	StagedSignal StageArrowBatch(OtlpSignalType signal_type, ArrowArray &array, ArrowSchema &schema);
-	void StageAppend(ColumnDataCollection &collection, DataChunk &chunk);
+	void StageArrowBatch(OtlpSignalType signal_type, ArrowArray &array, ArrowSchema &schema,
+	                     vector<StagedSignal> &staged);
 	//! Move staged signals into the live buffers and transfer their reservation (zeroes it once consumed).
 	void CommitStaged(vector<StagedSignal> &staged, OtlpIngestResult &result, idx_t &admission_bytes);
 	bool TryReserveAdmission(idx_t bytes, idx_t &current);
@@ -346,16 +346,13 @@ private:
 
 	void InitBuffers();
 	OtlpBuffers MakeEmptyBuffers(Allocator &allocator) const;
-	void StartSealer();
 	void SealerLoop();
-	OtlpIngestResult SealOnce();
 	//! Re-buffer unwritten signals ahead of rows appended during the seal.
 	void RestoreUnsealed(OtlpBuffers &plan, const std::vector<bool> &sealed, idx_t restored_admission);
 	//! At most once per signal, and only if the name is free. Under writer_mutex.
 	void EnsureParquetView(OtlpSignal &signal);
 	//! One statement per signal that writes the relation `sealed` to the destination.
 	void BuildSinks();
-	string SealTargetDescription() const;
 	void RecordSealOutcome(bool success, idx_t rows_committed, const string &error);
 	void RequestSeal();
 	bool SealAgeDue() const;
@@ -368,11 +365,9 @@ private:
 	//! Best-effort: non-DuckLake catalogs throw and are ignored.
 	void ConfigureCatalogMaintenanceOptions();
 
-	void CreateOrValidateTable(Connection &con, OtlpSignalType signal_type, const string &table_name);
+	void CreateOrValidateTable(const OtlpSignal &signal);
 	//! The importer's type, except TIMESTAMP_NS narrows to the tables' TIMESTAMP (us).
 	static LogicalType BufferColumnType(const LogicalType &imported);
-	static void GetSignalColumns(ClientContext &context, OtlpSignalType signal_type, vector<LogicalType> &types,
-	                             vector<string> &names);
 
 private:
 	weak_ptr<DatabaseInstance> db_ptr;
@@ -388,7 +383,7 @@ private:
 	//! seal size trigger. Includes reservations for staged, live and sealing rows.
 	std::atomic<idx_t> admitted_bytes {0};
 
-	// writer_mutex serializes SealOnce against FlushNow and the shutdown drain.
+	// writer_mutex serializes seals, including the shutdown drain, and catalog maintenance.
 	unique_ptr<Connection> writer_con;
 	mutex writer_mutex;
 	//! Shared by every ingest thread for DuckDB's Arrow importer: safe because it runs no queries and

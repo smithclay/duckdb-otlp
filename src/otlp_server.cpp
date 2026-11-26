@@ -130,14 +130,6 @@ static bool IsContendedCatalogMaintenanceError(const string &message) {
 	       lower.find("concurrent update") != string::npos;
 }
 
-static void RunSQL(Connection &connection, const string &sql) {
-	auto result = connection.Query(sql);
-	if (!result || result->HasError()) {
-		auto error = result ? result->GetError() : string("DuckDB query failed");
-		throw IOException("%s", error);
-	}
-}
-
 //! The input format for a Content-Type, or false when the server does not decode it. `media_type`
 //! receives the normalized type either way, for the refusal message.
 static bool FormatFromContentType(const string &content_type, OtlpInputFormat &format, string &media_type) {
@@ -194,15 +186,6 @@ LogicalType OtlpServer::BufferColumnType(const LogicalType &imported) {
 	return imported.id() == LogicalTypeId::TIMESTAMP_NS ? LogicalType::TIMESTAMP : imported;
 }
 
-void OtlpServer::GetSignalColumns(ClientContext &context, OtlpSignalType signal_type, vector<LogicalType> &types,
-                                  vector<string> &names) {
-	auto table = OtlpArrowTable::ForSignal(context, signal_type);
-	for (auto &type : table->types) {
-		types.push_back(BufferColumnType(type));
-	}
-	names = table->names;
-}
-
 // Truncates toward zero.
 static void TimestampNsToTimestamp(Vector &source, Vector &result, idx_t count) {
 	auto values = source.Values<int64_t>();
@@ -241,10 +224,6 @@ OtlpServer::OtlpBuffers OtlpServer::MakeEmptyBuffers(Allocator &allocator) const
 		buffers.rows.push_back(make_uniq<ColumnDataCollection>(allocator, signal->types));
 	}
 	return buffers;
-}
-
-void OtlpServer::StartSealer() {
-	sealer_thread = std::thread([this] { SealerLoop(); });
 }
 
 int64_t OtlpServer::LastSealAgeMs() const {
@@ -335,11 +314,11 @@ OtlpServer::OtlpServer(ClientContext &context, const vector<OtlpListenerSpec> &l
 		throw InternalException("Database was closed");
 	}
 	arrow_con = make_uniq<Connection>(*db);
-	EnsureTargetTables();
 	InitBuffers();
 	// The sealer thread is the only thing that commits, so concurrent DuckLake writes never conflict.
 	writer_con = make_uniq<Connection>(*db);
 	writer_con->context->config.enable_progress_bar = false;
+	EnsureTargetTables();
 	// Before the sealer can fire.
 	ConfigureCatalogMaintenanceOptions();
 	// Parquet-export mode has no table to ALTER.
@@ -350,7 +329,7 @@ OtlpServer::OtlpServer(ClientContext &context, const vector<OtlpListenerSpec> &l
 	}
 	// After promotion has settled (it may disable itself), so the sinks project only existing columns.
 	BuildSinks();
-	StartSealer();
+	sealer_thread = std::thread([this] { SealerLoop(); });
 
 	// A throw here means ~OtlpServer() won't run: close started listeners and stop the sealer, or
 	// a socket stays bound and a joinable std::thread is destroyed (std::terminate).
@@ -520,31 +499,23 @@ void OtlpServer::ReleaseAdmission(idx_t bytes) {
 }
 
 void OtlpServer::EnsureTargetTables() {
-	auto db = db_ptr.lock();
-	if (!db) {
-		throw InternalException("Database was closed");
+	if (!config.parquet_export_path.empty()) {
+		// COPY creates only its partition subdirectories. Remote stores need no directory.
+		if (config.parquet_export_path.find("://") == string::npos) {
+			std::error_code ec;
+			std::filesystem::create_directories(config.parquet_export_path, ec);
+		}
+		return;
 	}
-	// COPY creates only its partition subdirectories. Remote stores need no directory.
-	if (!config.parquet_export_path.empty() && config.parquet_export_path.find("://") == string::npos) {
-		std::error_code ec;
-		std::filesystem::create_directories(config.parquet_export_path, ec);
-	}
-	Connection con(*db);
-	con.context->config.enable_progress_bar = false;
-	for (auto signal_type : OTLP_SIGNALS) {
-		CreateOrValidateTable(con, signal_type, OTLP_SIGNAL_TABLES[signal_type]);
+	for (auto &signal : signals) {
+		CreateOrValidateTable(*signal);
 	}
 }
 
-void OtlpServer::CreateOrValidateTable(Connection &con, OtlpSignalType signal_type, const string &table_name) {
-	if (!config.parquet_export_path.empty()) {
-		return;
-	}
-	vector<LogicalType> expected_types;
-	vector<string> expected_names;
-	GetSignalColumns(*con.context, signal_type, expected_types, expected_names);
-
-	auto qualified = QualifiedTable(config.catalog_name, config.schema_name, table_name);
+void OtlpServer::CreateOrValidateTable(const OtlpSignal &signal) {
+	const auto &expected_types = signal.types;
+	const auto &expected_names = signal.arrow_table->names;
+	auto qualified = QualifiedTable(config.catalog_name, config.schema_name, signal.table_name);
 	if (config.create_tables) {
 		string sql = "CREATE TABLE IF NOT EXISTS " + qualified + " (";
 		for (idx_t i = 0; i < expected_names.size(); i++) {
@@ -554,14 +525,11 @@ void OtlpServer::CreateOrValidateTable(Connection &con, OtlpSignalType signal_ty
 			sql += QuoteIdentifier(expected_names[i]) + " " + expected_types[i].ToString();
 		}
 		sql += ")";
-		RunSQL(con, sql);
+		RunSQL(*writer_con, sql);
 	}
 
-	auto result = con.Query("SELECT * FROM " + qualified + " LIMIT 0");
-	if (!result || result->HasError()) {
-		throw IOException("Target table %s is not available: %s", qualified,
-		                  result ? result->GetError() : "query failed");
-	}
+	auto result = RunSQL(*writer_con, "SELECT * FROM " + qualified + " LIMIT 0",
+	                     "Target table " + qualified + " is not available: ");
 	// The base columns must be a leading prefix (name + type, in order). Trailing extras (promoted
 	// columns from an earlier run) are allowed; the sink inserts BY NAME and NULL-fills them.
 	auto &result_names = result->GetNames();
@@ -633,10 +601,7 @@ OtlpIngestOutcome OtlpServer::IngestArrow(OtlpSignalType signal_type, idx_t inpu
 	return Admit(input_bytes, [&](OtlpIngestResult &) {
 		// array/schema are borrowed from Rust: StageArrowBatch copies the rows and never releases them.
 		vector<StagedSignal> staged;
-		auto stage = StageArrowBatch(signal_type, array, schema);
-		if (stage.rows > 0) {
-			staged.push_back(std::move(stage));
-		}
+		StageArrowBatch(signal_type, array, schema, staged);
 		return staged;
 	});
 }
@@ -672,67 +637,52 @@ OtlpIngestOutcome OtlpServer::RefusalFromException() const {
 		throw;
 	} catch (OtlpIngestRefused &ex) {
 		return Refused(ex.refusal, ex.message);
-	} catch (InvalidInputException &ex) {
-		return Refused(OtlpIngestRefusal::MALFORMED, ex.what());
-	} catch (IOException &ex) {
-		LogServerEvent(StringUtil::Format("ingest I/O error: %s", ex.what()), LogLevel::LOG_WARNING);
-		return Refused(OtlpIngestRefusal::INTERNAL, ex.what());
-	} catch (std::exception &ex) {
-		LogServerEvent(StringUtil::Format("ingest internal error: %s", ex.what()), LogLevel::LOG_WARNING);
-		return Refused(OtlpIngestRefusal::INTERNAL, ex.what());
+	} catch (InvalidInputException &) {
+		return Refused(OtlpIngestRefusal::MALFORMED, CurrentExceptionMessage());
+	} catch (IOException &) {
+		auto message = CurrentExceptionMessage();
+		LogServerEvent("ingest I/O error: " + message, LogLevel::LOG_WARNING);
+		return Refused(OtlpIngestRefusal::INTERNAL, std::move(message));
 	} catch (...) {
 		// catch(...) so a non-std throw cannot cross into a transport (or into Rust, for gRPC).
-		string message = "unknown (non-std) exception during ingest";
+		auto message = CurrentExceptionMessage("ingest");
 		LogServerEvent("ingest internal error: " + message, LogLevel::LOG_WARNING);
-		return Refused(OtlpIngestRefusal::INTERNAL, message);
+		return Refused(OtlpIngestRefusal::INTERNAL, std::move(message));
 	}
 }
 
 vector<OtlpServer::StagedSignal> OtlpServer::StageSignal(OtlpSignalType signal_type, const string &body,
                                                          OtlpInputFormat format) {
 	const auto &signal = *signals[signal_type];
-	ArrowArray array;
-	ArrowSchema schema;
-	OtlpStatus status =
-	    otlp_transform_with_profile(signal_type, format, OTLP_ARROW_PROFILE_DUCKDB,
-	                                reinterpret_cast<const uint8_t *>(body.data()), body.size(), &array, &schema);
+	ArrowSchemaWrapper schema;
+	ArrowArrayWrapper array;
+	OtlpStatus status = otlp_transform_with_profile(signal_type, format, OTLP_ARROW_PROFILE_DUCKDB,
+	                                                reinterpret_cast<const uint8_t *>(body.data()), body.size(),
+	                                                &array.arrow_array, &schema.arrow_schema);
 	if (status != OTLP_OK) {
 		throw OtlpIngestRefused(
 		    OtlpIngestRefusal::MALFORMED,
 		    StringUtil::Format("OTLP parse failed for %s: %s", signal.table_name, otlp_status_message(status)));
 	}
 
-	auto release = [&]() {
-		if (array.release) {
-			array.release(&array);
-		}
-		if (schema.release) {
-			schema.release(&schema);
-		}
-	};
 	vector<StagedSignal> staged;
-	try {
-		// Stage first, so a conversion failure leaves the live buffer untouched.
-		auto stage = StageArrowBatch(signal_type, array, schema);
-		if (stage.rows > 0) {
-			staged.push_back(std::move(stage));
-		}
-	} catch (...) {
-		release();
-		throw;
-	}
-	release();
+	StageArrowBatch(signal_type, array.arrow_array, schema.arrow_schema, staged);
 	return staged;
 }
 
 vector<OtlpServer::StagedSignal> OtlpServer::StageMetrics(const string &body, OtlpInputFormat format,
                                                           OtlpIngestResult &counts) {
 	OtlpMetricsArrowBatches batches = {};
+	struct BatchGuard {
+		OtlpMetricsArrowBatches &batches;
+		~BatchGuard() {
+			ReleaseOtlpMetricBatches(batches);
+		}
+	} guard {batches};
 	OtlpStatus status = otlp_transform_metrics_all_with_profile(
 	    format, OTLP_ARROW_PROFILE_DUCKDB, reinterpret_cast<const uint8_t *>(body.data()), body.size(), &batches);
 
 	if (status != OTLP_OK) {
-		ReleaseOtlpMetricBatches(batches);
 		throw OtlpIngestRefused(OtlpIngestRefusal::MALFORMED,
 		                        StringUtil::Format("OTLP parse failed for metrics: %s", otlp_status_message(status)));
 	}
@@ -740,29 +690,20 @@ vector<OtlpServer::StagedSignal> OtlpServer::StageMetrics(const string &body, Ot
 	// Stage every metric shape before any reaches the live buffers (Admit -> CommitStaged), so a
 	// failure on a later shape cannot make a client retry double-buffer the earlier ones.
 	vector<StagedSignal> staged;
-	try {
-		for (auto signal_type : OTLP_SIGNALS) {
-			if (signal_type < OTLP_SIGNAL_METRICS_GAUGE) {
-				continue;
-			}
-			auto &shape = OtlpMetricShape(batches, signal_type);
-			if (shape.present) {
-				auto stage = StageArrowBatch(signal_type, shape.array, shape.schema);
-				if (stage.rows > 0) {
-					staged.push_back(std::move(stage));
-				}
-			}
-#ifdef DUCKDB_OTLP_ENABLE_TEST_SEAM
-			if (metrics_stage_fault_hook_for_test && signal_type == OTLP_SIGNAL_METRICS_GAUGE) {
-				metrics_stage_fault_hook_for_test();
-			}
-#endif
+	for (auto signal_type : OTLP_SIGNALS) {
+		if (signal_type < OTLP_SIGNAL_METRICS_GAUGE) {
+			continue;
 		}
-	} catch (...) {
-		ReleaseOtlpMetricBatches(batches);
-		throw;
+		auto &shape = OtlpMetricShape(batches, signal_type);
+		if (shape.present) {
+			StageArrowBatch(signal_type, shape.array, shape.schema, staged);
+		}
+#ifdef DUCKDB_OTLP_ENABLE_TEST_SEAM
+		if (metrics_stage_fault_hook_for_test && signal_type == OTLP_SIGNAL_METRICS_GAUGE) {
+			metrics_stage_fault_hook_for_test();
+		}
+#endif
 	}
-	ReleaseOtlpMetricBatches(batches);
 
 	// The skipped-counters describe what the Rust transform dropped, not what was buffered; a
 	// refused request reports none of them (Admit returns a fresh outcome).
@@ -773,14 +714,12 @@ vector<OtlpServer::StagedSignal> OtlpServer::StageMetrics(const string &body, Ot
 	return staged;
 }
 
-OtlpServer::StagedSignal OtlpServer::StageArrowBatch(OtlpSignalType signal_type, ArrowArray &array,
-                                                     ArrowSchema &schema) {
-	const auto &signal = *signals[signal_type];
-	StagedSignal staged;
-	staged.signal_type = signal_type;
+void OtlpServer::StageArrowBatch(OtlpSignalType signal_type, ArrowArray &array, ArrowSchema &schema,
+                                 vector<StagedSignal> &staged) {
 	if (array.length <= 0) {
-		return staged;
+		return;
 	}
+	const auto &signal = *signals[signal_type];
 	auto db = db_ptr.lock();
 	if (!db) {
 		throw IOException("Database was closed");
@@ -788,7 +727,7 @@ OtlpServer::StagedSignal OtlpServer::StageArrowBatch(OtlpSignalType signal_type,
 	auto &table = *signal.arrow_table;
 	table.CheckBatchSchema(schema);
 	auto &allocator = Allocator::Get(*db);
-	staged.collection = make_uniq<ColumnDataCollection>(allocator, signal.types);
+	StagedSignal stage {signal_type, make_uniq<ColumnDataCollection>(allocator, signal.types)};
 	// `imported` may reference the borrowed Arrow buffers (zero-copy); Append copies out of them.
 	auto batch = OtlpBorrowArrowBatch(array);
 	DataChunk imported;
@@ -809,18 +748,11 @@ OtlpServer::StagedSignal OtlpServer::StageArrowBatch(OtlpSignalType signal_type,
 			}
 		}
 		chunk.SetChildCardinality(count);
-		StageAppend(*staged.collection, chunk);
-		staged.rows += count;
-		staged.batches++;
+		stage.collection->Append(chunk);
+		stage.rows += count;
+		stage.batches++;
 	}
-	return staged;
-}
-
-void OtlpServer::StageAppend(ColumnDataCollection &collection, DataChunk &chunk) {
-	if (chunk.size() == 0) {
-		return;
-	}
-	collection.Append(chunk);
+	staged.push_back(std::move(stage));
 }
 
 void OtlpServer::CommitStaged(vector<StagedSignal> &staged, OtlpIngestResult &result, idx_t &admission_bytes) {
@@ -933,10 +865,7 @@ static void ExecuteOverSealed(Connection &connection, const string &sql, ColumnD
 	cte->materialized = CTEMaterialize::CTE_MATERIALIZE_NEVER;
 	cte_map->map.insert(Identifier(SEALED_RELATION), std::move(cte));
 
-	auto result = connection.Query(std::move(parser.statements[0]));
-	if (!result || result->HasError()) {
-		throw IOException("%s", result ? result->GetError() : string("DuckDB query failed"));
-	}
+	RunSQL(connection, std::move(parser.statements[0]));
 }
 
 //! Appends to `<root>/<table>/year=/month=/day=/`.
@@ -964,14 +893,14 @@ void OtlpServer::BuildSinks() {
 	}
 }
 
-OtlpIngestResult OtlpServer::SealOnce() {
+idx_t OtlpServer::SealOnce() {
 	std::lock_guard<std::mutex> writer_lock(writer_mutex);
 	if (!writer_con) {
-		return OtlpIngestResult {};
+		return 0;
 	}
 	auto db = db_ptr.lock();
 	if (!db) {
-		return OtlpIngestResult {}; // database closed; nothing we can durably write
+		return 0; // database closed; nothing we can durably write
 	}
 	auto &allocator = Allocator::Get(*db);
 	const auto seal_started = std::chrono::steady_clock::now();
@@ -991,14 +920,15 @@ OtlpIngestResult OtlpServer::SealOnce() {
 	if (total_rows == 0) {
 		ReleaseAdmission(plan.admission_bytes);
 		last_seal_unix_ms.store(NowUnixMs());
-		return OtlpIngestResult {};
+		return 0;
 	}
 
 	// A catalog seal is one transaction: a failure rolls back and re-buffers everything. A Parquet
 	// COPY cannot be rolled back, so export is at-least-once: a failure re-buffers only signals not
 	// yet exported, and a COPY that throws part-way may leave duplicates for readers to tolerate.
 	const bool transactional = config.parquet_export_path.empty();
-	OtlpIngestResult result;
+	idx_t written_rows = 0;
+	idx_t written_batches = 0;
 	int64_t append_duration_ms = 0;
 	int64_t commit_duration_ms = 0;
 	auto phase_started = seal_started;
@@ -1023,8 +953,8 @@ OtlpIngestResult OtlpServer::SealOnce() {
 			auto &signal = *signals[i];
 			ExecuteOverSealed(*writer_con, signal.sink_sql, collection, signal.names);
 			sealed[i] = true;
-			result.rows += collection.Count();
-			result.batches += collection.ChunkCount();
+			written_rows += collection.Count();
+			written_batches += collection.ChunkCount();
 			if (!transactional && config.parquet_views) {
 				// The export is durable; the view is best-effort and never fails it.
 				EnsureParquetView(signal);
@@ -1046,14 +976,7 @@ OtlpIngestResult OtlpServer::SealOnce() {
 		auto &failed_phase_ms = appending ? append_duration_ms : commit_duration_ms;
 		failed_phase_ms = elapsed_ms(phase_started);
 		// catch(...) so a non-std throw cannot std::terminate the host and the buffers are restored.
-		string msg;
-		try {
-			throw;
-		} catch (std::exception &ex) {
-			msg = ex.what();
-		} catch (...) {
-			msg = "unknown (non-std) exception during seal";
-		}
+		auto msg = CurrentExceptionMessage("seal");
 		if (transactional) {
 			std::fill(sealed.begin(), sealed.end(), false);
 			bool rollback_ok = true;
@@ -1071,7 +994,7 @@ OtlpIngestResult OtlpServer::SealOnce() {
 				}
 			}
 		}
-		const auto sealed_rows = transactional ? 0 : result.rows;
+		const auto sealed_rows = transactional ? 0 : written_rows;
 		const auto restored_rows = total_rows - sealed_rows;
 		// Use a wide product and release the complement so rounding preserves the budget exactly.
 		const auto restored_admission =
@@ -1098,22 +1021,19 @@ OtlpIngestResult OtlpServer::SealOnce() {
 	}
 
 	ReleaseAdmission(plan.admission_bytes);
+	auto target = config.parquet_export_path;
+	if (transactional) {
+		target = config.catalog_name.empty() ? config.schema_name : config.catalog_name + "." + config.schema_name;
+	}
 	LogServerEvent(StringUtil::Format("seal: target=%s rows=%llu batches=%llu duration_ms=%lld append_duration_ms=%lld "
 	                                  "commit_duration_ms=%lld",
-	                                  SealTargetDescription(), static_cast<uint64_t>(result.rows),
-	                                  static_cast<uint64_t>(result.batches), elapsed_ms(seal_started),
+	                                  target, static_cast<uint64_t>(written_rows),
+	                                  static_cast<uint64_t>(written_batches), elapsed_ms(seal_started),
 	                                  append_duration_ms, commit_duration_ms),
 	               LogLevel::LOG_DEBUG);
-	RecordSealOutcome(true, result.rows, "");
+	RecordSealOutcome(true, written_rows, "");
 	catalog_maintenance_due = true;
-	return result;
-}
-
-string OtlpServer::SealTargetDescription() const {
-	if (!config.parquet_export_path.empty()) {
-		return config.parquet_export_path;
-	}
-	return config.catalog_name.empty() ? config.schema_name : config.catalog_name + "." + config.schema_name;
+	return written_rows;
 }
 
 void OtlpServer::EnsureParquetView(OtlpSignal &signal) {
@@ -1137,9 +1057,10 @@ void OtlpServer::EnsureParquetView(OtlpSignal &signal) {
 	try {
 		RunSQL(*writer_con, "CREATE VIEW IF NOT EXISTS " + view + " AS " +
 		                        ParquetDatasetSelect(config.parquet_export_path, table_name));
-	} catch (std::exception &ex) {
-		LogServerEvent(StringUtil::Format("parquet inspection view %s not created: %s", view, ex.what()),
-		               LogLevel::LOG_WARNING);
+	} catch (std::exception &) {
+		LogServerEvent(
+		    StringUtil::Format("parquet inspection view %s not created: %s", view, CurrentExceptionMessage()),
+		    LogLevel::LOG_WARNING);
 	}
 }
 
@@ -1179,14 +1100,7 @@ void OtlpServer::MaybeRunCatalogMaintenance() {
 		LogServerEvent(StringUtil::Format("catalog maintenance checkpoint succeeded: catalog=%s", config.catalog_name));
 		SweepOrphanedFiles();
 	} catch (...) {
-		string msg;
-		try {
-			throw;
-		} catch (std::exception &ex) {
-			msg = ex.what();
-		} catch (...) {
-			msg = "unknown (non-std) exception during catalog maintenance checkpoint";
-		}
+		auto msg = CurrentExceptionMessage("catalog maintenance checkpoint");
 		if (IsContendedCatalogMaintenanceError(msg)) {
 			maintenance_contended_total.fetch_add(1);
 			LogServerEvent(StringUtil::Format("catalog maintenance checkpoint skipped: another writer checkpointed "
@@ -1221,11 +1135,8 @@ void OtlpServer::SweepOrphanedFiles() {
 	try {
 		if (orphan_sweep_state == CatalogMaintenanceState::PENDING) {
 			// Other catalogs that accept CHECKPOINT (e.g. a plain DuckDB file) never sweep.
-			auto result = writer_con->Query("SELECT type FROM duckdb_databases() WHERE database_name = " +
-			                                SqlQuote(config.catalog_name));
-			if (!result || result->HasError()) {
-				throw IOException("%s", result ? result->GetError() : string("catalog type lookup failed"));
-			}
+			auto result = RunSQL(*writer_con, "SELECT type FROM duckdb_databases() WHERE database_name = " +
+			                                      SqlQuote(config.catalog_name));
 			auto chunk = result->Fetch();
 			bool is_ducklake =
 			    chunk && chunk->size() > 0 && StringUtil::Lower(chunk->GetValue(0, 0).ToString()) == "ducklake";
@@ -1237,20 +1148,19 @@ void OtlpServer::SweepOrphanedFiles() {
 		// Same retention window as expire_older_than/delete_older_than, so an in-flight seal or
 		// checkpoint's Parquet (here or in another process) is never a candidate.
 		auto retention_s = std::max<int64_t>(1, config.maintenance_retention_ms / 1000);
-		auto result = writer_con->Query(StringUtil::Format(
-		    "SELECT count(*) FROM ducklake_delete_orphaned_files(%s, older_than => now() - INTERVAL %lld SECOND)",
-		    SqlQuote(config.catalog_name), static_cast<int64_t>(retention_s)));
-		if (!result || result->HasError()) {
-			throw IOException("%s", result ? result->GetError() : string("DuckDB query failed"));
-		}
+		auto result = RunSQL(
+		    *writer_con,
+		    StringUtil::Format(
+		        "SELECT count(*) FROM ducklake_delete_orphaned_files(%s, older_than => now() - INTERVAL %lld SECOND)",
+		        SqlQuote(config.catalog_name), static_cast<int64_t>(retention_s)));
 		auto chunk = result->Fetch();
 		auto deleted = chunk && chunk->size() > 0 ? chunk->GetValue(0, 0).GetValue<int64_t>() : 0;
 		if (deleted > 0) {
 			LogServerEvent(StringUtil::Format("catalog maintenance deleted %lld orphaned data files: catalog=%s",
 			                                  static_cast<int64_t>(deleted), config.catalog_name));
 		}
-	} catch (std::exception &ex) {
-		auto msg = string(ex.what());
+	} catch (std::exception &) {
+		auto msg = CurrentExceptionMessage();
 		if (IsContendedCatalogMaintenanceError(msg)) {
 			LogServerEvent(StringUtil::Format(
 			    "catalog maintenance orphan sweep skipped: another writer is maintaining catalog=%s: %s",
@@ -1284,14 +1194,7 @@ void OtlpServer::ConfigureCatalogMaintenanceOptions() {
 	} catch (...) {
 		// Not DuckLake: keep defaults; maintenance DISABLEs itself if CHECKPOINT fails. catch(...) so a
 		// non-std throw cannot escape this startup path.
-		string msg;
-		try {
-			throw;
-		} catch (std::exception &ex) {
-			msg = ex.what();
-		} catch (...) {
-			msg = "unknown (non-std) exception during catalog maintenance option setup";
-		}
+		auto msg = CurrentExceptionMessage("catalog maintenance option setup");
 		LogServerEvent(
 		    StringUtil::Format("catalog maintenance options not applied for catalog=%s: %s", config.catalog_name, msg));
 	}
@@ -1330,10 +1233,6 @@ void OtlpServer::SealerLoop() {
 
 bool OtlpServer::SealAgeDue() const {
 	return OldestBufferedAgeMs() >= config.seal_max_age_ms;
-}
-
-OtlpIngestResult OtlpServer::FlushNow() {
-	return SealOnce();
 }
 
 idx_t OtlpServer::ShutdownIngest() {

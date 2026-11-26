@@ -10,13 +10,6 @@ namespace duckdb {
 
 namespace {
 
-void Exec(Connection &con, const string &sql) {
-	auto result = con.Query(sql);
-	if (!result || result->HasError()) {
-		throw IOException("%s", result ? result->GetError() : string("query failed"));
-	}
-}
-
 //! `attr_<sanitized>` body: lowercase-preserving, non-[A-Za-z0-9_] -> '_'.
 string Sanitize(const string &key) {
 	string out;
@@ -83,12 +76,12 @@ void OtlpColumnPromoter::Initialize(Connection &con) {
 		return;
 	}
 	try {
-		Exec(con, "LOAD json");
+		RunSQL(con, "LOAD json");
 	} catch (...) {
 		try {
-			Exec(con, "SELECT json_extract_string('{\"a\":1}', '$.\"a\"')");
-		} catch (std::exception &ex) {
-			Disable(string("json extension unavailable: ") + ex.what());
+			RunSQL(con, "SELECT json_extract_string('{\"a\":1}', '$.\"a\"')");
+		} catch (std::exception &) {
+			Disable("json extension unavailable: " + CurrentExceptionMessage());
 			return;
 		}
 	}
@@ -97,11 +90,11 @@ void OtlpColumnPromoter::Initialize(Connection &con) {
 		auto qualified = QualifiedTable(catalog_name, schema_name, table);
 		for (auto &c : columns) {
 			try {
-				Exec(con, "ALTER TABLE " + qualified + " ADD COLUMN IF NOT EXISTS " + QuoteIdentifier(c.target_column) +
-				              " VARCHAR");
-			} catch (std::exception &ex) {
+				RunSQL(con, "ALTER TABLE " + qualified + " ADD COLUMN IF NOT EXISTS " +
+				                QuoteIdentifier(c.target_column) + " VARCHAR");
+			} catch (std::exception &) {
 				Disable(StringUtil::Format("ALTER ADD COLUMN on %s failed (catalog may not support it): %s", table,
-				                           ex.what()));
+				                           CurrentExceptionMessage()));
 				return;
 			}
 		}

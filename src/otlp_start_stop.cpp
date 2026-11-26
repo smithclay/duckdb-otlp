@@ -6,6 +6,7 @@
 
 #include "otlp_arrow.hpp"
 #include "otlp_registry.hpp"
+#include "otlp_sql_util.hpp"
 #include "otlp_server.hpp"
 #include "otlp_uri.hpp"
 
@@ -529,11 +530,9 @@ static unique_ptr<FunctionData> OtlpFlushBind(ClientContext &, TableFunctionBind
 			idx_t sealed_rows = 0;
 			string error;
 			try {
-				sealed_rows = server->FlushNow().rows;
-			} catch (std::exception &ex) {
-				error = ex.what();
+				sealed_rows = server->SealOnce();
 			} catch (...) {
-				error = "unknown (non-std) exception during flush";
+				error = CurrentExceptionMessage("flush");
 			}
 			const bool success = error.empty();
 			rows.push_back({Value(success ? "sealed" : "error"), Value::UBIGINT(sealed_rows),
