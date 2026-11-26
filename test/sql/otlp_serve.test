@@ -342,11 +342,25 @@ CALL otlp_serve('otlp:127.0.0.1:55471', token := 'dev-token-123456', schema := '
 ----
 OTLP server already exists for otlp:127.0.0.1:55471
 
-# stopping through any listener URI stops every listener and drains once
+# Another server remains registered when the first server is stopped via its second listener.
+statement ok
+CREATE SCHEMA stop_all_other;
+
+statement ok
+CALL otlp_serve('otlp:127.0.0.1:55482', token := 'dev-token-123456', schema := 'stop_all_other');
+
 query T
 SELECT status FROM otlp_stop('otlp:127.0.0.1:55471');
 ----
 Stopped listening on otlp:127.0.0.1:55470, otlp:127.0.0.1:55471
+
+query TI
+SELECT listen_uri, is_listening FROM otlp_server_list();
+----
+otlp:127.0.0.1:55482	true
+
+statement ok
+CALL otlp_stop('otlp:127.0.0.1:55482');
 
 query I
 SELECT count(*) FROM otlp_server_list();
@@ -421,9 +435,6 @@ query TIIT
 SELECT * FROM otlp_flush();
 ----
 No OTLP servers are running	0	0	NULL
-
-statement ok
-CREATE SCHEMA stop_all_other;
 
 statement ok
 CALL otlp_serve('otlp:127.0.0.1:55481', token := 'dev-token-123456');

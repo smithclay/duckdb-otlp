@@ -7,7 +7,7 @@
 
 #include "otlp_log.hpp"
 #include "otlp_start_stop.hpp"
-#include "otlp_storage.hpp"
+#include "otlp_registry.hpp"
 #include "otlp_uri.hpp"
 
 #include "duckdb/logging/log_manager.hpp"
@@ -31,10 +31,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	loader.GetDatabaseInstance().GetLogManager().RegisterLogType(make_uniq<OtlpLogType>());
 
-	auto ext = duckdb::make_shared_ptr<OtlpStorageExtension>();
-	ext->storage_info = duckdb::make_uniq<OtlpStorageExtensionInfo>();
-	StorageExtension::Register(loader.GetDatabaseInstance().config, OtlpStorageExtensionInfo::STORAGE_EXTENSION_KEY,
-	                           ext);
+	auto ext = duckdb::make_shared_ptr<StorageExtension>();
+	ext->storage_info = duckdb::make_uniq<OtlpServerRegistry>();
+	StorageExtension::Register(loader.GetDatabaseInstance().config, OtlpServerRegistry::STORAGE_EXTENSION_KEY, ext);
 }
 
 void OtlpExtension::Load(ExtensionLoader &loader) {

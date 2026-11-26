@@ -1345,7 +1345,7 @@ idx_t OtlpServer::ShutdownIngest() {
 	if (sealer_thread.joinable()) {
 		sealer_thread.join();
 	}
-	// Final drain. On the implicit DB-teardown path (~OtlpStorageExtensionInfo) db_ptr is already
+	// Final drain. On the implicit DB-teardown path (~OtlpServerRegistry) db_ptr is already
 	// expired, so SealOnce is a no-op and buffered rows are dropped: callers must otlp_stop first.
 	for (int attempt = 0; attempt < 3 && BufferedRows() > 0; attempt++) {
 		try {

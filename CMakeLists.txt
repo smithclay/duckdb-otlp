@@ -29,7 +29,7 @@ set(EXTENSION_SOURCES
     src/otlp_server.cpp
     src/otlp_server_http.cpp
     src/otlp_server_grpc.cpp
-    src/otlp_storage.cpp
+    src/otlp_registry.cpp
     src/otlp_start_stop.cpp)
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})

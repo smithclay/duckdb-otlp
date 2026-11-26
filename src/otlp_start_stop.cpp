@@ -1,13 +1,15 @@
 #include "otlp_start_stop.hpp"
 
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
 
 #include "otlp_arrow.hpp"
+#include "otlp_registry.hpp"
 #include "otlp_server.hpp"
-#include "otlp_storage.hpp"
 #include "otlp_uri.hpp"
 
+#include <algorithm>
 #include <functional>
 #include <optional>
 
@@ -268,7 +270,7 @@ static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableF
 
 	return make_uniq<OtlpControlBindData>(
 	    [listeners = std::move(listeners), config = std::move(config), include_signal_tables](ClientContext &context) {
-		    OtlpStorageExtensionInfo::GetState(*context.db).CreateServer(context, listeners, config);
+		    OtlpServerRegistry::Get(*context.db).Start(context, listeners, config);
 		    OtlpRows rows;
 		    for (auto &spec : listeners) {
 			    vector<Value> row {spec.uri.Uri(), spec.uri.Http(), config.token, config.schema_name};
@@ -417,17 +419,34 @@ static TableFunctionSet OptionalUriFunctions(Identifier name, table_function_bin
 
 static constexpr const char *NO_SERVERS = "No OTLP servers are running";
 
-static string StopStatusMessage(const OtlpStorageExtensionInfo::StopResult &stop) {
-	auto uris = StringUtil::Join(stop.listen_uris, ", ");
-	if (!stop.error.empty()) {
-		return StringUtil::Format("Failed to stop %s: %s; dropped %llu un-sealed buffered rows", uris, stop.error,
-		                          static_cast<uint64_t>(stop.dropped_rows));
+//! Close an unregistered server. Stop-all reports close errors and keeps draining the other servers.
+static vector<Value> StopServer(OtlpServer &server, bool catch_errors) {
+	vector<string> listen_uris;
+	for (auto &listener : server.Listeners()) {
+		listen_uris.push_back(listener->Uri().Uri());
 	}
-	if (stop.dropped_rows > 0) {
-		return StringUtil::Format("Stopped listening on %s; dropped %llu un-sealed buffered rows", uris,
-		                          static_cast<uint64_t>(stop.dropped_rows));
+	string error;
+	try {
+		server.Close();
+	} catch (std::exception &ex) {
+		if (!catch_errors) {
+			throw;
+		}
+		error = ErrorData(ex).RawMessage();
 	}
-	return StringUtil::Format("Stopped listening on %s", uris);
+	auto uris = StringUtil::Join(listen_uris, ", ");
+	auto dropped_rows = server.ShutdownDroppedRows();
+	string status;
+	if (!error.empty()) {
+		status = StringUtil::Format("Failed to stop %s: %s; dropped %llu un-sealed buffered rows", uris, error,
+		                            static_cast<uint64_t>(dropped_rows));
+	} else if (dropped_rows > 0) {
+		status = StringUtil::Format("Stopped listening on %s; dropped %llu un-sealed buffered rows", uris,
+		                            static_cast<uint64_t>(dropped_rows));
+	} else {
+		status = StringUtil::Format("Stopped listening on %s", uris);
+	}
+	return {Value(status), Value::UBIGINT(dropped_rows)};
 }
 
 static unique_ptr<FunctionData> OtlpStopBind(ClientContext &, TableFunctionBindInput &input,
@@ -435,10 +454,11 @@ static unique_ptr<FunctionData> OtlpStopBind(ClientContext &, TableFunctionBindI
 	names = {"status", "dropped_rows"};
 	return_types = {LogicalType::VARCHAR, LogicalType::UBIGINT};
 	return make_uniq<OtlpControlBindData>([uri = BindOptionalUri(input)](ClientContext &context) {
-		auto results = OtlpStorageExtensionInfo::GetState(*context.db).StopServers(uri ? &*uri : nullptr);
+		auto &registry = OtlpServerRegistry::Get(*context.db);
+		auto servers = uri ? vector<shared_ptr<OtlpServer>> {registry.Remove(*uri)} : registry.RemoveAll();
 		OtlpRows rows;
-		for (auto &stop : results) {
-			rows.push_back({Value(StopStatusMessage(stop)), Value::UBIGINT(stop.dropped_rows)});
+		for (auto &server : servers) {
+			rows.push_back(StopServer(*server, /*catch_errors=*/!uri));
 		}
 		if (rows.empty()) {
 			rows.push_back({Value(NO_SERVERS), Value::UBIGINT(0)});
@@ -467,8 +487,23 @@ static unique_ptr<FunctionData> OtlpServerListBind(ClientContext &, TableFunctio
 		names.emplace_back(column.name);
 		return_types.emplace_back(column.type);
 	}
-	return make_uniq<OtlpControlBindData>(
-	    [](ClientContext &context) { return OtlpStorageExtensionInfo::GetState(*context.db).ListServers(); });
+	return make_uniq<OtlpControlBindData>([](ClientContext &context) {
+		OtlpRows rows;
+		for (auto &server : OtlpServerRegistry::Get(*context.db).All()) {
+			for (auto &listener : server->Listeners()) {
+				vector<Value> row;
+				for (auto &column : OtlpServer::ListColumns()) {
+					row.push_back(column.get(*server, *listener));
+				}
+				rows.push_back(std::move(row));
+			}
+		}
+		// Column 0 is listen_uri.
+		std::sort(rows.begin(), rows.end(), [](const vector<Value> &a, const vector<Value> &b) {
+			return StringValue::Get(a[0]) < StringValue::Get(b[0]);
+		});
+		return rows;
+	});
 }
 
 CreateTableFunctionInfo OtlpServerListFunction::GetFunction() {
@@ -487,13 +522,23 @@ static unique_ptr<FunctionData> OtlpFlushBind(ClientContext &, TableFunctionBind
 	names = {"status", "sealed_rows", "seals_total", "error"};
 	return_types = {LogicalType::VARCHAR, LogicalType::UBIGINT, LogicalType::UBIGINT, LogicalType::VARCHAR};
 	return make_uniq<OtlpControlBindData>([uri = BindOptionalUri(input)](ClientContext &context) {
-		auto results = OtlpStorageExtensionInfo::GetState(*context.db).FlushServers(uri ? &*uri : nullptr);
+		auto &registry = OtlpServerRegistry::Get(*context.db);
+		auto servers = uri ? vector<shared_ptr<OtlpServer>> {registry.Find(*uri)} : registry.All();
 		OtlpRows rows;
-		for (auto &flush : results) {
-			const bool success = flush.error.empty();
-			rows.push_back({Value(success ? "sealed" : "error"), Value::UBIGINT(flush.sealed_rows),
-			                Value::UBIGINT(flush.seals_total),
-			                success ? Value(LogicalType::VARCHAR) : Value(flush.error)});
+		for (auto &server : servers) {
+			idx_t sealed_rows = 0;
+			string error;
+			try {
+				sealed_rows = server->FlushNow().rows;
+			} catch (std::exception &ex) {
+				error = ex.what();
+			} catch (...) {
+				error = "unknown (non-std) exception during flush";
+			}
+			const bool success = error.empty();
+			rows.push_back({Value(success ? "sealed" : "error"), Value::UBIGINT(sealed_rows),
+			                Value::UBIGINT(server->SealsTotal()),
+			                success ? Value(LogicalType::VARCHAR) : Value(error)});
 		}
 		if (rows.empty()) {
 			rows.push_back({Value(NO_SERVERS), Value::UBIGINT(0), Value::UBIGINT(0), Value(LogicalType::VARCHAR)});
