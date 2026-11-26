@@ -393,8 +393,8 @@ TEST_CASE("seal harness: parquet_views=false exports without creating a view", "
 }
 
 // Parquet partial export is at-least-once: logs export, the gauge COPY fails. The exported share is
-// committed and its admission released; the gauge is re-buffered with exactly its own admission.
-TEST_CASE("seal harness: parquet partial export re-buffers only failed signal with exact per-signal admission",
+// committed and the gauge is re-buffered with its share of the seal's admission by row count.
+TEST_CASE("seal harness: parquet partial export re-buffers only the failed signal and balances admission",
           "[seal_harness]") {
 	auto export_dir = UniqueExportDir();
 	{
@@ -405,16 +405,15 @@ TEST_CASE("seal harness: parquet partial export re-buffers only failed signal wi
 		const idx_t kLogRows = 10;  // signal index 0 (otlp_logs) — exports successfully
 		const idx_t kGaugeRows = 5; // signal index 2 (otlp_metrics_gauge) — forced to fail
 
-		// Separate requests, so the gauge signal owns exactly the gauge request's reservation.
 		server->IngestForTest(OtlpRequestKind::LOGS, "application/json", "", MakeLogsJson(kLogRows));
-		const idx_t admitted_after_logs = server->AdmittedBytes(); // == the logs signal's admission
+		const idx_t admitted_after_logs = server->AdmittedBytes();
 		server->IngestForTest(OtlpRequestKind::METRICS, "application/json", "", MakeGaugeJson(kGaugeRows));
 		const idx_t admitted_before = server->AdmittedBytes();
 		REQUIRE(admitted_before > admitted_after_logs);
 		REQUIRE(server->BufferedRows() == kLogRows + kGaugeRows);
-		const idx_t gauge_admission = admitted_before - admitted_after_logs;
+		const idx_t released_admission = admitted_before - admitted_before * kGaugeRows / (kLogRows + kGaugeRows);
 
-		// Fail only the gauge signal's COPY (TARGET_TABLES index 2).
+		// Fail only the gauge signal's COPY.
 		server->SetParquetSealFaultHookForTest([](idx_t i) {
 			if (i == 2) {
 				throw std::runtime_error("injected parquet seal failure on gauge");
@@ -425,18 +424,19 @@ TEST_CASE("seal harness: parquet partial export re-buffers only failed signal wi
 
 		REQUIRE(TableCount(con, "otlp_logs") == kLogRows);
 		REQUIRE(server->BufferedRows() == kGaugeRows);
-		REQUIRE(server->AdmittedBytes() == gauge_admission);
+		const idx_t restored_admission = server->AdmittedBytes();
+		REQUIRE(restored_admission + released_admission == admitted_before);
 		// A failed seal, yet the exported share lands in committed_rows_total.
 		REQUIRE(server->SealFailuresTotal() == 1);
 		REQUIRE(server->SealsTotal() == 0);
 		REQUIRE(server->CommittedRowsTotal() == kLogRows);
 		REQUIRE_FALSE(server->SealLastError().empty());
 
-		// Repeated failures must keep admission pinned at gauge_admission, with no drift.
+		// Repeated failures restore every remaining row and its full admission.
 		for (int cycle = 0; cycle < 5; cycle++) {
 			REQUIRE_THROWS(server->FlushNow());
 			REQUIRE(server->BufferedRows() == kGaugeRows);
-			REQUIRE(server->AdmittedBytes() == gauge_admission); // no drift across cycles
+			REQUIRE(server->AdmittedBytes() == restored_admission);
 		}
 		REQUIRE(server->SealFailuresTotal() == 1 + 5);
 		REQUIRE(server->SealsTotal() == 0);
@@ -480,7 +480,7 @@ TEST_CASE("seal harness: failed catalog seal preserves oldest-buffered age acros
 	REQUIRE(server->BufferedRows() == kLogRows);
 	REQUIRE(server->SealFailuresTotal() == 1);
 
-	// Age only grows, so >= age_before_seal shows first_unsealed was carried across the restore.
+	// Age only grows, so >= age_before_seal shows the oldest time was carried across the restore.
 	const int64_t age_after_restore = server->OldestBufferedAgeMs();
 	REQUIRE(age_after_restore >= age_before_seal);
 

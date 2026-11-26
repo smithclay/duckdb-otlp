@@ -22,7 +22,7 @@ class Connection;
 class DatabaseInstance;
 class ColumnDataCollection;
 class DataChunk;
-struct OtlpSignalBuffer;
+struct OtlpSignal;
 
 //! Wire transport for one listener: HTTP (cpp-httplib) or GRPC (OTLP/gRPC + OTAP/Arrow via the
 //! tonic server in otlp2records). otap: URIs are always GRPC.
@@ -329,45 +329,28 @@ private:
 	vector<StagedSignal> StageMetrics(const string &body, OtlpInputFormat format, OtlpIngestResult &counts);
 	StagedSignal StageArrowBatch(OtlpSignalType signal_type, ArrowArray &array, ArrowSchema &schema);
 	void StageAppend(ColumnDataCollection &collection, DataChunk &chunk);
-	//! Move staged signals into the live buffers and attribute `admission_bytes` across them by
-	//! rows, exactly once (zeroes it once consumed).
+	//! Move staged signals into the live buffers and transfer their reservation (zeroes it once consumed).
 	void CommitStaged(vector<StagedSignal> &staged, OtlpIngestResult &result, idx_t &admission_bytes);
-	OtlpSignalBuffer &BufferFor(OtlpSignalType signal_type);
 	bool TryReserveAdmission(idx_t bytes, idx_t &current);
 	void ReleaseAdmission(idx_t bytes);
 
 	// --- seal path (single writer) ---
+	struct OtlpBuffers {
+		vector<unique_ptr<ColumnDataCollection>> rows; // OTLP_SIGNALS order
+		idx_t admission_bytes = 0;
+		std::chrono::steady_clock::time_point oldest; // meaningful while Rows() > 0
+		idx_t Rows() const;
+	};
+
 	void InitBuffers();
+	OtlpBuffers MakeEmptyBuffers(Allocator &allocator) const;
 	void StartSealer();
 	void SealerLoop();
-
-	//! One signal's rows swapped out of the live buffer for a seal, until written or re-buffered.
-	struct SealingSignal {
-		unique_ptr<ColumnDataCollection> collection;
-		idx_t rows = 0;
-		//! Restored exactly on a partial Parquet failure (no proportional re-split), so repeated
-		//! partial failures cannot drift the admission budget.
-		idx_t admission_bytes = 0;
-		//! Preserved so a failed-seal restore keeps the rows' true age. Only meaningful when rows > 0.
-		std::chrono::steady_clock::time_point first_unsealed;
-	};
-	//! The atomic snapshot one seal operates on.
-	struct SealingPlan {
-		std::vector<SealingSignal> signals;
-		idx_t total_rows = 0;
-		//! Sum of the signals' admission_bytes; released whole on success.
-		idx_t sealed_admission_bytes = 0;
-	};
-
 	OtlpIngestResult SealOnce();
-	//! Swap every live buffer for an empty one, holding all per-signal locks in forward index order.
-	//! Workers keep filling the fresh buffers during the slow write.
-	SealingPlan SwapBuffersForSeal(Allocator &allocator);
-	//! Re-buffer the signals selected by `restore` ahead of rows appended during the seal (old rows
-	//! first), taking the per-signal locks in forward order. Returns the row count restored.
-	idx_t RestoreUnsealed(SealingPlan &plan, const std::vector<bool> &restore);
-	//! At most once per signal, and only if the name is free. Seal thread only (under writer_mutex).
-	void EnsureParquetView(idx_t signal_index, const string &table_name);
+	//! Re-buffer unwritten signals ahead of rows appended during the seal.
+	void RestoreUnsealed(OtlpBuffers &plan, const std::vector<bool> &sealed, idx_t restored_admission);
+	//! At most once per signal, and only if the name is free. Under writer_mutex.
+	void EnsureParquetView(OtlpSignal &signal);
 	//! One statement per signal that writes the relation `sealed` to the destination.
 	void BuildSinks();
 	string SealTargetDescription() const;
@@ -395,12 +378,12 @@ private:
 	//! Start order. Immutable after construction.
 	vector<unique_ptr<OtlpListener>> listeners;
 
-	// Immutable after InitBuffers(); each buffer carries its own mutex.
-	std::vector<unique_ptr<OtlpSignalBuffer>> signal_buffers;
-	//! Per signal (signal_buffers order). Immutable after construction.
-	std::vector<string> sinks;
+	//! OTLP_SIGNALS order. Metadata and sink SQL are fixed before ingest starts.
+	vector<unique_ptr<OtlpSignal>> signals;
+	mutable std::mutex buffer_mutex;
+	OtlpBuffers live; // under buffer_mutex once ingest starts
 	//! Admitted bytes of in-flight and unsealed requests: enforces max_buffered_bytes and drives the
-	//! seal size trigger. The per-signal share lives in OtlpSignalBuffer::unsealed_admission_bytes.
+	//! seal size trigger. Includes reservations for staged, live and sealing rows.
 	std::atomic<idx_t> admitted_bytes {0};
 
 	// writer_mutex serializes SealOnce against FlushNow and the shutdown drain.
@@ -409,8 +392,6 @@ private:
 	//! Shared by every ingest thread for DuckDB's Arrow importer: safe because it runs no queries and
 	//! the importer reads it only for extension types, which ForSignal rules out.
 	unique_ptr<Connection> arrow_con;
-	//! Per signal: view already found or attempted. Under writer_mutex.
-	std::vector<bool> parquet_view_settled;
 	//! Null unless promotion is enabled. Immutable after construction.
 	unique_ptr<OtlpColumnPromoter> promoter;
 	std::thread sealer_thread;
