@@ -84,19 +84,17 @@ onto one port. See [Cloud Run HTTP/2 configuration](https://docs.cloud.google.co
 
 ## Functions
 
-The extension registers six server functions (two to start a server, two lifecycle, two diagnostic):
+The extension registers five server functions (two to start a server, two lifecycle, one diagnostic):
 
 | Function | What it does |
 |----------|-------------|
 | `otlp_serve([uri], ...)` | Start an **OTLP** server (OTLP/HTTP, or OTLP/gRPC with `transport := 'grpc'`) on one or more listeners and create/validate target tables. Returns one row per listener. |
-| `otap_serve([uri], ...)` | Start an **OTAP/Arrow** gRPC streaming server and create/validate target tables. Same parameters and output as `otlp_serve`. Returns one row per listener. |
-| `otlp_flush(uri)` | Force a synchronous commit of buffered rows when readers need fresh data. Returns commit stats. It leaves catalog maintenance alone. |
-| `otlp_stop(uri)` | Stop the server that owns listener `uri`, including its other listeners (commits remaining rows first). Returns a status string. |
-| `otlp_stop()` | Stop every server on this database, committing each first. Returns one row per server. |
+| `otap_serve([uri], ...)` | Start an **OTAP/Arrow** gRPC streaming server and create/validate target tables. Returns one row per listener. |
+| `otlp_flush([listen_uri])` | Commit buffered rows synchronously for the selected server or every server. Returns commit stats per server. |
+| `otlp_stop([listen_uri])` | Stop the selected server or every server, committing buffered rows first. Returns a status and dropped-row count per server. |
 | `otlp_server_list()` | List every running listener with its server's live counters, buffer state, and health. |
-| `otlp_seal_list()` | List recent seal attempts with append, commit, row, byte, and error telemetry. |
 
-`otlp_flush`, `otlp_stop`, `otlp_server_list`, and `otlp_seal_list` are **transport-agnostic** — they dispatch by the scheme-aware canonical listen URI, so an `otap:` server and an `otlp:` server are distinct entries managed by the same lifecycle functions. Any listener's URI names its whole server.
+`otlp_flush`, `otlp_stop`, and `otlp_server_list` cover every transport. Any listener’s canonical URI names its whole server and includes the URI scheme.
 
 ### `otlp_serve([uri], ...)`
 
@@ -140,12 +138,6 @@ SELECT * FROM otlp_serve('otlp:localhost:4318', catalog := 'lake', token := 'my-
 | `listen_url` | VARCHAR | The equivalent `http://` base URL (POST endpoints hang off this). |
 | `auth_token` | VARCHAR | The token clients must present (the value you passed, or the generated one). |
 | `schema_name` | VARCHAR | Schema holding the target tables. |
-| `logs_table` | VARCHAR | `otlp_logs` |
-| `traces_table` | VARCHAR | `otlp_traces` |
-| `metrics_gauge_table` | VARCHAR | `otlp_metrics_gauge` |
-| `metrics_sum_table` | VARCHAR | `otlp_metrics_sum` |
-| `metrics_histogram_table` | VARCHAR | `otlp_metrics_histogram` |
-| `metrics_exp_histogram_table` | VARCHAR | `otlp_metrics_exp_histogram` |
 | `catalog_name` | VARCHAR | Target catalog. Empty for the connection's default catalog. |
 | `transport` | VARCHAR | `http` or `grpc`. |
 
@@ -160,7 +152,7 @@ Starts an **OTAP/Arrow** gRPC streaming server bound to `uri`. The `uri` argumen
 SELECT listen_uri, listen_url FROM otap_serve('otap:localhost:4317', catalog := 'lake', token := 'my-dev-token-123456');
 ```
 
-It takes the **same named parameters** and returns the **same output columns** as [`otlp_serve`](#otlp_serveuri-); only the transport, scheme, and default port differ. It serves the canonical OTAP/Arrow bidirectional-streaming services (`Arrow{Logs,Traces,Metrics}Service`) for all six signals, sharing the same catalog/Parquet targeting, token auth, buffered group-commit, and lifecycle functions. See [gRPC transport](#grpc-transport) for the service and RPC contract.
+It takes the same named parameters as [`otlp_serve`](#otlp_serveuri-). Its output also includes the six target table names between `schema_name` and `catalog_name` in `logs_table`, `traces_table`, `metrics_gauge_table`, `metrics_sum_table`, `metrics_histogram_table`, and `metrics_exp_histogram_table`. It serves the canonical OTAP/Arrow bidirectional-streaming services (`Arrow{Logs,Traces,Metrics}Service`) for all six signals, sharing the same catalog/Parquet targeting, token auth, buffered group-commit, and lifecycle functions. See [gRPC transport](#grpc-transport) for the service and RPC contract.
 
 Two parameter notes for the gRPC path:
 
@@ -169,33 +161,29 @@ Two parameter notes for the gRPC path:
 
 Because the wire is gRPC (HTTP/2), an `otap:` server exposes **no HTTP endpoints** — the `/v1/*` POST paths and the `/healthz` / `/readyz` probes are HTTP-only. The `listen_url` output column is still populated with a derived `http://host:port` string for display, but it is not a usable HTTP base URL; clients connect with a gRPC client, and a liveness probe should use a TCP connect rather than `/readyz`. The same applies to an `otlp_serve(transport := 'grpc')` listener.
 
-### `otlp_flush(uri)`
+### `otlp_flush()` and `otlp_flush(listen_uri)`
 
-Forces a **synchronous commit**: the server writes its in-memory buffer to the target in one transaction before the function returns. Normal ingest can rely on background commits, and `otlp_stop` performs a final commit. Use `otlp_flush` when readers need the latest accepted rows while the server stays running. `otlp_flush` handles durability and read freshness; it leaves compaction and other catalog maintenance alone.
+Commits accepted rows to their targets before returning and leaves the servers running. Catalog maintenance continues on its own schedule.
+
+With no argument, it flushes every server on the database. Pass a listener’s `VARCHAR` URI to flush only its server. An unknown URI raises an error.
 
 ```sql
--- Force a commit
+SELECT * FROM otlp_flush();
 SELECT * FROM otlp_flush('otlp:localhost:4318');
 ```
 
-**Parameters:**
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `uri` (positional) | VARCHAR | *(required)* | Listen URI of the server to flush. |
-
-**Output columns** (one row):
+**Output columns** (one row per server):
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `status` | VARCHAR | `sealed` on success, or `No server found listening on <uri>`. The literal success value means the batch commit completed. |
+| `status` | VARCHAR | `sealed` on success, `error` on a failed commit, or `No OTLP servers are running` when called without a URI and no servers are running. |
 | `sealed_rows` | UBIGINT | Rows committed by this call. |
 | `seals_total` | UBIGINT | Total batch commits performed by this server since startup. |
 | `error` | VARCHAR | Commit error detail, or `NULL` if none. |
 
-### `otlp_stop(uri)`
+### `otlp_stop(listen_uri)`
 
-Stops the server that owns listener `uri`: every listener of that server stops accepting and frees its port, then the shared buffers are **committed once**, so a graceful stop loses no data.
+Stops every listener of the server that owns `listen_uri` and commits the shared buffers once. An unknown URI raises an error.
 
 ```sql
 SELECT status FROM otlp_stop('otlp:localhost:4318');
@@ -209,13 +197,13 @@ Stops **every** server on this database, committing each one before returning, a
 SELECT status, dropped_rows FROM otlp_stop();
 ```
 
-Prefer this over `otlp_stop(uri)` in a shutdown path. A stop that names one URI reaches only that server, so a server started somewhere else — by another connection, or by the daemon's [`--init-sql`](../cli/) script — survives to database teardown, where the final commit can no longer write and its buffered rows are dropped. With no servers running it returns a single `No OTLP servers are running` row.
+Use this at shutdown to include servers started by another connection or by the daemon’s [`--init-sql`](../cli/) script. With no servers running it returns a single `No OTLP servers are running` row.
 
 **Output columns (both forms):**
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `status` | VARCHAR | `Stopped listening on <uri>[, <uri>...]` listing every listener that was stopped, or `No server found listening on <uri>` if none matched. |
+| `status` | VARCHAR | `Stopped listening on <uri>[, <uri>...]` listing the listeners stopped. A stop-all row reports any close error. With no servers, stop-all reports `No OTLP servers are running`. |
 | `dropped_rows` | UBIGINT | Rows still buffered after the final commit failed, and therefore lost. `0` on a clean stop. |
 
 ### `otlp_server_list()`
@@ -269,9 +257,7 @@ FROM otlp_server_list();
 
 Use `is_listening` / `last_error` to detect a dead listener. Use `seal_last_error` to inspect writer failures, such as catalog conflicts. Use `maintenance_runs_total` / `last_maintenance_age_ms` to confirm compaction is keeping up.
 
-### `otlp_seal_list()`
-
-Lists the bounded in-memory history of recent seal attempts for all running servers. `duration_ms` covers the complete seal attempt. For transaction-backed targets, `append_duration_ms` measures appending buffered chunks into the destination tables and `commit_duration_ms` measures `COMMIT`, including catalog and object-storage work. The remaining duration is buffer swapping, transaction setup, and bookkeeping. Plain Parquet export does not have a transaction commit, so both phase fields are zero.
+The DuckDB `OTLP` log records seal attempts at DEBUG on success and WARNING on failure. `duration_ms` covers the whole attempt, including recovery on failure. `append_duration_ms` measures writing the buffered rows, and `commit_duration_ms` measures the transaction commit. Plain Parquet export has no transaction commit.
 
 ## Catalog targeting
 
@@ -397,7 +383,7 @@ There are two gRPC entry points, each bound to its own scheme and serving a **di
 - **`otlp_serve('otlp:...', transport := 'grpc')`** — standard **OTLP/gRPC** unary `Export`. `otlp_serve` defaults to `otlp:localhost:4318` (HTTP); point it at the conventional gRPC port for this, e.g. `otlp:localhost:4317`.
 - **`otap_serve('otap:...')`** — canonical **OTAP/Arrow** bidirectional streaming. Defaults to `otap:localhost:4317`; gRPC-only.
 
-Both share everything below the wire: the same parameters, catalog/Parquet targeting, token auth, buffered group-commit ("seal") path, backpressure cap, and lifecycle functions (`otlp_flush` / `otlp_stop` / `otlp_server_list` / `otlp_seal_list`). Because the service sets are disjoint, calling the other family on a listener returns `UNIMPLEMENTED`.
+Both share everything below the wire: the same parameters, catalog/Parquet targeting, token auth, buffered group-commit ("seal") path, backpressure cap, and lifecycle functions (`otlp_flush` / `otlp_stop` / `otlp_server_list`). Because the service sets are disjoint, calling the other family on a listener returns `UNIMPLEMENTED`.
 
 | Server | Service | RPC | Wire format |
 |--------|---------|-----|-------------|
@@ -442,7 +428,7 @@ The server **buffers ingest and commits rows in batches** for each target. Batch
 2. A single background writer commits the buffer to the target in **one transaction** when any trigger fires:
    - admitted request-body bytes reach the internal size threshold, 128 MiB today,
    - the oldest buffered row reaches the internal age limit, about 5 seconds today, or
-   - an explicit [`otlp_flush`](#otlp_flushuri).
+   - an explicit [`otlp_flush`](#otlp_flush-and-otlp_flushlisten_uri).
 3. For a DuckLake target, each batch commit writes **one Parquet data file per signal** plus one snapshot.
 4. For named catalogs, the writer runs best-effort, non-force `CHECKPOINT <catalog>` outside the ingest transaction at most once per `maintenance_interval_ms`, when rows were committed since the last attempt. The server skips the default catalog, explicit `otlp_flush`, and shutdown drains; unsupported checkpoint implementations log once and disable maintenance for that server. While a checkpoint runs, commits wait for it and ingest keeps buffering against `max_buffered_bytes`.
 

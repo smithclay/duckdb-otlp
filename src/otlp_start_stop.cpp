@@ -8,17 +8,47 @@
 #include "otlp_storage.hpp"
 #include "otlp_uri.hpp"
 
+#include <functional>
+#include <optional>
+
 namespace duckdb {
 
-struct OtlpStartStopFunctionData : public TableFunctionData {
-	// DuckDB may rescan a table function; `finished` keeps the side effect from repeating.
-	bool finished = false;
-	OtlpUri listen_uri;
-	vector<OtlpListenerSpec> listeners;
-	OtlpServerConfig config;
+using OtlpRows = vector<vector<Value>>;
+
+struct OtlpControlBindData : TableFunctionData {
+	explicit OtlpControlBindData(std::function<OtlpRows(ClientContext &)> run_p) : run(std::move(run_p)) {
+	}
+
+	std::function<OtlpRows(ClientContext &)> run;
 };
 
-//! Bound on listeners per server; each needs one row of the otlp_serve result chunk.
+struct OtlpControlState : GlobalTableFunctionState {
+	OtlpRows rows;
+	idx_t offset = 0;
+};
+
+static unique_ptr<GlobalTableFunctionState> OtlpControlInit(ClientContext &context, TableFunctionInitInput &input) {
+	auto state = make_uniq<OtlpControlState>();
+	state->rows = input.bind_data->Cast<OtlpControlBindData>().run(context);
+	return state;
+}
+
+static void OtlpControlScan(ClientContext &, TableFunctionInput &input, DataChunk &output) {
+	auto &state = input.global_state->Cast<OtlpControlState>();
+	idx_t row = 0;
+	for (; state.offset < state.rows.size() && row < STANDARD_VECTOR_SIZE; state.offset++, row++) {
+		const auto &values = state.rows[state.offset];
+		for (idx_t col = 0; col < values.size(); col++) {
+			output.data[col].Append(values[col]);
+		}
+	}
+}
+
+static TableFunction OtlpControlFunction(Identifier name, FunctionSignature signature, table_function_bind_t bind) {
+	return TableFunction(std::move(name), std::move(signature), OtlpControlScan, bind, OtlpControlInit);
+}
+
+//! Bound on listeners per server.
 static constexpr idx_t MAX_LISTENERS_PER_SERVER = 64;
 
 //! A VARCHAR or VARCHAR[] argument as a list of strings (a scalar is a one-element list).
@@ -91,7 +121,7 @@ static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableF
 	throw NotImplementedException("live OTLP ingest is not implemented for the wasm platform");
 #endif
 
-	auto bind_data = make_uniq<OtlpStartStopFunctionData>();
+	vector<OtlpListenerSpec> listeners;
 	const char *function_name = required_scheme == "otap" ? "otap_serve" : "otlp_serve";
 	vector<string> listen_uris {default_uri};
 	if (!input.inputs.empty()) {
@@ -127,7 +157,7 @@ static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableF
 			throw InvalidInputException("%s requires an '%s:' URI, but got an '%s:' URI", function_name,
 			                            required_scheme, spec.uri.Scheme());
 		}
-		for (auto &existing : bind_data->listeners) {
+		for (auto &existing : listeners) {
 			if (existing.uri.CanonicalUri() == spec.uri.CanonicalUri()) {
 				throw InvalidInputException("%s listen URIs must be distinct (got %s twice)", function_name,
 				                            spec.uri.Uri());
@@ -155,10 +185,10 @@ static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableF
 		} else {
 			throw InvalidInputException("transport must be 'http' or 'grpc' (got '%s')", transport_opt);
 		}
-		bind_data->listeners.push_back(std::move(spec));
+		listeners.push_back(std::move(spec));
 	}
 
-	auto &config = bind_data->config;
+	OtlpServerConfig config;
 	auto &params = input.named_parameters;
 	for (auto &option : STRING_OPTIONS) {
 		auto it = params.find(option.name);
@@ -205,7 +235,7 @@ static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableF
 
 	auto other_host = params.find("allow_other_hostname");
 	if (other_host == params.end() || !other_host->second.GetValue<bool>()) {
-		for (auto &spec : bind_data->listeners) {
+		for (auto &spec : listeners) {
 			if (!spec.uri.IsLocal()) {
 				throw InvalidInputException("Only localhost is allowed as an OTLP hostname by default; set "
 				                            "allow_other_hostname=true to override");
@@ -226,14 +256,33 @@ static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableF
 	for (auto name : {"listen_uri", "listen_url", "auth_token", "schema_name"}) {
 		names.emplace_back(name);
 	}
-	for (auto *table : OTLP_SIGNAL_TABLES) {
-		names.emplace_back(string(table + strlen("otlp_")) + "_table");
+	const bool include_signal_tables = required_scheme == "otap";
+	if (include_signal_tables) {
+		for (auto *table : OTLP_SIGNAL_TABLES) {
+			names.emplace_back(string(table + strlen("otlp_")) + "_table");
+		}
 	}
 	names.emplace_back("catalog_name");
 	names.emplace_back("transport");
 	return_types.assign(names.size(), LogicalType::VARCHAR);
 
-	return std::move(bind_data);
+	return make_uniq<OtlpControlBindData>(
+	    [listeners = std::move(listeners), config = std::move(config), include_signal_tables](ClientContext &context) {
+		    OtlpStorageExtensionInfo::GetState(*context.db).CreateServer(context, listeners, config);
+		    OtlpRows rows;
+		    for (auto &spec : listeners) {
+			    vector<Value> row {spec.uri.Uri(), spec.uri.Http(), config.token, config.schema_name};
+			    if (include_signal_tables) {
+				    for (auto *table : OTLP_SIGNAL_TABLES) {
+					    row.emplace_back(table);
+				    }
+			    }
+			    row.emplace_back(config.catalog_name);
+			    row.emplace_back(OtlpTransportName(spec.transport));
+			    rows.push_back(std::move(row));
+		    }
+		    return rows;
+	    });
 }
 
 static unique_ptr<FunctionData> OtlpServeBind(ClientContext &context, TableFunctionBindInput &input,
@@ -246,37 +295,10 @@ static unique_ptr<FunctionData> OtapServeBind(ClientContext &context, TableFunct
 	return OtlpServeBindImpl(context, input, return_types, names, "otap:localhost:4317", "otap");
 }
 
-static void OtlpServe(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
-	auto &bind_data = data_p.bind_data->CastNoConst<OtlpStartStopFunctionData>();
-	if (bind_data.finished) {
-		return;
-	}
-
-	auto &state = OtlpStorageExtensionInfo::GetState(*context.db);
-	state.CreateServer(context, bind_data.listeners, bind_data.config);
-	// Set before filling rows: if SetValue throws, a rescan must not create the server again.
-	bind_data.finished = true;
-
-	idx_t row = 0;
-	for (auto &spec : bind_data.listeners) {
-		idx_t col = 0;
-		for (auto &value : {spec.uri.Uri(), spec.uri.Http(), bind_data.config.token, bind_data.config.schema_name}) {
-			output.SetValue(col++, row, value);
-		}
-		for (auto *table : OTLP_SIGNAL_TABLES) {
-			output.SetValue(col++, row, table);
-		}
-		output.SetValue(col++, row, bind_data.config.catalog_name);
-		output.SetValue(col++, row, OtlpTransportName(spec.transport));
-		row++;
-	}
-	output.SetChildCardinality(row);
-}
-
 static TableFunctionSet BuildServeFunctionSet(const string &name, table_function_bind_t bind) {
 	// Options are a typed **kwargs schema: an omitted option is not passed, so the bind keeps its defaults.
-	auto make_overload = [&](const vector<LogicalType> &arguments) {
-		auto fun = TableFunction(Identifier(name), arguments, OtlpServe, bind);
+	auto make_overload = [&](FunctionSignature signature) {
+		auto fun = OtlpControlFunction(Identifier(name), std::move(signature), bind);
 		fun.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
 			for (auto &option : STRING_OPTIONS) {
 				options.Add(option.name, LogicalType::VARCHAR);
@@ -297,8 +319,9 @@ static TableFunctionSet BuildServeFunctionSet(const string &name, table_function
 		return fun;
 	};
 	TableFunctionSet set {Identifier(name)};
-	set.AddFunction(make_overload({LogicalType::VARCHAR}));
-	set.AddFunction(make_overload({LogicalType::LIST(LogicalType::VARCHAR)}));
+	set.AddFunction(make_overload(FunctionSignature().AddPositionalOnly("listen_uri", LogicalType::VARCHAR)));
+	set.AddFunction(
+	    make_overload(FunctionSignature().AddPositionalOnly("listen_uris", LogicalType::LIST(LogicalType::VARCHAR))));
 	set.AddFunction(make_overload({}));
 	return set;
 }
@@ -373,36 +396,26 @@ CreateTableFunctionInfo OtapServeFunction::GetFunction() {
 	return OtlpDocumented(BuildServeFunctionSet("otap_serve", OtapServeBind), ServeDescriptions(docs));
 }
 
-struct OtlpStopFunctionData : public TableFunctionData {
-	//! No-argument overload: stop every server, including ones whose URI the caller does not know
-	//! (e.g. started over Quack), whose buffered rows would otherwise be dropped at teardown.
-	bool stop_all = false;
-	OtlpUri listen_uri;
-	// The stop runs once and its rows are then paged out; a rescan must not stop servers again.
-	bool executed = false;
-	idx_t offset = 0;
-	vector<OtlpStorageExtensionInfo::StopResult> results;
-};
-
-static unique_ptr<FunctionData> OtlpStopBind(ClientContext &context, TableFunctionBindInput &input,
-                                             vector<LogicalType> &return_types, vector<Identifier> &names) {
-	auto bind_data = make_uniq<OtlpStopFunctionData>();
+static std::optional<OtlpUri> BindOptionalUri(const TableFunctionBindInput &input) {
 	if (input.inputs.empty()) {
-		bind_data->stop_all = true;
-	} else {
-		auto &uri_value = input.inputs[0];
-		if (uri_value.IsNull() || uri_value.GetValue<string>().empty()) {
-			throw InvalidInputException("Invalid OTLP listen URI specified");
-		}
-		bind_data->listen_uri = OtlpUri(uri_value.GetValue<string>());
+		return std::nullopt;
 	}
-	names.emplace_back("status");
-	return_types.emplace_back(LogicalType::VARCHAR);
-	// Rows dropped because the final drain failed; 0 on a clean stop. The daemon exit code keys off it.
-	names.emplace_back("dropped_rows");
-	return_types.emplace_back(LogicalType::UBIGINT);
-	return std::move(bind_data);
+	auto &value = input.inputs[0];
+	if (value.IsNull() || value.GetValue<string>().empty()) {
+		throw InvalidInputException("Invalid OTLP listen URI specified");
+	}
+	return OtlpUri(value.GetValue<string>());
 }
+
+static TableFunctionSet OptionalUriFunctions(Identifier name, table_function_bind_t bind) {
+	TableFunctionSet set(name);
+	set.AddFunction(OtlpControlFunction(name, {}, bind));
+	set.AddFunction(
+	    OtlpControlFunction(name, FunctionSignature().AddPositionalOnly("listen_uri", LogicalType::VARCHAR), bind));
+	return set;
+}
+
+static constexpr const char *NO_SERVERS = "No OTLP servers are running";
 
 static string StopStatusMessage(const OtlpStorageExtensionInfo::StopResult &stop) {
 	auto uris = StringUtil::Join(stop.listen_uris, ", ");
@@ -417,95 +430,50 @@ static string StopStatusMessage(const OtlpStorageExtensionInfo::StopResult &stop
 	return StringUtil::Format("Stopped listening on %s", uris);
 }
 
-static void OtlpStop(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
-	auto &bind_data = data_p.bind_data->CastNoConst<OtlpStopFunctionData>();
-	auto &state = OtlpStorageExtensionInfo::GetState(*context.db);
-	if (!bind_data.executed) {
-		bind_data.executed = true;
-		if (bind_data.stop_all) {
-			bind_data.results = state.StopAllServersGraceful();
-		} else {
-			bind_data.results.push_back(state.StopServer(context, bind_data.listen_uri));
+static unique_ptr<FunctionData> OtlpStopBind(ClientContext &, TableFunctionBindInput &input,
+                                             vector<LogicalType> &return_types, vector<Identifier> &names) {
+	names = {"status", "dropped_rows"};
+	return_types = {LogicalType::VARCHAR, LogicalType::UBIGINT};
+	return make_uniq<OtlpControlBindData>([uri = BindOptionalUri(input)](ClientContext &context) {
+		auto results = OtlpStorageExtensionInfo::GetState(*context.db).StopServers(uri ? &*uri : nullptr);
+		OtlpRows rows;
+		for (auto &stop : results) {
+			rows.push_back({Value(StopStatusMessage(stop)), Value::UBIGINT(stop.dropped_rows)});
 		}
-	}
-	// Nothing to stop: one informational row rather than an empty result.
-	if (bind_data.results.empty()) {
-		if (bind_data.offset > 0) {
-			return;
+		if (rows.empty()) {
+			rows.push_back({Value(NO_SERVERS), Value::UBIGINT(0)});
 		}
-		bind_data.offset = 1;
-		output.SetValue(0, 0, Value("No OTLP servers are running"));
-		output.SetValue(1, 0, Value::UBIGINT(0));
-		output.SetChildCardinality(1);
-		return;
-	}
-	idx_t row = 0;
-	while (bind_data.offset < bind_data.results.size() && row < STANDARD_VECTOR_SIZE) {
-		auto &stop = bind_data.results[bind_data.offset];
-		// Only the URI form can miss: the stop-all form reports whatever it found.
-		auto status = stop.found ? StopStatusMessage(stop)
-		                         : StringUtil::Format("No server found listening on %s", bind_data.listen_uri.Uri());
-		output.SetValue(0, row, Value(status));
-		output.SetValue(1, row, Value::UBIGINT(stop.dropped_rows));
-		bind_data.offset++;
-		row++;
-	}
-	output.SetChildCardinality(row);
+		return rows;
+	});
 }
 
 CreateTableFunctionInfo OtlpStopFunction::GetFunction() {
-	TableFunctionSet set("otlp_stop");
-	set.AddFunction(TableFunction("otlp_stop", {}, OtlpStop, OtlpStopBind));
-	set.AddFunction(TableFunction("otlp_stop", {LogicalType::VARCHAR}, OtlpStop, OtlpStopBind));
 	const vector<string> categories = {"opentelemetry", "ingest"};
 	return OtlpDocumented(
-	    std::move(set),
+	    OptionalUriFunctions("otlp_stop", OtlpStopBind),
 	    {OtlpDoc({}, {},
 	             "Stop every live ingest server on this database, committing each one's buffered rows before "
-	             "returning. One row per stopped server. Use this before closing a database you did not start "
-	             "every server on: a plain close drops buffered rows.",
+	             "returning. Returns one row per server, or one informational row if no servers are running.",
 	             {"SELECT * FROM otlp_stop();"}, categories),
 	     OtlpDoc({LogicalType::VARCHAR}, {"listen_uri"},
 	             "Stop the live ingest server that owns listener `listen_uri`, including its other listeners, "
-	             "committing its buffered rows before returning.",
+	             "committing its buffered rows before returning. An unknown URI raises an error.",
 	             {"SELECT * FROM otlp_stop('otlp:localhost:4318');"}, categories)});
 }
 
-struct OtlpServerListFunctionData : public TableFunctionData {
-	bool initialized = false;
-	idx_t offset = 0;
-	vector<vector<Value>> rows;
-};
-
-static unique_ptr<FunctionData> OtlpServerListBind(ClientContext &context, TableFunctionBindInput &input,
+static unique_ptr<FunctionData> OtlpServerListBind(ClientContext &, TableFunctionBindInput &,
                                                    vector<LogicalType> &return_types, vector<Identifier> &names) {
 	for (auto &column : OtlpServer::ListColumns()) {
 		names.emplace_back(column.name);
 		return_types.emplace_back(column.type);
 	}
-	return make_uniq<OtlpServerListFunctionData>();
-}
-
-static void OtlpServerList(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
-	auto &bind_data = data_p.bind_data->CastNoConst<OtlpServerListFunctionData>();
-	// Snapshot once, then page out STANDARD_VECTOR_SIZE rows per scan.
-	if (!bind_data.initialized) {
-		bind_data.rows = OtlpStorageExtensionInfo::GetState(*context.db).ListServers();
-		bind_data.initialized = true;
-	}
-	idx_t row = 0;
-	for (; bind_data.offset < bind_data.rows.size() && row < STANDARD_VECTOR_SIZE; bind_data.offset++, row++) {
-		auto &values = bind_data.rows[bind_data.offset];
-		for (idx_t col = 0; col < values.size(); col++) {
-			output.SetValue(col, row, values[col]);
-		}
-	}
-	output.SetChildCardinality(row);
+	return make_uniq<OtlpControlBindData>(
+	    [](ClientContext &context) { return OtlpStorageExtensionInfo::GetState(*context.db).ListServers(); });
 }
 
 CreateTableFunctionInfo OtlpServerListFunction::GetFunction() {
 	return OtlpDocumented(
-	    TableFunction("otlp_server_list", {}, OtlpServerList, OtlpServerListBind),
+	    OtlpControlFunction("otlp_server_list", {}, OtlpServerListBind),
 	    {OtlpDoc({}, {},
 	             "List every live ingest listener on this database with its server's target catalog, transport and "
 	             "live counters: rows received, buffered rows and bytes, seal totals and failures, last seal age "
@@ -514,123 +482,39 @@ CreateTableFunctionInfo OtlpServerListFunction::GetFunction() {
 	             {"opentelemetry", "monitoring"})});
 }
 
-struct OtlpSealListFunctionData : public TableFunctionData {
-	bool initialized = false;
-	idx_t offset = 0;
-	vector<OtlpStorageExtensionInfo::SealSnapshot> snapshots;
-};
-
-static unique_ptr<FunctionData> OtlpSealListBind(ClientContext &context, TableFunctionBindInput &input,
-                                                 vector<LogicalType> &return_types, vector<Identifier> &names) {
-	names = {Identifier("listen_uri"),           Identifier("seal_sequence"),
-	         Identifier("started_unix_ms"),      Identifier("completed_unix_ms"),
-	         Identifier("duration_ms"),          Identifier("append_duration_ms"),
-	         Identifier("commit_duration_ms"),   Identifier("rows_committed"),
-	         Identifier("admitted_bytes"),       Identifier("success"),
-	         Identifier("seals_total"),          Identifier("seal_failures_total"),
-	         Identifier("committed_rows_total"), Identifier("error")};
-	return_types = {LogicalType::VARCHAR, LogicalType::UBIGINT, LogicalType::BIGINT,  LogicalType::BIGINT,
-	                LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::UBIGINT,
-	                LogicalType::UBIGINT, LogicalType::BOOLEAN, LogicalType::UBIGINT, LogicalType::UBIGINT,
-	                LogicalType::UBIGINT, LogicalType::VARCHAR};
-	return make_uniq<OtlpSealListFunctionData>();
-}
-
-static void OtlpSealList(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
-	auto &bind_data = data_p.bind_data->CastNoConst<OtlpSealListFunctionData>();
-	if (!bind_data.initialized) {
-		bind_data.snapshots = OtlpStorageExtensionInfo::GetState(*context.db).ListSeals();
-		bind_data.initialized = true;
-	}
-	idx_t row = 0;
-	while (bind_data.offset < bind_data.snapshots.size() && row < STANDARD_VECTOR_SIZE) {
-		auto &snapshot = bind_data.snapshots[bind_data.offset];
-		auto &event = snapshot.event;
-		output.SetValue(0, row, Value(snapshot.listen_uri));
-		output.SetValue(1, row, Value::UBIGINT(event.seal_sequence));
-		output.SetValue(2, row, Value::BIGINT(event.started_unix_ms));
-		output.SetValue(3, row, Value::BIGINT(event.completed_unix_ms));
-		output.SetValue(4, row, Value::BIGINT(event.duration_ms));
-		output.SetValue(5, row, Value::BIGINT(event.append_duration_ms));
-		output.SetValue(6, row, Value::BIGINT(event.commit_duration_ms));
-		output.SetValue(7, row, Value::UBIGINT(event.rows_committed));
-		output.SetValue(8, row, Value::UBIGINT(event.admitted_bytes_committed));
-		output.SetValue(9, row, Value::BOOLEAN(event.success));
-		output.SetValue(10, row, Value::UBIGINT(event.seals_total));
-		output.SetValue(11, row, Value::UBIGINT(event.seal_failures_total));
-		output.SetValue(12, row, Value::UBIGINT(event.committed_rows_total));
-		output.SetValue(13, row, event.error.empty() ? Value(LogicalType::VARCHAR) : Value(event.error));
-		row++;
-		bind_data.offset++;
-	}
-	output.SetChildCardinality(row);
-}
-
-CreateTableFunctionInfo OtlpSealListFunction::GetFunction() {
-	return OtlpDocumented(
-	    TableFunction("otlp_seal_list", {}, OtlpSealList, OtlpSealListBind),
-	    {OtlpDoc({}, {},
-	             "List the recent seal (group-commit) attempts of every live ingest server, with append and commit "
-	             "timings, rows and admitted bytes committed, and the error of any that failed.",
-	             {"SELECT listen_uri, seal_sequence, rows_committed, duration_ms FROM otlp_seal_list();"},
-	             {"opentelemetry", "monitoring"})});
-}
-
-struct OtlpFlushFunctionData : public TableFunctionData {
-	// Rescan guard, as in OtlpStartStopFunctionData.
-	bool finished = false;
-	OtlpUri listen_uri;
-};
-
-static unique_ptr<FunctionData> OtlpFlushBind(ClientContext &context, TableFunctionBindInput &input,
+static unique_ptr<FunctionData> OtlpFlushBind(ClientContext &, TableFunctionBindInput &input,
                                               vector<LogicalType> &return_types, vector<Identifier> &names) {
-	auto bind_data = make_uniq<OtlpFlushFunctionData>();
-	auto &uri_value = input.inputs[0];
-	if (uri_value.IsNull() || uri_value.GetValue<string>().empty()) {
-		throw InvalidInputException("Invalid OTLP listen URI specified");
-	}
-	bind_data->listen_uri = OtlpUri(uri_value.GetValue<string>());
-	names.emplace_back("status");
-	return_types.emplace_back(LogicalType::VARCHAR);
-	names.emplace_back("sealed_rows");
-	return_types.emplace_back(LogicalType::UBIGINT);
-	names.emplace_back("seals_total");
-	return_types.emplace_back(LogicalType::UBIGINT);
-	names.emplace_back("error");
-	return_types.emplace_back(LogicalType::VARCHAR);
-	return std::move(bind_data);
-}
-
-static void OtlpFlush(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
-	auto &bind_data = data_p.bind_data->CastNoConst<OtlpFlushFunctionData>();
-	if (bind_data.finished) {
-		return;
-	}
-	auto &state = OtlpStorageExtensionInfo::GetState(*context.db);
-	auto result = state.FlushServer(bind_data.listen_uri);
-	if (!result.found) {
-		output.SetValue(0, 0, StringUtil::Format("No server found listening on %s", bind_data.listen_uri.Uri()));
-		output.SetValue(1, 0, Value::UBIGINT(0));
-		output.SetValue(2, 0, Value::UBIGINT(0));
-		output.SetValue(3, 0, Value(LogicalType::VARCHAR));
-	} else {
-		output.SetValue(0, 0, result.error.empty() ? Value("sealed") : Value("error"));
-		output.SetValue(1, 0, Value::UBIGINT(result.sealed_rows));
-		output.SetValue(2, 0, Value::UBIGINT(result.seals_total));
-		output.SetValue(3, 0, result.error.empty() ? Value(LogicalType::VARCHAR) : Value(result.error));
-	}
-	output.SetChildCardinality(1);
-	bind_data.finished = true;
+	names = {"status", "sealed_rows", "seals_total", "error"};
+	return_types = {LogicalType::VARCHAR, LogicalType::UBIGINT, LogicalType::UBIGINT, LogicalType::VARCHAR};
+	return make_uniq<OtlpControlBindData>([uri = BindOptionalUri(input)](ClientContext &context) {
+		auto results = OtlpStorageExtensionInfo::GetState(*context.db).FlushServers(uri ? &*uri : nullptr);
+		OtlpRows rows;
+		for (auto &flush : results) {
+			const bool success = flush.error.empty();
+			rows.push_back({Value(success ? "sealed" : "error"), Value::UBIGINT(flush.sealed_rows),
+			                Value::UBIGINT(flush.seals_total),
+			                success ? Value(LogicalType::VARCHAR) : Value(flush.error)});
+		}
+		if (rows.empty()) {
+			rows.push_back({Value(NO_SERVERS), Value::UBIGINT(0), Value::UBIGINT(0), Value(LogicalType::VARCHAR)});
+		}
+		return rows;
+	});
 }
 
 CreateTableFunctionInfo OtlpFlushFunction::GetFunction() {
+	const vector<string> categories = {"opentelemetry", "ingest"};
 	return OtlpDocumented(
-	    TableFunction("otlp_flush", {LogicalType::VARCHAR}, OtlpFlush, OtlpFlushBind),
-	    {OtlpDoc({LogicalType::VARCHAR}, {"listen_uri"},
+	    OptionalUriFunctions("otlp_flush", OtlpFlushBind),
+	    {OtlpDoc({}, {},
+	             "Force a synchronous seal (group-commit) on every live ingest server on this database. "
+	             "Returns one row per server, or one informational row if no servers are running.",
+	             {"SELECT * FROM otlp_flush();"}, categories),
+	     OtlpDoc({LogicalType::VARCHAR}, {"listen_uri"},
 	             "Force a synchronous seal (group-commit) on the live ingest server that owns listener "
 	             "`listen_uri`, so rows accepted so far become readable in the target catalog. The server keeps "
-	             "running.",
-	             {"SELECT * FROM otlp_flush('otlp:localhost:4318');"}, {"opentelemetry", "ingest"})});
+	             "running. An unknown URI raises an error.",
+	             {"SELECT * FROM otlp_flush('otlp:localhost:4318');"}, categories)});
 }
 
 } // namespace duckdb

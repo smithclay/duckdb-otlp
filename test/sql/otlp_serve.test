@@ -61,13 +61,13 @@ CALL otlp_serve('otlp:127.0.0.1:55439', token := 'dev-token-123456', checkpoint_
 ----
 Invalid named parameter "checkpoint_interval"
 
-query TTT
-SELECT listen_uri, listen_url, schema_name
+query TTTTTT
+SELECT *
 FROM otlp_serve('otlp:127.0.0.1:55439', token := 'dev-token-123456', schema := 'main', create_tables := true,
                 seal_target_bytes := 1048576, seal_max_age_ms := 2500,
                 target_file_size := 134217728, maintenance_retention_ms := 600000);
 ----
-otlp:127.0.0.1:55439	http://127.0.0.1:55439	main
+otlp:127.0.0.1:55439	http://127.0.0.1:55439	dev-token-123456	main	(empty)	http
 
 statement error
 CALL otlp_serve('otlp:127.0.0.1:55439', token := 'dev-token-123456');
@@ -80,6 +80,22 @@ FROM otlp_server_list()
 WHERE listen_uri = 'otlp:127.0.0.1:55439';
 ----
 otlp:127.0.0.1:55439	main	0
+
+statement ok
+PREPARE list_servers AS SELECT count(*) FROM otlp_server_list();
+
+query I
+EXECUTE list_servers;
+----
+1
+
+query I
+EXECUTE list_servers;
+----
+1
+
+statement ok
+DEALLOCATE list_servers;
 
 # a freshly-started server reports itself listening with no error
 query I
@@ -115,17 +131,32 @@ SELECT status, sealed_rows FROM otlp_flush('otlp:127.0.0.1:55439');
 ----
 sealed	0
 
-query I
-SELECT count(*) FROM otlp_seal_list()
-WHERE listen_uri = 'otlp:127.0.0.1:55439';
-----
-0
+statement ok
+PREPARE flush_server AS SELECT status, sealed_rows FROM otlp_flush('otlp:127.0.0.1:55439');
 
-# flushing an unknown server reports not found
-query T
+query TI
+EXECUTE flush_server;
+----
+sealed	0
+
+query TI
+EXECUTE flush_server;
+----
+sealed	0
+
+statement ok
+DEALLOCATE flush_server;
+
+# Both actions reject an unknown listen URI.
+statement error
 SELECT status FROM otlp_flush('otlp:127.0.0.1:59999');
 ----
-No server found listening on otlp:127.0.0.1:59999
+Invalid Input Error: No server found listening on otlp:127.0.0.1:59999
+
+statement error
+SELECT status FROM otlp_stop('otlp:127.0.0.1:59999');
+----
+Invalid Input Error: No server found listening on otlp:127.0.0.1:59999
 
 query T
 SELECT status FROM otlp_stop('otlp:127.0.0.1:55439');
@@ -141,11 +172,11 @@ WHERE listen_uri = 'otlp:127.0.0.1:55439';
 # disable_auth opt-in: anonymous serve mints no token (auth_token is empty) and
 # skips the >= 16 char token floor. Used by tokenless producers (e.g. the
 # otel-arrow OTAP exporter, which cannot attach a bearer token).
-query TT
-SELECT listen_uri, auth_token
+query TTT
+SELECT listen_uri, auth_token, logs_table
 FROM otap_serve('otap:127.0.0.1:55445', disable_auth := true);
 ----
-otap:127.0.0.1:55445	(empty)
+otap:127.0.0.1:55445	(empty)	otlp_logs
 
 query T
 SELECT status FROM otlp_stop('otap:127.0.0.1:55445');
@@ -294,6 +325,11 @@ SELECT status FROM otlp_flush('otlp:127.0.0.1:55471');
 ----
 sealed
 
+query T
+SELECT status FROM otlp_flush();
+----
+sealed
+
 # a second server for the same catalog + schema is rejected: a target has one writer
 statement error
 CALL otlp_serve('otlp:127.0.0.1:55472', token := 'dev-token-123456');
@@ -366,7 +402,7 @@ SELECT maintenance_contended_total FROM otlp_server_list() WHERE listen_uri = 'o
 statement ok
 CALL otlp_stop('otlp:127.0.0.1:55480');
 
-# --- otlp_stop() with no argument: stop every server on the instance ---
+# --- otlp_flush() and otlp_stop(): act on every server on the instance ---
 #
 # This is what the daemon's shutdown runs. The single-URI form only reaches the server it
 # names, so a server started out-of-band (over Quack, or by the daemon's --init-sql script)
@@ -380,6 +416,11 @@ query TI
 SELECT status, dropped_rows FROM otlp_stop();
 ----
 No OTLP servers are running	0
+
+query TIIT
+SELECT * FROM otlp_flush();
+----
+No OTLP servers are running	0	0	NULL
 
 statement ok
 CREATE SCHEMA stop_all_other;
@@ -396,6 +437,12 @@ query I
 SELECT count(*) FROM otlp_server_list();
 ----
 2
+
+query TIIT
+SELECT * FROM otlp_flush();
+----
+sealed	0	0	NULL
+sealed	0	0	NULL
 
 # one row per server, and no rows dropped: both were sealed while the database was alive.
 query I

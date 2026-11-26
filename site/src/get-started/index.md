@@ -70,7 +70,7 @@ For durable lakehouse ingest, pass `catalog` to an attached lakehouse catalog. S
 The server buffers rows in memory and commits them in the background, so a freshly POSTed row may not be visible yet. Force a commit with `otlp_flush`, then read the table:
 
 ```sql
-SELECT * FROM otlp_flush('otlp:localhost:4318');
+SELECT * FROM otlp_flush();
 
 SELECT time_unix_nano, service_name, severity_text, body
 FROM otlp_logs;
@@ -172,4 +172,4 @@ SELECT * FROM read_otlp_traces('/full/path/to/traces.jsonl');
 
 **Rows posted to the server are not visible yet**
 
-Wait for the background commit, or stop the server with `otlp_stop('otlp:localhost:4318')` before closing the database. Use `otlp_flush('otlp:localhost:4318')` when the server should keep running and readers need the latest accepted rows before the next scheduled commit.
+Wait for the background commit, or stop the server with `otlp_stop('otlp:localhost:4318')` before closing the database. Use `otlp_flush()` when the server should keep running and readers need the latest accepted rows before the next scheduled commit.

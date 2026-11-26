@@ -250,36 +250,6 @@ int64_t OtlpServer::OldestBufferedAgeMs() const {
 	    0, std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - oldest).count());
 }
 
-vector<OtlpSealEvent> OtlpServer::SealHistory() const {
-	std::lock_guard<std::mutex> lock(seal_history_mutex);
-	return vector<OtlpSealEvent>(seal_history.begin(), seal_history.end());
-}
-
-void OtlpServer::RecordSealEvent(int64_t started_unix_ms, int64_t append_duration_ms, int64_t commit_duration_ms,
-                                 idx_t rows_committed, idx_t admitted_bytes_committed, bool success,
-                                 const string &error) {
-	OtlpSealEvent event;
-	event.seal_sequence = seal_sequence.fetch_add(1) + 1;
-	event.started_unix_ms = started_unix_ms;
-	event.completed_unix_ms = NowUnixMs();
-	event.duration_ms = std::max<int64_t>(0, event.completed_unix_ms - event.started_unix_ms);
-	event.append_duration_ms = append_duration_ms;
-	event.commit_duration_ms = commit_duration_ms;
-	event.rows_committed = rows_committed;
-	event.admitted_bytes_committed = admitted_bytes_committed;
-	event.success = success;
-	event.seals_total = seals_total.load();
-	event.seal_failures_total = seal_failures_total.load();
-	event.committed_rows_total = committed_rows_total.load();
-	event.error = error;
-	std::lock_guard<std::mutex> lock(seal_history_mutex);
-	static constexpr idx_t MAX_SEAL_HISTORY = 4096;
-	if (seal_history.size() >= MAX_SEAL_HISTORY) {
-		seal_history.pop_front();
-	}
-	seal_history.push_back(std::move(event));
-}
-
 void OtlpServer::LogServerEvent(const string &message, LogLevel level) const {
 	auto db = db_ptr.lock();
 	if (!db) {
@@ -923,27 +893,16 @@ idx_t OtlpServer::RestoreUnsealed(SealingPlan &plan, const std::vector<bool> &re
 	return restored_rows;
 }
 
-void OtlpServer::RecordSealOutcome(bool success, idx_t rows_committed, idx_t admitted_bytes_committed,
-                                   int64_t seal_started_unix_ms, int64_t append_duration_ms, int64_t commit_duration_ms,
-                                   const string &error) {
-	// Increment the counters BEFORE RecordSealEvent snapshots them (see OtlpSealEvent).
+void OtlpServer::RecordSealOutcome(bool success, idx_t rows_committed, const string &error) {
 	if (success) {
 		seals_total.fetch_add(1);
 		committed_rows_total.fetch_add(rows_committed);
 		last_seal_unix_ms.store(NowUnixMs());
-		{
-			std::lock_guard<std::mutex> elock(seal_error_mutex);
-			seal_last_error.clear();
-		}
 	} else {
 		seal_failures_total.fetch_add(1);
-		{
-			std::lock_guard<std::mutex> elock(seal_error_mutex);
-			seal_last_error = error;
-		}
 	}
-	RecordSealEvent(seal_started_unix_ms, append_duration_ms, commit_duration_ms, rows_committed,
-	                admitted_bytes_committed, success, error);
+	std::lock_guard<std::mutex> lock(seal_error_mutex);
+	seal_last_error = error;
 }
 
 //! The relation name a sink statement reads the sealed rows from.
@@ -1026,7 +985,11 @@ OtlpIngestResult OtlpServer::SealOnce() {
 		return OtlpIngestResult {}; // database closed; nothing we can durably write
 	}
 	auto &allocator = Allocator::Get(*db);
-	auto seal_started_unix_ms = NowUnixMs();
+	const auto seal_started = std::chrono::steady_clock::now();
+	const auto elapsed_ms = [](std::chrono::steady_clock::time_point started) {
+		return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started)
+		    .count();
+	};
 
 	auto plan = SwapBuffersForSeal(allocator);
 	if (plan.total_rows == 0) {
@@ -1044,12 +1007,14 @@ OtlpIngestResult OtlpServer::SealOnce() {
 	OtlpIngestResult result;
 	int64_t append_duration_ms = 0;
 	int64_t commit_duration_ms = 0;
+	auto phase_started = seal_started;
+	bool appending = true;
 	idx_t failed_signal = 0;
 	try {
 		if (transactional) {
 			RunSQL(*writer_con, "BEGIN TRANSACTION");
 		}
-		auto append_started = std::chrono::steady_clock::now();
+		phase_started = std::chrono::steady_clock::now();
 		for (idx_t i = 0; i < signal_buffers.size(); i++) {
 			failed_signal = i;
 			if (sealing[i].rows == 0) {
@@ -1070,22 +1035,21 @@ OtlpIngestResult OtlpServer::SealOnce() {
 				EnsureParquetView(i, buf.table_name);
 			}
 		}
-		append_duration_ms =
-		    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - append_started)
-		        .count();
+		append_duration_ms = elapsed_ms(phase_started);
 		if (transactional) {
+			appending = false;
+			phase_started = std::chrono::steady_clock::now();
 #ifdef DUCKDB_OTLP_ENABLE_TEST_SEAM
 			if (seal_fault_hook_for_test) {
 				seal_fault_hook_for_test();
 			}
 #endif
-			auto commit_started = std::chrono::steady_clock::now();
 			RunSQL(*writer_con, "COMMIT");
-			commit_duration_ms =
-			    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - commit_started)
-			        .count();
+			commit_duration_ms = elapsed_ms(phase_started);
 		}
 	} catch (...) {
+		auto &failed_phase_ms = appending ? append_duration_ms : commit_duration_ms;
+		failed_phase_ms = elapsed_ms(phase_started);
 		// catch(...) so a non-std throw cannot std::terminate the host and the buffers are restored.
 		string msg;
 		try {
@@ -1129,26 +1093,29 @@ OtlpIngestResult OtlpServer::SealOnce() {
 		ReleaseAdmission(sealed_admission);
 		if (sealed_rows > 0) {
 			// A partial Parquet export is durable: it advances the seal clock and committed_rows_total
-			// (hence success=false with rows_committed > 0). Bumped before RecordSealOutcome snapshots it.
+			// even though the seal failed overall.
 			last_seal_unix_ms.store(NowUnixMs());
 			committed_rows_total.fetch_add(sealed_rows);
 		}
-		LogServerEvent(StringUtil::Format("seal failed at %s (%llu/%llu rows sealed): %s",
-		                                  signal_buffers[failed_signal]->table_name, static_cast<uint64_t>(sealed_rows),
-		                                  static_cast<uint64_t>(plan.total_rows), msg),
-		               LogLevel::LOG_WARNING);
-		RecordSealOutcome(false, sealed_rows, sealed_admission, seal_started_unix_ms, append_duration_ms,
-		                  commit_duration_ms, msg);
+		LogServerEvent(
+		    StringUtil::Format("seal failed at %s (%llu/%llu rows sealed) duration_ms=%lld append_duration_ms=%lld "
+		                       "commit_duration_ms=%lld: %s",
+		                       signal_buffers[failed_signal]->table_name, static_cast<uint64_t>(sealed_rows),
+		                       static_cast<uint64_t>(plan.total_rows), elapsed_ms(seal_started), append_duration_ms,
+		                       commit_duration_ms, msg),
+		    LogLevel::LOG_WARNING);
+		RecordSealOutcome(false, 0, msg);
 		throw IOException("seal failed: %s", msg);
 	}
 
 	ReleaseAdmission(plan.sealed_admission_bytes);
-	// DEBUG: otlp_seal_list() keeps the history.
-	LogServerEvent(StringUtil::Format("seal: target=%s rows=%llu batches=%llu", SealTargetDescription(),
-	                                  static_cast<uint64_t>(result.rows), static_cast<uint64_t>(result.batches)),
+	LogServerEvent(StringUtil::Format("seal: target=%s rows=%llu batches=%llu duration_ms=%lld append_duration_ms=%lld "
+	                                  "commit_duration_ms=%lld",
+	                                  SealTargetDescription(), static_cast<uint64_t>(result.rows),
+	                                  static_cast<uint64_t>(result.batches), elapsed_ms(seal_started),
+	                                  append_duration_ms, commit_duration_ms),
 	               LogLevel::LOG_DEBUG);
-	RecordSealOutcome(true, result.rows, plan.sealed_admission_bytes, seal_started_unix_ms, append_duration_ms,
-	                  commit_duration_ms, "");
+	RecordSealOutcome(true, result.rows, "");
 	catalog_maintenance_due = true;
 	return result;
 }

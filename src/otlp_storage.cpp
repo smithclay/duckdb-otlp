@@ -102,10 +102,9 @@ OtlpServer &OtlpStorageExtensionInfo::CreateServer(ClientContext &context, const
 }
 
 //! Close an already-unregistered server (final seal included) and report what it dropped.
-//! `catch_errors`: StopAllServersGraceful records a failure and continues, so later servers still seal.
+//! Stop-all records a failure and continues, so later servers still seal.
 static OtlpStorageExtensionInfo::StopResult CloseAndDescribe(OtlpServer &server, bool catch_errors) {
 	OtlpStorageExtensionInfo::StopResult result;
-	result.found = true;
 	for (auto &listener : server.Listeners()) {
 		result.listen_uris.push_back(listener->Uri().Uri());
 	}
@@ -122,74 +121,62 @@ static OtlpStorageExtensionInfo::StopResult CloseAndDescribe(OtlpServer &server,
 	return result;
 }
 
-OtlpStorageExtensionInfo::StopResult OtlpStorageExtensionInfo::StopServer(ClientContext &context,
-                                                                          const OtlpUri &listen_uri) {
-	shared_ptr<OtlpServer> to_destroy;
-	{
-		std::lock_guard<std::mutex> lock(servers_mutex);
-		EnsureNotShutDown();
-		const auto it = servers.find(listen_uri.CanonicalUri());
-		if (it == servers.end()) {
-			return {};
-		}
-		to_destroy = it->second;
-		// Any listener URI names the whole server: unregister all of its listeners.
-		for (auto entry = servers.begin(); entry != servers.end();) {
-			entry = entry->second == to_destroy ? servers.erase(entry) : std::next(entry);
-		}
+vector<shared_ptr<OtlpServer>> OtlpStorageExtensionInfo::Select(optional_ptr<const OtlpUri> listen_uri) const {
+	EnsureNotShutDown();
+	if (!listen_uri) {
+		return DistinctServers();
 	}
-	// A concurrent otlp_flush may hold another ref; Close() serializes with it via the writer mutex.
-	auto result = CloseAndDescribe(*to_destroy, /*catch_errors=*/false);
-	to_destroy.reset();
-	return result;
+	auto entry = servers.find(listen_uri->CanonicalUri());
+	if (entry == servers.end()) {
+		throw InvalidInputException("No server found listening on %s", listen_uri->CanonicalUri());
+	}
+	return {entry->second};
 }
 
-OtlpStorageExtensionInfo::FlushResult OtlpStorageExtensionInfo::FlushServer(const OtlpUri &listen_uri) {
-	shared_ptr<OtlpServer> server;
+vector<OtlpStorageExtensionInfo::StopResult>
+OtlpStorageExtensionInfo::StopServers(optional_ptr<const OtlpUri> listen_uri) {
+	vector<shared_ptr<OtlpServer>> selected;
 	{
 		std::lock_guard<std::mutex> lock(servers_mutex);
-		EnsureNotShutDown();
-		auto it = servers.find(listen_uri.CanonicalUri());
-		if (it != servers.end()) {
-			server = it->second;
+		selected = Select(listen_uri);
+		// Unregister before closing so a concurrent stop cannot stop a server twice.
+		if (listen_uri) {
+			for (auto entry = servers.begin(); entry != servers.end();) {
+				entry = entry->second == selected.front() ? servers.erase(entry) : std::next(entry);
+			}
+		} else {
+			servers.clear();
 		}
 	}
-	FlushResult result;
-	if (!server) {
-		return result;
+	vector<StopResult> results;
+	results.reserve(selected.size());
+	for (auto &server : selected) {
+		results.push_back(CloseAndDescribe(*server, /*catch_errors=*/!listen_uri));
 	}
-	result.found = true;
-	try {
-		result.sealed_rows = server->FlushNow().rows;
-	} catch (...) {
+	return results;
+}
+
+vector<OtlpStorageExtensionInfo::FlushResult>
+OtlpStorageExtensionInfo::FlushServers(optional_ptr<const OtlpUri> listen_uri) {
+	vector<shared_ptr<OtlpServer>> selected;
+	{
+		std::lock_guard<std::mutex> lock(servers_mutex);
+		selected = Select(listen_uri);
+	}
+	vector<FlushResult> results;
+	results.reserve(selected.size());
+	for (auto &server : selected) {
+		FlushResult result;
 		try {
-			throw;
+			result.sealed_rows = server->FlushNow().rows;
 		} catch (std::exception &ex) {
 			result.error = ex.what();
 		} catch (...) {
 			result.error = "unknown (non-std) exception during flush";
 		}
+		result.seals_total = server->SealsTotal();
+		results.push_back(std::move(result));
 	}
-	result.seals_total = server->SealsTotal();
-	return result;
-}
-
-vector<OtlpStorageExtensionInfo::StopResult> OtlpStorageExtensionInfo::StopAllServersGraceful() {
-	vector<shared_ptr<OtlpServer>> to_destroy;
-	{
-		std::lock_guard<std::mutex> lock(servers_mutex);
-		EnsureNotShutDown();
-		to_destroy = DistinctServers();
-		// Unregister before closing so a concurrent otlp_stop cannot stop one twice; not teardown, so
-		// shutting_down stays false. Close outside the lock: a final seal can be slow.
-		servers.clear();
-	}
-	vector<StopResult> results;
-	results.reserve(to_destroy.size());
-	for (auto &server : to_destroy) {
-		results.push_back(CloseAndDescribe(*server, /*catch_errors=*/true));
-	}
-	to_destroy.clear();
 	return results;
 }
 
@@ -225,25 +212,6 @@ vector<vector<Value>> OtlpStorageExtensionInfo::ListServers() {
 		return StringValue::Get(a[0]) < StringValue::Get(b[0]);
 	});
 	return rows;
-}
-
-vector<OtlpStorageExtensionInfo::SealSnapshot> OtlpStorageExtensionInfo::ListSeals() {
-	vector<SealSnapshot> result;
-	std::lock_guard<std::mutex> lock(servers_mutex);
-	EnsureNotShutDown();
-	for (auto &server : DistinctServers()) {
-		auto primary = server->PrimaryUri().Uri();
-		for (auto &event : server->SealHistory()) {
-			result.push_back({primary, std::move(event)});
-		}
-	}
-	std::sort(result.begin(), result.end(), [](const SealSnapshot &a, const SealSnapshot &b) {
-		if (a.listen_uri != b.listen_uri) {
-			return a.listen_uri < b.listen_uri;
-		}
-		return a.event.seal_sequence < b.event.seal_sequence;
-	});
-	return result;
 }
 
 } // namespace duckdb

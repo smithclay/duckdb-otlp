@@ -197,8 +197,8 @@ The schemas align with a normalized version of the [OpenTelemetry Arrow Data mod
 | `read_otlp_metrics_exp_histogram(path)` | Read exponential histogram metrics |
 | `read_otap_traces/logs/metrics_*(path)` | Read OpenTelemetry Arrow Protocol (OTAP) files into the same schemas as the `read_otlp_*` readers |
 | `otlp_serve([uri], ...)` | Start a native ingest server (`otlp:` scheme) with OTLP/HTTP or, with `transport := 'grpc'`, both OTLP/gRPC and OTAP/Arrow streaming |
-| `otlp_flush(uri)` | Optionally force buffered ingest rows to commit to the target catalog now |
-| `otlp_stop(uri)` | Stop a server after committing remaining rows |
+| `otlp_flush([listen_uri])` | Commit buffered rows synchronously for one server or all servers |
+| `otlp_stop([listen_uri])` | Stop one server or all servers, committing remaining rows |
 | `otlp_server_list()` | Inspect running servers and ingest counters |
 
 ## Installation

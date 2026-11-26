@@ -26,7 +26,6 @@ static void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(OtapServeFunction::GetFunction());
 	loader.RegisterFunction(OtlpStopFunction::GetFunction());
 	loader.RegisterFunction(OtlpServerListFunction::GetFunction());
-	loader.RegisterFunction(OtlpSealListFunction::GetFunction());
 	loader.RegisterFunction(OtlpFlushFunction::GetFunction());
 	loader.RegisterFunction(OtlpUriParserFunction::GetFunction());
 

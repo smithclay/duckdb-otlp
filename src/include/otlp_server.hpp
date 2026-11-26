@@ -12,7 +12,6 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
-#include <deque>
 #include <functional>
 #include <thread>
 
@@ -116,24 +115,6 @@ struct OtlpIngestOutcome {
 	}
 };
 
-struct OtlpSealEvent {
-	idx_t seal_sequence = 0;
-	int64_t started_unix_ms = 0;
-	int64_t completed_unix_ms = 0;
-	int64_t duration_ms = 0;
-	int64_t append_duration_ms = 0;
-	int64_t commit_duration_ms = 0;
-	idx_t rows_committed = 0;
-	idx_t admitted_bytes_committed = 0;
-	bool success = false;
-	// Running totals snapshotted *after* this seal's counters were incremented; keep that order
-	// in SealOnce or these are off by one seal.
-	idx_t seals_total = 0;
-	idx_t seal_failures_total = 0;
-	idx_t committed_rows_total = 0;
-	string error;
-};
-
 class OtlpServer;
 
 //! One bound socket feeding a shared OtlpServer. Listeners own no buffers, sealer, or counters.
@@ -201,7 +182,7 @@ public:
 	const vector<unique_ptr<OtlpListener>> &Listeners() const {
 		return listeners;
 	}
-	//! The first listener's URI; labels server-wide rows such as otlp_seal_list().
+	//! The first listener's URI.
 	const OtlpUri &PrimaryUri() const;
 
 	//! CSPRNG-backed 128-bit token, hex-encoded.
@@ -260,7 +241,6 @@ public:
 	idx_t PromotedColumnsTotal() const {
 		return promoter ? promoter->PromotedColumnsTotal() : 0;
 	}
-	vector<OtlpSealEvent> SealHistory() const;
 
 	//! Synchronous seal of all buffered rows (otlp_flush).
 	OtlpIngestResult FlushNow();
@@ -391,9 +371,7 @@ private:
 	//! One statement per signal that writes the relation `sealed` to the destination.
 	void BuildSinks();
 	string SealTargetDescription() const;
-	void RecordSealOutcome(bool success, idx_t rows_committed, idx_t admitted_bytes_committed,
-	                       int64_t seal_started_unix_ms, int64_t append_duration_ms, int64_t commit_duration_ms,
-	                       const string &error);
+	void RecordSealOutcome(bool success, idx_t rows_committed, const string &error);
 	void RequestSeal();
 	bool SealAgeDue() const;
 	//! Sealer thread only.
@@ -404,8 +382,6 @@ private:
 	void SweepOrphanedFiles();
 	//! Best-effort: non-DuckLake catalogs throw and are ignored.
 	void ConfigureCatalogMaintenanceOptions();
-	void RecordSealEvent(int64_t started_unix_ms, int64_t append_duration_ms, int64_t commit_duration_ms,
-	                     idx_t rows_committed, idx_t admitted_bytes_committed, bool success, const string &error);
 
 	void CreateOrValidateTable(Connection &con, OtlpSignalType signal_type, const string &table_name);
 	//! The importer's type, except TIMESTAMP_NS narrows to the tables' TIMESTAMP (us).
@@ -448,12 +424,9 @@ private:
 	std::atomic<idx_t> seals_total {0};
 	std::atomic<idx_t> seal_failures_total {0};
 	std::atomic<idx_t> committed_rows_total {0};
-	std::atomic<idx_t> seal_sequence {0};
 	std::atomic<int64_t> last_seal_unix_ms {0};
 	mutable mutex seal_error_mutex;
 	string seal_last_error;
-	mutable mutex seal_history_mutex;
-	std::deque<OtlpSealEvent> seal_history;
 
 	enum class CatalogMaintenanceState { PENDING, SUPPORTED, DISABLED };
 	CatalogMaintenanceState catalog_maintenance_state = CatalogMaintenanceState::PENDING;

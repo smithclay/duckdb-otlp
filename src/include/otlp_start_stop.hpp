@@ -26,11 +26,6 @@ public:
 	static CreateTableFunctionInfo GetFunction();
 };
 
-class OtlpSealListFunction {
-public:
-	static CreateTableFunctionInfo GetFunction();
-};
-
 class OtlpFlushFunction {
 public:
 	static CreateTableFunctionInfo GetFunction();
