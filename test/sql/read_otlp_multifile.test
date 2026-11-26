@@ -41,6 +41,51 @@ WHERE file_row_number > 1;
 ----
 2
 
+# Decoder pruning must leave the file positions the same as in an unfiltered read.
+statement ok
+CREATE TEMP TABLE unfiltered_logs AS
+SELECT file_row_number, time_unix_nano, service_name
+FROM read_otlp_logs('external/otlp2records/testdata/logs_large.pb');
+
+query II
+SELECT
+    (SELECT list(file_row_number ORDER BY file_row_number)
+     FROM read_otlp_logs('external/otlp2records/testdata/logs_large.pb') WHERE time_unix_nano >= '2025-10-17 23:48:00')
+    = (SELECT list(file_row_number ORDER BY file_row_number)
+       FROM unfiltered_logs WHERE time_unix_nano >= '2025-10-17 23:48:00'),
+    (SELECT list(file_row_number ORDER BY file_row_number)
+     FROM read_otlp_logs('external/otlp2records/testdata/logs_large.pb') WHERE service_name = 'cart')
+    = (SELECT list(file_row_number ORDER BY file_row_number)
+       FROM unfiltered_logs WHERE service_name = 'cart');
+----
+true	true
+
+statement ok
+CREATE TEMP TABLE unfiltered_gauges AS
+SELECT file_row_number, time_unix_nano, service_name
+FROM read_otlp_metrics_gauge('test/data/metrics_multiple_services.jsonl');
+
+query II
+SELECT
+    (SELECT list(file_row_number ORDER BY file_row_number)
+     FROM read_otlp_metrics_gauge('test/data/metrics_multiple_services.jsonl') WHERE time_unix_nano >= '2021-12-20 11:33:30')
+    = (SELECT list(file_row_number ORDER BY file_row_number)
+       FROM unfiltered_gauges WHERE time_unix_nano >= '2021-12-20 11:33:30'),
+    (SELECT list(file_row_number ORDER BY file_row_number)
+     FROM read_otlp_metrics_gauge('test/data/metrics_multiple_services.jsonl') WHERE service_name = 'second')
+    = (SELECT list(file_row_number ORDER BY file_row_number)
+       FROM unfiltered_gauges WHERE service_name = 'second');
+----
+true	true
+
+# A WHERE clause can request file_row_number even when SELECT leaves it out.
+query T
+SELECT severity_text
+FROM read_otlp_logs('test/data/logs_simple.jsonl')
+WHERE file_row_number = 1 AND time_unix_nano >= '2021-12-20 11:33:21';
+----
+WARN
+
 # Hive partitions become columns...
 query IIII
 SELECT region, day, count(*), list(DISTINCT service_name)

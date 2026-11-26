@@ -391,8 +391,9 @@ static unique_ptr<GlobalTableFunctionState> ReadOtlpFileInitGlobal(ClientContext
 			auto position = entry.GetIndex().GetIndex();
 			auto &filter = entry.Filter();
 			result->filters.push_back({position, TableFilterState::Initialize(context, filter)});
-			auto batch_column = result->column_ids[position];
-			if (batch_column != COLUMN_IDENTIFIER_ROW_ID) {
+			// Row numbers use the decoded batch's offsets, so keep every row until the exact filter pass.
+			if (result->row_number_positions.empty()) {
+				auto batch_column = result->column_ids[position];
 				AddFilterToRequest(*bind_data.table, result->request.columns[batch_column], filter, result->request);
 			}
 		}

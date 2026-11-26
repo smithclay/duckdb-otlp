@@ -1,0 +1,2 @@
+{"resourceMetrics":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"first"}}]},"scopeMetrics":[{"metrics":[{"name":"queue.depth","gauge":{"dataPoints":[{"timeUnixNano":"1640000000000000000","asInt":"1"}]}}]}]}]}
+{"resourceMetrics":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"second"}}]},"scopeMetrics":[{"metrics":[{"name":"queue.depth","gauge":{"dataPoints":[{"timeUnixNano":"1640000010000000000","asInt":"2"}]}}]}]}]}
