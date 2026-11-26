@@ -177,6 +177,62 @@ def test_second_listener_bind_failure_cleans_up_first_listener(tmp_path):
             assert probe.connect_ex(('127.0.0.1', int(env['DUCKDB_OTLP_HTTP_PORT']))) != 0
 
 
+@pytest.mark.parametrize('begin', ['', 'BEGIN;\n'], ids=['autocommit', 'transaction'])
+def test_sigterm_during_init_sql_drains_started_listeners(tmp_path, begin):
+    env = configuration(tmp_path, 'http')
+    side = configuration(tmp_path / 'side', 'http')
+    while side['DUCKDB_OTLP_HTTP_PORT'] == env['DUCKDB_OTLP_HTTP_PORT']:
+        side = configuration(tmp_path / 'side', 'http')
+    side_uri = f'otlp:{http_addr(side)}'
+    script = tmp_path / 'init.sql'
+    script.write_text(
+        f"SELECT 1 FROM otlp_serve('{side_uri}', parquet_export_path := '{side['PARQUET_EXPORT_PATH']}', "
+        f"token := '{TOKEN}', seal_max_age_ms := 600000);\n"
+        f"{begin}SELECT sum(sin(i)) FROM range(1000000000000) t(i);\n"
+    )
+    env['DUCKDB_OTLP_INIT_SQL'] = str(script)
+
+    with daemon(tmp_path, env) as (process, log_path):
+        # The side listener proves init SQL has started. The following query holds up startup.
+        wait_ready(process, side, log_path)
+        assert post_http(side, trace_request(1), TOKEN) == 202
+        process.terminate()
+        assert process.wait(timeout=5) == 0, log_path.read_text()
+
+    log = log_path.read_text()
+    assert 'Shutdown requested during startup' in log, log
+    assert 'DuckDB initialization complete' not in log, log
+    assert f'Stopped listening on {side_uri}' in log, log
+    assert list((tmp_path / 'side').rglob('*.parquet')), log
+
+
+def test_shutdown_reports_drops_from_the_second_stop_row(tmp_path):
+    env = configuration(tmp_path, 'http')
+    side_port = free_port()
+    while str(side_port) == env['DUCKDB_OTLP_HTTP_PORT']:
+        side_port = free_port()
+    side_uri = f'otlp:127.0.0.1:{side_port}'
+    script = tmp_path / 'init.sql'
+    script.write_text(
+        f"SELECT 1 FROM otlp_serve('{side_uri}', parquet_export_path := '{tmp_path / 'side'}', token := '{TOKEN}');\n"
+    )
+    env['DUCKDB_OTLP_INIT_SQL'] = str(script)
+    export_path = tmp_path / 'parquet'
+
+    with daemon(tmp_path, env) as (process, log_path):
+        wait_ready(process, env, log_path)
+        assert post_http(env, trace_request(1), TOKEN) == 202
+        # Init SQL registers the clean server first. Make the daemon's own server fail its final seal.
+        export_path.rmdir()
+        export_path.touch()
+
+    log = log_path.read_text()
+    assert f'Stopped listening on {side_uri}' in log, log
+    assert f'Stopped listening on otlp:{http_addr(env)}; dropped 1 un-sealed buffered rows' in log, log
+    assert process.returncode == 1, log
+    assert 'ERROR: otlp shutdown dropped 1 un-sealed buffered rows' in log, log
+
+
 def test_quack_clients_reach_the_signal_tables_unqualified(tmp_path):
     """Quack serves each client on a fresh Connection, which copies the instance's default
     database when it is created. The daemon makes the mode's catalog that default, so a client

@@ -20,7 +20,6 @@
 #include <csignal>
 #include <cstdlib>
 #include <iostream>
-#include <stdexcept>
 #include <thread>
 #include <unordered_set>
 #include <vector>
@@ -33,11 +32,23 @@ using duckdb_otlp_server::CliErrorMessage;
 using duckdb_otlp_server::EnvSource;
 using duckdb_otlp_server::Execute;
 
-// Written from a signal handler, so it must be a mutable global volatile sig_atomic_t.
-volatile std::sig_atomic_t shutdown_requested = 0; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+// ClientContext::Interrupt() only updates interrupt_state. Every operation in the handler
+// must be lock-free (atomic_flag is guaranteed lock-free).
+static_assert(std::atomic<duckdb::ClientInterruptState>::is_always_lock_free);
+static_assert(std::atomic<duckdb::ClientContext *>::is_always_lock_free);
+static_assert(std::atomic<bool>::is_always_lock_free);
+std::atomic<bool> shutdown_requested {false};
+std::atomic<duckdb::ClientContext *> startup_context {nullptr};
+std::atomic_flag startup_interrupt_active = ATOMIC_FLAG_INIT;
 
 void HandleSignal(int) {
-	shutdown_requested = 1;
+	shutdown_requested.store(true);
+	if (!startup_interrupt_active.test_and_set()) {
+		if (auto *context = startup_context.load()) {
+			context->Interrupt();
+		}
+		startup_interrupt_active.clear();
+	}
 }
 
 void InstallSignalHandlers() {
@@ -45,27 +56,16 @@ void InstallSignalHandlers() {
 	std::signal(SIGTERM, HandleSignal);
 }
 
-bool TryExecuteShutdown(duckdb::Connection &con, const duckdb::string &sql, const duckdb::string &label) {
-	try {
-		Execute(con, sql, label, true);
-		return true;
-	} catch (std::exception &ex) {
-		std::cerr << "ERROR during " << label << ": " << ex.what() << '\n';
-		return false;
-	}
-}
-
-// otlp_stop seals buffered rows and returns (status, dropped_rows). Returns false on an error OR
-// on dropped rows, so the exit code tells an orchestrator a clean shutdown from a data-losing one.
-bool TryExecuteOtlpShutdown(duckdb::Connection &con, const duckdb::string &sql, const duckdb::string &label) {
+bool StopServer(duckdb::Connection &con, const duckdb::string &sql, const char *label, bool reports_dropped_rows) {
 	try {
 		auto result = con.Query(sql);
 		CheckResult(*result, label);
 		result->Print();
-		auto chunk = result->Fetch();
 		uint64_t dropped_rows = 0;
-		if (chunk && chunk->size() > 0 && chunk->ColumnCount() >= 2) {
-			dropped_rows = chunk->GetValue(1, 0).GetValue<uint64_t>();
+		if (reports_dropped_rows) {
+			for (const auto &row : *result) {
+				dropped_rows += row.GetValue<uint64_t>(1);
+			}
 		}
 		if (dropped_rows > 0) {
 			std::cerr << "ERROR: " << label << " dropped " << dropped_rows
@@ -79,39 +79,38 @@ bool TryExecuteOtlpShutdown(duckdb::Connection &con, const duckdb::string &sql, 
 	}
 }
 
-struct OtlpHealth {
-	bool listening = false;
-	duckdb::string last_error;
-};
-
-OtlpHealth QueryOtlpHealth(duckdb::Connection &con, const duckdb_otlp_server::IngestListener &listener) {
-	auto result =
-	    con.Query("SELECT is_listening, coalesce(last_error, '') FROM otlp_server_list() WHERE listen_uri = " +
-	              duckdb::SqlQuote(listener.uri));
-	CheckResult(*result, "otlp readiness");
-	auto chunk = result->Fetch();
-	if (!chunk || chunk->size() == 0) {
-		return {false, "listener is not registered"};
-	}
-	return {chunk->GetValue(0, 0).GetValue<bool>(), chunk->GetValue(1, 0).GetValue<duckdb::string>()};
-}
-
 //! Block until a signal arrives, checking once a second that every listener is still up. Seal
 //! and maintenance outcomes are logged by the server itself (see OtlpEventsToStderr).
 bool WaitForShutdownOrListenerFailure(duckdb::Connection &con, const duckdb_otlp_server::ServerConfig &config) {
-	for (duckdb::idx_t ticks = 1; !shutdown_requested; ticks++) {
+	duckdb::vector<duckdb::string> quoted_uris;
+	for (const auto &listener : config.listeners) {
+		quoted_uris.push_back(duckdb::SqlQuote(listener.uri));
+	}
+	auto uris = duckdb::StringUtil::Join(quoted_uris, ", ");
+	auto count_sql = "SELECT count(*) FROM otlp_server_list() WHERE is_listening AND listen_uri IN (" + uris + ")";
+	for (duckdb::idx_t ticks = 1; !shutdown_requested.load(); ticks++) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(250));
-		if (ticks % 4 != 0) {
+		if (ticks % 4 != 0 || shutdown_requested.load()) {
 			continue;
 		}
-		for (const auto &listener : config.listeners) {
-			auto health = QueryOtlpHealth(con, listener);
-			if (!health.listening) {
-				std::cerr << "ERROR: OTLP listener " << listener.uri << " stopped or disappeared: " << health.last_error
-				          << '\n';
-				return false;
-			}
+		auto count = con.Query(count_sql);
+		CheckResult(*count, "otlp listener health");
+		if (count->Fetch()->GetValue(0, 0).GetValue<duckdb::idx_t>() == config.listeners.size()) {
+			continue;
 		}
+		auto failures = con.Query(duckdb::StringUtil::Format(R"SQL(
+SELECT uri, CASE WHEN listen_uri IS NULL THEN 'listener is not registered' ELSE coalesce(last_error, '') END
+FROM unnest([%s]) AS expected(uri)
+LEFT JOIN otlp_server_list() ON uri = listen_uri
+WHERE is_listening IS DISTINCT FROM true
+)SQL",
+		                                                     uris));
+		CheckResult(*failures, "otlp listener health");
+		for (const auto &row : *failures) {
+			std::cerr << "ERROR: OTLP listener " << row.GetValue<duckdb::string>(0)
+			          << " stopped or disappeared: " << row.GetValue<duckdb::string>(1) << '\n';
+		}
+		return false;
 	}
 	return true;
 }
@@ -355,95 +354,84 @@ int RunServe(const EnvSource &env) {
 		BindConfigEnvVariables(con, config, env);
 
 		InstallSignalHandlers();
+		startup_context.store(con.context.get());
 
-		// The signal flag is only observed between statements and a remote ATTACH/INSTALL can block
-		// for long, so a watcher thread interrupts the connection as soon as a signal arrives.
-		std::atomic<bool> startup_complete {false};
-		std::thread interrupt_watcher([&con, &startup_complete] {
-			while (!startup_complete.load()) {
-				if (shutdown_requested) {
-					con.Interrupt();
+		auto execute_steps = [&con](const std::vector<duckdb_otlp_server::BootStep> &steps) {
+			for (const auto &step : steps) {
+				if (shutdown_requested.load()) {
 					return;
 				}
-				std::this_thread::sleep_for(std::chrono::milliseconds(100));
-			}
-		});
-		// Sole owner of the join. Stop() runs before listener cleanup so shutdown SQL cannot race an
-		// interrupt.
-		struct WatcherGuard {
-			std::atomic<bool> &done;
-			std::thread &worker;
-			void Stop() {
-				done.store(true);
-				if (worker.joinable()) {
-					worker.join();
-				}
-			}
-			~WatcherGuard() {
-				Stop();
-			}
-		} watcher_guard {startup_complete, interrupt_watcher};
-
-		std::cout << "Setting up " << config.mode << " (installing extensions, attaching catalog)...\n";
-		for (const auto &step : config.SetupSteps()) {
-			Execute(con, step.sql, step.label);
-		}
-		// Instance-wide default, not `USE`: Quack serves each client on a fresh Connection, which copies
-		// the DatabaseManager default, so Quack clients resolve the signal tables unqualified.
-		if (!config.catalog.empty()) {
-			duckdb::DatabaseManager::Get(*con.context).SetDefaultDatabase(duckdb::Identifier(config.catalog));
-		}
-		// Attempted on every exit, so a server that did register is always drained.
-		auto stop_listeners = [&] {
-			return TryExecuteOtlpShutdown(con, config.StopOtlpSql(), "otlp shutdown");
-		};
-		try {
-			for (const auto &step : config.ServeSteps()) {
 				Execute(con, step.sql, step.label);
 			}
-			watcher_guard.Stop();
+		};
+		bool started = false;
+		bool run_ok = true;
+		try {
+			std::cout << "Setting up " << config.mode << " (installing extensions, attaching catalog)...\n";
+			execute_steps(config.SetupSteps());
+			// Quack opens a new connection per client. Set the instance-wide default so clients
+			// can resolve signal tables without qualifying their catalog.
+			if (!shutdown_requested.load() && !config.catalog.empty()) {
+				duckdb::DatabaseManager::Get(*con.context).SetDefaultDatabase(duckdb::Identifier(config.catalog));
+			}
+			execute_steps(config.ServeSteps());
+			startup_context.store(nullptr);
 
-			std::cout << "DuckDB initialization complete\n";
-			std::cout << "Starting server..." << '\n';
-			for (const auto &listener : config.listeners) {
-				if (listener.transport == "http") {
-					duckdb::OtlpUri uri(listener.uri);
-					auto host = ReachableHost(uri.Host());
-					std::cout << "\nSend OTLP/HTTP to http://" << host << ":" << uri.Port()
-					          << "/v1/{logs,traces,metrics}\n";
-					break;
+			if (!shutdown_requested.load()) {
+				started = true;
+				std::cout << "DuckDB initialization complete\n";
+				std::cout << "Starting server..." << '\n';
+				for (const auto &listener : config.listeners) {
+					if (listener.transport == "http") {
+						duckdb::OtlpUri uri(listener.uri);
+						auto host = ReachableHost(uri.Host());
+						std::cout << "\nSend OTLP/HTTP to http://" << host << ":" << uri.Port()
+						          << "/v1/{logs,traces,metrics}\n";
+						break;
+					}
 				}
+				if (config.quack_enabled) {
+					PrintQuackEndpoint(con, config);
+				} else {
+					std::cout
+					    << "Query it while the server runs by enabling Quack (--quack PORT --quack-token TOKEN)\n";
+				}
+				run_ok = WaitForShutdownOrListenerFailure(con, config);
 			}
-			if (config.quack_enabled) {
-				PrintQuackEndpoint(con, config);
-			} else {
-				std::cout << "Query it while the server runs by enabling Quack (--quack PORT --quack-token TOKEN)\n";
+		} catch (const std::exception &ex) {
+			if (started || !shutdown_requested.load()) {
+				std::cerr << "ERROR: " << CliErrorMessage(ex) << '\n';
+				run_ok = false;
 			}
-			auto listener_ok = WaitForShutdownOrListenerFailure(con, config);
+		}
 
-			std::cout << "Stopping duckdb-otlp..." << '\n';
-			bool shutdown_ok = true;
-			if (config.quack_enabled) {
-				shutdown_ok = TryExecuteShutdown(con, config.StopQuackSql(), "quack shutdown");
-			}
-			shutdown_ok = stop_listeners() && shutdown_ok;
-			return listener_ok && shutdown_ok ? 0 : 1;
-		} catch (...) {
-			watcher_guard.Stop();
-			if (config.quack_enabled) {
-				TryExecuteShutdown(con, config.StopQuackSql(), "quack startup cleanup");
-			}
-			if (!stop_listeners()) {
-				return 1;
-			}
-			throw;
+		// A signal handler on another thread may already have read startup_context.
+		// Let that interrupt finish before clearing it and running shutdown SQL.
+		startup_context.store(nullptr);
+		while (startup_interrupt_active.test_and_set()) {
+			std::this_thread::yield();
 		}
+		startup_interrupt_active.clear();
+		con.context->ClearInterrupt();
+		// Interrupted init SQL can leave an explicit transaction aborted.
+		if (con.HasActiveTransaction()) {
+			try {
+				con.Rollback();
+			} catch (const std::exception &ex) {
+				std::cerr << "ERROR during shutdown rollback: " << CliErrorMessage(ex) << '\n';
+				run_ok = false;
+			}
+		}
+
+		if (!started && shutdown_requested.load()) {
+			std::cerr << "Shutdown requested during startup; exiting before the server became ready.\n";
+		}
+		std::cout << "Stopping duckdb-otlp...\n";
+		const bool quack_ok = !config.quack_enabled || !db.ExtensionIsLoaded("quack") ||
+		                      StopServer(con, config.StopQuackSql(), "quack shutdown", false);
+		const bool otlp_ok = StopServer(con, config.StopOtlpSql(), "otlp shutdown", true);
+		return run_ok && quack_ok && otlp_ok ? 0 : 1;
 	} catch (std::exception &ex) {
-		if (shutdown_requested) {
-			// A signal interrupted startup (e.g. mid-ATTACH); treat it as a clean stop.
-			std::cerr << "Shutdown requested during startup; exiting before the server became ready." << '\n';
-			return 0;
-		}
 		std::cerr << "ERROR: " << CliErrorMessage(ex) << '\n';
 		return 1;
 	}
