@@ -18,6 +18,13 @@ CORE_EXTENSIONS=json
 # Include the Makefile from extension-ci-tools
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
+# Run the separate C++ seal harness alongside the SQL tests.
+test_release: seal_harness_release
+test_debug: seal_harness_debug
+seal_harness_%:
+	@bin=build/$*/extension/otlp/otlp_seal_harness; \
+	if [ "$(SKIP_TESTS)" = "1" ] || [ ! -x "$$bin" ]; then echo "seal harness skipped"; else "$$bin"; fi
+
 # FFI functions that need to be exported for WASM Rust backend
 OTLP_FFI_EXPORTS := _otlp_get_schema,_otlp_transform,_otlp_transform_metrics_all,_otlp_status_message
 
