@@ -59,8 +59,6 @@ struct ServerConfig {
 	duckdb::string credentials_source;
 	//! Directory DuckDB loads persistent secrets from. Empty keeps $HOME/.duckdb/stored_secrets.
 	duckdb::string secret_dir;
-	//! The preset LOADs an unsigned extension; DuckDB accepts this only before the database starts.
-	bool allow_unsigned_extensions = false;
 	//! Set by --no-auth, or implicitly when no token is configured and every listener binds
 	//! loopback (`auth_disabled_for_loopback`). A non-loopback bind with no token is an error.
 	bool disable_auth = false;

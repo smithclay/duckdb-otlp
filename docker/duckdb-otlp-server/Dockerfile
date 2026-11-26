@@ -72,45 +72,11 @@ RUN set -eux; \
 # is offline. The daemon (otlp) is statically embedded and is intentionally not installed.
 # avro is no mode's extension but iceberg autoloads it, so it is primed too or the iceberg
 # modes reach the network on first LOAD.
-#
-# gcs is a community extension and is best effort: it has no build for DuckDB 2.0 yet, so a
-# missing build is reported and skipped instead of failing the image.
 RUN set -eux; mkdir -p "${HOME}"; \
     for ext in ducklake iceberg avro httpfs aws postgres quack; do \
         /tmp/duckdb-cli/duckdb -c "INSTALL ${ext};"; \
     done; \
-    for ext in gcs; do \
-        /tmp/duckdb-cli/duckdb -c "INSTALL ${ext} FROM community; LOAD ${ext};" \
-            || echo "WARNING: community extension ${ext} not published for ${DUCKDB_VERSION}; skipped" >&2; \
-    done; \
     chown -R "${RUN_UID}:${RUN_GID}" "${HOME}"
-
-# gcp-ducklake loads a fixed gcs build instead of the community one, which prints a failed
-# upload finalize rather than raising it, so DuckLake commits data files that were never
-# written. The fixed build is unsigned; DUCKDB_OTLP_GCS_EXTENSION_PATH (set in runtime-base)
-# makes the daemon LOAD it by path with allow_unsigned_extensions. Pinned by checksum.
-#
-# The release has no DuckDB 2.0 build yet, so the checksums are empty and the step is
-# skipped: gcp-ducklake then fails at startup, naming the missing file. Set the URL and both
-# checksums together once gcs.${DUCKDB_VERSION}.linux_*.duckdb_extension is published.
-ARG GCS_EXTENSION_URL=https://github.com/smithclay/duckdb-gcs/releases/download/v0.0.8-finalize.1
-ARG GCS_EXTENSION_SHA256_AMD64=
-ARG GCS_EXTENSION_SHA256_ARM64=
-RUN set -eux; \
-    case "${TARGETARCH:-amd64}" in \
-        amd64) arch="amd64"; sha="${GCS_EXTENSION_SHA256_AMD64}" ;; \
-        arm64) arch="arm64"; sha="${GCS_EXTENSION_SHA256_ARM64}" ;; \
-        *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
-    esac; \
-    mkdir -p /staging/extensions; \
-    if [ -z "${sha}" ]; then \
-        echo "WARNING: no fixed gcs build pinned for ${DUCKDB_VERSION}; skipped" >&2; \
-        exit 0; \
-    fi; \
-    curl -fsSL "${GCS_EXTENSION_URL}/gcs.${DUCKDB_VERSION}.linux_${arch}.duckdb_extension" \
-        -o /staging/extensions/gcs.duckdb_extension; \
-    echo "${sha}  /staging/extensions/gcs.duckdb_extension" | sha256sum -c -; \
-    /tmp/duckdb-cli/duckdb -unsigned -c "LOAD '/staging/extensions/gcs.duckdb_extension';"
 
 # A runtime-user-owned empty data dir (so fresh named volumes inherit good ownership).
 RUN install -d -o "${RUN_UID}" -g "${RUN_GID}" /staging/data
@@ -119,12 +85,6 @@ RUN install -d -o "${RUN_UID}" -g "${RUN_GID}" /staging/data
 # historical entry point was `duckdb-otlp-server`. Distroless has no shell, so the symlink
 # is created here and copied in; COPY preserves it rather than dereferencing it.
 RUN mkdir -p /staging/bin && ln -s duckdb-otlp /staging/bin/duckdb-otlp-server
-
-# The GCS extension's bundled libcurl looks for a Red Hat-style CA path during
-# ADC token refresh. Link it to the runtime base's maintained trust store.
-# Copy the directory below to preserve the symlink rather than dereferencing it.
-RUN mkdir -p /staging/certs \
-    && ln -s /etc/ssl/certs/ca-certificates.crt /staging/certs/ca-bundle.crt
 
 # libz is the one shared lib the daemon links that glibc-dynamic lacks. Take it from Wolfi,
 # the same distribution as the runtime base, so it tracks the same security updates.
@@ -135,20 +95,13 @@ RUN apk add --no-cache zlib && mkdir -p /staging && cp -L /usr/lib/libz.so.1 /st
 # digest so the image picks up rebuilt (CVE-fixed) bases without floating silently.
 FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:eaa0c377a38e4c67f4192fd5fe9d24d39d51c4531613d97731537f9d33460ae4 AS runtime-base
 
-COPY --from=deps /staging/certs/ /etc/pki/tls/certs/
-
 # Wolfi's library directory is /usr/lib, already on the loader's default search path.
 COPY --from=zlib /staging/libz.so.1 /usr/lib/libz.so.1
 # Pre-primed extension cache and a writable data dir, both owned by the nonroot user.
 COPY --from=deps --chown=65532:65532 /duckdb-home /duckdb-home
 COPY --from=deps --chown=65532:65532 /staging/data /data
-# A directory copy, so the stage still builds while the fixed gcs build is skipped.
-COPY --from=deps /staging/extensions/ /usr/local/lib/duckdb-otlp/
-ENV HOME=/duckdb-home \
-    DUCKDB_OTLP_GCS_EXTENSION_PATH=/usr/local/lib/duckdb-otlp/gcs.duckdb_extension
-# Copy the directory, not the file: a direct COPY of a symlink dereferences it (the same
-# reason the CA bundle above is copied as a directory), and this link's target only lands in
-# the leaf stage below.
+ENV HOME=/duckdb-home
+# The directory copy preserves the symlink. Its target lands in the leaf stage below.
 COPY --from=deps /staging/bin/ /usr/local/bin/
 
 # Container-shaped defaults live HERE, not in the C++ defaults, which are laptop-shaped

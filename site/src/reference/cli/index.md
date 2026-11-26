@@ -157,7 +157,6 @@ A mode is a preset: a SQL file ([`src/server/modes/`](https://github.com/smithcl
 | `local-ducklake` *(default)* | DuckLake | local DuckDB file | local directory | *(none)* |
 | `parquet` | *(none)* | — | local directory or `s3://` | `AWS_REGION` for S3 |
 | `aws-ducklake` | DuckLake | local DuckDB file | `s3://` | `DUCKLAKE_DATA_PATH`, `AWS_REGION` |
-| `gcp-ducklake` | DuckLake | Postgres | `gcss://` | `DUCKLAKE_DATA_PATH`, `PGHOST`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` |
 | `r2-local-ducklake` | DuckLake | local DuckDB file | R2 | `R2_BUCKET`, `CLOUDFLARE_ACCOUNT_ID` |
 | `r2-neon-ducklake` | DuckLake | Postgres | R2 | the two above, plus `PGHOST`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` |
 | `r2-data-catalog` | Iceberg REST | Cloudflare | R2 (catalog-managed) | `R2_BUCKET`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` |
@@ -200,15 +199,14 @@ One name per concept, across every mode that uses it.
 | `CLOUDFLARE_ACCOUNT_ID` | every R2 mode | derives the endpoint, catalog URI, and warehouse |
 | `CLOUDFLARE_API_TOKEN` | `r2-data-catalog` | R2 Data Catalog read/write token |
 | `CLOUDFLARE_CATALOG_URI`, `CLOUDFLARE_WAREHOUSE` | `r2-data-catalog` | both derived from the account and bucket; set only to override |
-| `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, `PGSSLMODE` | Postgres-catalog modes | the standard libpq names |
-| `DUCKDB_OTLP_GCS_EXTENSION_PATH` | `gcp-ducklake` | a local `gcs.duckdb_extension` to `LOAD` instead of the community build; turns on `allow_unsigned_extensions`. The image sets it to its bundled build |
+| `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, `PGSSLMODE` | `r2-neon-ducklake` | the standard libpq names |
 | `DUCKLAKE_DATA_INLINING_ROW_LIMIT` | every DuckLake mode | DuckLake's per-insert inlining limit; `0` writes every seal straight to Parquet |
 
 Values are not validated beyond being present: a malformed one fails when the SQL runs. Credential values are never interpolated into the generated SQL. They are bound as session variables and referenced with `getvariable()`, so `validate` can print the full boot SQL without disclosing them.
 
 #### Credentials from the DuckDB secret store
 
-Storage credentials do not have to be environment variables. If no key pair is set, the mode emits no `CREATE SECRET` at all and DuckDB resolves access through its own persistent secret store (or, for AWS and GCP, the provider credential chain). Create the secret once:
+R2 modes can use credentials from DuckDB's persistent secret store. Leave the key pair unset and create a persistent secret once.
 
 ```bash
 duckdb -c "

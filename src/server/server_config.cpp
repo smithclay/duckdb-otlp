@@ -131,9 +131,6 @@ public:
 					active.pop_back();
 				} else if (directive == "if") {
 					active.push_back(keep && If(words));
-				} else if (directive == "else" && !active.empty()) {
-					bool parent = active.size() < 2 || active[active.size() - 2];
-					active.back() = parent && !active.back();
 				} else if (directive == "set" && words.size() >= 2) {
 					if (keep) {
 						auto value = trimmed.substr(trimmed.find(words[1]) + words[1].size());
@@ -296,7 +293,6 @@ void ConfigureMode(const EnvSource &env, ServerConfig &config) {
 	config.schema = expander.Var("SCHEMA");
 	config.parquet_export_path = expander.Var("PARQUET_EXPORT_PATH");
 	config.credentials_source = expander.Var("CREDENTIALS");
-	config.allow_unsigned_extensions = !expander.Var("ALLOW_UNSIGNED_EXTENSIONS").empty();
 	auto data_path = expander.Var("DATA_PATH");
 	auto catalog_path = expander.Var("CATALOG_PATH");
 	if (!catalog_path.empty()) {

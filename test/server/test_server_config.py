@@ -298,75 +298,15 @@ def test_r2_neon_ducklake_secrets_use_getvariable(tmp_path):
     assert "getvariable('env_R2_ACCESS_KEY_ID')" in out
 
 
-def gcp_env():
-    return {
-        "DUCKDB_MODE": "gcp-ducklake",
-        "DUCKDB_OTLP_TOKEN": "a-private-token-123456",
-        "DUCKLAKE_DATA_PATH": "gcss://trace-bucket/ducklake/",
-        "PGHOST": "/cloudsql/project:region:instance",
-        "PGDATABASE": "tracelake",
-        "PGUSER": "trace_writer",
-        "PGPASSWORD": SECRET,
-    }
-
-
-def test_gcp_ducklake_loads_a_local_gcs_build_by_path(tmp_path):
-    """DUCKDB_OTLP_GCS_EXTENSION_PATH swaps the community gcs build for one on disk.
-
-    The community build prints a failed upload finalize instead of raising it, so DuckLake
-    commits data files that were never written. The image ships a fixed build; it is LOADed by
-    path and never INSTALLed, since an INSTALL would fetch the community build again.
-    """
-    env = gcp_env()
-    env["DUCKDB_OTLP_GCS_EXTENSION_PATH"] = "/opt/extensions/gcs.duckdb_extension"
-    result = run(env, tmp_path)
-    assert result.returncode == 0, result.stderr
-    out = result.stdout
-    assert "LOAD '/opt/extensions/gcs.duckdb_extension';" in out
-    assert "INSTALL gcs" not in out
-    assert "LOAD gcs;" not in out
-    assert "INSTALL ducklake;" in out
-
-
-def test_gcp_ducklake_uses_adc_and_remote_postgres(tmp_path):
-    result = run(gcp_env(), tmp_path)
-    assert result.returncode == 0, result.stderr
-    out = result.stdout
-    assert "INSTALL gcs FROM community;" in out
-    assert "LOAD gcs;" in out
-    assert "TYPE gcp" in out
-    assert "PROVIDER credential_chain" in out
-    assert "DATA_PATH 'gcss://trace-bucket/ducklake/'" in out
-    assert "ATTACH 'ducklake:ducklake_secret' AS" in out
-    assert "'TYPE': 'postgres'" in out
-    assert "PORT '5432'" in out
-    assert "SSLMODE 'require'" in out
-    for name in ("PGHOST", "PGDATABASE", "PGUSER", "PGPASSWORD"):
-        assert f"getvariable('env_{name}')" in out
-    assert SECRET not in result.stdout + result.stderr
-    assert "KEY_ID" not in out
-    assert "getenv(" not in out
-
-
-def test_gcp_ducklake_proxy_and_catalog_overrides(tmp_path):
-    env = gcp_env()
-    env.update({"PGPORT": "5433", "PGSSLMODE": "disable", "DUCKDB_CATALOG": "trace-lake", "DUCKDB_SCHEMA": "traces"})
-    result = run(env, tmp_path)
-    assert result.returncode == 0, result.stderr
-    assert "PORT '5433'" in result.stdout
-    assert "SSLMODE 'disable'" in result.stdout
-    assert 'AS "trace-lake"' in result.stdout
-    assert "schema := 'traces'" in result.stdout
-
-
 def test_ducklake_inlining_default_leaves_attach_untouched(tmp_path):
-    result = run(gcp_env(), tmp_path)
+    env = dict(MODE_FIXTURES["r2-neon-ducklake"], DUCKDB_MODE="r2-neon-ducklake")
+    result = run(env, tmp_path)
     assert result.returncode == 0, result.stderr
     assert "DATA_INLINING_ROW_LIMIT" not in result.stdout
 
 
 def test_ducklake_inlining_can_be_disabled_on_secret_attach(tmp_path):
-    env = gcp_env()
+    env = dict(MODE_FIXTURES["r2-neon-ducklake"], DUCKDB_MODE="r2-neon-ducklake")
     env["DUCKLAKE_DATA_INLINING_ROW_LIMIT"] = "0"
     result = run(env, tmp_path)
     assert result.returncode == 0, result.stderr
@@ -377,16 +317,6 @@ def test_ducklake_inlining_limit_on_path_attach(tmp_path):
     result = run({"DUCKDB_MODE": "local-ducklake", "DUCKLAKE_DATA_INLINING_ROW_LIMIT": "50"}, tmp_path)
     assert result.returncode == 0, result.stderr
     assert "\n  , DATA_INLINING_ROW_LIMIT 50\n);" in result.stdout
-
-
-@pytest.mark.parametrize("missing", ["DUCKLAKE_DATA_PATH", "PGHOST", "PGDATABASE", "PGUSER", "PGPASSWORD"])
-def test_gcp_ducklake_requires_catalog_and_storage_config(tmp_path, missing):
-    env = gcp_env()
-    del env[missing]
-    result = run(env, tmp_path)
-    assert result.returncode == 1
-    assert missing in result.stderr
-    assert SECRET not in result.stdout + result.stderr
 
 
 def test_missing_required_var_names_the_var(tmp_path):
@@ -671,7 +601,7 @@ def test_secret_dir_is_set_before_anything_touches_the_secret_manager(tmp_path):
 
 def test_mode_none_attaches_nothing_and_leaves_the_target_to_init_sql(tmp_path):
     """The escape hatch: --init-sql layered on an unwanted local-ducklake ATTACH was the only
-    way to reach a layout the eight presets do not cover (S3 data, Postgres catalog)."""
+    way to reach a layout the presets do not cover (S3 data, Postgres catalog)."""
     script = tmp_path / "attach.sql"
     script.write_text("ATTACH 'ducklake:postgres:dbname=lake' AS lake (DATA_PATH 's3://b/p');\n")
     result = run(
@@ -703,13 +633,6 @@ MODE_FIXTURES = {
     "parquet": {},
     "parquet-s3": {"DUCKDB_MODE": "parquet", "S3_BUCKET": "b", "AWS_REGION": "us-east-1"},
     "aws-ducklake": {"DUCKLAKE_DATA_PATH": "s3://b/p", "AWS_REGION": "us-east-1"},
-    "gcp-ducklake": {
-        "DUCKLAKE_DATA_PATH": "gcss://b/p",
-        "PGHOST": "h",
-        "PGDATABASE": "d",
-        "PGUSER": "u",
-        "PGPASSWORD": SECRET,
-    },
     "r2-local-ducklake": {"R2_BUCKET": "b", "CLOUDFLARE_ACCOUNT_ID": "a"},
     "r2-neon-ducklake": {
         "R2_BUCKET": "b",
