@@ -41,7 +41,7 @@ COPY . /src
 RUN GEN=ninja OVERRIDE_GIT_DESCRIBE=${DUCKDB_VERSION} make server-release
 
 FROM scratch AS daemon-export
-COPY --from=builder /src/build/release/extension/otlp/duckdb-otlp /duckdb-otlp-server
+COPY --from=builder /src/build/release/extension/otlp/duckdb-otlp /duckdb-otlp
 
 FROM debian:bookworm-slim AS deps
 
@@ -182,7 +182,7 @@ ENTRYPOINT ["/usr/local/bin/duckdb-otlp"]
 
 FROM runtime-base AS runtime-prebuilt
 ARG TARGETARCH
-COPY docker-bin/${TARGETARCH}/duckdb-otlp-server /usr/local/bin/duckdb-otlp
+COPY docker-bin/${TARGETARCH}/duckdb-otlp /usr/local/bin/duckdb-otlp
 
 FROM runtime-base AS runtime-source
 COPY --from=builder /src/build/release/extension/otlp/duckdb-otlp /usr/local/bin/duckdb-otlp
