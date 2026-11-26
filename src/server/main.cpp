@@ -220,7 +220,7 @@ duckdb::string HealthCheckHost(const duckdb::string &addr) {
 }
 
 duckdb::string ListenerLabel(const duckdb_otlp_server::IngestListener &listener) {
-	return duckdb::string(listener.otap ? "OTAP " : "OTLP ") + listener.transport;
+	return duckdb::string("OTLP ") + listener.transport;
 }
 
 // Quack serves TLS (self-signed by default) on a non-loopback bind, so clients must pin the
@@ -426,7 +426,7 @@ int RunServe(const EnvSource &env) {
 			std::cout << "DuckDB initialization complete\n";
 			std::cout << "Starting server..." << '\n';
 			for (const auto &listener : config.listeners) {
-				if (listener.transport == "http" && !listener.otap) {
+				if (listener.transport == "http") {
 					duckdb::OtlpUri uri(listener.uri);
 					auto host = ReachableHost(uri.Host());
 					std::cout << "\nSend OTLP/HTTP to http://" << host << ":" << uri.Port()

@@ -9,12 +9,6 @@ public:
 	static CreateTableFunctionInfo GetFunction();
 };
 
-//! otlp_serve's OTAP/Arrow counterpart: otap: URIs only (default otap:localhost:4317), always gRPC.
-class OtapServeFunction {
-public:
-	static CreateTableFunctionInfo GetFunction();
-};
-
 //! otlp_stop(uri) / otlp_stop(): stop one server or all of them, sealing buffered rows first.
 class OtlpStopFunction {
 public:

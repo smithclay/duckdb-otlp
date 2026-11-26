@@ -2,17 +2,14 @@
 
 You can run an embedded server that accepts live OpenTelemetry exports and streams them into DuckDB. Point any OpenTelemetry exporter at the server. The server buffers rows, then commits them in batches to the connection's default catalog, a DuckLake lakehouse, or another attached writable catalog such as an Iceberg REST catalog.
 
-The server speaks three wire protocols across two scheme-bound functions:
+`otlp_serve` uses the `otlp:` scheme. Choose the wire transport with the `transport` option.
 
-| Function | Scheme | Transport | Wire protocol |
-|----------|--------|-----------|---------------|
-| `otlp_serve` (default) | `otlp:` (port 4318) | HTTP | **OTLP/HTTP** (JSON, NDJSON, protobuf) |
-| `otlp_serve(transport := 'grpc')` | `otlp:` | gRPC | **OTLP/gRPC** unary `Export` |
-| `otap_serve` | `otap:` (port 4317) | gRPC | **OTAP/Arrow** bidirectional streaming |
+| Transport | Wire protocols |
+|-----------|----------------|
+| `http` (default) | **OTLP/HTTP** (JSON, NDJSON, protobuf) |
+| `grpc` | **OTLP/gRPC** unary `Export` and **OTAP/Arrow** bidirectional streaming on the same port |
 
-All three share one buffering/seal core, the same parameters, catalog targeting, token auth, and lifecycle functions — only the wire differs. The transport is **not** encoded in the scheme: `otlp_serve` picks HTTP vs gRPC via the `transport` parameter, and `otap_serve` is always gRPC. Each function rejects the other's scheme.
-
-A **server** is one ingest pipeline — one set of in-memory buffers, one admission cap, one writer, and one catalog-maintenance schedule — fed by one or more **listeners**. Pass a list of URIs to start several listeners on one server, for example OTLP/HTTP and OTLP/gRPC together:
+A **server** is one ingest pipeline — one set of in-memory buffers, one admission cap, one writer, and one catalog-maintenance schedule — fed by one or more **listeners**. Pass a list of URIs to start several listeners on one server, for example HTTP and gRPC into the same catalog:
 
 ```sql
 SELECT listen_uri, transport
@@ -20,7 +17,7 @@ FROM otlp_serve(['otlp:localhost:4318', 'otlp:localhost:4317'], transport := ['h
                 catalog := 'lake', token := 'my-dev-token-123456');
 ```
 
-Each catalog target (catalog + schema, or Parquet export root) has at most one server, so it has a single writer. A second `otlp_serve`/`otap_serve` call for a target that already has a server fails; list every URI in one call instead.
+Each catalog target (catalog + schema, or Parquet export root) has at most one server, so it has a single writer. List every listener URI for the target in one `otlp_serve` call.
 
 Native extension builds include the server; WASM builds omit it entirely (no HTTP and no gRPC). See [gRPC transport](#grpc-transport) for the OTLP/gRPC and OTAP/Arrow service contracts.
 
@@ -35,7 +32,7 @@ starts a local receiver with no configuration at all. See the
 surface; this page documents the SQL functions underneath it.
 
 ```sh
-duckdb-otlp                                  # OTLP/HTTP 4318 + OTLP/gRPC 4317 on loopback
+duckdb-otlp                                  # OTLP/HTTP 4318 + gRPC 4317 on loopback
 duckdb-otlp --host 0.0.0.0 --token "$TOKEN"  # a non-loopback bind requires a token
 ```
 
@@ -47,8 +44,7 @@ port setting selects its listener; `0` turns one off:
 | Setting | Listener |
 | --- | --- |
 | `--http PORT` / `DUCKDB_OTLP_HTTP_PORT` | OTLP/HTTP |
-| `--grpc PORT` / `DUCKDB_OTLP_GRPC_PORT` | Standard OTLP/gRPC |
-| `--otap PORT` / `DUCKDB_OTLP_OTAP_PORT` | OTAP/Arrow (cannot be combined with the two above) |
+| `--grpc PORT` / `DUCKDB_OTLP_GRPC_PORT` | OTLP/gRPC and OTAP/Arrow |
 
 All of them bind `--host` / `DUCKDB_OTLP_HOST`. For example, accept both protocols
 into the same local DuckLake:
@@ -84,21 +80,20 @@ onto one port. See [Cloud Run HTTP/2 configuration](https://docs.cloud.google.co
 
 ## Functions
 
-The extension registers five server functions (two to start a server, two lifecycle, one diagnostic):
+The extension registers four server functions.
 
 | Function | What it does |
 |----------|-------------|
-| `otlp_serve([uri], ...)` | Start an **OTLP** server (OTLP/HTTP, or OTLP/gRPC with `transport := 'grpc'`) on one or more listeners and create/validate target tables. Returns one row per listener. |
-| `otap_serve([uri], ...)` | Start an **OTAP/Arrow** gRPC streaming server and create/validate target tables. Returns one row per listener. |
+| `otlp_serve([uri], ...)` | Start an ingest server on one or more listeners and create or validate the target tables. Returns one row per listener. |
 | `otlp_flush([listen_uri])` | Commit buffered rows synchronously for the selected server or every server. Returns commit stats per server. |
 | `otlp_stop([listen_uri])` | Stop the selected server or every server, committing buffered rows first. Returns a status and dropped-row count per server. |
 | `otlp_server_list()` | List every running listener with its server's live counters, buffer state, and health. |
 
-`otlp_flush`, `otlp_stop`, and `otlp_server_list` cover every transport. Any listener’s canonical URI names its whole server and includes the URI scheme.
+`otlp_flush`, `otlp_stop`, and `otlp_server_list` cover every transport. Any listener’s canonical URI names its whole server.
 
 ### `otlp_serve([uri], ...)`
 
-Starts an OTLP ingest server with a listener on `uri`. The `uri` argument is optional; with no argument it defaults to `otlp:localhost:4318`. Pass a `VARCHAR[]` list to start several listeners on the same server.
+Starts an ingest server with a listener on `uri`. The `uri` argument is optional; with no argument it defaults to `otlp:localhost:4318`. Pass a `VARCHAR[]` list to start several listeners on the same server.
 
 ```sql
 -- Stream into an attached catalog
@@ -110,8 +105,8 @@ SELECT * FROM otlp_serve('otlp:localhost:4318', catalog := 'lake', token := 'my-
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `uri` (positional) | VARCHAR or VARCHAR[] | `otlp:localhost:4318` | Listen URI, or a list of distinct listen URIs that feed one server. See [URI scheme](#uri-scheme). |
-| `transport` | VARCHAR or VARCHAR[] | `http` | `http` (OTLP/HTTP) or `grpc` (OTLP/gRPC unary). One value applies to every URI; a list must have one entry per URI. `otap_serve` accepts only `grpc`. |
-| `catalog` | VARCHAR | *(default catalog)* | Name of the target catalog. Empty means the connection's **default catalog** (in-memory or file). Set this to an attached writable catalog such as DuckLake or an Iceberg REST catalog to stream OTLP into a lakehouse. See [Catalog targeting](#catalog-targeting). |
+| `transport` | VARCHAR or VARCHAR[] | `http` | `http` (OTLP/HTTP) or `grpc` (OTLP/gRPC and OTAP/Arrow). A single value applies to every URI. A list must have one entry per URI. |
+| `catalog` | VARCHAR | *(default catalog)* | Name of the target catalog. Empty means the connection's **default catalog** (in-memory or file). Set this to an attached writable catalog such as DuckLake or an Iceberg REST catalog to stream telemetry into a lakehouse. See [Catalog targeting](#catalog-targeting). |
 | `token` | VARCHAR | *(random, see below)* | Auth token clients must present. Must be at least 16 characters. If you omit it, `otlp_serve` generates a random 32-hex-character token and returns it in `auth_token`. Ignored when `disable_auth := true`. |
 | `disable_auth` | BOOLEAN | `false` | Accept every request **without** checking the token. No token is generated or validated, and `auth_token` comes back empty. Opt-in for trusted local networks and for producers that cannot attach a bearer token (e.g. the otel-arrow OTAP exporter). See [Authentication](#authentication). |
 | `schema` | VARCHAR | `main` | Schema (within the catalog) that holds the target tables. |
@@ -133,31 +128,13 @@ SELECT * FROM otlp_serve('otlp:localhost:4318', catalog := 'lake', token := 'my-
 | Column | Type | Description |
 |--------|------|-------------|
 | `listen_uri` | VARCHAR | The `otlp:` URI the listener is bound to. |
-| `listen_url` | VARCHAR | The equivalent `http://` base URL (POST endpoints hang off this). |
+| `listen_url` | VARCHAR | The derived `http://host:port` URL. For gRPC clients, use the host and port. |
 | `auth_token` | VARCHAR | The token clients must present (the value you passed, or the generated one). |
 | `schema_name` | VARCHAR | Schema holding the target tables. |
 | `catalog_name` | VARCHAR | Target catalog. Empty for the connection's default catalog. |
 | `transport` | VARCHAR | `http` or `grpc`. |
 
 Starting a second server on the same URI, or for the same catalog target, fails (`OTLP server already exists`). If any listener fails to bind, the listeners already started are closed and no server is registered. The DuckDB `DatabaseInstance` owns the server lifetime: DuckDB stops all servers when the database closes, but it does **not** commit their buffers at that point (see Durability below). Call `otlp_stop` before closing the database to avoid losing buffered rows — `otlp_stop()` with no argument covers every server, including any you did not start yourself.
-
-### `otap_serve([uri], ...)`
-
-Starts an **OTAP/Arrow** gRPC streaming server bound to `uri`. The `uri` argument is optional; with no argument it defaults to `otap:localhost:4317`. `otap_serve` is gRPC-only — `transport` must be `'grpc'` or omitted (OTAP/Arrow is always gRPC); any other value is rejected.
-
-```sql
--- Stream OTAP/Arrow into an attached DuckLake catalog
-SELECT listen_uri, listen_url FROM otap_serve('otap:localhost:4317', catalog := 'lake', token := 'my-dev-token-123456');
-```
-
-It takes the same named parameters as [`otlp_serve`](#otlp_serveuri-). Its output also includes the six target table names between `schema_name` and `catalog_name` in `logs_table`, `traces_table`, `metrics_gauge_table`, `metrics_sum_table`, `metrics_histogram_table`, and `metrics_exp_histogram_table`. It serves the canonical OTAP/Arrow bidirectional-streaming services (`Arrow{Logs,Traces,Metrics}Service`) for all six signals, sharing the same catalog/Parquet targeting, token auth, buffered group-commit, and lifecycle functions. See [gRPC transport](#grpc-transport) for the service and RPC contract.
-
-Two parameter notes for the gRPC path:
-
-- `max_body_bytes` becomes the gRPC server's **maximum decoding message size** (the largest single `BatchArrowRecords`/`Export` message accepted), rather than an HTTP body cap.
-- `http_threads` is **ignored** — it tunes only the HTTP worker pool; the gRPC path uses its own async runtime.
-
-Because the wire is gRPC (HTTP/2), an `otap:` server exposes **no HTTP endpoints** — the `/v1/*` POST paths and the `/healthz` / `/readyz` probes are HTTP-only. The `listen_url` output column is still populated with a derived `http://host:port` string for display, but it is not a usable HTTP base URL; clients connect with a gRPC client, and a liveness probe should use a TCP connect rather than `/readyz`. The same applies to an `otlp_serve(transport := 'grpc')` listener.
 
 ### `otlp_flush()` and `otlp_flush(listen_uri)`
 
@@ -314,18 +291,17 @@ The daemon exposes the same option via `DUCKDB_OTLP_PROMOTE_RESOURCE_ATTRIBUTES`
 
 ## URI scheme
 
-The scheme binds the URI to a serve function (no mixing): `otlp:` is `otlp_serve`, the OTLP server (OTLP/HTTP by default on port 4318, or OTLP/gRPC unary with `transport := 'grpc'`); `otap:` is `otap_serve`, the [OTAP/Arrow gRPC server](#grpc-transport) (port 4317). Each function rejects the other's scheme.
+Both transports use the `otlp:` scheme. The host defaults to `localhost` and the port to `4318`. Use port `4317` for the conventional gRPC endpoint.
 
-| Form | Example | Server |
-|------|---------|--------|
-| `otlp:host:port` | `otlp:localhost:4318` | OTLP/HTTP (or OTLP/gRPC with `transport := 'grpc'`) |
-| `otlp://host:port` | `otlp://127.0.0.1:4318` | OTLP/HTTP |
-| `otap:host:port` | `otap:localhost:4317` | OTAP/Arrow (gRPC) |
-| IPv6 (host in brackets) | `otlp:[::1]:4318` | OTLP/HTTP |
+| Form | Example |
+|------|---------|
+| `otlp:host:port` | `otlp:localhost:4318` |
+| `otlp://host:port` | `otlp://127.0.0.1:4318` |
+| IPv6 (host in brackets) | `otlp:[::1]:4318` |
 
-The scheme is part of the canonical key, so `otap:host:4317` and `otlp:host:4318` are distinct servers in `otlp_server_list` / `otlp_stop` / `otlp_flush`. By default, `otlp_serve`/`otap_serve` allow only `localhost`, `127.0.0.1`, and `::1`. To bind to any other host (for example `0.0.0.0` to accept remote exporters), pass `allow_other_hostname := true`; non-localhost hosts are rejected before a socket is bound.
+By default, `otlp_serve` allows loopback hosts. To bind to another host, such as `0.0.0.0`, pass `allow_other_hostname := true`.
 
-The scalar function **`otlp_uri_parser(uri)`** parses an `otlp:`/`otap:` URI and returns a `STRUCT(host VARCHAR, port USMALLINT, ipv6 BOOLEAN, url VARCHAR)` — the same parsing the serve functions use, useful for validating a URI up front.
+The scalar function **`otlp_uri_parser(uri)`** parses an `otlp:` URI and returns a `STRUCT(host VARCHAR, port USMALLINT, ipv6 BOOLEAN, url VARCHAR)`.
 
 ## HTTP endpoints
 
@@ -370,25 +346,20 @@ Tokens must be at least 16 characters. Auto-generated tokens (when `token` is om
 
 ### Disabling authentication
 
-`disable_auth := true` turns auth off entirely: the server accepts every request without checking any header, mints no token, and returns an empty `auth_token`. The same flag applies to the gRPC transports (`otlp_serve(transport := 'grpc')` and `otap_serve`), which otherwise reject a bad token with `UNAUTHENTICATED`.
+`disable_auth := true` turns auth off entirely: the server accepts every request without checking any header, mints no token, and returns an empty `auth_token`. The flag applies to every listener and both gRPC service families.
 
 This exists for two cases: trusted, network-isolated deployments, and OTLP/OTAP producers that have no way to attach a bearer token — notably the otel-arrow OTAP exporter, which has no header/auth configuration. It is **off by default**; only enable it when the listener is otherwise protected (loopback bind, private network, or a sidecar that terminates auth), since anyone who can reach the port can write to your tables.
 
 ## gRPC transport
 
-There are two gRPC entry points, each bound to its own scheme and serving a **disjoint** service family, for all six signals:
+Use `otlp_serve('otlp:localhost:4317', transport := 'grpc')` to serve both service families. They share the target tables, auth, buffers, and backpressure cap.
 
-- **`otlp_serve('otlp:...', transport := 'grpc')`** — standard **OTLP/gRPC** unary `Export`. `otlp_serve` defaults to `otlp:localhost:4318` (HTTP); point it at the conventional gRPC port for this, e.g. `otlp:localhost:4317`.
-- **`otap_serve('otap:...')`** — canonical **OTAP/Arrow** bidirectional streaming. Defaults to `otap:localhost:4317`; gRPC-only.
+| Service | RPC | Wire format |
+|---------|-----|-------------|
+| `opentelemetry.proto.collector.{logs,trace,metrics}.v1.{Logs,Trace,Metrics}Service` | `Export` (unary) | **OTLP/gRPC** |
+| `opentelemetry.proto.experimental.arrow.v1.Arrow{Logs,Traces,Metrics}Service` | `Arrow{Logs,Traces,Metrics}` (bidirectional streaming) | **OTAP/Arrow** (`stream BatchArrowRecords` → `stream BatchStatus`) |
 
-Both share everything below the wire: the same parameters, catalog/Parquet targeting, token auth, buffered group-commit ("seal") path, backpressure cap, and lifecycle functions (`otlp_flush` / `otlp_stop` / `otlp_server_list`). Because the service sets are disjoint, calling the other family on a listener returns `UNIMPLEMENTED`.
-
-| Server | Service | RPC | Wire format |
-|--------|---------|-----|-------------|
-| `otlp_serve(transport := 'grpc')` | `opentelemetry.proto.collector.{logs,trace,metrics}.v1.{Logs,Trace,Metrics}Service` | `Export` (unary) | Standard **OTLP/gRPC** |
-| `otap_serve` | `opentelemetry.proto.experimental.arrow.v1.Arrow{Logs,Traces,Metrics}Service` | `Arrow{Logs,Traces,Metrics}` (bidirectional streaming) | **OTAP/Arrow** (`stream BatchArrowRecords` → `stream BatchStatus`) |
-
-Notes:
+`max_body_bytes` caps the size of each decoded gRPC message. `http_threads` tunes the HTTP worker pool. Use a TCP connection to probe the gRPC port. The `/healthz` and `/readyz` endpoints are on HTTP listeners.
 
 - **Auth** is the bearer token in the gRPC `authorization` metadata (`Bearer <token>`); a bad token is rejected with `UNAUTHENTICATED`, unless [`disable_auth`](#disabling-authentication) is set. Backpressure surfaces as `RESOURCE_EXHAUSTED` (the gRPC equivalent of HTTP `503`), a batch that fails to convert as `INVALID_ARGUMENT` (HTTP `400`), and a server-side failure as `INTERNAL` (HTTP `500`, also written to `duckdb_logs`).
 - **OTAP streaming** keeps one stateful decoder per stream, so later messages can reuse the Arrow dictionaries/schemas established by earlier ones. The server returns one `BatchStatus` per received `BatchArrowRecords`. A message that fails to decode is nacked and the stream is closed (the decoder is poisoned); a message nacked for backpressure leaves the stream open.

@@ -80,7 +80,7 @@ void RejectUnsupportedOtelEnv(const EnvSource &env) {
 	    {"OTEL_HTTP_ADDR", "it was removed; use --host and --http PORT (DUCKDB_OTLP_HOST, DUCKDB_OTLP_HTTP_PORT)"},
 	    {"OTEL_GRPC_ADDR", "it was removed; use --host and --grpc PORT (DUCKDB_OTLP_HOST, DUCKDB_OTLP_GRPC_PORT)"},
 	    {"DUCKDB_OTLP_TRANSPORTS", "it was removed; select listeners with --http/--grpc PORT (0 disables one)"},
-	    {"DUCKDB_OTLP_LISTEN_URI", "it was removed; use --host with --http, --grpc or --otap PORT"},
+	    {"DUCKDB_OTLP_LISTEN_URI", "it was removed; use --host with --http/--grpc PORT"},
 	    {"DUCKDB_QUACK_ENABLED", "it was removed; enable Quack with --quack PORT (DUCKDB_QUACK_PORT)"},
 	    {"DUCKDB_QUACK_ADDR", "it was removed; use --host and --quack PORT (DUCKDB_QUACK_PORT)"},
 	};
@@ -392,14 +392,11 @@ std::vector<IngestListener> ListenersFromEnv(const EnvSource &env) {
 	struct PortSpec {
 		const char *port_var;
 		int default_port;
-		const char *scheme;
 		const char *transport;
-		bool otap;
 	};
 	const PortSpec specs[] = {
-	    {"DUCKDB_OTLP_HTTP_PORT", DEFAULT_HTTP_PORT, "otlp", "http", false},
-	    {"DUCKDB_OTLP_GRPC_PORT", DEFAULT_GRPC_PORT, "otlp", "grpc", false},
-	    {"DUCKDB_OTLP_OTAP_PORT", DEFAULT_GRPC_PORT, "otap", "grpc", true},
+	    {"DUCKDB_OTLP_HTTP_PORT", DEFAULT_HTTP_PORT, "http"},
+	    {"DUCKDB_OTLP_GRPC_PORT", DEFAULT_GRPC_PORT, "grpc"},
 	};
 	// A non-zero port selects its transport and narrows the set to the ones selected. A port of 0
 	// disables its transport without selecting one, so `--grpc 0` keeps the HTTP default.
@@ -411,20 +408,14 @@ std::vector<IngestListener> ListenersFromEnv(const EnvSource &env) {
 	for (const auto &spec : specs) {
 		bool set = env.Has(spec.port_var);
 		int port = set ? ParsePortEnv(env, spec.port_var) : spec.default_port;
-		// OTAP is never on by default; it has to be asked for.
-		bool enabled = set ? port != 0 : !spec.otap && !any_selected;
+		bool enabled = set ? port != 0 : !any_selected;
 		if (enabled) {
-			auto uri = duckdb::OtlpUri(string(spec.scheme) + ":" + BindAddr(env, port)).Uri();
-			listeners.push_back({uri, spec.transport, spec.otap});
+			auto uri = duckdb::OtlpUri("otlp:" + BindAddr(env, port)).Uri();
+			listeners.push_back({uri, spec.transport});
 		}
 	}
 	if (listeners.empty()) {
-		throw InvalidInputException("Every listener is disabled. Enable at least one of --http, --grpc, or --otap.");
-	}
-	// otap_serve and otlp_serve are separate servers; one process starts one of them.
-	if (listeners.front().otap != listeners.back().otap) {
-		throw InvalidInputException("OTAP/Arrow cannot be combined with standard OTLP listeners. Start OTAP alone "
-		                            "(--otap PORT --http 0 --grpc 0), or run a second process for it.");
+		throw InvalidInputException("Every listener is disabled. Enable --http or --grpc.");
 	}
 	ValidateDistinctPorts(listeners);
 	return listeners;
@@ -538,7 +529,7 @@ string ServerConfig::StartOtlpSql() const {
 	return StringUtil::Format(R"SQL(
 CREATE SCHEMA IF NOT EXISTS %s;
 SELECT listen_url, catalog_name, schema_name
-FROM %s(
+FROM otlp_serve(
     [%s],
     transport := [%s],
     catalog := %s,
@@ -547,8 +538,8 @@ FROM %s(
     allow_other_hostname := true%s
 );
 )SQL",
-	                          schema_target, listeners.front().otap ? "otap_serve" : "otlp_serve", uris_sql,
-	                          transports_sql, SqlQuote(catalog), SqlQuote(schema), auth_sql, options_sql);
+	                          schema_target, uris_sql, transports_sql, SqlQuote(catalog), SqlQuote(schema), auth_sql,
+	                          options_sql);
 }
 
 string ServerConfig::StartQuackSql() const {

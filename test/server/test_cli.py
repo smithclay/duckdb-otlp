@@ -204,19 +204,6 @@ def test_duplicate_ports_are_rejected(tmp_path):
     assert "must use different ports" in result.stderr
 
 
-def test_otap_cannot_be_combined_with_standard_otlp(tmp_path):
-    result = run(["validate", "--otap", "4317", "--http", "4318"], home=tmp_path)
-    assert result.returncode == 1
-    assert "OTAP/Arrow cannot be combined" in result.stderr
-
-
-def test_otap_alone_uses_otap_serve(tmp_path):
-    result = run(["validate", "--otap", "4317"], home=tmp_path)
-    assert result.returncode == 0, result.stderr
-    assert "otap:127.0.0.1:4317" in result.stdout
-    assert "FROM otap_serve(" in result.stdout
-
-
 # --------------------------------------------------------------------------------------
 # Standard OTLP environment variables
 # --------------------------------------------------------------------------------------

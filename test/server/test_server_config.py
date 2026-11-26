@@ -91,25 +91,6 @@ def test_local_ducklake_boot_sql(tmp_path):
     assert "a-private-token-123456" not in out
 
 
-def test_otap_port_routes_to_otap_serve(tmp_path):
-    # An OTAP listener must dispatch to otap_serve (OTAP/Arrow), never otlp_serve;
-    # the two serve functions are bound to their own scheme and reject the other's.
-    result = run(
-        {
-            "DUCKDB_MODE": "local-ducklake",
-            "DUCKDB_OTLP_TOKEN": "a-private-token-123456",
-            "DUCKDB_OTLP_OTAP_PORT": "4317",
-            "DUCKDB_OTLP_HTTP_PORT": "0",
-            "DUCKDB_OTLP_GRPC_PORT": "0",
-        },
-        tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    out = result.stdout
-    assert "FROM otap_serve(" in out
-    assert "FROM otlp_serve(" not in out
-
-
 def test_aws_ducklake_uses_the_shared_credential_chain_and_local_catalog(tmp_path):
     catalog = tmp_path / "ducklake" / "catalog.duckdb"
     result = run(
@@ -465,12 +446,11 @@ def tcp_listener():
         yield sock.getsockname()[1]
 
 
-@pytest.mark.parametrize("variable", ["DUCKDB_OTLP_OTAP_PORT", "DUCKDB_OTLP_GRPC_PORT"])
-def test_grpc_healthcheck_uses_tcp_connect(variable):
+def test_grpc_healthcheck_uses_tcp_connect():
     # gRPC (HTTP/2) has no /readyz, so doctor TCP-connects: a bound port is healthy, the same
     # port with nothing listening is not.
     with tcp_listener() as port:
-        env = {variable: str(port), "DUCKDB_OTLP_HTTP_PORT": "0"}
+        env = {"DUCKDB_OTLP_GRPC_PORT": str(port), "DUCKDB_OTLP_HTTP_PORT": "0"}
         assert _healthcheck(env) == 0
     assert _healthcheck(env) == 1
 
@@ -530,7 +510,6 @@ def test_ports_select_listeners_for_one_otlp_serve_call(tmp_path, ports, expecte
         ({"DUCKDB_OTLP_HTTP_PORT": "9000", "DUCKDB_OTLP_GRPC_PORT": "9000"}, "different ports"),
         ({"DUCKDB_OTLP_GRPC_PORT": "70000"}, "port between 0 and 65535"),
         ({"DUCKDB_OTLP_HTTP_PORT": "0", "DUCKDB_OTLP_GRPC_PORT": "0"}, "Every listener is disabled"),
-        ({"DUCKDB_OTLP_OTAP_PORT": "4319", "DUCKDB_OTLP_HTTP_PORT": "4318"}, "OTAP/Arrow cannot be combined"),
         ({"OTEL_HTTP_ADDR": "0.0.0.0:4318"}, "--http PORT"),
         ({"DUCKDB_OTLP_TRANSPORTS": "http"}, "--http/--grpc PORT"),
         ({"DUCKDB_QUACK_ENABLED": "1"}, "--quack PORT"),

@@ -27,8 +27,7 @@ public:
 		return uri;
 	}
 	string CanonicalUri() const {
-		// Scheme-aware: otap: and otlp: on the same host:port are distinct registry keys.
-		return scheme + ":" + UriHost(host) + ":" + std::to_string(port);
+		return "otlp:" + UriHost(host) + ":" + std::to_string(port);
 	}
 	string Host() const {
 		return host;
@@ -39,12 +38,6 @@ public:
 	bool IPv6() const {
 		return ipv6;
 	}
-	string Scheme() const {
-		return scheme;
-	}
-	bool IsGrpc() const {
-		return scheme == "otap";
-	}
 	//! Loopback only (all of 127.0.0.0/8). Shared by the allow_other_hostname gate and the daemon's
 	//! no-auth-on-loopback rule, which must agree.
 	bool IsLocal() const {
@@ -54,7 +47,6 @@ public:
 
 private:
 	bool ipv6 = false;
-	string scheme = "otlp";
 	string host;
 	uint16_t port = 4318;
 	string http;

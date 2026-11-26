@@ -1,5 +1,5 @@
 # name: test/sql/otlp_serve.test
-# description: Test OTLP HTTP server lifecycle SQL functions
+# description: Test ingest server lifecycle SQL functions
 # group: [sql]
 
 #
@@ -13,12 +13,12 @@
 require otlp
 
 # The live ingest server (HTTP + gRPC) is native-only: it needs OS sockets and a
-# real thread pool, neither of which exists in the wasm32 sandbox, so otlp_serve /
-# otap_serve throw "not implemented for the wasm platform" there. `require 64bit`
+# real thread pool, neither of which exists in the wasm32 sandbox, so
+# otlp_serve throws "not implemented for the wasm platform" there. `require 64bit`
 # keeps this whole file running on every native build (always 64-bit) while
 # skipping it on wasm (wasm32 is 32-bit). It also makes the out-of-tree haybarn
 # wasm sqllogictest runner skip the file instead of reporting these native-only
-# functions as failures. See AGENTS.md "Known Limitations": ingest is native-only.
+# function as a failure. See AGENTS.md "Known Limitations": ingest is native-only.
 require 64bit
 
 statement error
@@ -161,26 +161,26 @@ WHERE listen_uri = 'otlp:127.0.0.1:55439';
 # disable_auth opt-in: anonymous serve mints no token (auth_token is empty) and
 # skips the >= 16 char token floor. Used by tokenless producers (e.g. the
 # otel-arrow OTAP exporter, which cannot attach a bearer token).
-query TTT
-SELECT listen_uri, auth_token, logs_table
-FROM otap_serve('otap:127.0.0.1:55445', disable_auth := true);
+query TT
+SELECT listen_uri, auth_token
+FROM otlp_serve('otlp:127.0.0.1:55445', transport := 'grpc', disable_auth := true);
 ----
-otap:127.0.0.1:55445	(empty)	otlp_logs
+otlp:127.0.0.1:55445	(empty)
 
 query T
-SELECT status FROM otlp_stop('otap:127.0.0.1:55445');
+SELECT status FROM otlp_stop('otlp:127.0.0.1:55445');
 ----
-Stopped listening on otap:127.0.0.1:55445
+Stopped listening on otlp:127.0.0.1:55445
 
 # disable_auth coexists with an explicitly supplied (and intentionally short) token
 # without tripping the token-length floor, since auth is off.
 query T
-SELECT listen_uri FROM otap_serve('otap:127.0.0.1:55446', disable_auth := true, token := 'x');
+SELECT listen_uri FROM otlp_serve('otlp:127.0.0.1:55446', transport := 'grpc', disable_auth := true, token := 'x');
 ----
-otap:127.0.0.1:55446
+otlp:127.0.0.1:55446
 
 statement ok
-CALL otlp_stop('otap:127.0.0.1:55446');
+CALL otlp_stop('otlp:127.0.0.1:55446');
 
 # non-localhost binds require allow_other_hostname (rejected before binding a socket)
 statement error
@@ -224,31 +224,7 @@ SELECT status FROM otlp_stop('otlp:127.0.0.1:55444');
 Stopped listening on otlp:127.0.0.1:55444
 
 # --- gRPC transport control plane ---
-# Two gRPC entry points, each strictly bound to its scheme: otap_serve('otap:...')
-# serves OTAP/Arrow streaming; otlp_serve('otlp:...', transport := 'grpc') serves
-# OTLP/gRPC unary Export. The data paths are exercised by test/server (the daemon's
-# transport and ingest tests) -- SQLLogicTest cannot drive a gRPC client. The canonical URI keeps its scheme, so each is a distinct registry key.
-
-query TT
-SELECT listen_uri, schema_name
-FROM otap_serve('otap:127.0.0.1:55460', token := 'dev-token-123456', schema := 'main');
-----
-otap:127.0.0.1:55460	main
-
-# a freshly-started gRPC server reports itself listening with no error
-query I
-SELECT count(*) FROM otlp_server_list()
-WHERE listen_uri = 'otap:127.0.0.1:55460' AND is_listening AND last_error IS NULL;
-----
-1
-
-query T
-SELECT status FROM otlp_stop('otap:127.0.0.1:55460');
-----
-Stopped listening on otap:127.0.0.1:55460
-
-# otlp_serve runs OTLP/gRPC unary under the otlp: scheme via transport := 'grpc'.
-# The transport is NOT encoded in the scheme, so the canonical key stays otlp:.
+# The daemon tests exercise OTLP exports and OTAP streams on the same gRPC port.
 query T
 SELECT listen_uri FROM otlp_serve('otlp:127.0.0.1:55461', token := 'dev-token-123456', transport := 'grpc');
 ----
@@ -256,7 +232,7 @@ otlp:127.0.0.1:55461
 
 query I
 SELECT count(*) FROM otlp_server_list()
-WHERE listen_uri = 'otlp:127.0.0.1:55461' AND is_listening AND last_error IS NULL;
+WHERE listen_uri = 'otlp:127.0.0.1:55461' AND transport = 'grpc' AND is_listening AND last_error IS NULL;
 ----
 1
 
@@ -265,27 +241,17 @@ SELECT status FROM otlp_stop('otlp:127.0.0.1:55461');
 ----
 Stopped listening on otlp:127.0.0.1:55461
 
-# Scheme/function binding is strict: URIs are never mixed across the two functions.
+# An unsupported scheme is rejected before binding.
 statement error
 SELECT listen_uri FROM otlp_serve('otap:127.0.0.1:55462', token := 'dev-token-123456');
 ----
-otlp_serve requires an 'otlp:' URI
+Invalid OTLP listen URI, needs to start with 'otlp:'
 
-statement error
-SELECT listen_uri FROM otap_serve('otlp:127.0.0.1:55463', token := 'dev-token-123456');
-----
-otap_serve requires an 'otap:' URI
-
-# transport accepts only http/grpc; otap_serve is gRPC-only.
+# transport accepts only http/grpc.
 statement error
 SELECT listen_uri FROM otlp_serve('otlp:127.0.0.1:55464', token := 'dev-token-123456', transport := 'bogus');
 ----
 transport must be 'http' or 'grpc'
-
-statement error
-SELECT listen_uri FROM otap_serve('otap:127.0.0.1:55465', token := 'dev-token-123456', transport := 'http');
-----
-otap_serve is gRPC-only
 
 # --- one server, N listeners ---
 # otlp_serve takes a list of listen URIs with a parallel transport list. Every listener
@@ -386,7 +352,7 @@ must be distinct
 statement error
 CALL otlp_serve(['otlp:127.0.0.1:55478', 'otap:127.0.0.1:55479'], token := 'dev-token-123456');
 ----
-otlp_serve requires an 'otlp:' URI
+Invalid OTLP listen URI, needs to start with 'otlp:'
 
 statement error
 CALL otlp_serve([]::VARCHAR[], token := 'dev-token-123456');

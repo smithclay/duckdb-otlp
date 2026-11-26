@@ -78,10 +78,9 @@ public:
 		                         : uri.Host() + ":" + std::to_string(uri.Port());
 		char err_buf[256] = {0};
 		// max_body_bytes caps one gRPC message, so both transports share one size bound (not tonic's 4 MiB).
-		handle = otlp_grpc_server_start_with_profile(addr.data(), addr.size(), &OtlpGrpcBatchThunk, &OtlpGrpcAuthThunk,
-		                                             static_cast<void *>(&server), spec.grpc_service_flags,
-		                                             static_cast<uint64_t>(server.Config().max_body_bytes),
-		                                             OTLP_ARROW_PROFILE_DUCKDB, err_buf, sizeof(err_buf));
+		handle = otlp_grpc_server_start_with_profile(
+		    addr.data(), addr.size(), &OtlpGrpcBatchThunk, &OtlpGrpcAuthThunk, static_cast<void *>(&server), 0,
+		    static_cast<uint64_t>(server.Config().max_body_bytes), OTLP_ARROW_PROFILE_DUCKDB, err_buf, sizeof(err_buf));
 		if (!handle) {
 			throw IOException("Failed to start OTLP/gRPC server at %s: %s", uri.Uri(),
 			                  err_buf[0] != '\0' ? err_buf : "unknown error");
@@ -116,7 +115,7 @@ unique_ptr<OtlpListener> MakeOtlpGrpcListener(OtlpServer &server, const OtlpList
 #else
 
 unique_ptr<OtlpListener> MakeOtlpGrpcListener(OtlpServer &server, const OtlpListenerSpec &spec) {
-	throw NotImplementedException("otap_serve is not implemented for the wasm platform");
+	throw NotImplementedException("gRPC ingest is not implemented for the wasm platform");
 }
 
 #endif

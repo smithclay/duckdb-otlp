@@ -62,8 +62,8 @@ docs:
     ## Serve live ingest (native builds)
 
     `otlp_serve()` starts an OTLP/HTTP endpoint inside DuckDB. Point a Collector or
-    SDK exporter at `http://localhost:4318` and the rows land in tables you can
-    query:
+    SDK exporter at `http://localhost:4318` to ingest rows into queryable tables.
+    With `transport := 'grpc'`, one port accepts OTLP unary exports and OTAP/Arrow streams.
 
     ```sql
     SELECT listen_url, auth_token

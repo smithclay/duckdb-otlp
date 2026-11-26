@@ -24,7 +24,7 @@ class DataChunk;
 struct OtlpSignal;
 
 //! Wire transport for one listener: HTTP (cpp-httplib) or GRPC (OTLP/gRPC + OTAP/Arrow via the
-//! tonic server in otlp2records). otap: URIs are always GRPC.
+//! tonic server in otlp2records).
 enum class OtlpTransport { HTTP, GRPC };
 
 enum class OtlpRequestKind : uint8_t { LOGS, TRACES, METRICS };
@@ -35,9 +35,6 @@ const char *OtlpTransportName(OtlpTransport transport);
 struct OtlpListenerSpec {
 	OtlpUri uri;
 	OtlpTransport transport = OtlpTransport::HTTP;
-	//! GRPC only: OR of OTLP_GRPC_SERVICE_* bits selecting the service families to register.
-	//! 0 would register both.
-	uint32_t grpc_service_flags = 0;
 };
 
 //! Server-wide settings shared by every listener.

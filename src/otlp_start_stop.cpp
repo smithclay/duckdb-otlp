@@ -4,7 +4,6 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
 
-#include "otlp_arrow.hpp"
 #include "otlp_registry.hpp"
 #include "otlp_sql_util.hpp"
 #include "otlp_server.hpp"
@@ -73,7 +72,7 @@ static vector<string> StringOrStringList(const Value &value, const char *what) {
 	return result;
 }
 
-//! otlp_serve/otap_serve options that set one OtlpServerConfig field. Numeric ones must be > 0.
+//! otlp_serve options that set one OtlpServerConfig field. Numeric ones must be > 0.
 struct ServeStringOption {
 	const char *name;
 	string OtlpServerConfig::*field;
@@ -115,24 +114,22 @@ static const std::pair<const char *, vector<string> OtlpPromoteConfig::*> PROMOT
     {"promote_scope_attributes", &OtlpPromoteConfig::scope_keys},
 };
 
-static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableFunctionBindInput &input,
-                                                  vector<LogicalType> &return_types, vector<Identifier> &names,
-                                                  const string &default_uri, const string &required_scheme) {
+static unique_ptr<FunctionData> OtlpServeBind(ClientContext &context, TableFunctionBindInput &input,
+                                              vector<LogicalType> &return_types, vector<Identifier> &names) {
 #ifdef __EMSCRIPTEN__
 	throw NotImplementedException("live OTLP ingest is not implemented for the wasm platform");
 #endif
 
 	vector<OtlpListenerSpec> listeners;
-	const char *function_name = required_scheme == "otap" ? "otap_serve" : "otlp_serve";
-	vector<string> listen_uris {default_uri};
+	vector<string> listen_uris {"otlp:localhost:4318"};
 	if (!input.inputs.empty()) {
 		listen_uris = StringOrStringList(input.inputs[0], "listen URI");
 	}
 	if (listen_uris.empty()) {
-		throw InvalidInputException("%s requires at least one listen URI", function_name);
+		throw InvalidInputException("otlp_serve requires at least one listen URI");
 	}
 	if (listen_uris.size() > MAX_LISTENERS_PER_SERVER) {
-		throw InvalidInputException("%s accepts at most %llu listen URIs", function_name,
+		throw InvalidInputException("otlp_serve accepts at most %llu listen URIs",
 		                            static_cast<uint64_t>(MAX_LISTENERS_PER_SERVER));
 	}
 
@@ -154,35 +151,20 @@ static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableF
 		}
 		OtlpListenerSpec spec;
 		spec.uri = OtlpUri(listen_uris[i]);
-		if (spec.uri.Scheme() != required_scheme) {
-			throw InvalidInputException("%s requires an '%s:' URI, but got an '%s:' URI", function_name,
-			                            required_scheme, spec.uri.Scheme());
-		}
 		for (auto &existing : listeners) {
 			if (existing.uri.CanonicalUri() == spec.uri.CanonicalUri()) {
-				throw InvalidInputException("%s listen URIs must be distinct (got %s twice)", function_name,
-				                            spec.uri.Uri());
+				throw InvalidInputException("otlp_serve listen URIs must be distinct (got %s twice)", spec.uri.Uri());
 			}
 		}
 
-		// The gRPC service sets are disjoint: otlp: registers only the unary services, otap: only the Arrow ones.
 		string transport_opt;
 		if (!transports.empty()) {
 			transport_opt = StringUtil::Lower(transports.size() == 1 ? transports[0] : transports[i]);
 		}
-		if (required_scheme == "otap") {
-			if (!transport_opt.empty() && transport_opt != "grpc") {
-				throw InvalidInputException("otap_serve is gRPC-only; transport must be 'grpc' or omitted (got '%s')",
-				                            transport_opt);
-			}
-			spec.transport = OtlpTransport::GRPC;
-			spec.grpc_service_flags = OTLP_GRPC_SERVICE_OTAP_ARROW;
-		} else if (transport_opt.empty() || transport_opt == "http") {
+		if (transport_opt.empty() || transport_opt == "http") {
 			spec.transport = OtlpTransport::HTTP;
-			spec.grpc_service_flags = 0;
 		} else if (transport_opt == "grpc") {
 			spec.transport = OtlpTransport::GRPC;
-			spec.grpc_service_flags = OTLP_GRPC_SERVICE_OTLP_UNARY;
 		} else {
 			throw InvalidInputException("transport must be 'http' or 'grpc' (got '%s')", transport_opt);
 		}
@@ -254,52 +236,25 @@ static unique_ptr<FunctionData> OtlpServeBindImpl(ClientContext &context, TableF
 		                            "mode for transactional ingest or parquet_export_path for plain Parquet export");
 	}
 
-	for (auto name : {"listen_uri", "listen_url", "auth_token", "schema_name"}) {
-		names.emplace_back(name);
-	}
-	const bool include_signal_tables = required_scheme == "otap";
-	if (include_signal_tables) {
-		for (auto *table : OTLP_SIGNAL_TABLES) {
-			names.emplace_back(string(table + strlen("otlp_")) + "_table");
-		}
-	}
-	names.emplace_back("catalog_name");
-	names.emplace_back("transport");
+	names = {"listen_uri", "listen_url", "auth_token", "schema_name", "catalog_name", "transport"};
 	return_types.assign(names.size(), LogicalType::VARCHAR);
 
 	return make_uniq<OtlpControlBindData>(
-	    [listeners = std::move(listeners), config = std::move(config), include_signal_tables](ClientContext &context) {
+	    [listeners = std::move(listeners), config = std::move(config)](ClientContext &context) {
 		    OtlpServerRegistry::Get(*context.db).Start(context, listeners, config);
 		    OtlpRows rows;
 		    for (auto &spec : listeners) {
-			    vector<Value> row {spec.uri.Uri(), spec.uri.Http(), config.token, config.schema_name};
-			    if (include_signal_tables) {
-				    for (auto *table : OTLP_SIGNAL_TABLES) {
-					    row.emplace_back(table);
-				    }
-			    }
-			    row.emplace_back(config.catalog_name);
-			    row.emplace_back(OtlpTransportName(spec.transport));
-			    rows.push_back(std::move(row));
+			    rows.push_back({spec.uri.Uri(), spec.uri.Http(), config.token, config.schema_name, config.catalog_name,
+			                    OtlpTransportName(spec.transport)});
 		    }
 		    return rows;
 	    });
 }
 
-static unique_ptr<FunctionData> OtlpServeBind(ClientContext &context, TableFunctionBindInput &input,
-                                              vector<LogicalType> &return_types, vector<Identifier> &names) {
-	return OtlpServeBindImpl(context, input, return_types, names, "otlp:localhost:4318", "otlp");
-}
-
-static unique_ptr<FunctionData> OtapServeBind(ClientContext &context, TableFunctionBindInput &input,
-                                              vector<LogicalType> &return_types, vector<Identifier> &names) {
-	return OtlpServeBindImpl(context, input, return_types, names, "otap:localhost:4317", "otap");
-}
-
-static TableFunctionSet BuildServeFunctionSet(const string &name, table_function_bind_t bind) {
+CreateTableFunctionInfo OtlpServeFunction::GetFunction() {
 	// Options are a typed **kwargs schema: an omitted option is not passed, so the bind keeps its defaults.
-	auto make_overload = [&](FunctionSignature signature) {
-		auto fun = OtlpControlFunction(Identifier(name), std::move(signature), bind);
+	auto make_overload = [](FunctionSignature signature) {
+		auto fun = OtlpControlFunction("otlp_serve", std::move(signature), OtlpServeBind);
 		fun.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
 			for (auto &option : STRING_OPTIONS) {
 				options.Add(option.name, LogicalType::VARCHAR);
@@ -319,82 +274,34 @@ static TableFunctionSet BuildServeFunctionSet(const string &name, table_function
 		});
 		return fun;
 	};
-	TableFunctionSet set {Identifier(name)};
+	TableFunctionSet set("otlp_serve");
 	set.AddFunction(make_overload(FunctionSignature().AddPositionalOnly("listen_uri", LogicalType::VARCHAR)));
 	set.AddFunction(
 	    make_overload(FunctionSignature().AddPositionalOnly("listen_uris", LogicalType::LIST(LogicalType::VARCHAR))));
 	set.AddFunction(make_overload({}));
-	return set;
-}
 
-//! Everything otlp_serve and otap_serve do not share, so the descriptions themselves can.
-struct ServeDocs {
-	const char *function_name;
-	const char *protocol;
-	//! Listen URI used when the function is called with no argument.
-	const char *default_uri;
-	//! Sentence about transport selection and the scheme this function is bound to.
-	const char *transport_note;
-	const char *uri_example;
-	const char *list_example;
-};
-
-//! One description per overload: duckdb_functions() matches them on the positional argument types.
-//! parameter_names stay empty; the names come from the signature and its **kwargs schema.
-static vector<FunctionDescription> ServeDescriptions(const ServeDocs &docs) {
+	// duckdb_functions() matches descriptions on positional types and gets names from the signature.
 	const vector<string> categories = {"opentelemetry", "ingest"};
-	const string durability =
-	    " Rows land in the catalog named by the `catalog` parameter -- an attached database, a DuckLake or Iceberg "
-	    "catalog among them -- or in the default catalog when it is unset. They are buffered in memory and "
-	    "group-committed (sealed) in batches, so an accepted request is not durable yet: otlp_flush() commits on "
-	    "demand and otlp_stop() commits before returning. Returns one row per listener.";
-	vector<FunctionDescription> descriptions;
-	descriptions.push_back(
-	    OtlpDoc({}, {},
-	            StringUtil::Format("Start a live %s ingest server on the default listen URI %s.%s%s", docs.protocol,
-	                               docs.default_uri, docs.transport_note, durability),
-	            {StringUtil::Format("SELECT * FROM %s(token := 'replace-with-a-real-token');", docs.function_name)},
-	            categories));
-	descriptions.push_back(OtlpDoc({LogicalType::VARCHAR}, {},
-	                               StringUtil::Format("Start a live %s ingest server on one listen URI.%s%s",
-	                                                  docs.protocol, docs.transport_note, durability),
-	                               {docs.uri_example}, categories));
-	descriptions.push_back(
-	    OtlpDoc({LogicalType::LIST(LogicalType::VARCHAR)}, {},
-	            StringUtil::Format("Start a live %s ingest server fed by several listeners -- one buffer set and one "
-	                               "sealer behind all of them, so any one of the URIs names the whole server to "
-	                               "otlp_stop() and otlp_flush().%s%s",
-	                               docs.protocol, docs.transport_note, durability),
-	            {docs.list_example}, categories));
-	return descriptions;
-}
-
-CreateTableFunctionInfo OtlpServeFunction::GetFunction() {
-	ServeDocs docs;
-	docs.function_name = "otlp_serve";
-	docs.protocol = "OTLP";
-	docs.default_uri = "otlp:localhost:4318";
-	docs.transport_note = " The transport is OTLP/HTTP by default (POST /v1/logs, /v1/traces, /v1/metrics); "
-	                      "transport := 'grpc' serves OTLP/gRPC unary Export instead. Only the otlp: scheme is "
-	                      "accepted.";
-	docs.uri_example = "SELECT * FROM otlp_serve('otlp:localhost:4318', token := 'replace-with-a-real-token');";
-	docs.list_example = "SELECT * FROM otlp_serve(['otlp:localhost:4318', 'otlp:localhost:4317'], "
-	                    "transport := ['http', 'grpc'], token := 'replace-with-a-real-token');";
-	return OtlpDocumented(BuildServeFunctionSet("otlp_serve", OtlpServeBind), ServeDescriptions(docs));
-}
-
-CreateTableFunctionInfo OtapServeFunction::GetFunction() {
-	ServeDocs docs;
-	docs.function_name = "otap_serve";
-	docs.protocol = "OTAP/Arrow";
-	docs.default_uri = "otap:localhost:4317";
-	docs.transport_note = " The transport is always gRPC: the canonical Arrow{Logs,Traces,Metrics}Service "
-	                      "bidirectional streams, which are disjoint from the services otlp_serve registers. Only "
-	                      "the otap: scheme is accepted.";
-	docs.uri_example = "SELECT * FROM otap_serve('otap:localhost:4317', token := 'replace-with-a-real-token');";
-	docs.list_example = "SELECT * FROM otap_serve(['otap:localhost:4317', 'otap:localhost:14317'], "
-	                    "token := 'replace-with-a-real-token');";
-	return OtlpDocumented(BuildServeFunctionSet("otap_serve", OtapServeBind), ServeDescriptions(docs));
+	const string common_description =
+	    " Use an otlp: URI. The transport defaults to OTLP/HTTP (POST /v1/logs, /v1/traces, /v1/metrics). "
+	    "A gRPC listener accepts OTLP unary exports and OTAP/Arrow streams on the same port. "
+	    "Rows are buffered for the target catalog and committed in batches. Call otlp_flush() to commit on demand "
+	    "or otlp_stop() to commit and stop. Returns one row per listener.";
+	return OtlpDocumented(
+	    std::move(set),
+	    {OtlpDoc({}, {}, "Start live ingestion at otlp:localhost:4318." + common_description,
+	             {"SELECT * FROM otlp_serve(token := 'replace-with-a-real-token');"}, categories),
+	     OtlpDoc({LogicalType::VARCHAR}, {}, "Start live ingestion on one listen URI." + common_description,
+	             {"SELECT * FROM otlp_serve('otlp:localhost:4317', transport := 'grpc', "
+	              "token := 'replace-with-a-real-token');"},
+	             categories),
+	     OtlpDoc({LogicalType::LIST(LogicalType::VARCHAR)}, {},
+	             "Start live ingestion on several listen URIs with shared buffers and one sealer. "
+	             "Any URI names the whole server to otlp_stop() and otlp_flush()." +
+	                 common_description,
+	             {"SELECT * FROM otlp_serve(['otlp:localhost:4318', 'otlp:localhost:4317'], "
+	              "transport := ['http', 'grpc'], token := 'replace-with-a-real-token');"},
+	             categories)});
 }
 
 static std::optional<OtlpUri> BindOptionalUri(const TableFunctionBindInput &input) {

@@ -49,7 +49,6 @@ const FlagDef FLAGS[] = {
     {"host", '\0', ALL_CMDS, "DUCKDB_OTLP_HOST", false},
     {"http", '\0', ALL_CMDS, "DUCKDB_OTLP_HTTP_PORT", false},
     {"grpc", '\0', ALL_CMDS, "DUCKDB_OTLP_GRPC_PORT", false},
-    {"otap", '\0', ALL_CMDS, "DUCKDB_OTLP_OTAP_PORT", false},
     {"token", '\0', ALL_CMDS, "DUCKDB_OTLP_TOKEN", false},
     {"no-auth", '\0', ALL_CMDS, "DUCKDB_OTLP_DISABLE_AUTH", true},
     {"quack", '\0', ALL_CMDS, "DUCKDB_QUACK_PORT", false},
@@ -279,8 +278,7 @@ Serve flags (each overrides the matching environment variable):
                               nothing and leaves the destination to --init-sql/--catalog.
       --host HOST             bind host (default: 127.0.0.1)
       --http PORT             OTLP/HTTP port, 0 to disable (default: 4318)
-      --grpc PORT             OTLP/gRPC port, 0 to disable (default: 4317)
-      --otap PORT             OTAP/Arrow gRPC port, 0 to disable (default: off)
+      --grpc PORT             gRPC port for OTLP and OTAP, 0 to disable (default: 4317)
       --data-dir DIR          data directory (default: $XDG_DATA_HOME/duckdb-otlp)
       --database PATH         control database file
       --catalog NAME          target catalog

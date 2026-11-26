@@ -1,12 +1,11 @@
 """Real daemon ingest edge cases: HTTP request handling, backpressure, metric fan-out and OTAP/Arrow
-streaming. Every case runs the daemon in `parquet` mode and reads what the SIGTERM drain wrote.
+streaming. The tests read what the daemon wrote during its SIGTERM drain.
 
 Run with uv run --with pytest --with grpcio --with opentelemetry-proto \
     --with duckdb==2.0.0 pytest test/server
 """
 
 import gzip
-import os
 import urllib.error
 import urllib.request
 import zlib
@@ -17,7 +16,7 @@ import grpc
 import pytest
 from opentelemetry.proto.collector.trace.v1 import trace_service_pb2_grpc
 
-from test_server_config import free_port, pytestmark  # noqa: F401
+from test_server_config import pytestmark  # noqa: F401
 from test_server_transports import TOKEN, configuration, daemon, grpc_addr, http_addr, trace_request, wait_ready
 
 DATA = Path(__file__).resolve().parents[1] / 'data' / 'otap'
@@ -158,45 +157,45 @@ def batch_status_code(raw):
     return code
 
 
-def test_otap_streams_ingest_every_signal_with_dictionary_reuse(tmp_path):
-    port = free_port()
-    env = {
-        'PATH': os.environ.get('PATH', ''),
-        'DUCKDB_MODE': 'parquet',
-        'DUCKDB_DATABASE': ':memory:',
-        'DUCKDB_OTLP_DATA_DIR': str(tmp_path),
-        'PARQUET_EXPORT_PATH': str(tmp_path / 'parquet'),
-        'DUCKDB_OTLP_HOST': '127.0.0.1',
-        'DUCKDB_OTLP_OTAP_PORT': str(port),
-        'DUCKDB_OTLP_HTTP_PORT': '0',
-        'DUCKDB_OTLP_GRPC_PORT': '0',
-        'DUCKDB_OTLP_TOKEN': TOKEN,
-        'DUCKDB_OTLP_SEAL_MAX_AGE_MS': '600000',
-        'DUCKDB_OTLP_STARTUP_TIMEOUT': '5',
-    }
+def stream_arrow(channel, service, files, token=TOKEN):
+    method = channel.stream_stream(f'{ARROW}.Arrow{service}Service/Arrow{service}')
+    messages = [(DATA / name).read_bytes() for name in files]
+    return list(method(iter(messages), metadata=[('authorization', f'Bearer {token}')], timeout=20))
 
-    def stream(channel, service, files, token=TOKEN):
-        method = channel.stream_stream(
-            f'{ARROW}.Arrow{service}Service/Arrow{service}',
-            request_serializer=lambda b: b,
-            response_deserializer=lambda b: b,
-        )
-        messages = [(DATA / name).read_bytes() for name in files]
-        return list(method(iter(messages), metadata=[('authorization', f'Bearer {token}')], timeout=20))
+
+def test_otlp_and_otap_share_a_grpc_listener_and_trace_table(tmp_path):
+    database = tmp_path / 'telemetry.duckdb'
+    env = configuration(tmp_path, 'grpc')
+    env.update(DUCKDB_MODE='none', DUCKDB_DATABASE=str(database))
 
     def body(env):
-        with grpc.insecure_channel(f'127.0.0.1:{port}') as channel:
-            # The reuse message carries no schema of its own: it decodes only because the server
-            # keeps one decoder per stream, so its rows prove cross-message dictionary reuse.
-            responses = stream(channel, 'Logs', ['logs-initial.bar', 'logs-reuse.bar'])
-            assert [batch_status_code(r) for r in responses] == [0, 0]
-            assert [batch_status_code(r) for r in stream(channel, 'Traces', ['traces-initial.bar'])] == [0]
-            assert [batch_status_code(r) for r in stream(channel, 'Metrics', ['metrics-initial.bar'])] == [0]
-            with pytest.raises(grpc.RpcError) as refused:
-                stream(channel, 'Logs', ['logs-initial.bar'], token='wrong-token')
-            assert refused.value.code() == grpc.StatusCode.UNAUTHENTICATED
+        with grpc.insecure_channel(grpc_addr(env)) as channel:
+            stub = trace_service_pb2_grpc.TraceServiceStub(channel)
+            stub.Export(trace_request(1), metadata=[('authorization', f'Bearer {TOKEN}')], timeout=5)
+            assert [batch_status_code(r) for r in stream_arrow(channel, 'Traces', ['traces-initial.bar'])] == [0]
 
     run_daemon(tmp_path, env, body)
+    with duckdb.connect(str(database), read_only=True) as connection:
+        assert connection.execute('SELECT name FROM otlp_traces ORDER BY name').fetchall() == [
+            ('first-span',),
+            ('transport-1',),
+        ]
+
+
+def test_otap_streams_ingest_every_signal_with_dictionary_reuse(tmp_path):
+    def body(env):
+        with grpc.insecure_channel(grpc_addr(env)) as channel:
+            # The reuse message carries no schema of its own: it decodes only because the server
+            # keeps one decoder per stream, so its rows prove cross-message dictionary reuse.
+            responses = stream_arrow(channel, 'Logs', ['logs-initial.bar', 'logs-reuse.bar'])
+            assert [batch_status_code(r) for r in responses] == [0, 0]
+            assert [batch_status_code(r) for r in stream_arrow(channel, 'Traces', ['traces-initial.bar'])] == [0]
+            assert [batch_status_code(r) for r in stream_arrow(channel, 'Metrics', ['metrics-initial.bar'])] == [0]
+            with pytest.raises(grpc.RpcError) as refused:
+                stream_arrow(channel, 'Logs', ['logs-initial.bar'], token='wrong-token')
+            assert refused.value.code() == grpc.StatusCode.UNAUTHENTICATED
+
+    run_daemon(tmp_path, configuration(tmp_path, 'grpc'), body)
     assert table_rows(tmp_path, 'otlp_logs') > 3, 'the dictionary-reuse message added no rows'
     assert table_rows(tmp_path, 'otlp_traces') == 1
     assert {table: table_rows(tmp_path, table) for table in METRIC_TABLES} == dict.fromkeys(METRIC_TABLES, 1)

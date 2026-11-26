@@ -20,10 +20,9 @@ extern const ModePreset MODE_PRESETS[];
 struct IngestListener {
 	duckdb::string uri;
 	duckdb::string transport;
-	bool otap = false;
 };
 
-//! The ingest listeners --host and --http/--grpc/--otap select. Shared with `doctor`; needs no
+//! The ingest listeners --host and --http/--grpc select. Shared with `doctor`; needs no
 //! credentials or I/O.
 std::vector<IngestListener> ListenersFromEnv(const EnvSource &env);
 
@@ -74,7 +73,7 @@ struct ServerConfig {
 
 	static ServerConfig FromEnv(const EnvSource &env);
 
-	//! One otlp_serve/otap_serve call starting every listener against one shared server.
+	//! One otlp_serve call starting every listener against one shared server.
 	duckdb::string StartOtlpSql() const;
 	duckdb::string StartQuackSql() const;
 	//! The running Quack server's URL and TLS fingerprint, for the startup banner.

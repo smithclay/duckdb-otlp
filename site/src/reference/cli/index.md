@@ -8,7 +8,7 @@ With no arguments it starts a working local receiver — no configuration file, 
 duckdb-otlp
 ```
 
-That listens for OTLP/HTTP on `127.0.0.1:4318` and OTLP/gRPC on `127.0.0.1:4317`, and streams into a local DuckLake lakehouse under `$XDG_DATA_HOME/duckdb-otlp`.
+That listens for OTLP/HTTP on `127.0.0.1:4318` and gRPC for OTLP and OTAP on `127.0.0.1:4317`, and streams into a local DuckLake lakehouse under `$XDG_DATA_HOME/duckdb-otlp`.
 
 ## Install
 
@@ -40,7 +40,7 @@ A flag always wins over its variable. Re-running the script upgrades in place: t
 brew install smithclay/tap/duckdb-otlp
 ```
 
-`brew services start duckdb-otlp` runs `duckdb-otlp serve` with its defaults: OTLP/HTTP on `127.0.0.1:4318`, OTLP/gRPC on `127.0.0.1:4317`, and a local DuckLake under `$XDG_DATA_HOME/duckdb-otlp` (`~/.local/share/duckdb-otlp` when unset). The service can only run those defaults, because `duckdb-otlp` has no configuration file; to change the mode, ports, bind host, or token, run `duckdb-otlp serve` yourself instead.
+`brew services start duckdb-otlp` runs `duckdb-otlp serve` with its defaults: OTLP/HTTP on `127.0.0.1:4318`, gRPC for OTLP and OTAP on `127.0.0.1:4317`, and a local DuckLake under `$XDG_DATA_HOME/duckdb-otlp` (`~/.local/share/duckdb-otlp` when unset). The service can only run those defaults, because `duckdb-otlp` has no configuration file; to change the mode, ports, bind host, or token, run `duckdb-otlp serve` yourself instead.
 
 ### Release tarballs
 
@@ -132,7 +132,6 @@ duckdb-otlp serve [flags]
 | `--host HOST` | `DUCKDB_OTLP_HOST` | `127.0.0.1` |
 | `--http PORT` | `DUCKDB_OTLP_HTTP_PORT` | `4318` (`0` disables) |
 | `--grpc PORT` | `DUCKDB_OTLP_GRPC_PORT` | `4317` (`0` disables) |
-| `--otap PORT` | `DUCKDB_OTLP_OTAP_PORT` | off |
 | `--data-dir DIR` | `DUCKDB_OTLP_DATA_DIR` | `$XDG_DATA_HOME/duckdb-otlp` |
 | `--database PATH` | `DUCKDB_DATABASE` | `<data-dir>/duckdb-otlp-control.duckdb` |
 | `--catalog NAME` | `DUCKDB_CATALOG` | mode-dependent |
@@ -315,11 +314,7 @@ duckdb-otlp --host :: --token "$TOKEN"      # every interface, IPv6
 
 Every listener, Quack included, binds the one `--host`. The earlier per-transport settings (`OTEL_HTTP_ADDR`, `OTEL_GRPC_ADDR`, `DUCKDB_OTLP_TRANSPORTS`, `DUCKDB_OTLP_LISTEN_URI`, `DUCKDB_QUACK_ENABLED`, `DUCKDB_QUACK_ADDR`) are rejected at startup with the flag that replaces them.
 
-OTAP/Arrow is a different protocol served by `otap_serve`, so it cannot be combined with standard OTLP listeners in one process:
-
-```sh
-duckdb-otlp --otap 4317 --http 0 --grpc 0
-```
+The gRPC port accepts OTLP unary exports and OTAP/Arrow streams into the same tables.
 
 ### Authentication
 

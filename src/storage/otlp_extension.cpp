@@ -23,7 +23,6 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// Register Rust-backed table functions
 	RegisterReadOTLPRustFunctions(loader);
 	loader.RegisterFunction(OtlpServeFunction::GetFunction());
-	loader.RegisterFunction(OtapServeFunction::GetFunction());
 	loader.RegisterFunction(OtlpStopFunction::GetFunction());
 	loader.RegisterFunction(OtlpServerListFunction::GetFunction());
 	loader.RegisterFunction(OtlpFlushFunction::GetFunction());

@@ -42,23 +42,13 @@ static uint16_t ParsePort(const string &port_str) {
 OtlpUri::OtlpUri(string uri_p) : uri(std::move(uri_p)) {
 	StringUtil::Trim(uri);
 	string remainder;
-	uint16_t default_port = 4318;
-	if (StringUtil::StartsWith(uri, "otap://")) {
-		scheme = "otap";
-		default_port = 4317;
-		remainder = uri.substr(strlen("otap://"));
-	} else if (StringUtil::StartsWith(uri, "otap:")) {
-		scheme = "otap";
-		default_port = 4317;
-		remainder = uri.substr(strlen("otap:"));
-	} else if (StringUtil::StartsWith(uri, "otlp://")) {
+	if (StringUtil::StartsWith(uri, "otlp://")) {
 		remainder = uri.substr(strlen("otlp://"));
 	} else if (StringUtil::StartsWith(uri, "otlp:")) {
 		remainder = uri.substr(strlen("otlp:"));
 	} else {
-		throw InvalidInputException("Invalid OTLP listen URI, needs to start with 'otlp:' or 'otap:'");
+		throw InvalidInputException("Invalid OTLP listen URI, needs to start with 'otlp:'");
 	}
-	port = default_port;
 	if (remainder.empty()) {
 		remainder = "localhost";
 	}
@@ -132,9 +122,8 @@ CreateScalarFunctionInfo OtlpUriParserFunction::GetFunction() {
 	    std::move(function),
 	    {OtlpDoc({varchar_type}, {"listen_uri"},
 	             "Parse an OTLP/OTAP listen URI into a struct of host, port, ipv6 and the http:// URL a "
-	             "listener would bind. The otlp: or otap: scheme is required; the host defaults to localhost "
-	             "and the port to 4318 for otlp: or 4317 for otap:, the same defaults otlp_serve and "
-	             "otap_serve apply. The argument must be constant.",
+	             "listener would bind. Use the otlp: scheme. The host defaults to localhost and the port to 4318. "
+	             "The argument must be constant.",
 	             {"otlp_uri_parser('otlp:localhost:4318')"}, {"opentelemetry", "utility"})});
 }
 

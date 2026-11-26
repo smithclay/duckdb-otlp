@@ -165,7 +165,7 @@ The schemas align with a normalized version of the [OpenTelemetry Arrow Data mod
 
 - Read OTLP traces, logs, gauges, sums/counters, histograms, and exponential histograms from files.
 - Read the columnar OpenTelemetry Arrow Protocol (OTAP) with the `read_otap_*` functions, which produce the same schemas as `read_otlp_*`.
-- Stream live telemetry with `otlp_serve` into the default DuckDB catalog, an attached DuckLake lakehouse, or an Iceberg REST catalog such as Amazon S3 Tables or Cloudflare R2 Data Catalog. The HTTP listener serves OTLP/HTTP. The gRPC listener serves OTLP/gRPC and OTAP/Arrow streaming. [DuckLake](https://ducklake.select)
+- Stream live telemetry with `otlp_serve` into the default DuckDB catalog, an attached DuckLake lakehouse, or an Iceberg REST catalog such as Amazon S3 Tables or Cloudflare R2 Data Catalog. The HTTP listener serves OTLP/HTTP. The gRPC listener accepts OTLP unary exports and OTAP/Arrow streams on the same port. [DuckLake](https://ducklake.select)
 - Convert telemetry to Parquet files and save to cloud storage.
 - Query local files, globs, S3, HTTP(S), Azure Blob, and GCS paths through DuckDB file systems.
 - Use the browser demo for JSON, JSONL, and protobuf exploration with DuckDB-WASM: [Interactive Demo](https://smithclay.github.io/duckdb-otlp/demo/).
