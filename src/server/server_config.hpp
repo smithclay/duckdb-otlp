@@ -63,7 +63,6 @@ struct ServerConfig {
 	//! loopback (`auth_disabled_for_loopback`). A non-loopback bind with no token is an error.
 	bool disable_auth = false;
 	bool auth_disabled_for_loopback = false;
-	int startup_timeout_secs = 60;
 	//! otlp_serve options set from DUCKDB_OTLP_* settings, as (option, SQL literal) pairs.
 	std::vector<std::pair<duckdb::string, duckdb::string>> serve_options;
 

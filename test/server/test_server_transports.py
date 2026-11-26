@@ -39,7 +39,6 @@ def configuration(tmp_path, transports):
         'DUCKDB_OTLP_TOKEN': TOKEN,
         # Ensure these small batches require the SIGTERM drain to become durable.
         'DUCKDB_OTLP_SEAL_MAX_AGE_MS': '600000',
-        'DUCKDB_OTLP_STARTUP_TIMEOUT': '5',
     }
 
 
@@ -205,7 +204,6 @@ def test_quack_clients_reach_the_signal_tables_unqualified(tmp_path):
         # Loopback, so Quack serves plain HTTP and the client needs no fingerprint.
         'DUCKDB_QUACK_PORT': str(quack_port),
         'DUCKDB_QUACK_TOKEN': quack_token,
-        'DUCKDB_OTLP_STARTUP_TIMEOUT': '15',
     }
 
     with daemon(tmp_path, env) as (process, log_path):
@@ -269,7 +267,6 @@ def test_init_sql_adds_a_parquet_destination_next_to_the_ducklake_catalog(tmp_pa
         'DUCKDB_OTLP_INIT_SQL': str(script),
         # Force both batches to depend on the SIGTERM drain to become durable.
         'DUCKDB_OTLP_SEAL_MAX_AGE_MS': '600000',
-        'DUCKDB_OTLP_STARTUP_TIMEOUT': '15',
     }
 
     with daemon(tmp_path, env) as (process, log_path):

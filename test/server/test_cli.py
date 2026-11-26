@@ -400,7 +400,6 @@ def test_the_startup_banner_is_visible_while_the_server_runs(tmp_path):
         "DUCKDB_DATABASE": ":memory:",
         "PARQUET_EXPORT_PATH": str(tmp_path / "pq"),
         "DUCKDB_OTLP_HTTP_PORT": str(free_port()),
-        "DUCKDB_OTLP_STARTUP_TIMEOUT": "30",
     }
     with log.open("w") as handle:
         process = subprocess.Popen([str(SERVER_BIN)], env=env, stdout=handle, stderr=handle)

@@ -96,26 +96,6 @@ OtlpHealth QueryOtlpHealth(duckdb::Connection &con, const duckdb_otlp_server::In
 	return {chunk->GetValue(0, 0).GetValue<bool>(), chunk->GetValue(1, 0).GetValue<duckdb::string>()};
 }
 
-bool WaitForReady(duckdb::Connection &con, const duckdb_otlp_server::ServerConfig &config) {
-	auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(config.startup_timeout_secs);
-	while (!shutdown_requested && std::chrono::steady_clock::now() < deadline) {
-		bool ready = true;
-		for (const auto &listener : config.listeners) {
-			auto health = QueryOtlpHealth(con, listener);
-			ready = ready && health.listening;
-			if (!health.last_error.empty()) {
-				throw std::runtime_error("OTLP listener " + listener.uri +
-				                         " failed during startup: " + health.last_error);
-			}
-		}
-		if (ready) {
-			return true;
-		}
-		std::this_thread::sleep_for(std::chrono::milliseconds(250));
-	}
-	return false;
-}
-
 //! Block until a signal arrives, checking once a second that every listener is still up. Seal
 //! and maintenance outcomes are logged by the server itself (see OtlpEventsToStderr).
 bool WaitForShutdownOrListenerFailure(duckdb::Connection &con, const duckdb_otlp_server::ServerConfig &config) {
@@ -420,9 +400,6 @@ int RunServe(const EnvSource &env) {
 		try {
 			for (const auto &step : config.ServeSteps()) {
 				Execute(con, step.sql, step.label);
-			}
-			if (!WaitForReady(con, config) && !shutdown_requested) {
-				throw std::runtime_error("Timed out waiting for OTLP listener readiness");
 			}
 			watcher_guard.Stop();
 

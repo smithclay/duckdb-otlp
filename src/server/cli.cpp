@@ -53,7 +53,6 @@ const FlagDef FLAGS[] = {
     {"no-auth", '\0', ALL_CMDS, "DUCKDB_OTLP_DISABLE_AUTH", true},
     {"quack", '\0', ALL_CMDS, "DUCKDB_QUACK_PORT", false},
     {"quack-token", '\0', ALL_CMDS, "DUCKDB_QUACK_TOKEN", false},
-    {"startup-timeout", '\0', ALL_CMDS, "DUCKDB_OTLP_STARTUP_TIMEOUT", false},
     {"dry-run", '\0', SERVE_CMDS, "DRY_RUN", true},
     {"json", '\0', Bit(Command::DOCTOR), nullptr, true},
 };
@@ -292,7 +291,6 @@ Serve flags (each overrides the matching environment variable):
       --no-auth               accept unauthenticated requests
       --quack PORT            enable the Quack SQL endpoint on PORT
       --quack-token TOKEN     Quack bearer token (required with --quack)
-      --startup-timeout SECS  listener readiness timeout (default: 60)
       --dry-run               alias for `validate`
 
 With no token and a loopback bind, authentication is disabled automatically and a

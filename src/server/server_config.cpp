@@ -115,9 +115,8 @@ void ValidateCatalogDoesNotShadowDatabase(const ServerConfig &config) {
 	}
 }
 
-//! `name` as a positive integer no larger than `max`, or `fallback` when it is unset.
-uint64_t ParsePositiveEnv(const EnvSource &env, const char *name, uint64_t fallback,
-                          uint64_t max = std::numeric_limits<int64_t>::max()) {
+//! `name` as a positive signed 64-bit integer, or `fallback` when it is unset.
+uint64_t ParsePositiveEnv(const EnvSource &env, const char *name, uint64_t fallback) {
 	auto value = env.Get(name);
 	if (value.empty()) {
 		return fallback;
@@ -129,7 +128,7 @@ uint64_t ParsePositiveEnv(const EnvSource &env, const char *name, uint64_t fallb
 	} catch (...) {
 		pos = 0;
 	}
-	if (pos != value.size() || value[0] == '-' || parsed == 0 || parsed > max) {
+	if (pos != value.size() || value[0] == '-' || parsed == 0 || parsed > std::numeric_limits<int64_t>::max()) {
 		throw InvalidInputException("%s must be a positive integer", name);
 	}
 	return parsed;
@@ -443,9 +442,6 @@ ServerConfig ServerConfig::FromEnv(const EnvSource &env) {
 	config.quack_enabled = !config.quack_http_addr.empty();
 	config.quack_listen_uri = "quack:" + config.quack_http_addr;
 	config.dry_run = IsTruthy(env.Get("DRY_RUN", "0"));
-	config.startup_timeout_secs = static_cast<int>(ParsePositiveEnv(env, "DUCKDB_OTLP_STARTUP_TIMEOUT",
-	                                                                static_cast<uint64_t>(config.startup_timeout_secs),
-	                                                                std::numeric_limits<int>::max()));
 	for (const auto &option : SERVE_OPTIONS) {
 		auto variable = string("DUCKDB_OTLP_") + option.variable;
 		if (!env.Has(variable.c_str())) {
