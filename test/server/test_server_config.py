@@ -472,7 +472,7 @@ def test_healthcheck_requires_every_listener():
 
 
 def test_healthcheck_probes_the_configured_quack_port():
-    # The probe resolves Quack's address the way startup does (QuackAddrFromEnv).
+    # The probe and startup use the same configured Quack port.
     with ready_server() as http_port, tcp_listener() as quack_port:
         env = {"DUCKDB_OTLP_HTTP_PORT": str(http_port), "DUCKDB_QUACK_PORT": str(quack_port)}
         assert _healthcheck(env) == 0

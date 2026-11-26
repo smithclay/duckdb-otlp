@@ -26,6 +26,7 @@
 
 namespace {
 
+using duckdb_otlp_server::BindAddr;
 using duckdb_otlp_server::BindConfigEnvVariables;
 using duckdb_otlp_server::CheckResult;
 using duckdb_otlp_server::CliErrorMessage;
@@ -150,37 +151,6 @@ void OtlpEventsToStderr(duckdb::DatabaseInstance &db) {
 	log_manager.SetEnableLogging(true);
 }
 
-int PortFromAddr(const duckdb::string &addr, int fallback) {
-	auto colon = addr.rfind(':');
-	if (colon == duckdb::string::npos) {
-		return fallback;
-	}
-	try {
-		auto port = std::stoi(addr.substr(colon + 1));
-		if (port > 0 && port <= 65535) {
-			return port;
-		}
-	} catch (...) {
-	}
-	return fallback;
-}
-
-// Host portion of a "host:port" / "[ipv6]:port" bind address (no scheme).
-duckdb::string HostFromAddr(const duckdb::string &addr) {
-	if (!addr.empty() && addr[0] == '[') {
-		auto close = addr.find(']');
-		if (close != duckdb::string::npos) {
-			return addr.substr(1, close - 1);
-		}
-		return addr;
-	}
-	auto colon = addr.rfind(':');
-	if (colon == duckdb::string::npos) {
-		return addr; // bare host, no port
-	}
-	return addr.substr(0, colon);
-}
-
 // The host to reach a server bound to `host` on: a wildcard bind is reachable on the loopback of
 // its own family, an explicit interface is not and must be used directly. The probes and the
 // banner all go through this one rule.
@@ -188,14 +158,10 @@ duckdb::string ReachableHost(const duckdb::string &host) {
 	if (host.empty() || host == "0.0.0.0") {
 		return "127.0.0.1";
 	}
-	if (host == "::" || host == "[::]") {
+	if (host == "::") {
 		return "::1";
 	}
 	return host;
-}
-
-duckdb::string HealthCheckHost(const duckdb::string &addr) {
-	return ReachableHost(HostFromAddr(addr));
 }
 
 duckdb::string ListenerLabel(const duckdb_otlp_server::IngestListener &listener) {
@@ -216,11 +182,7 @@ void PrintQuackEndpoint(duckdb::Connection &con, const duckdb_otlp_server::Serve
 		return;
 	}
 	auto fingerprint = chunk->GetValue(1, 0).GetValue<duckdb::string>();
-	auto host = ReachableHost(HostFromAddr(config.quack_http_addr));
-	if (host.find(':') != duckdb::string::npos) {
-		host = "[" + host + "]";
-	}
-	auto uri = "quack:" + host + ":" + std::to_string(PortFromAddr(config.quack_http_addr, 9494));
+	auto uri = "quack:" + BindAddr(ReachableHost(config.host), config.quack_port);
 	std::cout << "\nQuery over Quack at " << chunk->GetValue(0, 0).GetValue<duckdb::string>() << '\n';
 	if (fingerprint.empty()) {
 		std::cout << "  ATTACH '" << uri << "' AS otel (TYPE quack);\n";
@@ -228,12 +190,6 @@ void PrintQuackEndpoint(duckdb::Connection &con, const duckdb_otlp_server::Serve
 	}
 	std::cout << "TLS certificate SHA-256 fingerprint: " << fingerprint << '\n'
 	          << "  ATTACH '" << uri << "' AS otel (TYPE quack, SSL_FINGERPRINT '" << fingerprint << "');\n";
-}
-
-// TCP connect, not an HTTP GET: Quack serves TLS on a non-loopback bind and this binary carries
-// no TLS client.
-bool QuackProbe(const duckdb::string &addr) {
-	return duckdb_otlp_server::ProbeListener(HealthCheckHost(addr), PortFromAddr(addr, 9494));
 }
 
 // Collected rather than printed as found, so --json can emit one object.
@@ -267,22 +223,24 @@ void PrintDoctorReport(const std::vector<DoctorCheck> &checks, bool healthy, boo
 int RunDoctor(const EnvSource &env, bool as_json) {
 	std::vector<DoctorCheck> checks;
 	try {
-		for (const auto &listener : duckdb_otlp_server::ListenersFromEnv(env)) {
-			duckdb::OtlpUri uri(listener.uri);
-			auto host = ReachableHost(uri.Host());
+		auto bind_host = duckdb_otlp_server::ListenHostFromEnv(env).Host();
+		auto host = ReachableHost(bind_host);
+		for (const auto &listener : duckdb_otlp_server::ListenersFromEnv(env, bind_host)) {
 			// gRPC speaks HTTP/2 and has no /readyz, so a connect is all it can answer.
 			bool ok =
-			    duckdb_otlp_server::ProbeListener(host, uri.Port(), listener.transport == "grpc" ? "" : "/readyz");
-			checks.push_back({ListenerLabel(listener), host + ":" + std::to_string(uri.Port()), ok});
+			    duckdb_otlp_server::ProbeListener(host, listener.port, listener.transport == "grpc" ? "" : "/readyz");
+			checks.push_back({ListenerLabel(listener), BindAddr(host, listener.port), ok});
+		}
+		auto quack_port = duckdb_otlp_server::QuackPortFromEnv(env);
+		if (quack_port != 0) {
+			// Quack serves TLS on a non-loopback bind. Probe with a TCP connection.
+			checks.push_back(
+			    {"Quack", BindAddr(host, quack_port), duckdb_otlp_server::ProbeListener(host, quack_port)});
 		}
 	} catch (std::exception &ex) {
 		// Unresolvable configuration is a broken setup, not an unreachable listener.
 		std::cerr << "ERROR: " << CliErrorMessage(ex) << '\n';
 		return 1;
-	}
-	auto quack_addr = duckdb_otlp_server::QuackAddrFromEnv(env);
-	if (!quack_addr.empty()) {
-		checks.push_back({"Quack", quack_addr, QuackProbe(quack_addr)});
 	}
 	bool healthy = std::all_of(checks.begin(), checks.end(), [](const DoctorCheck &check) { return check.ok; });
 	PrintDoctorReport(checks, healthy, as_json);
@@ -316,8 +274,8 @@ int RunServe(const EnvSource &env) {
 			std::cout << "\nWARNING: authentication is DISABLED by request (--no-auth). Anyone who can reach a "
 			             "listener can write to this catalog.\n";
 		}
-		if (config.quack_enabled) {
-			std::cout << "Quack: " << config.quack_listen_uri << "\n\n";
+		if (config.quack_port != 0) {
+			std::cout << "Quack: " << config.QuackUri() << "\n\n";
 			std::cout << "WARNING: Quack grants full SQL read/write access to every attached catalog.\n";
 		} else {
 			std::cout << "Quack: disabled\n";
@@ -383,14 +341,13 @@ int RunServe(const EnvSource &env) {
 				std::cout << "Starting server..." << '\n';
 				for (const auto &listener : config.listeners) {
 					if (listener.transport == "http") {
-						duckdb::OtlpUri uri(listener.uri);
-						auto host = ReachableHost(uri.Host());
-						std::cout << "\nSend OTLP/HTTP to http://" << host << ":" << uri.Port()
+						std::cout << "\nSend OTLP/HTTP to http://"
+						          << BindAddr(ReachableHost(config.host), listener.port)
 						          << "/v1/{logs,traces,metrics}\n";
 						break;
 					}
 				}
-				if (config.quack_enabled) {
+				if (config.quack_port != 0) {
 					PrintQuackEndpoint(con, config);
 				} else {
 					std::cout
@@ -427,7 +384,7 @@ int RunServe(const EnvSource &env) {
 			std::cerr << "Shutdown requested during startup; exiting before the server became ready.\n";
 		}
 		std::cout << "Stopping duckdb-otlp...\n";
-		const bool quack_ok = !config.quack_enabled || !db.ExtensionIsLoaded("quack") ||
+		const bool quack_ok = config.quack_port == 0 || !db.ExtensionIsLoaded("quack") ||
 		                      StopServer(con, config.StopQuackSql(), "quack shutdown", false);
 		const bool otlp_ok = StopServer(con, config.StopOtlpSql(), "otlp shutdown", true);
 		return run_ok && quack_ok && otlp_ok ? 0 : 1;

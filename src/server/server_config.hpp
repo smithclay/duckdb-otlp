@@ -7,6 +7,10 @@
 #include <cstdint>
 #include <vector>
 
+namespace duckdb {
+class OtlpUri;
+}
+
 namespace duckdb_otlp_server {
 
 //! One mode: its name and the SQL template in src/server/modes/<name>.sql. The table is
@@ -20,6 +24,7 @@ extern const ModePreset MODE_PRESETS[];
 struct IngestListener {
 	duckdb::string uri;
 	duckdb::string transport;
+	int port;
 };
 
 struct BootStep {
@@ -27,23 +32,22 @@ struct BootStep {
 	duckdb::string sql;
 };
 
-//! The ingest listeners --host and --http/--grpc select. Shared with `doctor`; needs no
-//! credentials or I/O.
-std::vector<IngestListener> ListenersFromEnv(const EnvSource &env);
-
-//! The "host:port" Quack binds (--host, --quack PORT), or empty when Quack is off.
-duckdb::string QuackAddrFromEnv(const EnvSource &env);
+//! Listener settings shared with doctor. They need no credentials or I/O.
+duckdb::OtlpUri ListenHostFromEnv(const EnvSource &env);
+std::vector<IngestListener> ListenersFromEnv(const EnvSource &env, const duckdb::string &host);
+int QuackPortFromEnv(const EnvSource &env);
+duckdb::string BindAddr(const duckdb::string &host, int port);
 
 struct ServerConfig {
 	duckdb::string mode;
 	duckdb::string database;
 	duckdb::string data_dir;
+	duckdb::string host;
 	std::vector<IngestListener> listeners;
 	duckdb::string token;
 	duckdb::string catalog;
 	duckdb::string schema;
-	duckdb::string quack_listen_uri;
-	duckdb::string quack_http_addr;
+	int quack_port = 0;
 	duckdb::string quack_token;
 	//! PEM certificate and key Quack serves TLS with. Empty: Quack generates a self-signed pair.
 	duckdb::string quack_ssl_cert_file;
@@ -57,7 +61,6 @@ struct ServerConfig {
 	duckdb::string secret_dir;
 	//! The preset LOADs an unsigned extension; DuckDB accepts this only before the database starts.
 	bool allow_unsigned_extensions = false;
-	bool quack_enabled = false;
 	bool dry_run = false;
 	//! Set by --no-auth, or implicitly when no token is configured and every listener binds
 	//! loopback (`auth_disabled_for_loopback`). A non-loopback bind with no token is an error.
@@ -80,6 +83,7 @@ struct ServerConfig {
 	//! One otlp_serve call starting every listener against one shared server.
 	duckdb::string StartOtlpSql() const;
 	duckdb::string StartQuackSql() const;
+	duckdb::string QuackUri() const;
 	//! The running Quack server's URL and TLS fingerprint, for the startup banner.
 	duckdb::string QuackEndpointSql() const;
 	duckdb::string StopOtlpSql() const;

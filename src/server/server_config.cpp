@@ -367,16 +367,11 @@ int ParsePortEnv(const EnvSource &env, const char *name) {
 	return static_cast<int>(parsed);
 }
 
-//! "host:port" for a bind, bracketing an IPv6 literal so the port stays separable.
-string BindAddr(const EnvSource &env, int port) {
-	return duckdb::UriHost(env.Get("DUCKDB_OTLP_HOST", DEFAULT_HOST)) + ":" + std::to_string(port);
-}
-
 //! Ports must differ regardless of host: distinct host strings can name the same socket.
 void ValidateDistinctPorts(const std::vector<IngestListener> &listeners) {
 	for (duckdb::idx_t i = 0; i < listeners.size(); i++) {
 		for (duckdb::idx_t j = i + 1; j < listeners.size(); j++) {
-			if (duckdb::OtlpUri(listeners[i].uri).Port() == duckdb::OtlpUri(listeners[j].uri).Port()) {
+			if (listeners[i].port == listeners[j].port) {
 				throw InvalidInputException("Listeners %s and %s must use different ports", listeners[i].transport,
 				                            listeners[j].transport);
 			}
@@ -386,8 +381,17 @@ void ValidateDistinctPorts(const std::vector<IngestListener> &listeners) {
 
 } // namespace
 
-std::vector<IngestListener> ListenersFromEnv(const EnvSource &env) {
+string BindAddr(const string &host, int port) {
+	return duckdb::UriHost(host) + ":" + std::to_string(port);
+}
+
+duckdb::OtlpUri ListenHostFromEnv(const EnvSource &env) {
 	RejectUnsupportedOtelEnv(env);
+	// Validate and normalize the host once with the extension's URI parser.
+	return duckdb::OtlpUri("otlp:" + BindAddr(env.Get("DUCKDB_OTLP_HOST", DEFAULT_HOST), DEFAULT_HTTP_PORT));
+}
+
+std::vector<IngestListener> ListenersFromEnv(const EnvSource &env, const string &host) {
 	struct PortSpec {
 		const char *port_var;
 		int default_port;
@@ -409,8 +413,7 @@ std::vector<IngestListener> ListenersFromEnv(const EnvSource &env) {
 		int port = set ? ParsePortEnv(env, spec.port_var) : spec.default_port;
 		bool enabled = set ? port != 0 : !any_selected;
 		if (enabled) {
-			auto uri = duckdb::OtlpUri("otlp:" + BindAddr(env, port)).Uri();
-			listeners.push_back({uri, spec.transport});
+			listeners.push_back({"otlp:" + BindAddr(host, port), spec.transport, port});
 		}
 	}
 	if (listeners.empty()) {
@@ -420,9 +423,8 @@ std::vector<IngestListener> ListenersFromEnv(const EnvSource &env) {
 	return listeners;
 }
 
-string QuackAddrFromEnv(const EnvSource &env) {
-	auto port = env.Has("DUCKDB_QUACK_PORT") ? ParsePortEnv(env, "DUCKDB_QUACK_PORT") : 0;
-	return port == 0 ? string() : BindAddr(env, port);
+int QuackPortFromEnv(const EnvSource &env) {
+	return env.Has("DUCKDB_QUACK_PORT") ? ParsePortEnv(env, "DUCKDB_QUACK_PORT") : 0;
 }
 
 ServerConfig ServerConfig::FromEnv(const EnvSource &env) {
@@ -431,16 +433,16 @@ ServerConfig ServerConfig::FromEnv(const EnvSource &env) {
 	config.data_dir = env.Get("DUCKDB_OTLP_DATA_DIR", DefaultDataDir(env));
 	config.database = env.Get("DUCKDB_DATABASE", config.data_dir + "/duckdb-otlp-control.duckdb");
 	config.secret_dir = env.Get("DUCKDB_OTLP_SECRET_DIR", "");
-	config.listeners = ListenersFromEnv(env);
+	auto listen_host = ListenHostFromEnv(env);
+	config.host = listen_host.Host();
+	config.listeners = ListenersFromEnv(env, config.host);
 	// Most specific first; OTEL_EXPORTER_OTLP_HEADERS lets one variable configure exporter and receiver.
 	config.token = env.Get("OTEL_AUTH_TOKEN", env.Get("DUCKDB_OTLP_TOKEN"));
 	if (config.token.empty() && env.Has("OTEL_EXPORTER_OTLP_HEADERS")) {
 		config.token = BearerTokenFromOtelHeaders(env.Get("OTEL_EXPORTER_OTLP_HEADERS"));
 	}
 	config.disable_auth = IsTruthy(env.Get("DUCKDB_OTLP_DISABLE_AUTH", "0"));
-	config.quack_http_addr = QuackAddrFromEnv(env);
-	config.quack_enabled = !config.quack_http_addr.empty();
-	config.quack_listen_uri = "quack:" + config.quack_http_addr;
+	config.quack_port = QuackPortFromEnv(env);
 	config.dry_run = IsTruthy(env.Get("DRY_RUN", "0"));
 	for (const auto &option : SERVE_OPTIONS) {
 		auto variable = string("DUCKDB_OTLP_") + option.variable;
@@ -459,7 +461,7 @@ ServerConfig ServerConfig::FromEnv(const EnvSource &env) {
 	}
 
 	config.quack_token = env.Get("DUCKDB_QUACK_TOKEN");
-	if (config.quack_enabled && config.quack_token.empty()) {
+	if (config.quack_port != 0 && config.quack_token.empty()) {
 		throw InvalidInputException(
 		    "Quack (--quack PORT) requires a dedicated token. Set --quack-token (DUCKDB_QUACK_TOKEN).");
 	}
@@ -470,15 +472,11 @@ ServerConfig ServerConfig::FromEnv(const EnvSource &env) {
 		throw InvalidInputException("DUCKDB_QUACK_SSL_CERT_FILE and DUCKDB_QUACK_SSL_KEY_FILE must be set together.");
 	}
 
-	// No built-in default token: without one, auth is allowed off only when every listener is
+	// No built-in default token: without one, auth is allowed off only when the bind host is
 	// loopback. A wildcard bind is not local. OtlpUri::IsLocal() is the predicate otlp_serve's
 	// allow_other_hostname gate uses, so the two cannot disagree.
-	bool all_loopback = true;
-	for (const auto &listener : config.listeners) {
-		all_loopback = all_loopback && duckdb::OtlpUri(listener.uri).IsLocal();
-	}
 	if (!config.disable_auth && config.token.empty()) {
-		if (!all_loopback) {
+		if (!listen_host.IsLocal()) {
 			throw InvalidInputException(
 			    "A bearer token is required when binding a non-loopback address. Set DUCKDB_OTLP_TOKEN (at least 16 "
 			    "characters), or pass --no-auth to accept unauthenticated traffic on purpose. Binding loopback "
@@ -505,7 +503,7 @@ string ServerConfig::StartOtlpSql() const {
 		options_sql += ",\n    parquet_export_path := " + SqlQuote(parquet_export_path);
 		// The inspection view reads every archived footer, so it is worth creating only when
 		// something can query it.
-		if (!quack_enabled) {
+		if (quack_port == 0) {
 			options_sql += ",\n    parquet_views := false";
 		}
 	}
@@ -538,8 +536,12 @@ FROM otlp_serve(
 	                          options_sql);
 }
 
+string ServerConfig::QuackUri() const {
+	return "quack:" + BindAddr(host, quack_port);
+}
+
 string ServerConfig::StartQuackSql() const {
-	if (!quack_enabled) {
+	if (quack_port == 0) {
 		return "";
 	}
 	// No disable_ssl: Quack serves TLS on a non-loopback bind; the banner prints the fingerprint.
@@ -567,14 +569,14 @@ FROM quack_serve(
     allow_other_hostname := true%s
 );
 )SQL",
-	                          SqlQuote(quack_listen_uri), ssl_sql) +
+	                          SqlQuote(QuackUri()), ssl_sql) +
 	       reset_sql;
 }
 
 string ServerConfig::QuackEndpointSql() const {
 	return StringUtil::Format("SELECT listen_url, coalesce(info['ssl_fingerprint'], '') FROM quack_server_list() "
 	                          "WHERE listen_uri = %s LIMIT 1",
-	                          SqlQuote(quack_listen_uri));
+	                          SqlQuote(QuackUri()));
 }
 
 string ServerConfig::StopOtlpSql() const {
@@ -584,7 +586,7 @@ string ServerConfig::StopOtlpSql() const {
 }
 
 string ServerConfig::StopQuackSql() const {
-	return StringUtil::Format("CALL quack_stop(%s);", SqlQuote(quack_listen_uri));
+	return StringUtil::Format("CALL quack_stop(%s);", SqlQuote(QuackUri()));
 }
 
 std::vector<BootStep> ServerConfig::SetupSteps() const {
