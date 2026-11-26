@@ -52,10 +52,10 @@ def grpc_addr(env):
 
 
 @contextlib.contextmanager
-def daemon(tmp_path, env):
+def daemon(tmp_path, env, *args):
     log_path = tmp_path / 'daemon.log'
     with log_path.open('w') as log:
-        process = subprocess.Popen([str(SERVER_BIN)], env=env, stdout=log, stderr=log)
+        process = subprocess.Popen([str(SERVER_BIN), *args], env=env, stdout=log, stderr=log)
         try:
             yield process, log_path
         finally:
@@ -101,6 +101,23 @@ def post_http(env, message, token):
     )
     with urllib.request.urlopen(request, timeout=5) as response:
         return response.status
+
+
+def test_serve_applies_secret_dir_before_init_sql(tmp_path):
+    env = configuration(tmp_path, 'http')
+    secrets = tmp_path / 'secrets'
+    secrets.mkdir()
+    script = tmp_path / 'init.sql'
+    script.write_text(
+        f"SELECT CASE WHEN current_setting('secret_directory') = '{secrets}' "
+        "THEN 1 ELSE error('secret_directory not applied') END;\n"
+    )
+    with daemon(tmp_path, env, 'serve', '--secret-dir', str(secrets), '--init-sql', str(script)) as (
+        process,
+        log_path,
+    ):
+        wait_ready(process, env, log_path)
+    assert process.returncode == 0, log_path.read_text()
 
 
 @pytest.mark.parametrize('transports', ['http', 'grpc', 'http,grpc'])

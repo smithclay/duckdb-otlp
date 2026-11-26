@@ -22,6 +22,11 @@ struct IngestListener {
 	duckdb::string transport;
 };
 
+struct BootStep {
+	const char *label;
+	duckdb::string sql;
+};
+
 //! The ingest listeners --host and --http/--grpc select. Shared with `doctor`; needs no
 //! credentials or I/O.
 std::vector<IngestListener> ListenersFromEnv(const EnvSource &env);
@@ -80,7 +85,8 @@ struct ServerConfig {
 	duckdb::string QuackEndpointSql() const;
 	duckdb::string StopOtlpSql() const;
 	duckdb::string StopQuackSql() const;
-	duckdb::string BootSql() const;
+	std::vector<BootStep> SetupSteps() const;
+	std::vector<BootStep> ServeSteps() const;
 };
 
 } // namespace duckdb_otlp_server

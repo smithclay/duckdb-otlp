@@ -351,7 +351,13 @@ int RunServe(const EnvSource &env) {
 		if (config.dry_run) {
 			std::cout << "DRY_RUN=1; planned initialization only.\n\n";
 			std::cout << "Generated initialization SQL:\n";
-			std::cout << config.BootSql() << '\n';
+			for (const auto &step : config.SetupSteps()) {
+				std::cout << step.sql;
+			}
+			for (const auto &step : config.ServeSteps()) {
+				std::cout << step.sql;
+			}
+			std::cout << '\n';
 			return 0;
 		}
 
@@ -399,12 +405,8 @@ int RunServe(const EnvSource &env) {
 		} watcher_guard {startup_complete, interrupt_watcher};
 
 		std::cout << "Setting up " << config.mode << " (installing extensions, attaching catalog)...\n";
-		Execute(con, config.mode_setup_sql, "mode setup");
-		// After the mode's ATTACH, and before the default-catalog switch so a catalog the script
-		// attaches can still be named by --catalog. Failures are fatal.
-		if (!config.init_sql.empty()) {
-			std::cout << "Running init SQL from " << config.init_sql_path << "...\n";
-			Execute(con, config.init_sql, "init SQL");
+		for (const auto &step : config.SetupSteps()) {
+			Execute(con, step.sql, step.label);
 		}
 		// Instance-wide default, not `USE`: Quack serves each client on a fresh Connection, which copies
 		// the DatabaseManager default, so Quack clients resolve the signal tables unqualified.
@@ -416,8 +418,9 @@ int RunServe(const EnvSource &env) {
 			return TryExecuteOtlpShutdown(con, config.StopOtlpSql(), "otlp shutdown");
 		};
 		try {
-			Execute(con, config.StartOtlpSql(), "otlp startup");
-			Execute(con, config.StartQuackSql(), "quack startup");
+			for (const auto &step : config.ServeSteps()) {
+				Execute(con, step.sql, step.label);
+			}
 			if (!WaitForReady(con, config) && !shutdown_requested) {
 				throw std::runtime_error("Timed out waiting for OTLP listener readiness");
 			}

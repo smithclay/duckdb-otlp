@@ -591,12 +591,15 @@ string ServerConfig::StopQuackSql() const {
 	return StringUtil::Format("CALL quack_stop(%s);", SqlQuote(quack_listen_uri));
 }
 
-string ServerConfig::BootSql() const {
-	// Serve-path order. secret_directory goes first: it must be set before anything (the mode's
-	// CREATE SECRET) initializes the secret manager.
-	auto prelude = secret_dir.empty() ? string() : "SET secret_directory = " + SqlQuote(secret_dir) + ";\n";
-	auto init = init_sql.empty() ? string() : init_sql + "\n";
-	return prelude + mode_setup_sql + "\n" + init + StartOtlpSql() + "\n" + StartQuackSql();
+std::vector<BootStep> ServerConfig::SetupSteps() const {
+	// Set secret_directory before mode setup can initialize the secret manager.
+	return {{"settings", secret_dir.empty() ? string() : "SET secret_directory = " + SqlQuote(secret_dir) + ";\n"},
+	        {"mode setup", mode_setup_sql + "\n"},
+	        {"init SQL", init_sql.empty() ? string() : init_sql + "\n"}};
+}
+
+std::vector<BootStep> ServerConfig::ServeSteps() const {
+	return {{"otlp startup", StartOtlpSql() + "\n"}, {"quack startup", StartQuackSql()}};
 }
 
 } // namespace duckdb_otlp_server
