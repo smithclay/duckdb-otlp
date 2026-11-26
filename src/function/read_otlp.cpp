@@ -263,84 +263,79 @@ static bool TimestampNs(const Value &value, int64_t &result) {
 	return true;
 }
 
-//! The inclusive range `expr` limits a TIMESTAMP_NS column to, if it limits it.
+//! Intersects the inclusive range with what `expr` requires of a TIMESTAMP_NS column.
+//! An unsupported expression leaves the range unchanged.
 static bool RestrictTime(const Expression &expr, NanosecondRange &result) {
+	if (IsConjunction(expr, ExpressionType::CONJUNCTION_AND)) {
+		bool restricted = false;
+		for (auto &child : expr.Cast<BoundConjunctionExpression>().GetChildren()) {
+			restricted |= RestrictTime(*child, result);
+		}
+		return restricted;
+	}
 	ExpressionType type;
 	int64_t value;
 	if (auto constant = ColumnComparison(expr, type)) {
 		if (!TimestampNs(constant->GetValue(), value)) {
 			return false;
 		}
-		result = NanosecondRange();
 		switch (type) {
 		case ExpressionType::COMPARE_EQUAL:
-			result.min = result.max = value;
+			result.min = MaxValue(result.min, value);
+			result.max = MinValue(result.max, value);
 			return true;
 		case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
-			result.min = value;
+			result.min = MaxValue(result.min, value);
 			return true;
 		case ExpressionType::COMPARE_GREATERTHAN:
 			if (value == NumericLimits<int64_t>::Maximum()) {
 				return false;
 			}
-			result.min = value + 1;
+			result.min = MaxValue(result.min, value + 1);
 			return true;
 		case ExpressionType::COMPARE_LESSTHANOREQUALTO:
-			result.max = value;
+			result.max = MinValue(result.max, value);
 			return true;
 		case ExpressionType::COMPARE_LESSTHAN:
 			if (value == NumericLimits<int64_t>::Minimum()) {
 				return false;
 			}
-			result.max = value - 1;
+			result.max = MinValue(result.max, value - 1);
 			return true;
 		default:
 			return false;
 		}
 	}
+	NanosecondRange hull {NumericLimits<int64_t>::Maximum(), NumericLimits<int64_t>::Minimum()};
 	vector<Value> values;
 	if (ColumnInList(expr, values)) {
 		// The hull of the list: a superset of its values.
-		result = NanosecondRange();
-		result.min = NumericLimits<int64_t>::Maximum();
-		result.max = NumericLimits<int64_t>::Minimum();
 		for (auto &entry : values) {
 			if (!TimestampNs(entry, value)) {
 				return false;
 			}
-			result.min = MinValue(result.min, value);
-			result.max = MaxValue(result.max, value);
+			hull.min = MinValue(hull.min, value);
+			hull.max = MaxValue(hull.max, value);
 		}
-		return true;
-	}
-	if (IsConjunction(expr, ExpressionType::CONJUNCTION_OR)) {
-		bool first = true;
-		for (auto &child : expr.Cast<BoundConjunctionExpression>().GetChildren()) {
+	} else if (IsConjunction(expr, ExpressionType::CONJUNCTION_OR)) {
+		auto &children = expr.Cast<BoundConjunctionExpression>().GetChildren();
+		if (children.empty()) {
+			return false;
+		}
+		for (auto &child : children) {
 			NanosecondRange branch;
 			if (!RestrictTime(*child, branch)) {
 				return false;
 			}
-			result.min = first ? branch.min : MinValue(result.min, branch.min);
-			result.max = first ? branch.max : MaxValue(result.max, branch.max);
-			first = false;
+			hull.min = MinValue(hull.min, branch.min);
+			hull.max = MaxValue(hull.max, branch.max);
 		}
-		return !first;
+	} else {
+		return false;
 	}
-	if (IsConjunction(expr, ExpressionType::CONJUNCTION_AND)) {
-		bool restricted = false;
-		result = NanosecondRange();
-		for (auto &child : expr.Cast<BoundConjunctionExpression>().GetChildren()) {
-			NanosecondRange branch;
-			if (!RestrictTime(*child, branch)) {
-				continue;
-			}
-			result.min = MaxValue(result.min, branch.min);
-			result.max = MinValue(result.max, branch.max);
-			restricted = true;
-		}
-		return restricted;
-	}
-	return false;
+	result.min = MaxValue(result.min, hull.min);
+	result.max = MinValue(result.max, hull.max);
+	return true;
 }
 
 //! Narrows `request` by what `filter` on signal column `column_id` limits.
