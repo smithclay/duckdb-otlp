@@ -68,20 +68,6 @@ struct ReadOtlpFileBindData : public TableFunctionData {
 	// read_otap_*: decoded with the stateful OTAP decoder; same output schema as OTLP.
 	bool is_otap = false;
 	shared_ptr<const OtlpArrowTable> table;
-
-	unique_ptr<FunctionData> Copy() const override {
-		auto result = make_uniq<ReadOtlpFileBindData>();
-		result->column_ids = column_ids;
-		result->file = file;
-		result->signal_type = signal_type;
-		result->is_otap = is_otap;
-		result->table = table;
-		return std::move(result);
-	}
-	bool Equals(const FunctionData &other_p) const override {
-		auto &other = other_p.Cast<ReadOtlpFileBindData>();
-		return file.path == other.file.path && signal_type == other.signal_type && is_otap == other.is_otap;
-	}
 };
 
 //! What a file's scan asks otlp2records to build: only the columns it reads, and only the rows that can
@@ -567,19 +553,18 @@ static TableFunctionSet ReadOtlpFunctionSet(const string &name, shared_ptr<ReadO
 }
 
 void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
-	//! Per signal, in OTLP_SIGNALS order: what a row is, the column count, and any detail worth naming.
+	//! Per signal, in OTLP_SIGNALS order: what a row is and any detail worth naming.
 	struct SignalDoc {
 		const char *rows;
-		int columns;
 		const char *detail;
 	};
 	const SignalDoc docs[] = {
-	    {"log records", 18, ""},
-	    {"trace spans", 24, ", including events, links and a computed duration"},
-	    {"gauge data points", 17, ""},
-	    {"sum (counter) data points", 19, " with aggregation_temporality and is_monotonic"},
-	    {"explicit-bucket histogram data points", 22, " with bucket bounds and counts"},
-	    {"exponential histogram data points", 27, " with scale, zero bucket and positive/negative buckets"},
+	    {"log records", ""},
+	    {"trace spans", ", including events, links and a computed duration"},
+	    {"gauge data points", ""},
+	    {"sum (counter) data points", " with aggregation_temporality and is_monotonic"},
+	    {"explicit-bucket histogram data points", " with bucket bounds and counts"},
+	    {"exponential histogram data points", " with scale, zero bucket and positive/negative buckets"},
 	};
 	auto register_reader = [&](const string &name, shared_ptr<ReadOtlpInfo> info, const string &description,
 	                           const vector<string> &examples, const char *protocol) {
@@ -611,13 +596,13 @@ void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
 		const string file = metrics ? "metrics" : table.substr(strlen("otlp_"));
 		register_reader(otlp_name, make_shared_ptr<ReadOtlpInfo>(signal_type, false),
 		                StringUtil::Format("Read OpenTelemetry %s from OTLP JSON, NDJSON or protobuf files into a "
-		                                   "flat %d-column table%s.%s",
-		                                   doc.rows, doc.columns, doc.detail, common),
+		                                   "flat table%s.%s",
+		                                   doc.rows, doc.detail, common),
 		                {StringUtil::Format("SELECT * FROM %s('%s.pb');", otlp_name, file)}, "otlp");
 		register_reader(otap_name, make_shared_ptr<ReadOtlpInfo>(signal_type, true),
 		                StringUtil::Format("Read OpenTelemetry %s from an OTAP (OpenTelemetry Arrow Protocol) "
-		                                   "BatchArrowRecords file, returning the same %d columns as %s.%s",
-		                                   doc.rows, doc.columns, otlp_name, common),
+		                                   "BatchArrowRecords file into a flat table with the same columns as %s.%s",
+		                                   doc.rows, otlp_name, common),
 		                {StringUtil::Format("SELECT * FROM %s('%s.bar');", otap_name, file)}, "otap");
 	}
 }
