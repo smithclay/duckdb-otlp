@@ -197,120 +197,88 @@ static unique_ptr<FunctionData> ReadOtlpFileBind(ClientContext &context, TableFu
 // limits a timestamp column to a range, which otlp2records prunes rows by. The answer is a superset of
 // the rows the filter keeps, so pruning by it is safe; anything not understood restricts nothing.
 
-//! `column <op> constant` (either side): the constant, and the comparison as seen from the column.
-static optional_ptr<const BoundConstantExpression> ColumnComparison(const Expression &expr, ExpressionType &type) {
-	if (expr.GetExpressionClass() != ExpressionClass::BOUND_FUNCTION ||
-	    !BoundComparisonExpression::IsComparison(expr)) {
-		return nullptr;
-	}
-	auto constant = ExpressionFilter::TryGetColumnConstantComparison(expr.Cast<BoundFunctionExpression>(), type);
-	if (!constant || constant->GetValue().IsNull()) {
-		return nullptr;
-	}
-	return constant;
-}
-
-//! `column IN (constants)`: the non-NULL constants (a NULL never matches).
-static bool ColumnInList(const Expression &expr, vector<Value> &values) {
-	if (expr.GetExpressionClass() != ExpressionClass::BOUND_OPERATOR ||
-	    expr.GetExpressionType() != ExpressionType::COMPARE_IN) {
-		return false;
-	}
-	auto &children = expr.Cast<BoundOperatorExpression>().GetChildren();
-	if (children.empty() || !ExpressionFilter::IsSimpleFilterColumnRef(*children[0])) {
-		return false;
-	}
-	for (idx_t i = 1; i < children.size(); i++) {
-		if (children[i]->GetExpressionClass() != ExpressionClass::BOUND_CONSTANT) {
-			return false;
-		}
-		auto &value = children[i]->Cast<BoundConstantExpression>().GetValue();
-		if (!value.IsNull()) {
-			values.push_back(value);
-		}
-	}
-	return true;
-}
-
-static bool IsConjunction(const Expression &expr, ExpressionType type) {
-	return expr.GetExpressionClass() == ExpressionClass::BOUND_CONJUNCTION && expr.GetExpressionType() == type;
-}
-
-struct NanosecondRange {
-	int64_t min = NumericLimits<int64_t>::Minimum();
-	int64_t max = NumericLimits<int64_t>::Maximum();
-};
-
-static bool TimestampNs(const Value &value, int64_t &result) {
-	if (value.type().id() != LogicalTypeId::TIMESTAMP_NS) {
-		return false;
-	}
-	result = value.GetValue<timestamp_ns_t>().value;
-	return true;
-}
+static constexpr int64_t MIN_TIMESTAMP_NS = NumericLimits<int64_t>::Minimum();
+static constexpr int64_t MAX_TIMESTAMP_NS = NumericLimits<int64_t>::Maximum();
 
 //! Intersects the inclusive range with what `expr` requires of a TIMESTAMP_NS column.
 //! An unsupported expression leaves the range unchanged.
-static bool RestrictTime(const Expression &expr, NanosecondRange &result) {
-	if (IsConjunction(expr, ExpressionType::CONJUNCTION_AND)) {
+static bool NarrowTime(const Expression &expr, OtlpTimeRange &range) {
+	auto type = expr.GetExpressionType();
+	auto expression_class = expr.GetExpressionClass();
+	if (type == ExpressionType::CONJUNCTION_AND && expression_class == ExpressionClass::BOUND_CONJUNCTION) {
 		bool restricted = false;
 		for (auto &child : expr.Cast<BoundConjunctionExpression>().GetChildren()) {
-			restricted |= RestrictTime(*child, result);
+			restricted |= NarrowTime(*child, range);
 		}
 		return restricted;
 	}
-	ExpressionType type;
-	int64_t value;
-	if (auto constant = ColumnComparison(expr, type)) {
-		if (!TimestampNs(constant->GetValue(), value)) {
+	if (expression_class == ExpressionClass::BOUND_FUNCTION && BoundComparisonExpression::IsComparison(expr)) {
+		ExpressionType comparison;
+		auto constant =
+		    ExpressionFilter::TryGetColumnConstantComparison(expr.Cast<BoundFunctionExpression>(), comparison);
+		if (!constant || constant->GetValue().IsNull() ||
+		    constant->GetValue().type().id() != LogicalTypeId::TIMESTAMP_NS) {
 			return false;
 		}
-		switch (type) {
+		auto value = constant->GetValue().GetValue<timestamp_ns_t>().value;
+		switch (comparison) {
 		case ExpressionType::COMPARE_EQUAL:
-			result.min = MaxValue(result.min, value);
-			result.max = MinValue(result.max, value);
+			range.min = MaxValue(range.min, value);
+			range.max = MinValue(range.max, value);
 			return true;
 		case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
-			result.min = MaxValue(result.min, value);
+			range.min = MaxValue(range.min, value);
 			return true;
 		case ExpressionType::COMPARE_GREATERTHAN:
-			if (value == NumericLimits<int64_t>::Maximum()) {
+			if (value == MAX_TIMESTAMP_NS) {
 				return false;
 			}
-			result.min = MaxValue(result.min, value + 1);
+			range.min = MaxValue(range.min, value + 1);
 			return true;
 		case ExpressionType::COMPARE_LESSTHANOREQUALTO:
-			result.max = MinValue(result.max, value);
+			range.max = MinValue(range.max, value);
 			return true;
 		case ExpressionType::COMPARE_LESSTHAN:
-			if (value == NumericLimits<int64_t>::Minimum()) {
+			if (value == MIN_TIMESTAMP_NS) {
 				return false;
 			}
-			result.max = MinValue(result.max, value - 1);
+			range.max = MinValue(range.max, value - 1);
 			return true;
 		default:
 			return false;
 		}
 	}
-	NanosecondRange hull {NumericLimits<int64_t>::Maximum(), NumericLimits<int64_t>::Minimum()};
-	vector<Value> values;
-	if (ColumnInList(expr, values)) {
-		// The hull of the list: a superset of its values.
-		for (auto &entry : values) {
-			if (!TimestampNs(entry, value)) {
+
+	// Keep the hull for disjunctions: skipping their rows can avoid decoding invalid values in other columns.
+	OtlpTimeRange hull {range.column, MAX_TIMESTAMP_NS, MIN_TIMESTAMP_NS};
+	if (type == ExpressionType::COMPARE_IN && expression_class == ExpressionClass::BOUND_OPERATOR) {
+		auto &children = expr.Cast<BoundOperatorExpression>().GetChildren();
+		if (children.empty() || !ExpressionFilter::IsSimpleFilterColumnRef(*children[0])) {
+			return false;
+		}
+		for (idx_t i = 1; i < children.size(); i++) {
+			if (children[i]->GetExpressionClass() != ExpressionClass::BOUND_CONSTANT) {
 				return false;
 			}
-			hull.min = MinValue(hull.min, value);
-			hull.max = MaxValue(hull.max, value);
+			auto &value = children[i]->Cast<BoundConstantExpression>().GetValue();
+			if (value.IsNull()) {
+				continue;
+			}
+			if (value.type().id() != LogicalTypeId::TIMESTAMP_NS) {
+				return false;
+			}
+			auto timestamp = value.GetValue<timestamp_ns_t>().value;
+			hull.min = MinValue(hull.min, timestamp);
+			hull.max = MaxValue(hull.max, timestamp);
 		}
-	} else if (IsConjunction(expr, ExpressionType::CONJUNCTION_OR)) {
+	} else if (type == ExpressionType::CONJUNCTION_OR && expression_class == ExpressionClass::BOUND_CONJUNCTION) {
 		auto &children = expr.Cast<BoundConjunctionExpression>().GetChildren();
 		if (children.empty()) {
 			return false;
 		}
 		for (auto &child : children) {
-			NanosecondRange branch;
-			if (!RestrictTime(*child, branch)) {
+			OtlpTimeRange branch {range.column, MIN_TIMESTAMP_NS, MAX_TIMESTAMP_NS};
+			if (!NarrowTime(*child, branch)) {
 				return false;
 			}
 			hull.min = MinValue(hull.min, branch.min);
@@ -319,8 +287,8 @@ static bool RestrictTime(const Expression &expr, NanosecondRange &result) {
 	} else {
 		return false;
 	}
-	result.min = MaxValue(result.min, hull.min);
-	result.max = MinValue(result.max, hull.max);
+	range.min = MaxValue(range.min, hull.min);
+	range.max = MinValue(range.max, hull.max);
 	return true;
 }
 
@@ -338,18 +306,12 @@ static void AddFilterToRequest(const OtlpArrowTable &table, column_t column_id, 
 	if (table.types[column_id].id() != LogicalTypeId::TIMESTAMP_NS) {
 		return;
 	}
-	optional_ptr<const Expression> root = expression_filter.expr.get();
-	if (ExpressionFilter::IsRootOptionalFilter(filter)) {
-		// A hint the plan also enforces above the scan (an IN list next to the OR it came from, a join's
-		// key range): pruning by it drops only rows that would be dropped anyway.
-		root = ExpressionFilter::GetOptionalFilterChild(*root);
-		if (!root) {
-			return;
-		}
-	}
-	NanosecondRange range;
-	if (RestrictTime(*root, range)) {
-		request.time_ranges.push_back({static_cast<uint32_t>(column_id), range.min, range.max});
+	// For a root optional filter, the plan also enforces its predicate above the scan.
+	auto &expr = *expression_filter.expr;
+	auto child = ExpressionFilter::GetOptionalFilterChild(expr);
+	OtlpTimeRange range {NumericCast<uint32_t>(column_id), MIN_TIMESTAMP_NS, MAX_TIMESTAMP_NS};
+	if (NarrowTime(child ? *child : expr, range)) {
+		request.time_ranges.push_back(range);
 	}
 }
 
