@@ -6,25 +6,6 @@
 
 namespace duckdb {
 
-// Entry points the gRPC FFI callbacks reach; they share the HTTP path's admission and seal machinery.
-
-OtlpIngestOutcome OtlpServer::IngestDecodedArrowBatch(OtlpSignalType signal_type, idx_t input_bytes, ArrowArray &array,
-                                                      ArrowSchema &schema) {
-	return Admit(input_bytes, [&](OtlpIngestResult &) {
-		// array/schema are borrowed from Rust: StageArrowBatch copies the rows and never releases them.
-		vector<StagedSignal> staged;
-		auto stage = StageArrowBatch(signal_type, array, schema);
-		if (stage.rows > 0) {
-			staged.push_back(std::move(stage));
-		}
-		return staged;
-	});
-}
-
-bool OtlpServer::CheckGrpcAuth(const string &authorization) const {
-	return CheckAuth(authorization, "");
-}
-
 #ifndef __EMSCRIPTEN__
 
 namespace {
@@ -60,7 +41,7 @@ static OtlpIngestStatus OtlpGrpcBatchThunk(void *user_data, OtlpSignalType signa
 	}
 	try {
 		return GrpcIngestStatus(
-		    server->IngestDecodedArrowBatch(signal_type, static_cast<idx_t>(input_bytes), *array, *schema).refusal);
+		    server->IngestArrow(signal_type, static_cast<idx_t>(input_bytes), *array, *schema).refusal);
 	} catch (...) {
 		return OTLP_INGEST_INTERNAL;
 	}
@@ -73,7 +54,7 @@ static int OtlpGrpcAuthThunk(void *user_data, const char *metadata_token, size_t
 	}
 	try {
 		string token(metadata_token ? metadata_token : "", metadata_token ? len : 0);
-		return server->CheckGrpcAuth(token) ? 1 : 0;
+		return server->CheckAuth(token) ? 1 : 0;
 	} catch (...) {
 		return 0;
 	}

@@ -5,7 +5,6 @@
 #include "otlp_column_promote.hpp"
 #include "otlp_ingest_limits.hpp"
 #include "otlp_log.hpp"
-#include "otlp_request.hpp"
 #include "otlp_uri.hpp"
 #include "otlp2records.h"
 
@@ -27,6 +26,8 @@ struct OtlpSignal;
 //! Wire transport for one listener: HTTP (cpp-httplib) or GRPC (OTLP/gRPC + OTAP/Arrow via the
 //! tonic server in otlp2records). otap: URIs are always GRPC.
 enum class OtlpTransport { HTTP, GRPC };
+
+enum class OtlpRequestKind : uint8_t { LOGS, TRACES, METRICS };
 
 const char *OtlpTransportName(OtlpTransport transport);
 
@@ -254,10 +255,6 @@ public:
 	// --- test-only seam for test/cpp/test_seal_harness.cpp, which drives the buffer/seal path
 	// without a socket. Every hook defaults to unset, which is a no-op. ---
 #ifdef DUCKDB_OTLP_ENABLE_TEST_SEAM
-	OtlpIngestOutcome IngestForTest(OtlpRequestKind kind, const string &content_type, const string &content_encoding,
-	                                const string &body) {
-		return Ingest(kind, content_type, content_encoding, body);
-	}
 	//! Runs immediately before the catalog seal's COMMIT; a throw takes the rollback/re-buffer path.
 	void SetSealFaultHookForTest(std::function<void()> hook) {
 		seal_fault_hook_for_test = std::move(hook);
@@ -277,30 +274,35 @@ public:
 	}
 #endif
 
-	// --- gRPC transport bridge: public only because the C-linkage callback in
-	// otlp_server_grpc.cpp cannot be a member. Not part of the general API. ---
-
-	//! Buffer one decoded Arrow batch through the same admission path as HTTP (Admit). `input_bytes`
-	//! is the wire size charged against admission. The array/schema are borrowed, never released.
-	OtlpIngestOutcome IngestDecodedArrowBatch(OtlpSignalType signal_type, idx_t input_bytes, ArrowArray &array,
-	                                          ArrowSchema &schema);
-	bool CheckGrpcAuth(const string &authorization) const;
-
-private:
-	friend class OtlpHttpListener;
-	friend class OtlpListener;
-
-	bool CheckAuth(const string &authorization, const string &api_key) const;
-	//! An OTLP/HTTP request body: checks its size, content type and encoding, then Admit.
+	// --- Listener API ---
+	bool CheckAuth(const string &authorization, const string &api_key = "") const;
+	//! Check an OTLP/HTTP body and buffer its rows.
 	OtlpIngestOutcome Ingest(OtlpRequestKind kind, const string &content_type, const string &content_encoding,
 	                         const string &body);
+	//! Buffer one decoded Arrow batch through the same admission path as HTTP (Admit). `input_bytes`
+	//! is the wire size charged against admission. The array/schema are borrowed, never released.
+	OtlpIngestOutcome IngestArrow(OtlpSignalType signal_type, idx_t input_bytes, ArrowArray &array,
+	                              ArrowSchema &schema);
+	//! Log to duckdb_logs from any thread. Use LOG_WARNING for failures.
+	void LogServerEvent(const string &message, LogLevel level = OtlpLogType::LEVEL) const;
+
+	//! Counts HTTP ingest requests from handler entry, including rejected requests.
+	class RequestGuard {
+	public:
+		explicit RequestGuard(OtlpServer &server);
+		~RequestGuard();
+		RequestGuard(const RequestGuard &) = delete;
+		RequestGuard &operator=(const RequestGuard &) = delete;
+
+	private:
+		OtlpServer &server;
+	};
+
+private:
 	void EnsureTargetTables();
 	//! Stop the sealer and seal remaining rows before the writer connection / database go away.
 	//! Idempotent. Returns the rows dropped by a failed final drain (0 on every later call).
 	idx_t ShutdownIngest();
-	//! Log to duckdb_logs; no-op once the database is closed. Any thread. Use LOG_WARNING for
-	//! failures so they stay visible at default thresholds.
-	void LogServerEvent(const string &message, LogLevel level = OtlpLogType::LEVEL) const;
 	//! Reverse start order. Idempotent.
 	void CloseListeners();
 

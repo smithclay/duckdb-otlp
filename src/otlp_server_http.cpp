@@ -1,5 +1,4 @@
 #include "otlp_server.hpp"
-#include "otlp_server_internal.hpp"
 
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/connection.hpp"
@@ -103,7 +102,7 @@ private:
 };
 
 void OtlpHttpListener::Start() {
-	auto &config = server.config;
+	const auto &config = server.Config();
 	http = make_uniq<duckdb_httplib::Server>();
 	auto http_threads = config.http_threads == 0 ? DefaultHttpThreads() : config.http_threads;
 	// Each keep-alive connection holds a worker for its lifetime, so this bounds concurrent connections.
@@ -130,17 +129,7 @@ void OtlpHttpListener::Start() {
 
 	auto post_handler = [&](OtlpRequestKind kind) {
 		return [this, kind](const duckdb_httplib::Request &req, duckdb_httplib::Response &res) {
-			// Decrements even if an exception escapes the catch chain below.
-			struct RequestGuard {
-				std::atomic<idx_t> &counter;
-				explicit RequestGuard(std::atomic<idx_t> &counter_p) : counter(counter_p) {
-					counter++;
-				}
-				~RequestGuard() {
-					counter--;
-				}
-			} request_guard {server.active_requests};
-			server.total_requests++;
+			OtlpServer::RequestGuard request_guard(server);
 			try {
 				if (!server.CheckAuth(req.get_header_value("Authorization"), req.get_header_value("x-api-key"))) {
 					SetError(res, 401, "unauthorized", "missing or invalid Authorization bearer token or x-api-key");

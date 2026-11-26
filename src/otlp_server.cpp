@@ -20,14 +20,61 @@
 #include "otlp_arrow.hpp"
 #include "otlp_column_promote.hpp"
 #include "otlp_log.hpp"
-#include "otlp_server_internal.hpp"
 #include "otlp_sql_util.hpp"
 
 #include <chrono>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 
 namespace duckdb {
+
+//! Thrown while staging a request the server refuses for a known reason (a payload that does not
+//! parse). OtlpServer::Admit turns it into an OtlpIngestOutcome; it never reaches a transport.
+class OtlpIngestRefused : public std::exception {
+public:
+	OtlpIngestRefused(OtlpIngestRefusal refusal_p, string message_p)
+	    : refusal(refusal_p), message(std::move(message_p)) {
+	}
+
+	const char *what() const noexcept override {
+		return message.c_str();
+	}
+
+	OtlpIngestRefusal refusal;
+	string message;
+};
+
+//! The schema, importer and sink for one OTLP signal table.
+struct OtlpSignal {
+	const string table_name;
+	const vector<LogicalType> types;
+	//! Column names parallel to `types`: what the sink statement addresses the sealed rows by.
+	const vector<Identifier> names;
+	//! Identity projection (0..n_columns-1), precomputed for the per-chunk append path.
+	const vector<column_t> identity_column_ids;
+	//! How a decoded batch of this signal is imported. Its types are the importer's; `types` above
+	//! differ only where the buffer narrows them (TIMESTAMP_NS -> TIMESTAMP, see BufferColumnType).
+	const unique_ptr<OtlpArrowTable> arrow_table;
+	string sink_sql;                   // set once by BuildSinks before ingest starts
+	bool parquet_view_settled = false; // under writer_mutex
+
+	OtlpSignal(string table_name_p, vector<LogicalType> types_p, vector<Identifier> names_p,
+	           unique_ptr<OtlpArrowTable> arrow_table_p)
+	    : table_name(std::move(table_name_p)), types(std::move(types_p)), names(std::move(names_p)),
+	      identity_column_ids(MakeIdentityColumnIds(types.size())), arrow_table(std::move(arrow_table_p)) {
+	}
+
+private:
+	static vector<column_t> MakeIdentityColumnIds(idx_t count) {
+		vector<column_t> ids;
+		ids.reserve(count);
+		for (idx_t i = 0; i < count; i++) {
+			ids.push_back(i);
+		}
+		return ids;
+	}
+};
 
 static int64_t NowUnixMs();
 
@@ -280,9 +327,6 @@ OtlpServer::OtlpServer(ClientContext &context, const vector<OtlpListenerSpec> &l
 #ifdef __EMSCRIPTEN__
 	throw NotImplementedException("otlp_serve is not implemented for the wasm platform");
 #else
-	if (listener_specs.empty()) {
-		throw InvalidInputException("OTLP server requires at least one listen URI");
-	}
 	if (!config.disable_auth) {
 		ValidateToken(config.token);
 	}
@@ -542,6 +586,15 @@ void OtlpServer::CreateOrValidateTable(Connection &con, OtlpSignalType signal_ty
 	}
 }
 
+OtlpServer::RequestGuard::RequestGuard(OtlpServer &server_p) : server(server_p) {
+	server.active_requests++;
+	server.total_requests++;
+}
+
+OtlpServer::RequestGuard::~RequestGuard() {
+	server.active_requests--;
+}
+
 OtlpIngestOutcome OtlpServer::Ingest(OtlpRequestKind kind, const string &content_type, const string &content_encoding,
                                      const string &body) {
 	if (body.size() > config.max_body_bytes) {
@@ -572,6 +625,19 @@ OtlpIngestOutcome OtlpServer::Ingest(OtlpRequestKind kind, const string &content
 		default:
 			throw InternalException("Unknown OTLP request kind");
 		}
+	});
+}
+
+OtlpIngestOutcome OtlpServer::IngestArrow(OtlpSignalType signal_type, idx_t input_bytes, ArrowArray &array,
+                                          ArrowSchema &schema) {
+	return Admit(input_bytes, [&](OtlpIngestResult &) {
+		// array/schema are borrowed from Rust: StageArrowBatch copies the rows and never releases them.
+		vector<StagedSignal> staged;
+		auto stage = StageArrowBatch(signal_type, array, schema);
+		if (stage.rows > 0) {
+			staged.push_back(std::move(stage));
+		}
+		return staged;
 	});
 }
 
