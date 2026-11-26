@@ -46,7 +46,7 @@ See the [Schema Reference](../reference/schemas/) for every column emitted by ea
 
 ## 3. Stream One Log over OTLP/HTTP
 
-Native builds include the ingest server. You can POST OTLP/HTTP to it, and DuckDB buffers rows in memory before batch commits. When a POST returns `202`, DuckDB has accepted the rows, but it has not made them durable yet. DuckDB commits rows after about 5 seconds in the buffer, when admitted request-body bytes reach about 64 MiB, when you call `otlp_stop`, or when you call `otlp_flush`.
+Native builds include the ingest server. You can POST OTLP/HTTP to it, and DuckDB buffers rows in memory before batch commits. When a POST returns `202`, DuckDB has accepted the rows, but it has not made them durable yet. DuckDB commits rows after about 5 seconds in the buffer, when admitted request-body bytes reach about 128 MiB, when you call `otlp_stop`, or when you call `otlp_flush`.
 
 Start a local server:
 

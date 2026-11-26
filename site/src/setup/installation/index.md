@@ -16,7 +16,7 @@ DuckDB downloads the pre-built extension for your platform.
 
 ### Requirements
 
-- DuckDB 0.10.0 or later
+- DuckDB v2.0.0 for the current extension build
 - Supported platforms:
   - Linux (x86_64, arm64)
   - macOS (Intel, Apple Silicon)
@@ -24,7 +24,7 @@ DuckDB downloads the pre-built extension for your platform.
 
 ## Install the `duckdb-otlp` CLI
 
-The extension also ships as a standalone binary that receives OTLP over the network, converts OTLP/OTAP files, and queries what it has stored — no DuckDB shell required.
+The standalone `duckdb-otlp` binary runs the receiver with an embedded DuckDB instance. Use the `otlp` extension in the `duckdb` CLI for file conversion and SQL queries.
 
 ```sh
 # macOS or Linux (x86_64 or arm64), installs into ~/.local/bin
@@ -43,7 +43,7 @@ See the [CLI reference](../../reference/cli/) for install options, every command
 
 Try the extension in your browser without installation:
 
-**[→ Interactive Demo](https://smithclay.github.io/duckdb-otlp/)**
+**[Interactive Demo](../../demo/)**
 
 The WASM demo supports:
 - JSON, JSONL, and protobuf file reads
@@ -56,34 +56,6 @@ Native builds include the live ingest server.
 ## Build from Source
 
 For development or custom builds, see [CONTRIBUTING.md](https://github.com/smithclay/duckdb-otlp/blob/main/CONTRIBUTING.md).
-
-### Quick Build
-
-```bash
-# Clone repository
-git clone https://github.com/smithclay/duckdb-otlp.git
-cd duckdb-otlp
-
-# Install vcpkg dependencies
-export VCPKG_TOOLCHAIN_PATH=`pwd`/vcpkg/scripts/buildsystems/vcpkg.cmake
-
-# Build with ninja
-GEN=ninja make
-
-# DuckDB shell with extension loaded
-./build/release/duckdb
-```
-
-### WASM Build
-
-```bash
-# Build for browser
-make wasm_eh
-
-# Output: build/wasm_eh/extension/otlp/otlp.duckdb_extension.wasm
-```
-
-**Note**: The live ingest server is not available in WASM builds.
 
 ## Verify Installation
 
@@ -100,7 +72,7 @@ SELECT count(*) FROM read_otlp_logs('test/data/logs_simple.jsonl');
 ## Next Steps
 
 - [Get Started](../../get-started/) - install, load, and run first queries.
-- [CLI Reference](../../reference/cli/) - the `duckdb-otlp` binary: serve, convert, export, query.
+- [CLI Reference](../../reference/cli/) - configure, run, and check the standalone receiver.
 - [OpenTelemetry Collector](../collector/) - export OTLP files from the collector.
 - [OpenTelemetry Demo](../otel-demo/) - stream demo traces, logs, and metrics into local DuckLake.
 - [How-to Guides](../../guides/) - query and export telemetry.
@@ -113,7 +85,7 @@ SELECT count(*) FROM read_otlp_logs('test/data/logs_simple.jsonl');
 Error: Extension "otlp" not found
 ```
 
-Ensure you're using DuckDB 0.10+ and run:
+Check that your DuckDB version matches the extension build, then install and load the extension.
 
 ```sql
 INSTALL otlp FROM community;
@@ -130,10 +102,9 @@ If pre-built binaries aren't available for your platform, [build from source](ht
 Error: otlp_serve is not implemented for the wasm platform
 ```
 
-Use a native DuckDB build for the HTTP ingest functions: `otlp_serve`, `otlp_flush`, `otlp_stop`, and `otlp_server_list`.
+Use a native DuckDB build for live ingestion.
 
 ## See Also
 
 - [How to Configure the OpenTelemetry Collector](../collector/) - export OTLP files
-- [CONTRIBUTING.md](https://github.com/smithclay/duckdb-otlp/blob/main/CONTRIBUTING.md) - build instructions
 - [Get Started](../../get-started/) - first queries and one HTTP ingest request
