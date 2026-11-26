@@ -114,6 +114,20 @@ static const std::pair<const char *, vector<string> OtlpPromoteConfig::*> PROMOT
     {"promote_scope_attributes", &OtlpPromoteConfig::scope_keys},
 };
 
+const vector<std::pair<string, LogicalType>> &OtlpServeTuningOptions() {
+	static const auto options = [] {
+		vector<std::pair<string, LogicalType>> result;
+		for (const auto &option : NUMERIC_OPTIONS) {
+			result.emplace_back(option.name, option.unsigned_field ? LogicalType::UBIGINT : LogicalType::BIGINT);
+		}
+		for (const auto &option : PROMOTE_OPTIONS) {
+			result.emplace_back(option.first, LogicalType::VARCHAR);
+		}
+		return result;
+	}();
+	return options;
+}
+
 static unique_ptr<FunctionData> OtlpServeBind(ClientContext &context, TableFunctionBindInput &input,
                                               vector<LogicalType> &return_types, vector<Identifier> &names) {
 #ifdef __EMSCRIPTEN__
@@ -265,11 +279,8 @@ CreateTableFunctionInfo OtlpServeFunction::GetFunction() {
 			options.Add("allow_other_hostname", LogicalType::BOOLEAN);
 			// 'http' (default) or 'grpc', as one value or a list parallel to the listen URIs.
 			options.Add("transport", LogicalType::ANY);
-			for (auto &option : NUMERIC_OPTIONS) {
-				options.Add(option.name, option.unsigned_field ? LogicalType::UBIGINT : LogicalType::BIGINT);
-			}
-			for (auto &option : PROMOTE_OPTIONS) {
-				options.Add(option.first, LogicalType::VARCHAR);
+			for (const auto &option : OtlpServeTuningOptions()) {
+				options.Add(Identifier(option.first), option.second);
 			}
 		});
 		return fun;

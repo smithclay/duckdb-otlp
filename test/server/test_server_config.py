@@ -143,6 +143,12 @@ def test_otlp_limits_are_configurable(tmp_path):
     assert "maintenance_interval_ms := 600000" in result.stdout
 
 
+def test_numeric_tuning_rejects_non_digits(tmp_path):
+    result = run({"DUCKDB_OTLP_HTTP_THREADS": "4.5"}, tmp_path)
+    assert result.returncode == 1
+    assert "DUCKDB_OTLP_HTTP_THREADS must contain only decimal digits" in result.stderr
+
+
 def test_ducklake_preset_renders_catalog_maintenance_overrides(tmp_path):
     result = run(
         {
@@ -166,13 +172,13 @@ def test_promotion_params_emitted_when_set(tmp_path):
             "DUCKDB_MODE": "local-ducklake",
             "DUCKDB_OTLP_TOKEN": "a-private-token-123456",
             "DUCKDB_OTLP_PROMOTE_RESOURCE_ATTRIBUTES": "host.name,deployment.environment",
-            "DUCKDB_OTLP_PROMOTE_SCOPE_ATTRIBUTES": "scope.team",
+            "DUCKDB_OTLP_PROMOTE_SCOPE_ATTRIBUTES": "scope.team's",
         },
         tmp_path,
     )
     assert result.returncode == 0, result.stderr
     assert "promote_resource_attributes := 'host.name,deployment.environment'" in result.stdout
-    assert "promote_scope_attributes := 'scope.team'" in result.stdout
+    assert "promote_scope_attributes := 'scope.team''s'" in result.stdout
 
 
 def test_promotion_off_by_default(tmp_path):

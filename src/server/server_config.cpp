@@ -5,12 +5,12 @@
 #include "duckdb/common/string_util.hpp"
 #include "env_source.hpp"
 #include "otlp_sql_util.hpp"
+#include "otlp_start_stop.hpp"
 #include "otlp_uri.hpp"
 #include "server_util.hpp"
 
 #include <cstring>
 #include <filesystem>
-#include <limits>
 #include <map>
 #include <sstream>
 #include <utility>
@@ -114,41 +114,6 @@ void ValidateCatalogDoesNotShadowDatabase(const ServerConfig &config) {
 		    config.database, db_catalog, config.catalog);
 	}
 }
-
-//! `name` as a positive signed 64-bit integer, or `fallback` when it is unset.
-uint64_t ParsePositiveEnv(const EnvSource &env, const char *name, uint64_t fallback) {
-	auto value = env.Get(name);
-	if (value.empty()) {
-		return fallback;
-	}
-	size_t pos = 0;
-	uint64_t parsed = 0;
-	try {
-		parsed = std::stoull(value, &pos);
-	} catch (...) {
-		pos = 0;
-	}
-	if (pos != value.size() || value[0] == '-' || parsed == 0 || parsed > std::numeric_limits<int64_t>::max()) {
-		throw InvalidInputException("%s must be a positive integer", name);
-	}
-	return parsed;
-}
-
-//! DUCKDB_OTLP_<X> sets otlp_serve option <x>. The extension validates and defaults them.
-struct ServeOption {
-	const char *variable;
-	bool numeric;
-};
-const ServeOption SERVE_OPTIONS[] = {
-    {"HTTP_THREADS", true},
-    {"MAX_BODY_BYTES", true},
-    {"MAX_BUFFERED_BYTES", true},
-    {"SEAL_TARGET_BYTES", true},
-    {"SEAL_MAX_AGE_MS", true},
-    {"MAINTENANCE_INTERVAL_MS", true},
-    {"PROMOTE_RESOURCE_ATTRIBUTES", false},
-    {"PROMOTE_SCOPE_ATTRIBUTES", false},
-};
 
 //! Expands a mode preset. The syntax is documented at the top of local-ducklake.sql.
 class PresetExpander {
@@ -444,15 +409,20 @@ ServerConfig ServerConfig::FromEnv(const EnvSource &env) {
 	config.disable_auth = IsTruthy(env.Get("DUCKDB_OTLP_DISABLE_AUTH", "0"));
 	config.quack_port = QuackPortFromEnv(env);
 	config.dry_run = IsTruthy(env.Get("DRY_RUN", "0"));
-	for (const auto &option : SERVE_OPTIONS) {
-		auto variable = string("DUCKDB_OTLP_") + option.variable;
-		if (!env.Has(variable.c_str())) {
+	for (const auto &[name, type] : duckdb::OtlpServeTuningOptions()) {
+		auto variable = "DUCKDB_OTLP_" + StringUtil::Upper(name);
+		auto value = env.Get(variable.c_str());
+		if (value.empty()) {
 			continue;
 		}
-		auto name = StringUtil::Lower(option.variable);
-		auto value = option.numeric ? std::to_string(ParsePositiveEnv(env, variable.c_str(), 0))
-		                            : SqlQuote(env.Get(variable.c_str()));
-		config.serve_options.emplace_back(name, value);
+		if (type.IsIntegral()) {
+			if (value.find_first_not_of("0123456789") != string::npos) {
+				throw InvalidInputException("%s must contain only decimal digits", variable);
+			}
+		} else {
+			value = SqlQuote(value);
+		}
+		config.serve_options.emplace_back(name, std::move(value));
 	}
 	// An empty script is a no-op, so a templated file can render empty.
 	config.init_sql_path = env.Get("DUCKDB_OTLP_INIT_SQL", "");

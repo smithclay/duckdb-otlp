@@ -4,6 +4,9 @@
 
 namespace duckdb {
 
+//! Tuning options shared by otlp_serve and the daemon's DUCKDB_OTLP_* settings.
+const vector<std::pair<string, LogicalType>> &OtlpServeTuningOptions();
+
 class OtlpServeFunction {
 public:
 	static CreateTableFunctionInfo GetFunction();
