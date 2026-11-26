@@ -240,7 +240,7 @@ public:
 		return maintenance_last_error;
 	}
 	idx_t PromotedColumnsTotal() const {
-		return promoter ? promoter->PromotedColumnsTotal() : 0;
+		return promoted_columns;
 	}
 
 	//! Synchronous seal of all buffered rows (otlp_flush).
@@ -389,8 +389,9 @@ private:
 	//! Shared by every ingest thread for DuckDB's Arrow importer: safe because it runs no queries and
 	//! the importer reads it only for extension types, which ForSignal rules out.
 	unique_ptr<Connection> arrow_con;
-	//! Null unless promotion is enabled. Immutable after construction.
-	unique_ptr<OtlpColumnPromoter> promoter;
+	//! Empty unless promotion succeeded. Immutable after construction.
+	string promote_projection;
+	idx_t promoted_columns = 0;
 	std::thread sealer_thread;
 	std::mutex sealer_mutex;
 	std::condition_variable sealer_cv;

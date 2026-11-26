@@ -322,12 +322,17 @@ OtlpServer::OtlpServer(ClientContext &context, const vector<OtlpListenerSpec> &l
 	// Before the sealer can fire.
 	ConfigureCatalogMaintenanceOptions();
 	// Parquet-export mode has no table to ALTER.
-	if (config.promote.Enabled() && config.parquet_export_path.empty()) {
-		promoter = make_uniq<OtlpColumnPromoter>(config.promote, config.catalog_name, config.schema_name,
-		                                         [this](const string &msg) { LogServerEvent(msg); });
-		promoter->Initialize(*writer_con);
+	if (config.parquet_export_path.empty()) {
+		string failure;
+		promote_projection = OtlpPromoteColumns(*writer_con, config.promote, config.catalog_name, config.schema_name,
+		                                        promoted_columns, failure);
+		if (!failure.empty()) {
+			LogServerEvent("attribute promotion disabled: " + failure);
+		} else if (promoted_columns > 0) {
+			LogServerEvent(StringUtil::Format("attribute promotion enabled: %llu column(s) per signal",
+			                                  static_cast<uint64_t>(promoted_columns)));
+		}
 	}
-	// After promotion has settled (it may disable itself), so the sinks project only existing columns.
 	BuildSinks();
 	sealer_thread = std::thread([this] { SealerLoop(); });
 
@@ -880,7 +885,6 @@ static string ParquetSinkSql(const string &table_name, const string &root) {
 
 void OtlpServer::BuildSinks() {
 	const bool parquet = !config.parquet_export_path.empty();
-	const string promote = promoter && promoter->Enabled() ? promoter->ProjectionSuffix() : string();
 	for (auto &signal : signals) {
 		if (parquet) {
 			signal->sink_sql = ParquetSinkSql(signal->table_name, config.parquet_export_path);
@@ -889,7 +893,7 @@ void OtlpServer::BuildSinks() {
 		// BY NAME: table columns beyond the buffer's (earlier promotions, operator additions) are NULL-filled.
 		signal->sink_sql = "INSERT INTO " +
 		                   QualifiedTable(config.catalog_name, config.schema_name, signal->table_name) +
-		                   " BY NAME SELECT *" + promote + " FROM " + SEALED_RELATION;
+		                   " BY NAME SELECT *" + promote_projection + " FROM " + SEALED_RELATION;
 	}
 }
 

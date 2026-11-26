@@ -1,10 +1,9 @@
 #include "otlp_column_promote.hpp"
 
-#include "duckdb/main/connection.hpp"
-#include "duckdb/main/query_result.hpp"
-
 #include "otlp_arrow.hpp"
 #include "otlp_sql_util.hpp"
+
+#include <algorithm>
 
 namespace duckdb {
 
@@ -36,44 +35,31 @@ string JsonPathLiteral(const string &key) {
 
 } // namespace
 
-OtlpColumnPromoter::OtlpColumnPromoter(OtlpPromoteConfig config_p, string catalog_name_p, string schema_name_p,
-                                       std::function<void(const string &)> log_p)
-    : catalog_name(std::move(catalog_name_p)), schema_name(std::move(schema_name_p)), log(std::move(log_p)) {
+string OtlpPromoteColumns(Connection &con, const OtlpPromoteConfig &config, const string &catalog, const string &schema,
+                          idx_t &promoted_columns, string &failure) {
+	vector<string> columns;
+	string suffix;
 	auto add = [&](const string &source, const char *prefix, const string &key) {
 		if (key.empty()) {
 			return;
 		}
 		auto target = prefix + Sanitize(key);
 		// De-dupe (e.g. the same key listed twice, or two keys sanitizing alike).
-		for (auto &c : columns) {
-			if (c.target_column == target) {
-				return;
-			}
+		if (std::find(columns.begin(), columns.end(), target) != columns.end()) {
+			return;
 		}
-		columns.push_back({source, key, target});
+		suffix += ", json_extract_string(" + QuoteIdentifier(source) + ", " + JsonPathLiteral(key) + ") AS " +
+		          QuoteIdentifier(target);
+		columns.push_back(std::move(target));
 	};
-	for (auto &key : config_p.resource_keys) {
+	for (auto &key : config.resource_keys) {
 		add("resource_attributes", "resource_attr_", key);
 	}
-	for (auto &key : config_p.scope_keys) {
+	for (auto &key : config.scope_keys) {
 		add("scope_attributes", "scope_attr_", key);
 	}
-	for (auto &c : columns) {
-		suffix += ", json_extract_string(" + QuoteIdentifier(c.source_column) + ", " + JsonPathLiteral(c.attr_key) +
-		          ") AS " + QuoteIdentifier(c.target_column);
-	}
-}
-
-void OtlpColumnPromoter::Disable(const string &reason) {
-	enabled = false;
-	if (log) {
-		log("attribute promotion disabled: " + reason);
-	}
-}
-
-void OtlpColumnPromoter::Initialize(Connection &con) {
 	if (columns.empty()) {
-		return;
+		return "";
 	}
 	try {
 		RunSQL(con, "LOAD json");
@@ -81,29 +67,26 @@ void OtlpColumnPromoter::Initialize(Connection &con) {
 		try {
 			RunSQL(con, "SELECT json_extract_string('{\"a\":1}', '$.\"a\"')");
 		} catch (std::exception &) {
-			Disable("json extension unavailable: " + CurrentExceptionMessage());
-			return;
+			failure = "json extension unavailable: " + CurrentExceptionMessage();
+			return "";
 		}
 	}
 	// The first ALTER failure means the catalog cannot add columns at all, so disable rather than retry.
 	for (auto *table : OTLP_SIGNAL_TABLES) {
-		auto qualified = QualifiedTable(catalog_name, schema_name, table);
-		for (auto &c : columns) {
+		auto qualified = QualifiedTable(catalog, schema, table);
+		for (auto &column : columns) {
 			try {
-				RunSQL(con, "ALTER TABLE " + qualified + " ADD COLUMN IF NOT EXISTS " +
-				                QuoteIdentifier(c.target_column) + " VARCHAR");
+				RunSQL(con, "ALTER TABLE " + qualified + " ADD COLUMN IF NOT EXISTS " + QuoteIdentifier(column) +
+				                " VARCHAR");
 			} catch (std::exception &) {
-				Disable(StringUtil::Format("ALTER ADD COLUMN on %s failed (catalog may not support it): %s", table,
-				                           CurrentExceptionMessage()));
-				return;
+				failure = StringUtil::Format("ALTER ADD COLUMN on %s failed (catalog may not support it): %s", table,
+				                             CurrentExceptionMessage());
+				return "";
 			}
 		}
 	}
-	enabled = true;
-	if (log) {
-		log(StringUtil::Format("attribute promotion enabled: %llu column(s) per signal",
-		                       static_cast<uint64_t>(columns.size())));
-	}
+	promoted_columns = columns.size();
+	return suffix;
 }
 
 } // namespace duckdb
