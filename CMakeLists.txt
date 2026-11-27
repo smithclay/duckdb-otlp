@@ -132,7 +132,8 @@ if(NOT EMSCRIPTEN AND NOT WIN32)
   # identical. Gated on BUILD_UNITTESTS (the normal release build sets it TRUE;
   # WASM/EMSCRIPTEN is excluded by the enclosing NOT EMSCRIPTEN block) so it is
   # built only where wanted.
-  if(BUILD_UNITTESTS)
+  # The Docker build context has no test/ directory.
+  if(BUILD_UNITTESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_seal_harness.cpp")
     add_library(otlp_test_seam STATIC ${EXTENSION_SOURCES})
     target_compile_definitions(
       otlp_test_seam PUBLIC DUCKDB_OTLP_ENABLE_TEST_SEAM
