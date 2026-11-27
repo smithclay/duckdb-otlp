@@ -25,11 +25,10 @@ For a runnable walkthrough, see the [Live Ingest Quickstart](../../quickstart/se
 
 ## Command-line interface
 
-The daemon ships as `duckdb-otlp`, a CLI for macOS and Linux that also converts
-OTLP/OTAP files, exports the catalog, and runs one-shot SQL. A bare invocation
-starts a local receiver with no configuration at all. See the
-[CLI Reference](../cli/) for the full command, flag, and environment-variable
-surface; this page documents the SQL functions underneath it.
+The `duckdb-otlp` CLI runs the live receiver on macOS and Linux. A bare invocation
+starts a local receiver with the default settings. Use the `otlp` extension in
+DuckDB to read files and run queries. See the [CLI Reference](../cli/) for commands,
+flags, and environment variables.
 
 ```sh
 duckdb-otlp                                  # OTLP/HTTP 4318 + gRPC 4317 on loopback
@@ -393,8 +392,8 @@ The server **buffers ingest and commits rows in batches** for each target. Batch
 
 **The flow:**
 
-1. A POST reserves admission bytes, parses, converts, and appends rows into the relevant per-signal in-memory buffer, then returns `202`. The bounded worker pool does this concurrently; append locks only the target signal buffer.
-2. A single background writer commits the buffer to the target in **one transaction** when any trigger fires:
+1. A POST reserves admission bytes and stages decoded rows. The worker appends them to the shared in-memory buffers under one lock, then returns `202`.
+2. A single writer swaps out the buffers at each seal. It commits all signals in one transaction for a catalog target, or writes each signal separately for direct Parquet export. A seal runs when any trigger fires:
    - admitted request-body bytes reach the internal size threshold, 128 MiB today,
    - the oldest buffered row reaches the internal age limit, about 5 seconds today, or
    - an explicit [`otlp_flush`](#otlp_flush-and-otlp_flushlisten_uri).
@@ -405,7 +404,7 @@ The server **buffers ingest and commits rows in batches** for each target. Batch
 
 - A `202` is **not durable.** Rows become durable at the next background commit, on `otlp_stop`, or on `otlp_flush`.
 - A crash or hard kill loses buffered-but-uncommitted rows (**at-most-once** for that window).
-- `otlp_stop` and `otlp_flush` **commit remaining rows before returning**, so those calls lose no accepted rows. A plain **database/connection close does NOT commit buffered rows**. The drain runs after DuckDB tears down the instance, when it can no longer write, so DuckDB can drop buffered rows. Prefer `otlp_stop` before closing the database. Use `otlp_flush` when the server should keep running but readers need durable rows now.
+- Call `otlp_stop()` before closing the database so every server can drain while DuckDB can still write. Check the returned status and `dropped_rows` for drain failures. Use `otlp_flush()` to commit buffered rows and leave the servers running. A failed flush reports `error` and leaves uncommitted rows buffered for retry.
 
 The project tracks a future durable raw-spool journal for at-least-once delivery.
 
@@ -417,12 +416,12 @@ DuckLake maintenance runs outside the ingest transaction, so a failed checkpoint
 
 ## Concurrency model
 
-- The server runs a bounded httplib worker pool. Workers parse, convert, and buffer requests concurrently; each signal table has its own buffer lock. In the daemon, set `DUCKDB_OTLP_HTTP_THREADS` to override the host-based default.
+- A bounded httplib worker pool parses and converts HTTP requests concurrently. Workers hold the shared buffer lock only when appending staged rows. In the daemon, set `DUCKDB_OTLP_HTTP_THREADS` to override the host-based default.
 - A single background writer thread writes to the target catalog. Serial writes let DuckLake, which uses optimistic concurrency, avoid conflict retries and tiny-file churn.
 
 ## Verifying ingest under load
 
-`make test` cannot issue HTTP POSTs, so the SQL logic tests cover only the lifecycle functions. The ingest path is tested against the real daemon in `test/server/`, which CI runs on every pull request: auth (bearer and `x-api-key`), content-type and content-encoding handling, `413`, `503` backpressure, the metrics fan-out, OTLP/HTTP and OTLP/gRPC, OTAP/Arrow streams with dictionary reuse, and the drain on SIGTERM. `test/cpp/test_seal_harness.cpp` drives the seal path directly: failure and re-buffer, Parquet partial exports, catalog maintenance, and promoted columns.
+`GEN=ninja make test` runs the SQL logic tests and the C++ seal harness on supported native builds. The daemon suite in `test/server/` exercises the wire protocols and SIGTERM shutdown. The distribution workflow runs it in `docker-smoke`.
 
 ```bash
 DUCKDB_OTLP_SERVER_BIN=build/release/extension/otlp/duckdb-otlp \

@@ -73,6 +73,6 @@ This trades a little ingest work for much cheaper repeated reads. See [Attribute
 
 ## Live Ingest
 
-Live ingest buffers accepted rows and commits them in batches. Current native builds commit when the oldest buffered row is about 5 seconds old, or when admitted request-body bytes reach about 64 MiB. Use `otlp_flush` when readers need fresh rows while the server keeps running.
+Live ingest buffers accepted rows and commits them in batches. By default, the writer seals when the oldest buffered row is about 5 seconds old or admitted request-body bytes reach 128 MiB. Use `otlp_flush` when readers need fresh rows while the server keeps running.
 
 For named catalog targets, the writer runs best-effort catalog-native `CHECKPOINT <catalog>` outside the ingest transaction at most once per `maintenance_interval_ms` (5 minutes by default), after rows were committed. The writer skips the default catalog, explicit `otlp_flush`, and shutdown drains. While a checkpoint runs, commits wait and ingest keeps buffering against `max_buffered_bytes`, so size that cap for a few minutes of peak ingest. DuckLake uses this checkpoint hook for its own maintenance policy; the server logs unsupported catalog implementations and disables maintenance for that server. See [Live Ingest Reference](../serve/).

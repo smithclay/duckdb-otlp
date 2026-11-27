@@ -246,7 +246,7 @@ Keep the shell open while the agents send telemetry. Before closing it, stop bot
 ```sql
 CALL quack_stop('quack:0.0.0.0:9494');
 SELECT status, dropped_rows
-FROM otlp_stop('otlp:0.0.0.0:4318');
+FROM otlp_stop();
 ```
 
 ## If No Traces Appear

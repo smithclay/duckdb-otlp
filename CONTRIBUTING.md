@@ -47,7 +47,7 @@ The current build targets DuckDB `v2.0.0`. When moving to a new release, update 
 
 1. Check out the release tag in the `duckdb` submodule and record the new gitlink.
 2. Update `duckdb_version` and `DAEMON_DUCKDB_VERSION` in `MainDistributionPipeline.yml`. Update the daemon test's `duckdb==…` package pin there and in the [test guide](test/README.md).
-3. Update `duckdb_version` and `DUCKDB_VERSION` in `pages.yml`, both `DUCKDB_VERSION` defaults in the server Dockerfile, and `VERSION_FIELD` in the Makefile's WASM metadata.
+3. Update `duckdb_version` and `DUCKDB_VERSION` in `pages.yml` and both `DUCKDB_VERSION` defaults in the server Dockerfile.
 4. Match the `extension-ci-tools` submodule, its branch in `.gitmodules`, the reusable workflow refs, and the `ci_tools_version` inputs to the community build tools. They currently use `v2.0-cyanoptera`. Keep the DuckDB submodule branch hint aligned with the release line.
 5. Rebuild from a fresh build directory, run the test suites, and check that the daemon can load the extensions its modes install. The reported DuckDB version must match the version used to prime the image's extension cache.
 

@@ -20,7 +20,7 @@ The readers are DuckDB multi-file readers, so they take the same file options as
 | Option | Effect |
 |---|---|
 | `filename` | Adds a `filename` column naming each row's file. The `filename` virtual column is selectable without the option. |
-| `file_row_number` | Adds a `file_row_number` column (BIGINT), the row's position within its file, from 0. |
+| `file_row_number` | Adds a `file_row_number` column (BIGINT), the row's original zero-based position within its file. Filtering preserves these positions. |
 | `hive_partitioning` | Reads `key=value` directories in the path as columns. A filter on one skips other partitions' files without opening them. Detected automatically when every path is partitioned. |
 | `hive_types`, `hive_types_autocast` | Type the partition columns. |
 | `union_by_name` | Accepted. Every file of a signal has the same columns, so it changes nothing. |

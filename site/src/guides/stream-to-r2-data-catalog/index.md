@@ -317,7 +317,7 @@ Before closing DuckDB, stop both listeners cleanly:
 -- Stop Quack, then commit buffered telemetry and stop OTLP.
 CALL quack_stop('quack:0.0.0.0:9494');
 SELECT status, dropped_rows
-FROM otlp_stop('otlp:0.0.0.0:4318');
+FROM otlp_stop();
 ```
 
 ## Troubleshooting
