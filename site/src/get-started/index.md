@@ -46,7 +46,7 @@ See the [Schema Reference](../reference/schemas/) for every column emitted by ea
 
 ## 3. Stream One Log over OTLP/HTTP
 
-Native builds include the ingest server. You can POST OTLP/HTTP to it, and DuckDB buffers rows in memory before batch commits. When a POST returns `202`, DuckDB has accepted the rows, but it has not made them durable yet. DuckDB commits rows after about 5 seconds in the buffer, when admitted request-body bytes reach about 64 MiB, when you call `otlp_stop`, or when you call `otlp_flush`.
+Native builds include the ingest server. You can POST OTLP/HTTP to it, and DuckDB buffers rows in memory before batch commits. When a POST returns `202`, DuckDB has accepted the rows, but it has not made them durable yet. DuckDB commits rows after about 5 seconds in the buffer, when admitted request-body bytes reach about 128 MiB, when you call `otlp_stop`, or when you call `otlp_flush`.
 
 Start a local server:
 
@@ -70,7 +70,7 @@ For durable lakehouse ingest, pass `catalog` to an attached lakehouse catalog. S
 The server buffers rows in memory and commits them in the background, so a freshly POSTed row may not be visible yet. Force a commit with `otlp_flush`, then read the table:
 
 ```sql
-SELECT * FROM otlp_flush('otlp:localhost:4318');
+SELECT * FROM otlp_flush();
 
 SELECT time_unix_nano, service_name, severity_text, body
 FROM otlp_logs;
@@ -172,4 +172,4 @@ SELECT * FROM read_otlp_traces('/full/path/to/traces.jsonl');
 
 **Rows posted to the server are not visible yet**
 
-Wait for the background commit, or stop the server with `otlp_stop('otlp:localhost:4318')` before closing the database. Use `otlp_flush('otlp:localhost:4318')` when the server should keep running and readers need the latest accepted rows before the next scheduled commit.
+Wait for the background commit, or stop the server with `otlp_stop('otlp:localhost:4318')` before closing the database. Use `otlp_flush()` when the server should keep running and readers need the latest accepted rows before the next scheduled commit.

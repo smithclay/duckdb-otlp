@@ -1,24 +1,19 @@
 # name: test/sql/otlp_serve.test
-# description: Test OTLP HTTP server lifecycle SQL functions
+# description: Test ingest server lifecycle SQL functions
 # group: [sql]
 
 #
 # Coverage note: SQLLogicTest cannot issue HTTP POSTs, so this file covers only
 # the lifecycle/bind surface (serve/list/stop, validation, hostname gating,
-# schema/column validation, the is_listening/last_error columns). The ingest hot
+# schema/column validation). The ingest hot
 # path -- auth (Bearer/x-api-key), content-type/encoding errors, 413, 503
 # backpressure, metrics fan-out and the drain on stop -- is exercised end-to-end
 # against the daemon by test/server/test_server_ingest.py.
 
 require otlp
 
-# The live ingest server (HTTP + gRPC) is native-only: it needs OS sockets and a
-# real thread pool, neither of which exists in the wasm32 sandbox, so otlp_serve /
-# otap_serve throw "not implemented for the wasm platform" there. `require 64bit`
-# keeps this whole file running on every native build (always 64-bit) while
-# skipping it on wasm (wasm32 is 32-bit). It also makes the out-of-tree haybarn
-# wasm sqllogictest runner skip the file instead of reporting these native-only
-# functions as failures. See AGENTS.md "Known Limitations": ingest is native-only.
+# The live ingest functions are registered only on native builds. The supported
+# native builds are 64-bit, so this also skips the file in the wasm32 runner.
 require 64bit
 
 statement error
@@ -37,16 +32,6 @@ CALL otlp_serve('otlp:127.0.0.1:55439', token := 'dev-token-123456', seal_max_ag
 seal_max_age_ms must be greater than zero
 
 statement error
-CALL otlp_serve('otlp:127.0.0.1:55439', token := 'dev-token-123456', target_file_size := 0);
-----
-target_file_size must be greater than zero
-
-statement error
-CALL otlp_serve('otlp:127.0.0.1:55439', token := 'dev-token-123456', maintenance_retention_ms := 0);
-----
-maintenance_retention_ms must be greater than zero
-
-statement error
 CALL otlp_flush('otlp:127.0.0.1:55439', checkpoint := true);
 ----
 Invalid named parameter "checkpoint"
@@ -61,13 +46,12 @@ CALL otlp_serve('otlp:127.0.0.1:55439', token := 'dev-token-123456', checkpoint_
 ----
 Invalid named parameter "checkpoint_interval"
 
-query TTT
-SELECT listen_uri, listen_url, schema_name
+query TTTTTT
+SELECT *
 FROM otlp_serve('otlp:127.0.0.1:55439', token := 'dev-token-123456', schema := 'main', create_tables := true,
-                seal_target_bytes := 1048576, seal_max_age_ms := 2500,
-                target_file_size := 134217728, maintenance_retention_ms := 600000);
+                seal_target_bytes := 1048576, seal_max_age_ms := 2500, maintenance_interval_ms := 600000);
 ----
-otlp:127.0.0.1:55439	http://127.0.0.1:55439	main
+otlp:127.0.0.1:55439	http://127.0.0.1:55439	dev-token-123456	main	(empty)	http
 
 statement error
 CALL otlp_serve('otlp:127.0.0.1:55439', token := 'dev-token-123456');
@@ -81,10 +65,26 @@ WHERE listen_uri = 'otlp:127.0.0.1:55439';
 ----
 otlp:127.0.0.1:55439	main	0
 
-# a freshly-started server reports itself listening with no error
+statement ok
+PREPARE list_servers AS SELECT count(*) FROM otlp_server_list();
+
+query I
+EXECUTE list_servers;
+----
+1
+
+query I
+EXECUTE list_servers;
+----
+1
+
+statement ok
+DEALLOCATE list_servers;
+
+# a freshly-started server is listed
 query I
 SELECT count(*) FROM otlp_server_list()
-WHERE listen_uri = 'otlp:127.0.0.1:55439' AND is_listening AND last_error IS NULL;
+WHERE listen_uri = 'otlp:127.0.0.1:55439';
 ----
 1
 
@@ -115,17 +115,32 @@ SELECT status, sealed_rows FROM otlp_flush('otlp:127.0.0.1:55439');
 ----
 sealed	0
 
-query I
-SELECT count(*) FROM otlp_seal_list()
-WHERE listen_uri = 'otlp:127.0.0.1:55439';
-----
-0
+statement ok
+PREPARE flush_server AS SELECT status, sealed_rows FROM otlp_flush('otlp:127.0.0.1:55439');
 
-# flushing an unknown server reports not found
-query T
+query TI
+EXECUTE flush_server;
+----
+sealed	0
+
+query TI
+EXECUTE flush_server;
+----
+sealed	0
+
+statement ok
+DEALLOCATE flush_server;
+
+# Both actions reject an unknown listen URI.
+statement error
 SELECT status FROM otlp_flush('otlp:127.0.0.1:59999');
 ----
-No server found listening on otlp:127.0.0.1:59999
+Invalid Input Error: No server found listening on otlp:127.0.0.1:59999
+
+statement error
+SELECT status FROM otlp_stop('otlp:127.0.0.1:59999');
+----
+Invalid Input Error: No server found listening on otlp:127.0.0.1:59999
 
 query T
 SELECT status FROM otlp_stop('otlp:127.0.0.1:55439');
@@ -143,24 +158,24 @@ WHERE listen_uri = 'otlp:127.0.0.1:55439';
 # otel-arrow OTAP exporter, which cannot attach a bearer token).
 query TT
 SELECT listen_uri, auth_token
-FROM otap_serve('otap:127.0.0.1:55445', disable_auth := true);
+FROM otlp_serve('otlp:127.0.0.1:55445', transport := 'grpc', disable_auth := true);
 ----
-otap:127.0.0.1:55445	(empty)
+otlp:127.0.0.1:55445	(empty)
 
 query T
-SELECT status FROM otlp_stop('otap:127.0.0.1:55445');
+SELECT status FROM otlp_stop('otlp:127.0.0.1:55445');
 ----
-Stopped listening on otap:127.0.0.1:55445
+Stopped listening on otlp:127.0.0.1:55445
 
 # disable_auth coexists with an explicitly supplied (and intentionally short) token
 # without tripping the token-length floor, since auth is off.
 query T
-SELECT listen_uri FROM otap_serve('otap:127.0.0.1:55446', disable_auth := true, token := 'x');
+SELECT listen_uri FROM otlp_serve('otlp:127.0.0.1:55446', transport := 'grpc', disable_auth := true, token := 'x');
 ----
-otap:127.0.0.1:55446
+otlp:127.0.0.1:55446
 
 statement ok
-CALL otlp_stop('otap:127.0.0.1:55446');
+CALL otlp_stop('otlp:127.0.0.1:55446');
 
 # non-localhost binds require allow_other_hostname (rejected before binding a socket)
 statement error
@@ -204,31 +219,7 @@ SELECT status FROM otlp_stop('otlp:127.0.0.1:55444');
 Stopped listening on otlp:127.0.0.1:55444
 
 # --- gRPC transport control plane ---
-# Two gRPC entry points, each strictly bound to its scheme: otap_serve('otap:...')
-# serves OTAP/Arrow streaming; otlp_serve('otlp:...', transport := 'grpc') serves
-# OTLP/gRPC unary Export. The data paths are exercised by test/server (the daemon's
-# transport and ingest tests) -- SQLLogicTest cannot drive a gRPC client. The canonical URI keeps its scheme, so each is a distinct registry key.
-
-query TT
-SELECT listen_uri, schema_name
-FROM otap_serve('otap:127.0.0.1:55460', token := 'dev-token-123456', schema := 'main');
-----
-otap:127.0.0.1:55460	main
-
-# a freshly-started gRPC server reports itself listening with no error
-query I
-SELECT count(*) FROM otlp_server_list()
-WHERE listen_uri = 'otap:127.0.0.1:55460' AND is_listening AND last_error IS NULL;
-----
-1
-
-query T
-SELECT status FROM otlp_stop('otap:127.0.0.1:55460');
-----
-Stopped listening on otap:127.0.0.1:55460
-
-# otlp_serve runs OTLP/gRPC unary under the otlp: scheme via transport := 'grpc'.
-# The transport is NOT encoded in the scheme, so the canonical key stays otlp:.
+# The daemon tests exercise OTLP exports and OTAP streams on the same gRPC port.
 query T
 SELECT listen_uri FROM otlp_serve('otlp:127.0.0.1:55461', token := 'dev-token-123456', transport := 'grpc');
 ----
@@ -236,7 +227,7 @@ otlp:127.0.0.1:55461
 
 query I
 SELECT count(*) FROM otlp_server_list()
-WHERE listen_uri = 'otlp:127.0.0.1:55461' AND is_listening AND last_error IS NULL;
+WHERE listen_uri = 'otlp:127.0.0.1:55461' AND transport = 'grpc';
 ----
 1
 
@@ -245,27 +236,17 @@ SELECT status FROM otlp_stop('otlp:127.0.0.1:55461');
 ----
 Stopped listening on otlp:127.0.0.1:55461
 
-# Scheme/function binding is strict: URIs are never mixed across the two functions.
+# An unsupported scheme is rejected before binding.
 statement error
 SELECT listen_uri FROM otlp_serve('otap:127.0.0.1:55462', token := 'dev-token-123456');
 ----
-otlp_serve requires an 'otlp:' URI
+Invalid OTLP listen URI, needs to start with 'otlp:'
 
-statement error
-SELECT listen_uri FROM otap_serve('otlp:127.0.0.1:55463', token := 'dev-token-123456');
-----
-otap_serve requires an 'otap:' URI
-
-# transport accepts only http/grpc; otap_serve is gRPC-only.
+# transport accepts only http/grpc.
 statement error
 SELECT listen_uri FROM otlp_serve('otlp:127.0.0.1:55464', token := 'dev-token-123456', transport := 'bogus');
 ----
 transport must be 'http' or 'grpc'
-
-statement error
-SELECT listen_uri FROM otap_serve('otap:127.0.0.1:55465', token := 'dev-token-123456', transport := 'http');
-----
-otap_serve is gRPC-only
 
 # --- one server, N listeners ---
 # otlp_serve takes a list of listen URIs with a parallel transport list. Every listener
@@ -294,6 +275,11 @@ SELECT status FROM otlp_flush('otlp:127.0.0.1:55471');
 ----
 sealed
 
+query T
+SELECT status FROM otlp_flush();
+----
+sealed
+
 # a second server for the same catalog + schema is rejected: a target has one writer
 statement error
 CALL otlp_serve('otlp:127.0.0.1:55472', token := 'dev-token-123456');
@@ -306,11 +292,25 @@ CALL otlp_serve('otlp:127.0.0.1:55471', token := 'dev-token-123456', schema := '
 ----
 OTLP server already exists for otlp:127.0.0.1:55471
 
-# stopping through any listener URI stops every listener and drains once
+# Another server remains registered when the first server is stopped via its second listener.
+statement ok
+CREATE SCHEMA stop_all_other;
+
+statement ok
+CALL otlp_serve('otlp:127.0.0.1:55482', token := 'dev-token-123456', schema := 'stop_all_other');
+
 query T
 SELECT status FROM otlp_stop('otlp:127.0.0.1:55471');
 ----
 Stopped listening on otlp:127.0.0.1:55470, otlp:127.0.0.1:55471
+
+query T
+SELECT listen_uri FROM otlp_server_list();
+----
+otlp:127.0.0.1:55482
+
+statement ok
+CALL otlp_stop('otlp:127.0.0.1:55482');
 
 query I
 SELECT count(*) FROM otlp_server_list();
@@ -347,7 +347,7 @@ must be distinct
 statement error
 CALL otlp_serve(['otlp:127.0.0.1:55478', 'otap:127.0.0.1:55479'], token := 'dev-token-123456');
 ----
-otlp_serve requires an 'otlp:' URI
+Invalid OTLP listen URI, needs to start with 'otlp:'
 
 statement error
 CALL otlp_serve([]::VARCHAR[], token := 'dev-token-123456');
@@ -366,7 +366,7 @@ SELECT maintenance_contended_total FROM otlp_server_list() WHERE listen_uri = 'o
 statement ok
 CALL otlp_stop('otlp:127.0.0.1:55480');
 
-# --- otlp_stop() with no argument: stop every server on the instance ---
+# --- otlp_flush() and otlp_stop(): act on every server on the instance ---
 #
 # This is what the daemon's shutdown runs. The single-URI form only reaches the server it
 # names, so a server started out-of-band (over Quack, or by the daemon's --init-sql script)
@@ -381,8 +381,10 @@ SELECT status, dropped_rows FROM otlp_stop();
 ----
 No OTLP servers are running	0
 
-statement ok
-CREATE SCHEMA stop_all_other;
+query TIIT
+SELECT * FROM otlp_flush();
+----
+No OTLP servers are running	0	0	NULL
 
 statement ok
 CALL otlp_serve('otlp:127.0.0.1:55481', token := 'dev-token-123456');
@@ -396,6 +398,12 @@ query I
 SELECT count(*) FROM otlp_server_list();
 ----
 2
+
+query TIIT
+SELECT * FROM otlp_flush();
+----
+sealed	0	0	NULL
+sealed	0	0	NULL
 
 # one row per server, and no rows dropped: both were sealed while the database was alive.
 query I

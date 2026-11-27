@@ -8,35 +8,23 @@ require otlp
 # registered here may be left without a description.
 query II
 SELECT function_name, parameter_types FROM duckdb_functions()
-WHERE (function_name LIKE 'read_ot%' OR function_name LIKE 'otlp\_%' ESCAPE '\'
-       OR function_name LIKE 'otap\_%' ESCAPE '\')
+WHERE (function_name LIKE 'read_ot%' OR function_name LIKE 'otlp\_%' ESCAPE '\')
   AND description IS NULL
 ORDER BY function_name;
 ----
 
-# Every function has an example except the two readers that are registered only to raise a
-# not-implemented error -- an example that always throws would be worse than none.
+# Every function has an example.
 query I
 SELECT function_name FROM duckdb_functions()
-WHERE (function_name LIKE 'read_ot%' OR function_name LIKE 'otlp\_%' ESCAPE '\'
-       OR function_name LIKE 'otap\_%' ESCAPE '\')
+WHERE (function_name LIKE 'read_ot%' OR function_name LIKE 'otlp\_%' ESCAPE '\')
   AND len(examples) = 0
 ORDER BY function_name;
 ----
-read_otlp_metrics
-read_otlp_metrics_summary
 
-# Placeholder parameter names are what this metadata exists to remove. As of DuckDB 2.0,
-# duckdb_functions() takes parameter names off the function's own signature whenever their
-# count matches the parameter list, and only falls back to the FunctionDescription when it does
-# not (GetParameterNames in duckdb_functions.cpp -- in v1.5.5 the description won outright). So a
-# name has to be in the signature: otlp_uri_parser names its scalar argument, and the read_ot*
-# readers are multi-file functions whose signature names `path`/`paths` and every multi-file
-# option. The control-plane table functions are still built from a bare vector<LogicalType> and
-# report colN; their descriptions keep real parameter_names to document the argument.
+# The function signatures name every argument shown by duckdb_functions().
 query I
 SELECT DISTINCT function_name FROM duckdb_functions()
-WHERE (function_name = 'otlp_uri_parser' OR function_name LIKE 'read_ot%')
+WHERE (function_name LIKE 'read_ot%' OR function_name LIKE 'otlp\_%' ESCAPE '\')
   AND len(list_filter(parameters, lambda p: p SIMILAR TO 'col\d+')) > 0;
 ----
 
@@ -48,18 +36,6 @@ WHERE function_name = 'read_otlp_logs' ORDER BY parameter_types[1];
 paths	ANY[]
 path	VARCHAR
 path	VARIANT
-
-# Each overload of a function set gets its own description, matched on its positional
-# argument types: otlp_stop() and otlp_stop(uri) do different things.
-query I
-SELECT count(DISTINCT description) FROM duckdb_functions() WHERE function_name = 'otlp_stop';
-----
-2
-
-query I
-SELECT count(DISTINCT description) FROM duckdb_functions() WHERE function_name = 'otlp_serve';
-----
-3
 
 # The scalar function's example is a runnable expression.
 query I
@@ -75,3 +51,29 @@ ORDER BY function_name;
 ----
 read_otap_logs	[opentelemetry, otap]
 read_otlp_logs	[opentelemetry, otlp]
+
+# Only the native builds register live ingest functions.
+require 64bit
+
+# Each overload of a function set gets its own description, matched on its positional
+# argument types.
+query TI
+SELECT function_name, count(DISTINCT description) FROM duckdb_functions()
+WHERE function_name IN ('otlp_flush', 'otlp_stop')
+GROUP BY function_name ORDER BY function_name;
+----
+otlp_flush	2
+otlp_stop	2
+
+query TT
+SELECT function_name, parameters[1] FROM duckdb_functions()
+WHERE function_name IN ('otlp_flush', 'otlp_stop') AND len(parameters) = 1
+ORDER BY function_name;
+----
+otlp_flush	listen_uri
+otlp_stop	listen_uri
+
+query I
+SELECT count(DISTINCT description) FROM duckdb_functions() WHERE function_name = 'otlp_serve';
+----
+3

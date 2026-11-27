@@ -106,7 +106,7 @@ CREATE SECRET duckdb_otlp_quack (
 ATTACH 'quack:localhost:9494' AS otel (TYPE quack, SSL_FINGERPRINT '<fingerprint>'); -- printed by the container at startup
 CONNECT otel;
 
-SELECT * FROM otlp_flush('otlp:0.0.0.0:4318');
+SELECT * FROM otlp_flush();
 
 SELECT service_name, name, count(*) AS spans
 FROM lake.main.otlp_traces
@@ -159,7 +159,7 @@ Stop the DuckLake server:
 docker stop duckdb-otlp
 ```
 
-During shutdown, the image sends `otlp_stop('otlp:0.0.0.0:4318')`, so the server commits remaining buffered rows before the process exits.
+During shutdown, the image runs `otlp_stop()`, so the server commits remaining buffered rows before the process exits.
 
 ## Troubleshooting
 

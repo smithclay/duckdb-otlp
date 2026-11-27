@@ -6,8 +6,6 @@ The container initializes DuckDB, loads the required extensions, connects DuckLa
 
 Live ingestion uses OTLP/HTTP on port `4318`. WASM builds do not include the ingest server.
 
-For Google Cloud Storage and Cloud SQL, use [Stream to DuckLake on GCP](../stream-to-gcp-ducklake/).
-
 ## Prepare Neon and R2
 
 Create or choose a Neon database for the DuckLake catalog. Copy the connection details from Neon as separate values:
@@ -128,7 +126,7 @@ CREATE SECRET duckdb_otlp_quack (
 ATTACH 'quack:localhost:9494' AS otel (TYPE quack, SSL_FINGERPRINT '<fingerprint>');
 CONNECT otel;
 
-SELECT * FROM otlp_flush('otlp:0.0.0.0:4318');
+SELECT * FROM otlp_flush();
 
 SELECT service_name, severity_text, body
 FROM lake.otlp.otlp_logs
@@ -149,7 +147,7 @@ step and use [Clean up](#clean-up) instead.
 docker stop duckdb-otlp
 ```
 
-The image sends `otlp_stop('otlp:0.0.0.0:4318')` during shutdown,
+The image runs `otlp_stop()` during shutdown,
 so remaining buffered rows are committed before the process exits.
 
 ## Clean up
@@ -267,7 +265,7 @@ Before closing DuckDB, stop both listeners cleanly:
 -- Stop Quack, then commit buffered telemetry and stop OTLP.
 CALL quack_stop('quack:0.0.0.0:9494');
 SELECT status, dropped_rows
-FROM otlp_stop('otlp:0.0.0.0:4318');
+FROM otlp_stop();
 ```
 
 ## Troubleshooting

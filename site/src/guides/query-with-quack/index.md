@@ -117,7 +117,7 @@ After `CONNECT otel`, DuckDB routes ordinary SQL to the container's DuckDB proce
 The server accepts rows before it makes them durable. For a short local test, flush the ingest buffer first:
 
 ```sql
-SELECT * FROM otlp_flush('otlp:0.0.0.0:4318');
+SELECT * FROM otlp_flush();
 ```
 
 Then query the signal tables directly:
@@ -173,7 +173,7 @@ DISCONNECT;
 docker stop duckdb-otlp
 ```
 
-The image sends `otlp_stop('otlp:0.0.0.0:4318')` during shutdown,
+The image runs `otlp_stop()` during shutdown,
 so remaining buffered rows are committed before the process exits.
 
 ## Run manually
@@ -235,7 +235,7 @@ Before closing DuckDB, stop both listeners cleanly:
 -- Stop Quack, then commit buffered telemetry and stop OTLP.
 CALL quack_stop('quack:0.0.0.0:9494');
 SELECT status, dropped_rows
-FROM otlp_stop('otlp:0.0.0.0:4318');
+FROM otlp_stop();
 ```
 
 ## Clean up

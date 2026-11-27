@@ -5,17 +5,13 @@ name: Main Extension Distribution Pipeline
 on:
   push:
     paths-ignore:
-      - 'docs/**'
       - 'demo/**'
       - 'site/**'
-      - 'notebooks/**'
       - 'README.md'
   pull_request:
     paths-ignore:
-      - 'docs/**'
       - 'demo/**'
       - 'site/**'
-      - 'notebooks/**'
       - 'README.md'
   workflow_dispatch:
 
@@ -52,93 +48,13 @@ jobs:
       # x86_64-pc-windows-gnu Rust target for otlp2records, which has never been validated here.
       exclude_archs: "wasm_mvp;wasm_threads;linux_amd64_musl;windows_amd64_mingw"
 
-  # Cheap guard so daemon breakage fails on PRs and feature-branch pushes without paying
-  # for the 2-arch publish path. Compiles amd64 natively and warms the shared cache
-  # that the publish path (daemon-linux) reuses on main. Then packages that same amd64
-  # binary into the runtime-prebuilt image (no recompile) and runs the local-ducklake
-  # e2e smoke (scripts/smoke_test.py) so an ingest/seal/distroless-boot regression is
-  # caught on the PR instead of only post-merge by docker-smoke on main.
-  daemon-compile:
-    name: Compile + config-test + e2e smoke daemon (amd64)
-    if: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/v')) }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          submodules: recursive
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Compile daemon (amd64) and export the binary
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: docker/duckdb-otlp-server/Dockerfile
-          target: daemon-export
-          platforms: linux/amd64
-          outputs: type=local,dest=daemon-bin
-          cache-from: type=gha,scope=daemon-amd64
-          cache-to: type=gha,mode=max,scope=daemon-amd64
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v10.4.0
-
-      - name: Run daemon configuration and transport tests
-        run: |
-          chmod +x daemon-bin/duckdb-otlp-server
-          DUCKDB_OTLP_SERVER_BIN="$PWD/daemon-bin/duckdb-otlp-server" \
-            uv run --with pytest --with grpcio --with opentelemetry-proto --with duckdb==2.0.0 pytest test/server -q
-
-      - name: Prepare Docker build context
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p docker-bin/amd64
-          cp daemon-bin/duckdb-otlp-server docker-bin/amd64/duckdb-otlp-server
-          chmod +x docker-bin/amd64/duckdb-otlp-server
-
-      - name: Build amd64 runtime image (load)
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: docker/duckdb-otlp-server/Dockerfile
-          target: runtime-prebuilt
-          platforms: linux/amd64
-          load: true
-          tags: duckdb-otlp:smoke
-          cache-from: type=gha,scope=docker-runtime
-
-      - name: Install duckdb CLI (host, for Quack queries)
-        run: |
-          set -euo pipefail
-          curl -fsSL "https://github.com/duckdb/duckdb/releases/download/${DAEMON_DUCKDB_VERSION}/duckdb-cli-linux-amd64.tar.gz" \
-            | sudo tar -xz -C /usr/local/bin duckdb
-          duckdb --version
-
-      - name: Run e2e smoke
-        run: |
-          python3 scripts/smoke_test.py \
-            --image duckdb-otlp:smoke \
-            --platform linux/amd64 \
-            --startup-timeout 120
-
   daemon-linux:
     name: Build server daemon (${{ matrix.arch }})
-    if: ${{ github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - arch: amd64
-            platform: linux/amd64
-            runner: ubuntu-24.04
-          - arch: arm64
-            platform: linux/arm64
-            runner: ubuntu-24.04-arm
+        arch: ${{ fromJSON((github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) && '["amd64","arm64"]' || '["amd64"]') }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -155,7 +71,7 @@ jobs:
           context: .
           file: docker/duckdb-otlp-server/Dockerfile
           target: daemon-export
-          platforms: ${{ matrix.platform }}
+          platforms: linux/${{ matrix.arch }}
           outputs: type=local,dest=daemon-out/${{ matrix.arch }}
           cache-from: type=gha,scope=daemon-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=daemon-${{ matrix.arch }}
@@ -163,18 +79,13 @@ jobs:
       - name: Upload daemon artifact
         uses: actions/upload-artifact@v7
         with:
-          name: duckdb-otlp-server-${{ matrix.arch }}
-          path: daemon-out/${{ matrix.arch }}/duckdb-otlp-server
+          name: duckdb-otlp-linux-${{ matrix.arch }}
+          path: daemon-out/${{ matrix.arch }}/duckdb-otlp
           if-no-files-found: error
 
-  # End-to-end smoke before publishing: package the amd64 daemon into the runtime image
-  # (reusing the compiled artifact, no recompile) and run a minimal local-ducklake e2e
-  # (scripts/smoke_test.py): boot the distroless image, POST one fixed OTLP/JSON log
-  # batch, seal, and assert the committed row count. A distroless-boot,
-  # ingest, seal, or DuckLake-commit regression fails here and blocks the publish.
+  # Test the amd64 daemon directly, then package the same binary for the local-ducklake smoke.
   docker-smoke:
     name: Docker e2e smoke (local-ducklake)
-    if: ${{ github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     needs:
       - daemon-linux
@@ -185,16 +96,17 @@ jobs:
       - name: Download amd64 daemon artifact
         uses: actions/download-artifact@v8
         with:
-          name: duckdb-otlp-server-amd64
-          path: daemon-artifacts
+          name: duckdb-otlp-linux-amd64
+          path: docker-bin/amd64
 
-      - name: Prepare Docker build context
-        shell: bash
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.4.0
+
+      - name: Run daemon configuration and transport tests
         run: |
-          set -euo pipefail
-          mkdir -p docker-bin/amd64
-          cp daemon-artifacts/duckdb-otlp-server docker-bin/amd64/duckdb-otlp-server
-          chmod +x docker-bin/amd64/duckdb-otlp-server
+          chmod +x docker-bin/amd64/duckdb-otlp
+          DUCKDB_OTLP_SERVER_BIN="$PWD/docker-bin/amd64/duckdb-otlp" \
+            uv run --with pytest --with grpcio --with opentelemetry-proto --with duckdb==2.0.0 pytest test/server -q
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -229,8 +141,6 @@ jobs:
   # Both architectures build on the arm64 macos-15 runner: OSX_BUILD_ARCH drives
   # CMAKE_OSX_ARCHITECTURES and, through cmake/FindOtlp2Records.cmake, the Rust target — the
   # same cross-compile extension-ci-tools uses for osx_amd64 (config/distribution_matrix.json).
-  # No vcpkg setup: vcpkg.json declares zlib for Windows only, so on macOS
-  # find_package(ZLIB) resolves to the SDK's libz and vcpkg would install nothing.
   daemon-macos:
     name: Build server daemon (${{ matrix.arch }})
     if: ${{ github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
@@ -283,8 +193,6 @@ jobs:
       - name: Upload daemon artifact
         uses: actions/upload-artifact@v7
         with:
-          # Deliberately NOT the `duckdb-otlp-server-*` prefix the Linux artifacts use: that is
-          # the glob docker-image downloads, and it must not pick up Darwin binaries.
           name: duckdb-otlp-${{ matrix.arch }}
           path: build/release/extension/otlp/duckdb-otlp
           if-no-files-found: error
@@ -305,17 +213,15 @@ jobs:
       - name: Download daemon artifacts
         uses: actions/download-artifact@v8
         with:
-          pattern: duckdb-otlp-server-*
+          pattern: duckdb-otlp-linux-*
           path: daemon-artifacts
 
       - name: Prepare Docker build context
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p docker-bin/amd64 docker-bin/arm64
-          cp daemon-artifacts/duckdb-otlp-server-amd64/duckdb-otlp-server docker-bin/amd64/duckdb-otlp-server
-          cp daemon-artifacts/duckdb-otlp-server-arm64/duckdb-otlp-server docker-bin/arm64/duckdb-otlp-server
-          chmod +x docker-bin/amd64/duckdb-otlp-server docker-bin/arm64/duckdb-otlp-server
+          install -Dm0755 daemon-artifacts/duckdb-otlp-linux-amd64/duckdb-otlp docker-bin/amd64/duckdb-otlp
+          install -Dm0755 daemon-artifacts/duckdb-otlp-linux-arm64/duckdb-otlp docker-bin/arm64/duckdb-otlp
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -394,17 +300,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release-assets stage
-          # The two builders name the file differently — the Dockerfile's daemon-export stage
-          # calls it duckdb-otlp-server, the macOS build leaves it as duckdb-otlp — so the
-          # source paths are spelled out rather than globbed. Everything ships as `duckdb-otlp`.
-          declare -A SOURCES=(
-            [linux-amd64]=daemon-artifacts/duckdb-otlp-server-amd64/duckdb-otlp-server
-            [linux-arm64]=daemon-artifacts/duckdb-otlp-server-arm64/duckdb-otlp-server
-            [darwin-amd64]=daemon-artifacts/duckdb-otlp-darwin-amd64/duckdb-otlp
-            [darwin-arm64]=daemon-artifacts/duckdb-otlp-darwin-arm64/duckdb-otlp
-          )
-          for platform in "${!SOURCES[@]}"; do
-            source="${SOURCES[$platform]}"
+          for platform in linux-amd64 linux-arm64 darwin-amd64 darwin-arm64; do
+            source="daemon-artifacts/duckdb-otlp-${platform}/duckdb-otlp"
             test -f "$source" || { echo "missing artifact: $source" >&2; exit 1; }
             # A release asset does not carry the executable bit, so ship a tarball that does.
             install -m 0755 "$source" stage/duckdb-otlp

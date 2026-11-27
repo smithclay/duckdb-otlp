@@ -1,9 +1,37 @@
 #pragma once
 
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/string.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/main/connection.hpp"
+
+#include <utility>
 
 namespace duckdb {
+
+//! Call from a catch handler. DuckDB exceptions store their message in a JSON envelope.
+inline string CurrentExceptionMessage(const char *operation = nullptr) {
+	try {
+		throw;
+	} catch (const Exception &ex) {
+		return ErrorData(ex).RawMessage();
+	} catch (const std::exception &ex) {
+		return ex.what();
+	} catch (...) {
+		string message = "unknown (non-std) exception";
+		return operation ? message + " during " + operation : message;
+	}
+}
+
+//! Execute SQL text or an already parsed statement.
+template <class Query>
+unique_ptr<QueryResult> RunSQL(Connection &con, Query &&query, const string &error_prefix = "") {
+	auto result = con.Query(std::forward<Query>(query));
+	if (!result || result->HasError()) {
+		throw IOException("%s%s", error_prefix, result ? result->GetError() : "DuckDB query failed");
+	}
+	return result;
+}
 
 // The one definition of SQL quoting for the extension and the daemon (an injection surface).
 inline string SqlEscape(const string &value) {

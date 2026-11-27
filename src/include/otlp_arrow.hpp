@@ -9,32 +9,6 @@
 
 namespace duckdb {
 
-// Marks the batch absent after releasing it, so a later pass cannot double-free it.
-inline void ReleaseOtlpArrowBatch(OtlpArrowBatch &batch) {
-	if (!batch.present) {
-		return;
-	}
-	if (batch.array.release) {
-		batch.array.release(&batch.array);
-	}
-	if (batch.schema.release) {
-		batch.schema.release(&batch.schema);
-	}
-	batch.present = 0;
-}
-
-//! The batch holding metric shape `signal_type` (OTLP_SIGNAL_METRICS_GAUGE and after).
-inline OtlpArrowBatch &OtlpMetricShape(OtlpMetricsArrowBatches &batches, OtlpSignalType signal_type) {
-	OtlpArrowBatch *shapes[] = {&batches.gauge, &batches.sum, &batches.histogram, &batches.exp_histogram};
-	return *shapes[signal_type - OTLP_SIGNAL_METRICS_GAUGE];
-}
-
-inline void ReleaseOtlpMetricBatches(OtlpMetricsArrowBatches &batches) {
-	for (auto *batch : {&batches.gauge, &batches.sum, &batches.histogram, &batches.exp_histogram}) {
-		ReleaseOtlpArrowBatch(*batch);
-	}
-}
-
 //! Every signal, in OtlpSignalType order. The name is also the ingest table's; the readers are
 //! read_<name> and read_otap_<name minus "otlp_">.
 constexpr OtlpSignalType OTLP_SIGNALS[] = {OTLP_SIGNAL_LOGS,
@@ -65,9 +39,6 @@ struct OtlpArrowTable {
 	void CheckBatchSchema(const ArrowSchema &schema) const;
 };
 
-//! Takes ownership of `array` (its release callback is cleared); the wrapper releases it once no
-//! vector produced from it is alive.
-shared_ptr<ArrowArrayWrapper> OtlpOwnArrowBatch(ArrowArray &array);
 //! Wraps `array` without taking ownership. The caller keeps it alive while any vector produced from
 //! it is in use (e.g. until those rows have been appended into a ColumnDataCollection).
 shared_ptr<ArrowArrayWrapper> OtlpBorrowArrowBatch(const ArrowArray &array);

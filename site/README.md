@@ -7,6 +7,11 @@ publishes as `/guides/stream-to-parquet/`). `src/SUMMARY.md` is the sidebar, and
 page it does not list is not built. Every other file in `src/` is copied to the site
 verbatim: `install.sh`, the WASM demo in `src/wasm-demo/`, and example configs.
 
+The demo's `otlp.duckdb_extension.wasm` is the `wasm_eh` artifact of a distribution
+pipeline run. Its DuckDB version and source id must match the duckdb-wasm build that
+`src/wasm-demo/app.js` pins (the comment there names both), so rebuild the binary
+and move that pin together.
+
 The only build dependency is the `mdbook` binary. CI installs the version pinned
 in `../.github/actions/setup-mdbook/action.yml`; install the same one locally from
 the [mdBook releases](https://github.com/rust-lang/mdBook/releases).

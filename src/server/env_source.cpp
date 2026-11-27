@@ -30,8 +30,4 @@ bool EnvSource::Has(const char *name) const {
 	return !Get(name).empty();
 }
 
-bool EnvSource::Truthy(const char *name) const {
-	return IsTruthy(Get(name));
-}
-
 } // namespace duckdb_otlp_server

@@ -24,8 +24,6 @@ public:
 	//! empty string reads as unset, matching how an empty environment variable behaves.
 	duckdb::string Get(const char *name, const duckdb::string &fallback = "") const;
 	bool Has(const char *name) const;
-	//! True when `name` resolves to a recognized truthy spelling.
-	bool Truthy(const char *name) const;
 
 private:
 	std::map<duckdb::string, duckdb::string> overlay;

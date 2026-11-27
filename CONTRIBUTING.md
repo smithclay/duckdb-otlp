@@ -1,235 +1,64 @@
-# Contributing to DuckDB OTLP Extension
+# Contributing to duckdb-otlp
 
-Thanks for your interest in contributing! This guide covers building, testing, and developing the extension.
+## Build from source
 
-## Development Setup
+Install Git, a C++17 compiler, CMake 3.19 or later, GNU Make, Ninja, Python 3, and Rust with Cargo. The pinned `otlp2records` crate declares Rust 1.90 as its minimum. Install `uv` for Python tools and tests.
 
-### Prerequisites
+Windows builds the extension with MSVC. The daemon and C++ seal harness build on Linux and macOS.
 
-- **vcpkg** for dependency management
-- **Ninja** (recommended) or Make
-- **DuckDB** 0.10+
-- **C++ compiler** with C++17 support
-- **Python 3.8+** with `uv` for tooling
-
-### 1. Clone and set up vcpkg
-
-```bash
-# Clone the repository
-git clone https://github.com/smithclay/duckdb-otlp.git
+```sh
+git clone --recurse-submodules https://github.com/smithclay/duckdb-otlp.git
 cd duckdb-otlp
-
-# Set up vcpkg for dependency management
-git clone https://github.com/Microsoft/vcpkg.git
-./vcpkg/bootstrap-vcpkg.sh
-
-# Set the toolchain path (add to your shell profile)
-export VCPKG_TOOLCHAIN_PATH=$(pwd)/vcpkg/scripts/buildsystems/vcpkg.cmake
-```
-
-### 2. Build the extension
-
-Use Ninja for faster builds:
-
-```bash
 GEN=ninja make
 ```
 
-This produces:
-- `./build/release/duckdb` - DuckDB shell with extension loaded
-- `./build/release/test/unittest` - Test runner
-- `./build/release/extension/otlp/otlp.duckdb_extension` - Loadable extension
+For an existing checkout, initialize or refresh the pinned submodules with `git submodule update --init --recursive`.
 
-**Build debug version:**
-```bash
-GEN=ninja make debug
+The release build puts the DuckDB shell with the extension linked at `build/release/duckdb` and the loadable extension at `build/release/extension/otlp/otlp.duckdb_extension`. Use `GEN=ninja make debug` for a debug build.
+
+On Linux or macOS, build just the receiver with `GEN=ninja make server-release`. The binary is `build/release/extension/otlp/duckdb-otlp`.
+
+For a browser build, activate Emscripten and add the Rust target. Use the Make generator for this target because it invokes `emmake make`.
+
+```sh
+rustup target add wasm32-unknown-emscripten
+make wasm_eh
 ```
 
-## Testing
+The browser artifact is `build/wasm_eh/extension/otlp/otlp.duckdb_extension.wasm`.
 
-### Run all tests
+## Test and format
 
-```bash
-# SQL logic tests
-make test
+After a release build, run `GEN=ninja make test` for the SQL logic tests and the C++ seal harness on supported native platforms. See the [test guide](test/README.md) for all four suites and their CI jobs.
 
-# Debug build tests
-make test_debug
-```
-
-### Run specific test files
-
-```bash
-# Run a single test file
-./build/release/test/unittest "test/sql/read_otlp_protobuf.test"
-
-# Run all tests matching a pattern
-./build/release/test/unittest "test/sql/read_otlp_*.test"
-```
-
-### Test structure
-
-Tests are written in DuckDB's SQLLogicTest format under `test/sql/`:
-
-- `test/sql/otlp.test` - Basic extension functionality
-- `test/sql/read_otlp_json.test` - JSON parsing
-- `test/sql/read_otlp_protobuf.test` - Protobuf parsing
-- `test/sql/read_otlp_errors.test` - Error handling
-- `test/sql/read_otlp_on_error.test` - `on_error` parameter
-- `test/sql/read_otlp_metrics_helpers.test` - Metrics helpers
-- `test/sql/schema_bridge.test` - Schema compatibility
-
-## Code Quality
-
-### Formatting
-
-Check formatting before committing:
-
-```bash
-# Check C++ and Python formatting
-make format-check
-
-# Auto-fix formatting issues
-make format-fix
-```
-
-### Linting
-
-Run clang-tidy (requires vcpkg dependencies):
-
-```bash
+```sh
+GEN=ninja make format-check
+GEN=ninja make format-fix
 GEN=ninja make tidy-check
 ```
 
-### Pre-commit hooks
+Install `clang-tidy` for the last target. To install the repository's pre-commit hooks, run `uvx --from pre-commit pre-commit install`.
 
-Install hooks with `uv`:
+For the source map and implementation details, see [AGENTS.md](AGENTS.md). For the documentation build, see the [site README](site/README.md).
 
-```bash
-# Install pre-commit hooks
-uvx --from pre-commit pre-commit install
+## Update the DuckDB pin
 
-# Run manually
-uvx --from pre-commit pre-commit run --all-files
-```
+The current build targets DuckDB `v2.0.0`. When moving to a new release, update these pins together.
 
-## Project Structure
+1. Check out the release tag in the `duckdb` submodule and record the new gitlink.
+2. Update `duckdb_version` and `DAEMON_DUCKDB_VERSION` in `MainDistributionPipeline.yml`. Update the daemon test's `duckdb==…` package pin there and in the [test guide](test/README.md).
+3. Update `duckdb_version` and `DUCKDB_VERSION` in `pages.yml` and both `DUCKDB_VERSION` defaults in the server Dockerfile.
+4. Match the `extension-ci-tools` submodule, its branch in `.gitmodules`, the reusable workflow refs, and the `ci_tools_version` inputs to the community build tools. They currently use `v2.0-cyanoptera`. Keep the DuckDB submodule branch hint aligned with the release line.
+5. Rebuild from a fresh build directory, run the test suites, and check that the daemon can load the extensions its modes install. The reported DuckDB version must match the version used to prime the image's extension cache.
 
-```
-duckdb-otlp/
-├── src/
-│   ├── include/          # Public headers
-│   ├── storage/          # Extension entry point
-│   ├── function/         # Table function implementations
-│   ├── otlp_arrow.cpp    # Arrow import (wraps DuckDB's stock importer)
-│   ├── schema/           # Column layout definitions
-│   └── generated/        # Protobuf stubs (DO NOT EDIT)
-├── test/
-│   ├── sql/              # SQLLogicTests
-│   └── data/             # Test fixtures (OTLP JSON/protobuf)
-├── docs/                 # User documentation
-└── extension-ci-tools/   # Build system utilities
-```
+## Releases
 
-## Architecture
+Check that the release commit passed the main distribution pipeline before tagging it. A `v*` tag runs the pipeline and attaches the Linux and macOS receiver archives and `SHA256SUMS` after Docker smoke tests pass. Confirm the assets are available with `gh release view <tag>`.
 
-### Data Flow
+Coordinate the community catalog update through `repo.ref` in `description.yml`. Its `variegata` pin records the last build compatible with DuckDB v1.5.6.
 
-```
-OTLP File -> Rust backend -> Arrow arrays -> DuckDB DataChunks
-```
+## Pull requests
 
-1. **Rust backend** (`external/otlp2records`) - Parses OTLP JSON/protobuf payloads and emits Arrow arrays
-2. **Arrow import** (`src/otlp_arrow.cpp`) - Hands the Arrow arrays to DuckDB's stock Arrow importer
-3. **Table functions** (`src/function/read_otlp.cpp`) - Bind schemas and scan DuckDB `DataChunk`s
+Keep the change focused, include regression coverage for behavior changes, and update user documentation when the public interface changes. Describe the change, link the related issue if there is one, and list the checks you ran.
 
-### Key Files
-
-- `src/storage/otlp_extension.cpp` - Extension registration
-- `src/function/read_otlp.cpp` - Table function implementations
-- `src/otlp_arrow.cpp` - Arrow import (wraps DuckDB's stock importer)
-- `external/otlp2records` - Rust OTLP parser and Arrow batch builder
-
-### Generated Code
-
-`src/generated/` contains protobuf message stubs auto-generated from OpenTelemetry `.proto` files:
-
-- `opentelemetry/proto/common/v1/common.pb.{h,cc}`
-- `opentelemetry/proto/resource/v1/resource.pb.{h,cc}`
-- `opentelemetry/proto/trace/v1/trace.pb.{h,cc}`
-- `opentelemetry/proto/logs/v1/logs.pb.{h,cc}`
-- `opentelemetry/proto/metrics/v1/metrics.pb.{h,cc}`
-
-**Do not edit these files manually.** They are excluded from formatting and linting.
-
-## Adding Features
-
-### Adding a new table function
-
-1. Define the schema in the table function binding.
-2. Add the corresponding Arrow output in `external/otlp2records`.
-3. Register the function in `src/storage/otlp_extension.cpp`
-4. Add table function wrapper in `src/function/read_otlp.cpp`
-5. Add tests in `test/sql/`
-
-### Modifying parsers
-
-JSON/protobuf parsing lives in the Rust backend under `external/otlp2records`.
-
-## Updating DuckDB Version
-
-When a new DuckDB release is available:
-
-1. **Update submodules**:
-   ```bash
-   cd duckdb
-   git checkout <new-version-tag>
-   cd ../extension-ci-tools
-   git checkout <matching-version-branch>
-   ```
-
-2. **Update workflows**:
-   - `.github/workflows/MainDistributionPipeline.yml`:
-     - `duckdb_version` in `duckdb-stable-build` job
-     - `duckdb_version` in `duckdb-stable-deploy` job
-     - Reusable workflow version
-
-3. **Test for API changes**:
-   DuckDB's C++ API is not stable. Check:
-   - [DuckDB Release Notes](https://github.com/duckdb/duckdb/releases)
-   - [Core extension patches](https://github.com/duckdb/duckdb/commits/main/.github/patches/extensions)
-   - Git history of relevant headers
-
-4. **Rebuild and test**:
-   ```bash
-   rm -rf build/
-   GEN=ninja make
-   make test
-   ```
-
-## Submitting Pull Requests
-
-1. **Fork the repository** and create a feature branch
-2. **Make your changes** with clear, descriptive commits
-3. **Add tests** for new functionality
-4. **Run formatting and linting**:
-   ```bash
-   make format-fix
-   GEN=ninja make tidy-check
-   make test
-   ```
-5. **Update documentation** if adding features
-6. **Submit PR** with:
-   - Clear description of changes
-   - Link to related issues
-   - Before/after examples if relevant
-
-## Questions?
-
-- **Development questions**: Open a [Discussion](https://github.com/smithclay/duckdb-otlp/discussions)
-- **Bug reports**: File an [Issue](https://github.com/smithclay/duckdb-otlp/issues)
-- **Documentation**: See [docs/](docs/)
-
-## License
-
-By contributing, you agree that your contributions will be licensed under the MIT License.
+Contributions are licensed under the [MIT License](LICENSE).

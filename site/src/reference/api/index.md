@@ -20,7 +20,7 @@ The readers are DuckDB multi-file readers, so they take the same file options as
 | Option | Effect |
 |---|---|
 | `filename` | Adds a `filename` column naming each row's file. The `filename` virtual column is selectable without the option. |
-| `file_row_number` | Adds a `file_row_number` column (BIGINT), the row's position within its file, from 0. |
+| `file_row_number` | Adds a `file_row_number` column (BIGINT), the row's original zero-based position within its file. Filtering preserves these positions. |
 | `hive_partitioning` | Reads `key=value` directories in the path as columns. A filter on one skips other partitions' files without opening them. Detected automatically when every path is partitioned. |
 | `hive_types`, `hive_types_autocast` | Type the partition columns. |
 | `union_by_name` | Accepted. Every file of a signal has the same columns, so it changes nothing. |
@@ -63,7 +63,7 @@ Returns exponential histogram metrics (27 columns) with scale, zero bucket, posi
 
 **Parameters:** Same as `read_otlp_traces`
 
-`read_otlp_metrics(path)` and `read_otlp_metrics_summary(path)` are registered placeholders. Use the shape-specific metric readers above.
+Summary metrics are not supported.
 
 ### OpenTelemetry Arrow Protocol (OTAP)
 
@@ -88,15 +88,12 @@ Because OTAP and OTLP mean different things, they are separate functions rather 
 
 In native builds, you can run a server that accepts live telemetry over **HTTP** or **gRPC** and streams it into the default DuckDB catalog or an attached writable catalog such as DuckLake or an Iceberg REST catalog. The server buffers rows and commits them in batches: an accepted request returns immediately (HTTP `202 Accepted` / gRPC `OK`), and rows become durable at the next background commit or on graceful stop. Current native builds commit after about 5 seconds for the oldest buffered row, or when admitted request-body bytes reach about 128 MiB.
 
-Each serve function is bound to its own URI scheme (no mixing). `otlp_serve` runs the **OTLP** protocol on the `otlp:` scheme: **OTLP/HTTP** by default (port 4318), or standard **OTLP/gRPC** unary `Export` with `transport := 'grpc'`. `otap_serve` runs the canonical **OTAP/Arrow** bidirectional streaming services (`Arrow{Logs,Traces,Metrics}Service`, all six signals) over gRPC on the `otap:` scheme (port 4317). The two gRPC service sets are disjoint — `otlp_serve(transport := 'grpc')` serves only OTLP unary, `otap_serve` only OTAP/Arrow. The lifecycle functions below are transport-agnostic.
+- **`otlp_serve([uri], transport := 'http'|'grpc', catalog := '<attached_db>', ...)`** starts an ingest server on the `otlp:` scheme and creates or validates the target tables. The default transport is OTLP/HTTP. A gRPC listener accepts OTLP unary exports and OTAP/Arrow streams on the same port and writes them to the same tables. Pass a URI list with a parallel transport list to feed one server from several listeners. See the [Live Ingest Reference](../serve/#grpc-transport).
 
-- **`otlp_serve([uri], transport := 'http'|'grpc', catalog := '<attached_db>', ...)`** - Start an **OTLP** ingest server on the `otlp:` scheme, target a catalog, and create/validate the target tables. `transport` defaults to `'http'` (OTLP/HTTP); `'grpc'` serves OTLP/gRPC unary `Export`. Pass a URI list with a parallel `transport` list (for example `otlp_serve(['otlp:localhost:4318', 'otlp:localhost:4317'], transport := ['http', 'grpc'])`) to feed one server from several listeners.
-- **`otap_serve([uri], catalog := '<attached_db>', ...)`** - Start an **OTAP/Arrow** gRPC streaming server (`otap:` scheme; defaults to `otap:localhost:4317`, gRPC-only). Same parameters as `otlp_serve`. OTAP/Arrow streams keep one stateful decoder per stream (cross-message Arrow dictionary reuse).
-- **`otlp_flush(uri)`** - Force a synchronous commit when readers need the latest accepted rows now.
-- **`otlp_stop(uri)`** - Stop the server that owns listener `uri`, including its other listeners (commits remaining rows first).
+- **`otlp_flush([listen_uri])`** - Commit buffered rows synchronously. A listener URI selects its server. With no argument, flush every server on this database.
+- **`otlp_stop(listen_uri)`** - Stop the server that owns the listener and commit its remaining buffered rows.
 - **`otlp_stop()`** - Stop **every** server on this database, committing each before returning. One row per server. Use this before closing a database when you did not start every server yourself.
 - **`otlp_server_list()`** - List running listeners with their server's live counters, buffer state, and health.
-- **`otlp_seal_list()`** - List recent seal attempts with append/commit timing, row/byte counts, and any error.
 
 See the [Serve Reference](../serve/) for parameters, catalog targeting, endpoints, auth, and buffered commit behavior. For task-oriented walkthroughs, start with the [Live Ingest Quickstart](../../quickstart/serve/), [Stream to Local DuckLake](../../guides/stream-to-local-ducklake/), [Stream to Remote DuckLake](../../guides/stream-to-remote-ducklake/), [Stream to Parquet](../../guides/stream-to-parquet/), [Stream to Amazon S3 Tables](../../guides/stream-to-s3-tables/), or [Stream to Cloudflare R2 Data Catalog](../../guides/stream-to-r2-data-catalog/).
 
@@ -111,7 +108,7 @@ FROM duckdb_functions()
 WHERE list_contains(categories, 'opentelemetry');
 ```
 
-The `categories` column separates the two wire protocols (`otlp` vs `otap`) from the live-ingest functions (`ingest`, `monitoring`). `read_otlp_metrics` and `read_otlp_metrics_summary` are described but carry no example, because every call to them raises a not-implemented error.
+The `categories` column separates the two wire protocols (`otlp` vs `otap`) from the live-ingest functions (`ingest`, `monitoring`).
 
 ## Examples
 

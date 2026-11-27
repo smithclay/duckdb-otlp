@@ -30,3 +30,6 @@ ATTACH 'ducklake:${CATALOG_PATH}' AS "${CATALOG}" (
   , DATA_INLINING_ROW_LIMIT ${DUCKLAKE_DATA_INLINING_ROW_LIMIT}
 -- @end
 );
+CALL "${CATALOG}".set_option('target_file_size', '${DUCKDB_OTLP_TARGET_FILE_SIZE:-268435456} bytes');
+CALL "${CATALOG}".set_option('expire_older_than', '${DUCKDB_OTLP_MAINTENANCE_RETENTION_MS:-900000} milliseconds');
+CALL "${CATALOG}".set_option('delete_older_than', '${DUCKDB_OTLP_MAINTENANCE_RETENTION_MS:-900000} milliseconds');

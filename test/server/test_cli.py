@@ -204,19 +204,6 @@ def test_duplicate_ports_are_rejected(tmp_path):
     assert "must use different ports" in result.stderr
 
 
-def test_otap_cannot_be_combined_with_standard_otlp(tmp_path):
-    result = run(["validate", "--otap", "4317", "--http", "4318"], home=tmp_path)
-    assert result.returncode == 1
-    assert "OTAP/Arrow cannot be combined" in result.stderr
-
-
-def test_otap_alone_uses_otap_serve(tmp_path):
-    result = run(["validate", "--otap", "4317"], home=tmp_path)
-    assert result.returncode == 0, result.stderr
-    assert "otap:127.0.0.1:4317" in result.stdout
-    assert "FROM otap_serve(" in result.stdout
-
-
 # --------------------------------------------------------------------------------------
 # Standard OTLP environment variables
 # --------------------------------------------------------------------------------------
@@ -231,6 +218,7 @@ def test_otap_alone_uses_otap_serve(tmp_path):
         ("OTEL_EXPORTER_OTLP_CERTIFICATE", "/etc/ssl/ca.pem"),
         ("OTEL_EXPORTER_OTLP_CLIENT_KEY", "/etc/ssl/key.pem"),
         ("OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE", "/etc/ssl/cert.pem"),
+        ("OTEL_AUTH_TOKEN", "a-removed-token-variable"),
     ],
 )
 def test_unsupportable_otel_vars_fail_loudly(name, value, tmp_path):
@@ -413,7 +401,6 @@ def test_the_startup_banner_is_visible_while_the_server_runs(tmp_path):
         "DUCKDB_DATABASE": ":memory:",
         "PARQUET_EXPORT_PATH": str(tmp_path / "pq"),
         "DUCKDB_OTLP_HTTP_PORT": str(free_port()),
-        "DUCKDB_OTLP_STARTUP_TIMEOUT": "30",
     }
     with log.open("w") as handle:
         process = subprocess.Popen([str(SERVER_BIN)], env=env, stdout=handle, stderr=handle)
@@ -466,7 +453,6 @@ def test_an_ipv6_host_is_bracketed_in_the_quack_address_too(tmp_path):
     [
         (["doctor", "--init-sql", "x.sql"], "serve, validate"),
         (["validate", "--json"], "doctor"),
-        (["doctor", "--dry-run"], "serve, validate"),
     ],
 )
 def test_a_flag_of_another_command_is_rejected_by_name(args, belongs_to, tmp_path):

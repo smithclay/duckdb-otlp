@@ -10,12 +10,15 @@
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/client_context.hpp"
 
+#include "otlp_arrow.hpp"
 #include "otlp_server.hpp"
-#include "otlp_uri.hpp"
 
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -91,18 +94,63 @@ idx_t TableCount(Connection &con, const std::string &table) {
 	return chunk->GetValue(0, 0).GetValue<int64_t>();
 }
 
-// The constructor binds synchronously and throws on EADDRINUSE, so retry a few candidate ports.
 unique_ptr<OtlpServer> MakeServer(ClientContext &context, const OtlpServerConfig &config) {
-	for (int port = 41931; port < 41931 + 24; port++) {
-		try {
-			OtlpListenerSpec spec;
-			spec.uri = OtlpUri("otlp:127.0.0.1:" + std::to_string(port));
-			return make_uniq<OtlpServer>(context, vector<OtlpListenerSpec> {spec}, config);
-		} catch (const std::exception &) {
+	return make_uniq<OtlpServer>(context, vector<OtlpListenerSpec> {}, config);
+}
+
+struct IngestResult {
+	OtlpIngestStatus status;
+	string message;
+
+	bool Accepted() const {
+		return status == OTLP_INGEST_OK;
+	}
+};
+
+IngestResult IngestBatches(OtlpServer &server, idx_t input_bytes, const OtlpIngestBatch *batches, idx_t count) {
+	char detail[256] = {};
+	auto status = server.Ingest(input_bytes, batches, count, detail, sizeof(detail));
+	return {status, detail};
+}
+
+IngestResult IngestLogs(OtlpServer &server, const string &payload) {
+	ArrowArrayWrapper array;
+	ArrowSchemaWrapper schema;
+	REQUIRE(otlp_transform_with_profile(OTLP_SIGNAL_LOGS, OTLP_FORMAT_JSON, OTLP_ARROW_PROFILE_DUCKDB,
+	                                    reinterpret_cast<const uint8_t *>(payload.data()), payload.size(),
+	                                    &array.arrow_array, &schema.arrow_schema) == OTLP_OK);
+	const OtlpIngestBatch batch {OTLP_SIGNAL_LOGS, &array.arrow_array, &schema.arrow_schema};
+	return IngestBatches(server, payload.size(), &batch, 1);
+}
+
+IngestResult IngestMetrics(OtlpServer &server, const string &payload) {
+	struct MetricBatches {
+		OtlpMetricsArrowBatches decoded {};
+		//! In signal order from OTLP_SIGNAL_METRICS_GAUGE.
+		OtlpArrowBatch *shapes[4] = {&decoded.gauge, &decoded.sum, &decoded.histogram, &decoded.exp_histogram};
+		~MetricBatches() {
+			for (auto *shape : shapes) {
+				if (shape->present && shape->array.release) {
+					shape->array.release(&shape->array);
+				}
+				if (shape->present && shape->schema.release) {
+					shape->schema.release(&shape->schema);
+				}
+			}
+		}
+	} metrics;
+	REQUIRE(otlp_transform_metrics_all_with_profile(OTLP_FORMAT_JSON, OTLP_ARROW_PROFILE_DUCKDB,
+	                                                reinterpret_cast<const uint8_t *>(payload.data()), payload.size(),
+	                                                &metrics.decoded) == OTLP_OK);
+	vector<OtlpIngestBatch> batches;
+	for (idx_t i = 0; i < 4; i++) {
+		auto &shape = *metrics.shapes[i];
+		if (shape.present) {
+			batches.push_back(
+			    {static_cast<OtlpSignalType>(OTLP_SIGNAL_METRICS_GAUGE + i), &shape.array, &shape.schema});
 		}
 	}
-	FAIL("could not bind OtlpServer to any candidate loopback port");
-	return nullptr;
+	return IngestBatches(server, payload.size(), batches.data(), batches.size());
 }
 
 OtlpServerConfig HarnessConfig() {
@@ -110,7 +158,7 @@ OtlpServerConfig HarnessConfig() {
 	config.token = "harness-token-0123456789"; // >= 16 chars (ValidateToken)
 	config.catalog_name = "";                  // default in-memory catalog
 	config.schema_name = "main";
-	// Large triggers so only FlushNow seals, making row counts deterministic.
+	// Large triggers so only SealOnce seals, making row counts deterministic.
 	config.seal_target_bytes = 1ULL << 40;
 	config.seal_max_age_ms = 1000LL * 1000LL;
 	return config;
@@ -134,8 +182,7 @@ OtlpServerConfig ParquetHarnessConfig(const std::string &export_path) {
 
 } // namespace
 
-// Ingest reports every failure as a refusal value rather than a throw, so each transport only maps
-// it to its own wire status. A refusal must leave the buffers and the admission budget untouched.
+// A rejected message leaves the buffers and the admission budget untouched.
 TEST_CASE("seal harness: ingest refusals are classified and release their admission", "[seal_harness]") {
 	DuckDB db(nullptr);
 	Connection con(db);
@@ -144,37 +191,25 @@ TEST_CASE("seal harness: ingest refusals are classified and release their admiss
 	config.max_buffered_bytes = 4096;
 	auto server = MakeServer(*con.context, config);
 
-	auto expect_refusal = [&](const OtlpIngestOutcome &outcome, OtlpIngestRefusal refusal) {
-		REQUIRE_FALSE(outcome.Accepted());
-		REQUIRE(outcome.refusal == refusal);
-		REQUIRE_FALSE(outcome.message.empty());
-		REQUIRE(outcome.counts.rows == 0);
-		REQUIRE(server->BufferedRows() == 0);
-		REQUIRE(server->AdmittedBytes() == 0);
-	};
+	auto oversized = MakeLogsJson(1);
+	oversized.resize(config.max_buffered_bytes + 1, ' ');
+	auto refused = IngestLogs(*server, oversized);
+	REQUIRE(refused.status == OTLP_INGEST_RESOURCE_EXHAUSTED);
+	REQUIRE_FALSE(refused.message.empty());
+	REQUIRE(server->BufferedRows() == 0);
+	REQUIRE(server->AdmittedBytes() == 0);
 
-	expect_refusal(server->IngestForTest(OtlpRequestKind::LOGS, "application/json", "",
-	                                     std::string(config.max_body_bytes + 1, ' ')),
-	               OtlpIngestRefusal::PAYLOAD_TOO_LARGE);
-	expect_refusal(server->IngestForTest(OtlpRequestKind::LOGS, "text/plain", "", MakeLogsJson(1)),
-	               OtlpIngestRefusal::UNSUPPORTED_MEDIA);
-	expect_refusal(server->IngestForTest(OtlpRequestKind::LOGS, "application/json", "br", MakeLogsJson(1)),
-	               OtlpIngestRefusal::UNSUPPORTED_MEDIA);
-	expect_refusal(server->IngestForTest(OtlpRequestKind::LOGS, "application/json", "", "{not json"),
-	               OtlpIngestRefusal::MALFORMED);
-	expect_refusal(server->IngestForTest(OtlpRequestKind::METRICS, "application/x-protobuf", "", "\xff\xff"),
-	               OtlpIngestRefusal::MALFORMED);
-	// Under max_body_bytes but over the whole admission budget.
-	expect_refusal(server->IngestForTest(OtlpRequestKind::LOGS, "application/json", "",
-	                                     std::string(config.max_buffered_bytes + 1, ' ')),
-	               OtlpIngestRefusal::BUFFER_FULL);
+	// A message can have no batches, for example when it contains summaries only.
+	REQUIRE(IngestBatches(*server, 8, nullptr, 0).Accepted());
+	REQUIRE(server->BufferedRows() == 0);
+	REQUIRE(server->AdmittedBytes() == 0);
 
 	// Refusals leave the server able to accept.
-	auto accepted = server->IngestForTest(OtlpRequestKind::LOGS, "application/json", "", MakeLogsJson(2));
+	auto accepted = IngestLogs(*server, MakeLogsJson(2));
 	REQUIRE(accepted.Accepted());
 	REQUIRE(accepted.message.empty());
-	REQUIRE(accepted.counts.rows == 2);
-	REQUIRE(server->FlushNow().rows == 2);
+	REQUIRE(server->BufferedRows() == 2);
+	REQUIRE(server->SealOnce() == 2);
 	REQUIRE(server->AdmittedBytes() == 0);
 	server->Close();
 }
@@ -187,20 +222,17 @@ TEST_CASE("seal harness: happy-path flush commits all rows and drains buffers", 
 	const idx_t kLogRows = 7;
 	const idx_t kGaugeRows = 5;
 
-	auto logs = server->IngestForTest(OtlpRequestKind::LOGS, "application/json", "", MakeLogsJson(kLogRows));
-	auto metrics = server->IngestForTest(OtlpRequestKind::METRICS, "application/json", "", MakeGaugeJson(kGaugeRows));
-	REQUIRE(logs.Accepted());
-	REQUIRE(logs.counts.rows == kLogRows);
-	REQUIRE(metrics.Accepted());
-	REQUIRE(metrics.counts.rows == kGaugeRows);
+	REQUIRE(IngestLogs(*server, MakeLogsJson(kLogRows)).Accepted());
+	REQUIRE(server->BufferedRows() == kLogRows);
+	REQUIRE(IngestMetrics(*server, MakeGaugeJson(kGaugeRows)).Accepted());
 
 	REQUIRE(server->BufferedRows() == kLogRows + kGaugeRows);
 	REQUIRE(server->AdmittedBytes() > 0);
 	REQUIRE(TableCount(con, "otlp_logs") == 0);
 	REQUIRE(TableCount(con, "otlp_metrics_gauge") == 0);
 
-	auto sealed = server->FlushNow();
-	REQUIRE(sealed.rows == kLogRows + kGaugeRows);
+	auto sealed = server->SealOnce();
+	REQUIRE(sealed == kLogRows + kGaugeRows);
 
 	REQUIRE(TableCount(con, "otlp_logs") == kLogRows);
 	REQUIRE(TableCount(con, "otlp_metrics_gauge") == kGaugeRows);
@@ -223,8 +255,8 @@ TEST_CASE("seal harness: injected seal failure re-buffers rows, then retry commi
 	const idx_t kGaugeRows = 4;
 	const idx_t kTotal = kLogRows + kGaugeRows;
 
-	server->IngestForTest(OtlpRequestKind::LOGS, "application/json", "", MakeLogsJson(kLogRows));
-	server->IngestForTest(OtlpRequestKind::METRICS, "application/json", "", MakeGaugeJson(kGaugeRows));
+	IngestLogs(*server, MakeLogsJson(kLogRows));
+	IngestMetrics(*server, MakeGaugeJson(kGaugeRows));
 	REQUIRE(server->BufferedRows() == kTotal);
 	const idx_t admitted_before = server->AdmittedBytes();
 	REQUIRE(admitted_before > 0);
@@ -232,7 +264,7 @@ TEST_CASE("seal harness: injected seal failure re-buffers rows, then retry commi
 	server->SetSealFaultHookForTest([]() { throw std::runtime_error("injected seal failure"); });
 
 	// SealOnce rethrows; in production the sealer thread's loop swallows it.
-	REQUIRE_THROWS(server->FlushNow());
+	REQUIRE_THROWS(server->SealOnce());
 
 	// Rows re-buffered, nothing committed, admission restored, failure recorded.
 	REQUIRE(server->BufferedRows() == kTotal);
@@ -246,8 +278,8 @@ TEST_CASE("seal harness: injected seal failure re-buffers rows, then retry commi
 
 	// The retry commits everything.
 	server->SetSealFaultHookForTest(nullptr);
-	auto sealed = server->FlushNow();
-	REQUIRE(sealed.rows == kTotal);
+	auto sealed = server->SealOnce();
+	REQUIRE(sealed == kTotal);
 
 	REQUIRE(TableCount(con, "otlp_logs") == kLogRows);
 	REQUIRE(TableCount(con, "otlp_metrics_gauge") == kGaugeRows);
@@ -258,6 +290,25 @@ TEST_CASE("seal harness: injected seal failure re-buffers rows, then retry commi
 	REQUIRE(server->CommittedRowsTotal() == kTotal);
 	REQUIRE(server->SealLastError().empty()); // self-clears on success
 
+	server->Close();
+}
+
+TEST_CASE("seal harness: a failed insert records a plain seal error", "[seal_harness]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto server = MakeServer(*con.context, HarnessConfig());
+
+	REQUIRE(IngestLogs(*server, MakeLogsJson(1)).Accepted());
+	REQUIRE_FALSE(con.Query("ALTER TABLE otlp_logs RENAME TO saved_logs")->HasError());
+	REQUIRE_THROWS(server->SealOnce());
+	auto error = server->SealLastError();
+	REQUIRE_FALSE(error.empty());
+	INFO(error);
+	REQUIRE(error[0] != '{');
+	REQUIRE(error.find("Table with name otlp_logs does not exist") != string::npos);
+
+	REQUIRE_FALSE(con.Query("ALTER TABLE saved_logs RENAME TO otlp_logs")->HasError());
+	REQUIRE(server->SealOnce() == 1);
 	server->Close();
 }
 
@@ -274,13 +325,13 @@ TEST_CASE("seal harness: parquet happy-path seal exports all rows and drains buf
 		const idx_t kGaugeRows = 9;
 		const idx_t kTotal = kLogRows + kGaugeRows;
 
-		server->IngestForTest(OtlpRequestKind::LOGS, "application/json", "", MakeLogsJson(kLogRows));
-		server->IngestForTest(OtlpRequestKind::METRICS, "application/json", "", MakeGaugeJson(kGaugeRows));
+		IngestLogs(*server, MakeLogsJson(kLogRows));
+		IngestMetrics(*server, MakeGaugeJson(kGaugeRows));
 		REQUIRE(server->BufferedRows() == kTotal);
 		REQUIRE(server->AdmittedBytes() > 0);
 
-		auto sealed = server->FlushNow();
-		REQUIRE(sealed.rows == kTotal);
+		auto sealed = server->SealOnce();
+		REQUIRE(sealed == kTotal);
 
 		REQUIRE(TableCount(con, "otlp_logs") == kLogRows);
 		REQUIRE(TableCount(con, "otlp_metrics_gauge") == kGaugeRows);
@@ -337,8 +388,8 @@ TEST_CASE("seal harness: parquet seal does not re-bind an existing inspection vi
 		PlantCorruptParquet(export_dir, "otlp_logs");
 		auto server = MakeServer(*con.context, ParquetHarnessConfig(export_dir.string()));
 
-		server->IngestForTest(OtlpRequestKind::LOGS, "application/json", "", MakeLogsJson(3));
-		REQUIRE(server->FlushNow().rows == 3);
+		IngestLogs(*server, MakeLogsJson(3));
+		REQUIRE(server->SealOnce() == 3);
 
 		REQUIRE(ViewBindFailures(con) == 0);
 		REQUIRE(ScalarCount(con, "SELECT kept FROM otlp_logs") == 42);
@@ -359,8 +410,8 @@ TEST_CASE("seal harness: parquet inspection view is attempted once per server", 
 		auto server = MakeServer(*con.context, ParquetHarnessConfig(export_dir.string()));
 
 		for (int seal = 0; seal < 3; seal++) {
-			server->IngestForTest(OtlpRequestKind::LOGS, "application/json", "", MakeLogsJson(2));
-			REQUIRE(server->FlushNow().rows == 2);
+			IngestLogs(*server, MakeLogsJson(2));
+			REQUIRE(server->SealOnce() == 2);
 		}
 
 		REQUIRE(ViewBindFailures(con) == 1);
@@ -381,8 +432,8 @@ TEST_CASE("seal harness: parquet_views=false exports without creating a view", "
 		config.parquet_views = false;
 		auto server = MakeServer(*con.context, config);
 
-		server->IngestForTest(OtlpRequestKind::LOGS, "application/json", "", MakeLogsJson(4));
-		REQUIRE(server->FlushNow().rows == 4);
+		IngestLogs(*server, MakeLogsJson(4));
+		REQUIRE(server->SealOnce() == 4);
 
 		REQUIRE_FALSE(ViewExists(con, "otlp_logs"));
 		auto glob = (export_dir / "otlp_logs" / "**" / "*.parquet").string();
@@ -393,8 +444,8 @@ TEST_CASE("seal harness: parquet_views=false exports without creating a view", "
 }
 
 // Parquet partial export is at-least-once: logs export, the gauge COPY fails. The exported share is
-// committed and its admission released; the gauge is re-buffered with exactly its own admission.
-TEST_CASE("seal harness: parquet partial export re-buffers only failed signal with exact per-signal admission",
+// committed and the gauge is re-buffered with its share of the seal's admission by row count.
+TEST_CASE("seal harness: parquet partial export re-buffers only the failed signal and balances admission",
           "[seal_harness]") {
 	auto export_dir = UniqueExportDir();
 	{
@@ -405,46 +456,46 @@ TEST_CASE("seal harness: parquet partial export re-buffers only failed signal wi
 		const idx_t kLogRows = 10;  // signal index 0 (otlp_logs) — exports successfully
 		const idx_t kGaugeRows = 5; // signal index 2 (otlp_metrics_gauge) — forced to fail
 
-		// Separate requests, so the gauge signal owns exactly the gauge request's reservation.
-		server->IngestForTest(OtlpRequestKind::LOGS, "application/json", "", MakeLogsJson(kLogRows));
-		const idx_t admitted_after_logs = server->AdmittedBytes(); // == the logs signal's admission
-		server->IngestForTest(OtlpRequestKind::METRICS, "application/json", "", MakeGaugeJson(kGaugeRows));
+		IngestLogs(*server, MakeLogsJson(kLogRows));
+		const idx_t admitted_after_logs = server->AdmittedBytes();
+		IngestMetrics(*server, MakeGaugeJson(kGaugeRows));
 		const idx_t admitted_before = server->AdmittedBytes();
 		REQUIRE(admitted_before > admitted_after_logs);
 		REQUIRE(server->BufferedRows() == kLogRows + kGaugeRows);
-		const idx_t gauge_admission = admitted_before - admitted_after_logs;
+		const idx_t released_admission = admitted_before - admitted_before * kGaugeRows / (kLogRows + kGaugeRows);
 
-		// Fail only the gauge signal's COPY (TARGET_TABLES index 2).
+		// Fail only the gauge signal's COPY.
 		server->SetParquetSealFaultHookForTest([](idx_t i) {
 			if (i == 2) {
 				throw std::runtime_error("injected parquet seal failure on gauge");
 			}
 		});
 
-		REQUIRE_THROWS(server->FlushNow());
+		REQUIRE_THROWS(server->SealOnce());
 
 		REQUIRE(TableCount(con, "otlp_logs") == kLogRows);
 		REQUIRE(server->BufferedRows() == kGaugeRows);
-		REQUIRE(server->AdmittedBytes() == gauge_admission);
+		const idx_t restored_admission = server->AdmittedBytes();
+		REQUIRE(restored_admission + released_admission == admitted_before);
 		// A failed seal, yet the exported share lands in committed_rows_total.
 		REQUIRE(server->SealFailuresTotal() == 1);
 		REQUIRE(server->SealsTotal() == 0);
 		REQUIRE(server->CommittedRowsTotal() == kLogRows);
 		REQUIRE_FALSE(server->SealLastError().empty());
 
-		// Repeated failures must keep admission pinned at gauge_admission, with no drift.
+		// Repeated failures restore every remaining row and its full admission.
 		for (int cycle = 0; cycle < 5; cycle++) {
-			REQUIRE_THROWS(server->FlushNow());
+			REQUIRE_THROWS(server->SealOnce());
 			REQUIRE(server->BufferedRows() == kGaugeRows);
-			REQUIRE(server->AdmittedBytes() == gauge_admission); // no drift across cycles
+			REQUIRE(server->AdmittedBytes() == restored_admission);
 		}
 		REQUIRE(server->SealFailuresTotal() == 1 + 5);
 		REQUIRE(server->SealsTotal() == 0);
 
 		// The retry exports only the gauge rows; logs are not re-exported.
 		server->SetParquetSealFaultHookForTest(nullptr);
-		auto sealed = server->FlushNow();
-		REQUIRE(sealed.rows == kGaugeRows);
+		auto sealed = server->SealOnce();
+		REQUIRE(sealed == kGaugeRows);
 
 		REQUIRE(TableCount(con, "otlp_metrics_gauge") == kGaugeRows);
 		REQUIRE(server->BufferedRows() == 0);
@@ -467,7 +518,7 @@ TEST_CASE("seal harness: failed catalog seal preserves oldest-buffered age acros
 	auto server = MakeServer(*con.context, HarnessConfig());
 
 	const idx_t kLogRows = 8;
-	server->IngestForTest(OtlpRequestKind::LOGS, "application/json", "", MakeLogsJson(kLogRows));
+	IngestLogs(*server, MakeLogsJson(kLogRows));
 	REQUIRE(server->BufferedRows() == kLogRows);
 
 	std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -475,18 +526,18 @@ TEST_CASE("seal harness: failed catalog seal preserves oldest-buffered age acros
 	REQUIRE(age_before_seal >= 50);
 
 	server->SetSealFaultHookForTest([]() { throw std::runtime_error("injected seal failure"); });
-	REQUIRE_THROWS(server->FlushNow());
+	REQUIRE_THROWS(server->SealOnce());
 
 	REQUIRE(server->BufferedRows() == kLogRows);
 	REQUIRE(server->SealFailuresTotal() == 1);
 
-	// Age only grows, so >= age_before_seal shows first_unsealed was carried across the restore.
+	// Age only grows, so >= age_before_seal shows the oldest time was carried across the restore.
 	const int64_t age_after_restore = server->OldestBufferedAgeMs();
 	REQUIRE(age_after_restore >= age_before_seal);
 
 	server->SetSealFaultHookForTest(nullptr);
-	auto sealed = server->FlushNow();
-	REQUIRE(sealed.rows == kLogRows);
+	auto sealed = server->SealOnce();
+	REQUIRE(sealed == kLogRows);
 	REQUIRE(TableCount(con, "otlp_logs") == kLogRows);
 	REQUIRE(server->BufferedRows() == 0);
 	REQUIRE(server->OldestBufferedAgeMs() == -1); // drained: no buffered rows
@@ -502,7 +553,7 @@ TEST_CASE("seal harness: failed final drain reports dropped rows and stays idemp
 	auto server = MakeServer(*con.context, HarnessConfig());
 
 	const idx_t kLogRows = 9;
-	server->IngestForTest(OtlpRequestKind::LOGS, "application/json", "", MakeLogsJson(kLogRows));
+	IngestLogs(*server, MakeLogsJson(kLogRows));
 	REQUIRE(server->BufferedRows() == kLogRows);
 	REQUIRE(server->ShutdownDroppedRows() == 0); // nothing dropped yet
 
@@ -525,7 +576,7 @@ TEST_CASE("seal harness: clean shutdown drains all rows and reports zero dropped
 	auto server = MakeServer(*con.context, HarnessConfig());
 
 	const idx_t kLogRows = 5;
-	server->IngestForTest(OtlpRequestKind::LOGS, "application/json", "", MakeLogsJson(kLogRows));
+	IngestLogs(*server, MakeLogsJson(kLogRows));
 	REQUIRE(server->BufferedRows() == kLogRows);
 
 	server->Close(); // ShutdownIngest's final drain seals the remaining rows
@@ -533,6 +584,60 @@ TEST_CASE("seal harness: clean shutdown drains all rows and reports zero dropped
 	REQUIRE(server->BufferedRows() == 0);
 	REQUIRE(server->ShutdownDroppedRows() == 0);
 	REQUIRE(TableCount(con, "otlp_logs") == kLogRows);
+}
+
+// otlp_flush on another connection can be mid-seal when otlp_stop shuts the server down. Its rows
+// are then in the seal's detached plan, not the live buffers. If that seal fails and re-buffers
+// them, the shutdown drain must still seal them (or count them as dropped), never lose them.
+TEST_CASE("seal harness: shutdown during a concurrent flush that fails loses no rows", "[seal_harness]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto server = MakeServer(*con.context, HarnessConfig());
+
+	const idx_t kLogRows = 6;
+	REQUIRE(IngestLogs(*server, MakeLogsJson(kLogRows)).Accepted());
+
+	std::mutex mutex;
+	std::condition_variable cv;
+	bool in_seal = false;
+	bool closing = false;
+	std::atomic<int> seal_attempts {0};
+	server->SetSealFaultHookForTest([&]() {
+		if (seal_attempts.fetch_add(1) > 0) {
+			return; // only the concurrent flush fails; the shutdown drain may commit
+		}
+		std::unique_lock<std::mutex> lock(mutex);
+		in_seal = true;
+		cv.notify_all();
+		cv.wait(lock, [&] { return closing; });
+		lock.unlock();
+		// Give Close() time to reach its drain while this seal still holds the rows.
+		std::this_thread::sleep_for(std::chrono::milliseconds(200));
+		throw std::runtime_error("injected concurrent flush failure");
+	});
+
+	std::atomic<bool> flush_failed {false};
+	std::thread flusher([&] {
+		try {
+			server->SealOnce();
+		} catch (...) {
+			flush_failed = true;
+		}
+	});
+	{
+		std::unique_lock<std::mutex> lock(mutex);
+		cv.wait(lock, [&] { return in_seal; });
+		closing = true;
+		cv.notify_all();
+	}
+	server->Close();
+	flusher.join();
+
+	REQUIRE(flush_failed);
+	REQUIRE(TableCount(con, "otlp_logs") + server->ShutdownDroppedRows() == kLogRows);
+	REQUIRE(TableCount(con, "otlp_logs") == kLogRows);
+	REQUIRE(server->ShutdownDroppedRows() == 0);
+	REQUIRE(server->BufferedRows() == 0);
 }
 
 // A metrics request spanning several sub-signals is all-or-nothing: a mid-conversion failure
@@ -551,28 +656,29 @@ TEST_CASE("seal harness: failed metrics staging buffers nothing, retry buffers e
 	REQUIRE(server->AdmittedBytes() == 0);
 
 	// Fault fires after the gauge converts into staging, before the sum converts.
-	server->SetMetricsStageFaultHookForTest([]() { throw std::runtime_error("injected metrics staging failure"); });
+	server->SetStageFaultHookForTest([](OtlpSignalType signal) {
+		if (signal == OTLP_SIGNAL_METRICS_GAUGE) {
+			throw std::runtime_error("injected metrics staging failure");
+		}
+	});
 
-	auto refused = server->IngestForTest(OtlpRequestKind::METRICS, "application/json", "", payload);
-	REQUIRE(refused.refusal == OtlpIngestRefusal::INTERNAL);
+	auto refused = IngestMetrics(*server, payload);
+	REQUIRE(refused.status == OTLP_INGEST_INTERNAL);
 	REQUIRE(refused.message == "injected metrics staging failure");
-	REQUIRE(refused.counts.rows == 0);
-	REQUIRE(refused.counts.skipped_summaries == 0);
 
 	REQUIRE(server->BufferedRows() == 0);
 	REQUIRE(TableCount(con, "otlp_metrics_gauge") == 0);
 	REQUIRE(TableCount(con, "otlp_metrics_sum") == 0);
 	REQUIRE(server->AdmittedBytes() == 0);
 
-	server->SetMetricsStageFaultHookForTest(nullptr);
-	auto ingested = server->IngestForTest(OtlpRequestKind::METRICS, "application/json", "", payload);
+	server->SetStageFaultHookForTest(nullptr);
+	auto ingested = IngestMetrics(*server, payload);
 	REQUIRE(ingested.Accepted());
-	REQUIRE(ingested.counts.rows == kTotal);
 	REQUIRE(server->BufferedRows() == kTotal);
-	REQUIRE(server->AdmittedBytes() > 0);
+	REQUIRE(server->AdmittedBytes() == MaxValue<idx_t>(payload.size(), 1024));
 
-	auto sealed = server->FlushNow();
-	REQUIRE(sealed.rows == kTotal);
+	auto sealed = server->SealOnce();
+	REQUIRE(sealed == kTotal);
 	REQUIRE(TableCount(con, "otlp_metrics_gauge") == kGaugeRows);
 	REQUIRE(TableCount(con, "otlp_metrics_sum") == kSumRows);
 	REQUIRE(server->BufferedRows() == 0);
@@ -672,8 +778,8 @@ TEST_CASE("seal harness: catalog sink fills promoted columns by name and NULL-fi
 	{
 		auto server = MakeServer(*con.context, promoted);
 		REQUIRE(server->PromotedColumnsTotal() == 1);
-		server->IngestForTest(OtlpRequestKind::LOGS, "application/json", "", MakeLogsJson(3));
-		REQUIRE(server->FlushNow().rows == 3);
+		IngestLogs(*server, MakeLogsJson(3));
+		REQUIRE(server->SealOnce() == 3);
 		server->Close();
 	}
 	REQUIRE_FALSE(con.Query("ALTER TABLE otlp_logs ADD COLUMN operator_note VARCHAR")->HasError());
@@ -681,8 +787,8 @@ TEST_CASE("seal harness: catalog sink fills promoted columns by name and NULL-fi
 	// Restart without promotion against the now-wider table: it must validate and seal.
 	{
 		auto server = MakeServer(*con.context, HarnessConfig());
-		server->IngestForTest(OtlpRequestKind::LOGS, "application/json", "", MakeLogsJson(2));
-		REQUIRE(server->FlushNow().rows == 2);
+		IngestLogs(*server, MakeLogsJson(2));
+		REQUIRE(server->SealOnce() == 2);
 		server->Close();
 	}
 

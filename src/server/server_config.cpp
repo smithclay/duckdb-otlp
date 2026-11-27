@@ -4,13 +4,13 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "env_source.hpp"
+#include "otlp_control.hpp"
 #include "otlp_sql_util.hpp"
 #include "otlp_uri.hpp"
 #include "server_util.hpp"
 
 #include <cstring>
 #include <filesystem>
-#include <limits>
 #include <map>
 #include <sstream>
 #include <utility>
@@ -76,13 +76,7 @@ void RejectUnsupportedOtelEnv(const EnvSource &env) {
 	    {"OTEL_EXPORTER_OTLP_CERTIFICATE", tls},
 	    {"OTEL_EXPORTER_OTLP_CLIENT_KEY", tls},
 	    {"OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE", tls},
-	    // Removed settings: ignoring them would silently change the bind.
-	    {"OTEL_HTTP_ADDR", "it was removed; use --host and --http PORT (DUCKDB_OTLP_HOST, DUCKDB_OTLP_HTTP_PORT)"},
-	    {"OTEL_GRPC_ADDR", "it was removed; use --host and --grpc PORT (DUCKDB_OTLP_HOST, DUCKDB_OTLP_GRPC_PORT)"},
-	    {"DUCKDB_OTLP_TRANSPORTS", "it was removed; select listeners with --http/--grpc PORT (0 disables one)"},
-	    {"DUCKDB_OTLP_LISTEN_URI", "it was removed; use --host with --http, --grpc or --otap PORT"},
-	    {"DUCKDB_QUACK_ENABLED", "it was removed; enable Quack with --quack PORT (DUCKDB_QUACK_PORT)"},
-	    {"DUCKDB_QUACK_ADDR", "it was removed; use --host and --quack PORT (DUCKDB_QUACK_PORT)"},
+	    {"OTEL_AUTH_TOKEN", "it was removed; set DUCKDB_OTLP_TOKEN instead"},
 	};
 	for (const auto &entry : unsupported) {
 		if (env.Has(entry.first)) {
@@ -115,44 +109,6 @@ void ValidateCatalogDoesNotShadowDatabase(const ServerConfig &config) {
 	}
 }
 
-//! `name` as a positive integer no larger than `max`, or `fallback` when it is unset.
-uint64_t ParsePositiveEnv(const EnvSource &env, const char *name, uint64_t fallback,
-                          uint64_t max = std::numeric_limits<int64_t>::max()) {
-	auto value = env.Get(name);
-	if (value.empty()) {
-		return fallback;
-	}
-	size_t pos = 0;
-	uint64_t parsed = 0;
-	try {
-		parsed = std::stoull(value, &pos);
-	} catch (...) {
-		pos = 0;
-	}
-	if (pos != value.size() || value[0] == '-' || parsed == 0 || parsed > max) {
-		throw InvalidInputException("%s must be a positive integer", name);
-	}
-	return parsed;
-}
-
-//! DUCKDB_OTLP_<X> sets otlp_serve option <x>. The extension validates and defaults them.
-struct ServeOption {
-	const char *variable;
-	bool numeric;
-};
-const ServeOption SERVE_OPTIONS[] = {
-    {"HTTP_THREADS", true},
-    {"MAX_BODY_BYTES", true},
-    {"MAX_BUFFERED_BYTES", true},
-    {"SEAL_TARGET_BYTES", true},
-    {"SEAL_MAX_AGE_MS", true},
-    {"TARGET_FILE_SIZE", true},
-    {"MAINTENANCE_RETENTION_MS", true},
-    {"MAINTENANCE_INTERVAL_MS", true},
-    {"PROMOTE_RESOURCE_ATTRIBUTES", false},
-    {"PROMOTE_SCOPE_ATTRIBUTES", false},
-};
-
 //! Expands a mode preset. The syntax is documented at the top of local-ducklake.sql.
 class PresetExpander {
 public:
@@ -176,9 +132,6 @@ public:
 					active.pop_back();
 				} else if (directive == "if") {
 					active.push_back(keep && If(words));
-				} else if (directive == "else" && !active.empty()) {
-					bool parent = active.size() < 2 || active[active.size() - 2];
-					active.back() = parent && !active.back();
 				} else if (directive == "set" && words.size() >= 2) {
 					if (keep) {
 						auto value = trimmed.substr(trimmed.find(words[1]) + words[1].size());
@@ -341,7 +294,6 @@ void ConfigureMode(const EnvSource &env, ServerConfig &config) {
 	config.schema = expander.Var("SCHEMA");
 	config.parquet_export_path = expander.Var("PARQUET_EXPORT_PATH");
 	config.credentials_source = expander.Var("CREDENTIALS");
-	config.allow_unsigned_extensions = !expander.Var("ALLOW_UNSIGNED_EXTENSIONS").empty();
 	auto data_path = expander.Var("DATA_PATH");
 	auto catalog_path = expander.Var("CATALOG_PATH");
 	if (!catalog_path.empty()) {
@@ -370,16 +322,11 @@ int ParsePortEnv(const EnvSource &env, const char *name) {
 	return static_cast<int>(parsed);
 }
 
-//! "host:port" for a bind, bracketing an IPv6 literal so the port stays separable.
-string BindAddr(const EnvSource &env, int port) {
-	return duckdb::UriHost(env.Get("DUCKDB_OTLP_HOST", DEFAULT_HOST)) + ":" + std::to_string(port);
-}
-
 //! Ports must differ regardless of host: distinct host strings can name the same socket.
 void ValidateDistinctPorts(const std::vector<IngestListener> &listeners) {
 	for (duckdb::idx_t i = 0; i < listeners.size(); i++) {
 		for (duckdb::idx_t j = i + 1; j < listeners.size(); j++) {
-			if (duckdb::OtlpUri(listeners[i].uri).Port() == duckdb::OtlpUri(listeners[j].uri).Port()) {
+			if (listeners[i].port == listeners[j].port) {
 				throw InvalidInputException("Listeners %s and %s must use different ports", listeners[i].transport,
 				                            listeners[j].transport);
 			}
@@ -389,19 +336,25 @@ void ValidateDistinctPorts(const std::vector<IngestListener> &listeners) {
 
 } // namespace
 
-std::vector<IngestListener> ListenersFromEnv(const EnvSource &env) {
+string BindAddr(const string &host, int port) {
+	return duckdb::UriHost(host) + ":" + std::to_string(port);
+}
+
+duckdb::OtlpUri ListenHostFromEnv(const EnvSource &env) {
 	RejectUnsupportedOtelEnv(env);
+	// Validate and normalize the host once with the extension's URI parser.
+	return duckdb::OtlpUri("otlp:" + BindAddr(env.Get("DUCKDB_OTLP_HOST", DEFAULT_HOST), DEFAULT_HTTP_PORT));
+}
+
+std::vector<IngestListener> ListenersFromEnv(const EnvSource &env, const string &host) {
 	struct PortSpec {
 		const char *port_var;
 		int default_port;
-		const char *scheme;
 		const char *transport;
-		bool otap;
 	};
 	const PortSpec specs[] = {
-	    {"DUCKDB_OTLP_HTTP_PORT", DEFAULT_HTTP_PORT, "otlp", "http", false},
-	    {"DUCKDB_OTLP_GRPC_PORT", DEFAULT_GRPC_PORT, "otlp", "grpc", false},
-	    {"DUCKDB_OTLP_OTAP_PORT", DEFAULT_GRPC_PORT, "otap", "grpc", true},
+	    {"DUCKDB_OTLP_HTTP_PORT", DEFAULT_HTTP_PORT, "http"},
+	    {"DUCKDB_OTLP_GRPC_PORT", DEFAULT_GRPC_PORT, "grpc"},
 	};
 	// A non-zero port selects its transport and narrows the set to the ones selected. A port of 0
 	// disables its transport without selecting one, so `--grpc 0` keeps the HTTP default.
@@ -413,28 +366,20 @@ std::vector<IngestListener> ListenersFromEnv(const EnvSource &env) {
 	for (const auto &spec : specs) {
 		bool set = env.Has(spec.port_var);
 		int port = set ? ParsePortEnv(env, spec.port_var) : spec.default_port;
-		// OTAP is never on by default; it has to be asked for.
-		bool enabled = set ? port != 0 : !spec.otap && !any_selected;
+		bool enabled = set ? port != 0 : !any_selected;
 		if (enabled) {
-			auto uri = duckdb::OtlpUri(string(spec.scheme) + ":" + BindAddr(env, port)).Uri();
-			listeners.push_back({uri, spec.transport, spec.otap});
+			listeners.push_back({"otlp:" + BindAddr(host, port), spec.transport, port});
 		}
 	}
 	if (listeners.empty()) {
-		throw InvalidInputException("Every listener is disabled. Enable at least one of --http, --grpc, or --otap.");
-	}
-	// otap_serve and otlp_serve are separate servers; one process starts one of them.
-	if (listeners.front().otap != listeners.back().otap) {
-		throw InvalidInputException("OTAP/Arrow cannot be combined with standard OTLP listeners. Start OTAP alone "
-		                            "(--otap PORT --http 0 --grpc 0), or run a second process for it.");
+		throw InvalidInputException("Every listener is disabled. Enable --http or --grpc.");
 	}
 	ValidateDistinctPorts(listeners);
 	return listeners;
 }
 
-string QuackAddrFromEnv(const EnvSource &env) {
-	auto port = env.Has("DUCKDB_QUACK_PORT") ? ParsePortEnv(env, "DUCKDB_QUACK_PORT") : 0;
-	return port == 0 ? string() : BindAddr(env, port);
+int QuackPortFromEnv(const EnvSource &env) {
+	return env.Has("DUCKDB_QUACK_PORT") ? ParsePortEnv(env, "DUCKDB_QUACK_PORT") : 0;
 }
 
 ServerConfig ServerConfig::FromEnv(const EnvSource &env) {
@@ -443,29 +388,33 @@ ServerConfig ServerConfig::FromEnv(const EnvSource &env) {
 	config.data_dir = env.Get("DUCKDB_OTLP_DATA_DIR", DefaultDataDir(env));
 	config.database = env.Get("DUCKDB_DATABASE", config.data_dir + "/duckdb-otlp-control.duckdb");
 	config.secret_dir = env.Get("DUCKDB_OTLP_SECRET_DIR", "");
-	config.listeners = ListenersFromEnv(env);
+	auto listen_host = ListenHostFromEnv(env);
+	config.host = listen_host.Host();
+	config.listeners = ListenersFromEnv(env, config.host);
 	// Most specific first; OTEL_EXPORTER_OTLP_HEADERS lets one variable configure exporter and receiver.
-	config.token = env.Get("OTEL_AUTH_TOKEN", env.Get("DUCKDB_OTLP_TOKEN"));
+	config.token = env.Get("DUCKDB_OTLP_TOKEN");
 	if (config.token.empty() && env.Has("OTEL_EXPORTER_OTLP_HEADERS")) {
 		config.token = BearerTokenFromOtelHeaders(env.Get("OTEL_EXPORTER_OTLP_HEADERS"));
 	}
 	config.disable_auth = IsTruthy(env.Get("DUCKDB_OTLP_DISABLE_AUTH", "0"));
-	config.quack_http_addr = QuackAddrFromEnv(env);
-	config.quack_enabled = !config.quack_http_addr.empty();
-	config.quack_listen_uri = "quack:" + config.quack_http_addr;
-	config.dry_run = IsTruthy(env.Get("DRY_RUN", "0"));
-	config.startup_timeout_secs = static_cast<int>(ParsePositiveEnv(env, "DUCKDB_OTLP_STARTUP_TIMEOUT",
-	                                                                static_cast<uint64_t>(config.startup_timeout_secs),
-	                                                                std::numeric_limits<int>::max()));
-	for (const auto &option : SERVE_OPTIONS) {
-		auto variable = string("DUCKDB_OTLP_") + option.variable;
-		if (!env.Has(variable.c_str())) {
+	config.quack_port = QuackPortFromEnv(env);
+	for (const auto &[name, type] : duckdb::OtlpServeTuningOptions()) {
+		auto variable = "DUCKDB_OTLP_" + StringUtil::Upper(name);
+		auto value = env.Get(variable.c_str());
+		if (value.empty()) {
 			continue;
 		}
-		auto name = StringUtil::Lower(option.variable);
-		auto value = option.numeric ? std::to_string(ParsePositiveEnv(env, variable.c_str(), 0))
-		                            : SqlQuote(env.Get(variable.c_str()));
-		config.serve_options.emplace_back(name, value);
+		if (type.IsIntegral()) {
+			if (value.find_first_not_of("0123456789") != string::npos) {
+				throw InvalidInputException("%s must contain only decimal digits", variable);
+			}
+			if (value.find_first_not_of('0') == string::npos) {
+				throw InvalidInputException("%s must be greater than zero", variable);
+			}
+		} else {
+			value = SqlQuote(value);
+		}
+		config.serve_options.emplace_back(name, std::move(value));
 	}
 	// An empty script is a no-op, so a templated file can render empty.
 	config.init_sql_path = env.Get("DUCKDB_OTLP_INIT_SQL", "");
@@ -474,7 +423,7 @@ ServerConfig ServerConfig::FromEnv(const EnvSource &env) {
 	}
 
 	config.quack_token = env.Get("DUCKDB_QUACK_TOKEN");
-	if (config.quack_enabled && config.quack_token.empty()) {
+	if (config.quack_port != 0 && config.quack_token.empty()) {
 		throw InvalidInputException(
 		    "Quack (--quack PORT) requires a dedicated token. Set --quack-token (DUCKDB_QUACK_TOKEN).");
 	}
@@ -485,15 +434,11 @@ ServerConfig ServerConfig::FromEnv(const EnvSource &env) {
 		throw InvalidInputException("DUCKDB_QUACK_SSL_CERT_FILE and DUCKDB_QUACK_SSL_KEY_FILE must be set together.");
 	}
 
-	// No built-in default token: without one, auth is allowed off only when every listener is
+	// No built-in default token: without one, auth is allowed off only when the bind host is
 	// loopback. A wildcard bind is not local. OtlpUri::IsLocal() is the predicate otlp_serve's
 	// allow_other_hostname gate uses, so the two cannot disagree.
-	bool all_loopback = true;
-	for (const auto &listener : config.listeners) {
-		all_loopback = all_loopback && duckdb::OtlpUri(listener.uri).IsLocal();
-	}
 	if (!config.disable_auth && config.token.empty()) {
-		if (!all_loopback) {
+		if (!listen_host.IsLocal()) {
 			throw InvalidInputException(
 			    "A bearer token is required when binding a non-loopback address. Set DUCKDB_OTLP_TOKEN (at least 16 "
 			    "characters), or pass --no-auth to accept unauthenticated traffic on purpose. Binding loopback "
@@ -514,13 +459,21 @@ ServerConfig ServerConfig::FromEnv(const EnvSource &env) {
 	return config;
 }
 
+string ServerConfig::ListenUrisSql() const {
+	duckdb::vector<string> quoted;
+	for (const auto &listener : listeners) {
+		quoted.push_back(SqlQuote(listener.uri));
+	}
+	return StringUtil::Join(quoted, ", ");
+}
+
 string ServerConfig::StartOtlpSql() const {
 	string options_sql;
 	if (!parquet_export_path.empty()) {
 		options_sql += ",\n    parquet_export_path := " + SqlQuote(parquet_export_path);
 		// The inspection view reads every archived footer, so it is worth creating only when
 		// something can query it.
-		if (!quack_enabled) {
+		if (quack_port == 0) {
 			options_sql += ",\n    parquet_views := false";
 		}
 	}
@@ -529,10 +482,9 @@ string ServerConfig::StartOtlpSql() const {
 	}
 	auto schema_target =
 	    catalog.empty() ? QuoteIdentifier(schema) : QuoteIdentifier(catalog) + "." + QuoteIdentifier(schema);
-	string uris_sql;
+	auto uris_sql = ListenUrisSql();
 	string transports_sql;
 	for (const auto &listener : listeners) {
-		uris_sql += (uris_sql.empty() ? "" : ", ") + SqlQuote(listener.uri);
 		transports_sql += (transports_sql.empty() ? "" : ", ") + SqlQuote(listener.transport);
 	}
 	auto auth_sql =
@@ -540,7 +492,7 @@ string ServerConfig::StartOtlpSql() const {
 	return StringUtil::Format(R"SQL(
 CREATE SCHEMA IF NOT EXISTS %s;
 SELECT listen_url, catalog_name, schema_name
-FROM %s(
+FROM otlp_serve(
     [%s],
     transport := [%s],
     catalog := %s,
@@ -549,12 +501,16 @@ FROM %s(
     allow_other_hostname := true%s
 );
 )SQL",
-	                          schema_target, listeners.front().otap ? "otap_serve" : "otlp_serve", uris_sql,
-	                          transports_sql, SqlQuote(catalog), SqlQuote(schema), auth_sql, options_sql);
+	                          schema_target, uris_sql, transports_sql, SqlQuote(catalog), SqlQuote(schema), auth_sql,
+	                          options_sql);
+}
+
+string ServerConfig::QuackUri() const {
+	return "quack:" + BindAddr(host, quack_port);
 }
 
 string ServerConfig::StartQuackSql() const {
-	if (!quack_enabled) {
+	if (quack_port == 0) {
 		return "";
 	}
 	// No disable_ssl: Quack serves TLS on a non-loopback bind; the banner prints the fingerprint.
@@ -582,14 +538,14 @@ FROM quack_serve(
     allow_other_hostname := true%s
 );
 )SQL",
-	                          SqlQuote(quack_listen_uri), ssl_sql) +
+	                          SqlQuote(QuackUri()), ssl_sql) +
 	       reset_sql;
 }
 
 string ServerConfig::QuackEndpointSql() const {
 	return StringUtil::Format("SELECT listen_url, coalesce(info['ssl_fingerprint'], '') FROM quack_server_list() "
 	                          "WHERE listen_uri = %s LIMIT 1",
-	                          SqlQuote(quack_listen_uri));
+	                          SqlQuote(QuackUri()));
 }
 
 string ServerConfig::StopOtlpSql() const {
@@ -599,15 +555,18 @@ string ServerConfig::StopOtlpSql() const {
 }
 
 string ServerConfig::StopQuackSql() const {
-	return StringUtil::Format("CALL quack_stop(%s);", SqlQuote(quack_listen_uri));
+	return StringUtil::Format("CALL quack_stop(%s);", SqlQuote(QuackUri()));
 }
 
-string ServerConfig::BootSql() const {
-	// Serve-path order. secret_directory goes first: it must be set before anything (the mode's
-	// CREATE SECRET) initializes the secret manager.
-	auto prelude = secret_dir.empty() ? string() : "SET secret_directory = " + SqlQuote(secret_dir) + ";\n";
-	auto init = init_sql.empty() ? string() : init_sql + "\n";
-	return prelude + mode_setup_sql + "\n" + init + StartOtlpSql() + "\n" + StartQuackSql();
+std::vector<BootStep> ServerConfig::SetupSteps() const {
+	// Set secret_directory before mode setup can initialize the secret manager.
+	return {{"settings", secret_dir.empty() ? string() : "SET secret_directory = " + SqlQuote(secret_dir) + ";\n"},
+	        {"mode setup", mode_setup_sql + "\n"},
+	        {"init SQL", init_sql.empty() ? string() : init_sql + "\n"}};
+}
+
+std::vector<BootStep> ServerConfig::ServeSteps() const {
+	return {{"otlp startup", StartOtlpSql() + "\n"}, {"quack startup", StartQuackSql()}};
 }
 
 } // namespace duckdb_otlp_server

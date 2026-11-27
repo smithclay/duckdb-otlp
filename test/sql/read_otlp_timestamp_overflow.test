@@ -36,3 +36,24 @@ statement error
 SELECT COUNT(*) FROM read_otlp_logs('test/data/ts_overflow_logs.jsonl');
 ----
 OTLP parse error on test/data/ts_overflow_logs.jsonl: Parse failed
+
+# The protobuf fixture has a valid event timestamp and an overflowing observed timestamp.
+# Each hint rules out the row before the decoder converts its observed timestamp.
+query III
+SELECT
+    (SELECT count(*) FROM read_otlp_logs('test/data/ts_overflow_observed_logs.pb')
+     WHERE time_unix_nano IN ('2022-01-01', '2022-02-01')),
+    (SELECT count(*) FROM read_otlp_logs('test/data/ts_overflow_observed_logs.pb')
+     WHERE time_unix_nano = '2022-01-01' OR time_unix_nano > '2022-02-01'),
+    (SELECT count(*) FROM read_otlp_logs('test/data/ts_overflow_observed_logs.pb')
+     WHERE CAST(time_unix_nano AS TIMESTAMP) >= TIMESTAMP '2022-01-01');
+----
+0	0	0
+
+# There is no nanosecond between these exclusive bounds, so the scan can skip decoding.
+query I
+SELECT count(*) FROM read_otlp_logs('test/data/ts_overflow_logs.jsonl')
+WHERE time_unix_nano > make_timestamp_ns(1640995200000000000)
+  AND time_unix_nano < make_timestamp_ns(1640995200000000001);
+----
+0

@@ -1,10 +1,9 @@
 /**
- * @file read_otlp.cpp
- * @brief DuckDB table functions using Rust otlp2records backend
- *
  * This file implements read_otlp_logs, read_otlp_traces, etc. Each is a single-file reader over the
  * Rust otlp2records library, wrapped by DuckDB's multi-file framework.
  */
+
+#include "otlp_read.hpp"
 
 #include "duckdb.hpp"
 #include "duckdb/function/table_function.hpp"
@@ -59,13 +58,6 @@ private:
 	shared_ptr<const OtlpArrowTable> table;
 };
 
-//! A function registered only to point callers elsewhere: the error it raises.
-struct ReadOtlpUnsupportedInfo : public TableFunctionInfo {
-	explicit ReadOtlpUnsupportedInfo(string message_p) : message(std::move(message_p)) {
-	}
-	string message;
-};
-
 //! Bind data of the single-file reader: one file of a multi-file scan. Globbing, file lists and the
 //! multi-file options (filename, hive_partitioning, union_by_name, ...) belong to DuckDB's multi-file
 //! framework, which binds this once per file.
@@ -75,20 +67,6 @@ struct ReadOtlpFileBindData : public TableFunctionData {
 	// read_otap_*: decoded with the stateful OTAP decoder; same output schema as OTLP.
 	bool is_otap = false;
 	shared_ptr<const OtlpArrowTable> table;
-
-	unique_ptr<FunctionData> Copy() const override {
-		auto result = make_uniq<ReadOtlpFileBindData>();
-		result->column_ids = column_ids;
-		result->file = file;
-		result->signal_type = signal_type;
-		result->is_otap = is_otap;
-		result->table = table;
-		return std::move(result);
-	}
-	bool Equals(const FunctionData &other_p) const override {
-		auto &other = other_p.Cast<ReadOtlpFileBindData>();
-		return file.path == other.file.path && signal_type == other.signal_type && is_otap == other.is_otap;
-	}
 };
 
 //! What a file's scan asks otlp2records to build: only the columns it reads, and only the rows that can
@@ -196,15 +174,6 @@ struct ReadOtlpFileGlobalState : public GlobalTableFunctionState {
 	}
 };
 
-static unique_ptr<FunctionData> ReadOtlpUnsupportedBind(ClientContext &context, TableFunctionBindInput &input,
-                                                        vector<LogicalType> &return_types, vector<Identifier> &names) {
-	throw NotImplementedException(input.info->Cast<ReadOtlpUnsupportedInfo>().message);
-}
-
-static void ReadOtlpUnsupportedScan(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
-	throw InternalException("an unsupported read_otlp_* reader was scanned");
-}
-
 static unique_ptr<FunctionData> ReadOtlpFileBind(ClientContext &context, TableFunctionBindInput &input,
                                                  vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto &info = input.info->Cast<ReadOtlpInfo>();
@@ -223,140 +192,105 @@ static unique_ptr<FunctionData> ReadOtlpFileBind(ClientContext &context, TableFu
 //===--------------------------------------------------------------------===//
 // Filter pushdown: what otlp2records can prune
 //===--------------------------------------------------------------------===//
-// A pushed filter is an expression over its column (a bound reference). These find the part of it that
-// limits a timestamp column to a range, which otlp2records prunes rows by. The answer is a superset of
-// the rows the filter keeps, so pruning by it is safe; anything not understood restricts nothing.
+// AddFilterToRequest sends otlp2records service_name predicates and inclusive timestamp ranges.
+// DuckDB evaluates the service predicate on a constant per resource. NarrowTime finds a range
+// that covers every possible match, leaving unsupported expressions unrestricted. The projection
+// sets the order of the decoded batch and its arrow_columns map. ReadOtlpFileFilter applies the
+// pushed filters exactly with DuckDB's storage evaluator after Arrow conversion.
 
-//! `column <op> constant` (either side): the constant, and the comparison as seen from the column.
-static optional_ptr<const BoundConstantExpression> ColumnComparison(const Expression &expr, ExpressionType &type) {
-	if (expr.GetExpressionClass() != ExpressionClass::BOUND_FUNCTION ||
-	    !BoundComparisonExpression::IsComparison(expr)) {
-		return nullptr;
-	}
-	auto constant = ExpressionFilter::TryGetColumnConstantComparison(expr.Cast<BoundFunctionExpression>(), type);
-	if (!constant || constant->GetValue().IsNull()) {
-		return nullptr;
-	}
-	return constant;
-}
+static constexpr int64_t MIN_TIMESTAMP_NS = NumericLimits<int64_t>::Minimum();
+static constexpr int64_t MAX_TIMESTAMP_NS = NumericLimits<int64_t>::Maximum();
 
-//! `column IN (constants)`: the non-NULL constants (a NULL never matches).
-static bool ColumnInList(const Expression &expr, vector<Value> &values) {
-	if (expr.GetExpressionClass() != ExpressionClass::BOUND_OPERATOR ||
-	    expr.GetExpressionType() != ExpressionType::COMPARE_IN) {
-		return false;
+//! Intersects the inclusive range with what `expr` requires of a TIMESTAMP_NS column.
+//! An unsupported expression leaves the range unchanged.
+static bool NarrowTime(const Expression &expr, OtlpTimeRange &range) {
+	auto type = expr.GetExpressionType();
+	auto expression_class = expr.GetExpressionClass();
+	if (type == ExpressionType::CONJUNCTION_AND && expression_class == ExpressionClass::BOUND_CONJUNCTION) {
+		bool restricted = false;
+		for (auto &child : expr.Cast<BoundConjunctionExpression>().GetChildren()) {
+			restricted |= NarrowTime(*child, range);
+		}
+		return restricted;
 	}
-	auto &children = expr.Cast<BoundOperatorExpression>().GetChildren();
-	if (children.empty() || !ExpressionFilter::IsSimpleFilterColumnRef(*children[0])) {
-		return false;
-	}
-	for (idx_t i = 1; i < children.size(); i++) {
-		if (children[i]->GetExpressionClass() != ExpressionClass::BOUND_CONSTANT) {
+	if (expression_class == ExpressionClass::BOUND_FUNCTION && BoundComparisonExpression::IsComparison(expr)) {
+		ExpressionType comparison;
+		auto constant =
+		    ExpressionFilter::TryGetColumnConstantComparison(expr.Cast<BoundFunctionExpression>(), comparison);
+		if (!constant || constant->GetValue().IsNull() ||
+		    constant->GetValue().type().id() != LogicalTypeId::TIMESTAMP_NS) {
 			return false;
 		}
-		auto &value = children[i]->Cast<BoundConstantExpression>().GetValue();
-		if (!value.IsNull()) {
-			values.push_back(value);
-		}
-	}
-	return true;
-}
-
-static bool IsConjunction(const Expression &expr, ExpressionType type) {
-	return expr.GetExpressionClass() == ExpressionClass::BOUND_CONJUNCTION && expr.GetExpressionType() == type;
-}
-
-struct NanosecondRange {
-	int64_t min = NumericLimits<int64_t>::Minimum();
-	int64_t max = NumericLimits<int64_t>::Maximum();
-};
-
-static bool TimestampNs(const Value &value, int64_t &result) {
-	if (value.type().id() != LogicalTypeId::TIMESTAMP_NS) {
-		return false;
-	}
-	result = value.GetValue<timestamp_ns_t>().value;
-	return true;
-}
-
-//! The inclusive range `expr` limits a TIMESTAMP_NS column to, if it limits it.
-static bool RestrictTime(const Expression &expr, NanosecondRange &result) {
-	ExpressionType type;
-	int64_t value;
-	if (auto constant = ColumnComparison(expr, type)) {
-		if (!TimestampNs(constant->GetValue(), value)) {
-			return false;
-		}
-		result = NanosecondRange();
-		switch (type) {
+		auto value = constant->GetValue().GetValue<timestamp_ns_t>().value;
+		switch (comparison) {
 		case ExpressionType::COMPARE_EQUAL:
-			result.min = result.max = value;
+			range.min = MaxValue(range.min, value);
+			range.max = MinValue(range.max, value);
 			return true;
 		case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
-			result.min = value;
+			range.min = MaxValue(range.min, value);
 			return true;
 		case ExpressionType::COMPARE_GREATERTHAN:
-			if (value == NumericLimits<int64_t>::Maximum()) {
+			if (value == MAX_TIMESTAMP_NS) {
 				return false;
 			}
-			result.min = value + 1;
+			range.min = MaxValue(range.min, value + 1);
 			return true;
 		case ExpressionType::COMPARE_LESSTHANOREQUALTO:
-			result.max = value;
+			range.max = MinValue(range.max, value);
 			return true;
 		case ExpressionType::COMPARE_LESSTHAN:
-			if (value == NumericLimits<int64_t>::Minimum()) {
+			if (value == MIN_TIMESTAMP_NS) {
 				return false;
 			}
-			result.max = value - 1;
+			range.max = MinValue(range.max, value - 1);
 			return true;
 		default:
 			return false;
 		}
 	}
-	vector<Value> values;
-	if (ColumnInList(expr, values)) {
-		// The hull of the list: a superset of its values.
-		result = NanosecondRange();
-		result.min = NumericLimits<int64_t>::Maximum();
-		result.max = NumericLimits<int64_t>::Minimum();
-		for (auto &entry : values) {
-			if (!TimestampNs(entry, value)) {
+
+	// Keep the hull for disjunctions: skipping their rows can avoid decoding invalid values in other columns.
+	OtlpTimeRange hull {range.column, MAX_TIMESTAMP_NS, MIN_TIMESTAMP_NS};
+	if (type == ExpressionType::COMPARE_IN && expression_class == ExpressionClass::BOUND_OPERATOR) {
+		auto &children = expr.Cast<BoundOperatorExpression>().GetChildren();
+		if (children.empty() || !ExpressionFilter::IsSimpleFilterColumnRef(*children[0])) {
+			return false;
+		}
+		for (idx_t i = 1; i < children.size(); i++) {
+			if (children[i]->GetExpressionClass() != ExpressionClass::BOUND_CONSTANT) {
 				return false;
 			}
-			result.min = MinValue(result.min, value);
-			result.max = MaxValue(result.max, value);
-		}
-		return true;
-	}
-	if (IsConjunction(expr, ExpressionType::CONJUNCTION_OR)) {
-		bool first = true;
-		for (auto &child : expr.Cast<BoundConjunctionExpression>().GetChildren()) {
-			NanosecondRange branch;
-			if (!RestrictTime(*child, branch)) {
-				return false;
-			}
-			result.min = first ? branch.min : MinValue(result.min, branch.min);
-			result.max = first ? branch.max : MaxValue(result.max, branch.max);
-			first = false;
-		}
-		return !first;
-	}
-	if (IsConjunction(expr, ExpressionType::CONJUNCTION_AND)) {
-		bool restricted = false;
-		result = NanosecondRange();
-		for (auto &child : expr.Cast<BoundConjunctionExpression>().GetChildren()) {
-			NanosecondRange branch;
-			if (!RestrictTime(*child, branch)) {
+			auto &value = children[i]->Cast<BoundConstantExpression>().GetValue();
+			if (value.IsNull()) {
 				continue;
 			}
-			result.min = MaxValue(result.min, branch.min);
-			result.max = MinValue(result.max, branch.max);
-			restricted = true;
+			if (value.type().id() != LogicalTypeId::TIMESTAMP_NS) {
+				return false;
+			}
+			auto timestamp = value.GetValue<timestamp_ns_t>().value;
+			hull.min = MinValue(hull.min, timestamp);
+			hull.max = MaxValue(hull.max, timestamp);
 		}
-		return restricted;
+	} else if (type == ExpressionType::CONJUNCTION_OR && expression_class == ExpressionClass::BOUND_CONJUNCTION) {
+		auto &children = expr.Cast<BoundConjunctionExpression>().GetChildren();
+		if (children.empty()) {
+			return false;
+		}
+		for (auto &child : children) {
+			OtlpTimeRange branch {range.column, MIN_TIMESTAMP_NS, MAX_TIMESTAMP_NS};
+			if (!NarrowTime(*child, branch)) {
+				return false;
+			}
+			hull.min = MinValue(hull.min, branch.min);
+			hull.max = MaxValue(hull.max, branch.max);
+		}
+	} else {
+		return false;
 	}
-	return false;
+	range.min = MaxValue(range.min, hull.min);
+	range.max = MinValue(range.max, hull.max);
+	return true;
 }
 
 //! Narrows `request` by what `filter` on signal column `column_id` limits.
@@ -373,18 +307,12 @@ static void AddFilterToRequest(const OtlpArrowTable &table, column_t column_id, 
 	if (table.types[column_id].id() != LogicalTypeId::TIMESTAMP_NS) {
 		return;
 	}
-	optional_ptr<const Expression> root = expression_filter.expr.get();
-	if (ExpressionFilter::IsRootOptionalFilter(filter)) {
-		// A hint the plan also enforces above the scan (an IN list next to the OR it came from, a join's
-		// key range): pruning by it drops only rows that would be dropped anyway.
-		root = ExpressionFilter::GetOptionalFilterChild(*root);
-		if (!root) {
-			return;
-		}
-	}
-	NanosecondRange range;
-	if (RestrictTime(*root, range)) {
-		request.time_ranges.push_back({static_cast<uint32_t>(column_id), range.min, range.max});
+	// For a root optional filter, the plan also enforces its predicate above the scan.
+	auto &expr = *expression_filter.expr;
+	auto child = ExpressionFilter::GetOptionalFilterChild(expr);
+	OtlpTimeRange range {NumericCast<uint32_t>(column_id), MIN_TIMESTAMP_NS, MAX_TIMESTAMP_NS};
+	if (NarrowTime(child ? *child : expr, range)) {
+		request.time_ranges.push_back(range);
 	}
 }
 
@@ -426,8 +354,9 @@ static unique_ptr<GlobalTableFunctionState> ReadOtlpFileInitGlobal(ClientContext
 			auto position = entry.GetIndex().GetIndex();
 			auto &filter = entry.Filter();
 			result->filters.push_back({position, TableFilterState::Initialize(context, filter)});
-			auto batch_column = result->column_ids[position];
-			if (batch_column != COLUMN_IDENTIFIER_ROW_ID) {
+			// Row numbers use the decoded batch's offsets, so keep every row until the exact filter pass.
+			if (result->row_number_positions.empty()) {
+				auto batch_column = result->column_ids[position];
 				AddFilterToRequest(*bind_data.table, result->request.columns[batch_column], filter, result->request);
 			}
 		}
@@ -440,38 +369,6 @@ static virtual_column_map_t ReadOtlpFileVirtualColumns(ClientContext &context, o
 	result.insert(make_pair(MultiFileReader::COLUMN_IDENTIFIER_FILE_ROW_NUMBER,
 	                        TableColumn("file_row_number", LogicalType::BIGINT)));
 	return result;
-}
-
-// The returned schema is released here (conversion uses the bind-time types); the caller owns the array.
-static ArrowArray DecodeFileToArray(const ReadOtlpFileBindData &bind_data, OtlpReadRequest &request,
-                                    const uint8_t *input_bytes, idx_t input_len, const string &path) {
-	auto options = request.Options();
-	ArrowArray array;
-	ArrowSchema schema;
-	OtlpStatus status;
-	if (bind_data.is_otap) {
-		// One decoder per file: a file must be a self-contained message (no cross-file dictionary reuse).
-		OtapDecoderPtr decoder(otlp_otap_decoder_new_with_profile(OTLP_ARROW_PROFILE_DUCKDB));
-		if (!decoder) {
-			throw IOException("Failed to allocate OTAP decoder for %s", path);
-		}
-		status = otlp_otap_decode_with_options(decoder.get(), bind_data.signal_type, &options, input_bytes, input_len,
-		                                       &array, &schema);
-		if (status != OTLP_OK) {
-			throw IOException("OTAP decode error on %s: %s", path, otlp_status_message(status));
-		}
-	} else {
-		// A metric signal builds only its own shape; a file without it is an empty batch.
-		status = otlp_transform_with_options(bind_data.signal_type, OTLP_FORMAT_AUTO, OTLP_ARROW_PROFILE_DUCKDB,
-		                                     &options, input_bytes, input_len, &array, &schema);
-		if (status != OTLP_OK) {
-			throw IOException("OTLP parse error on %s: %s", path, otlp_status_message(status));
-		}
-	}
-	if (schema.release) {
-		schema.release(&schema);
-	}
-	return array;
 }
 
 //! Reads and decodes the whole file into one ArrowArray (null if no row of it is wanted).
@@ -498,21 +395,37 @@ static shared_ptr<ArrowArrayWrapper> DecodeFile(ClientContext &context, const Re
 		                  static_cast<uint64_t>(bytes_read));
 	}
 
-	ArrowArray array = DecodeFileToArray(bind_data, request, buffer.get(), file_size, path);
-	if (array.length < 0) {
-		if (array.release) {
-			array.release(&array);
+	auto options = request.Options();
+	auto batch = make_shared_ptr<ArrowArrayWrapper>();
+	ArrowSchemaWrapper schema;
+	if (bind_data.is_otap) {
+		// One decoder per file: a file must be a self-contained message (no cross-file dictionary reuse).
+		OtapDecoderPtr decoder(otlp_otap_decoder_new_with_profile(OTLP_ARROW_PROFILE_DUCKDB));
+		if (!decoder) {
+			throw IOException("Failed to allocate OTAP decoder for %s", path);
 		}
+		auto status = otlp_otap_decode_with_options(decoder.get(), bind_data.signal_type, &options, buffer.get(),
+		                                            file_size, &batch->arrow_array, &schema.arrow_schema);
+		if (status != OTLP_OK) {
+			throw IOException("OTAP decode error on %s: %s", path, otlp_status_message(status));
+		}
+	} else {
+		// A metric signal builds only its own shape; a file without it is an empty batch.
+		auto status =
+		    otlp_transform_with_options(bind_data.signal_type, OTLP_FORMAT_AUTO, OTLP_ARROW_PROFILE_DUCKDB, &options,
+		                                buffer.get(), file_size, &batch->arrow_array, &schema.arrow_schema);
+		if (status != OTLP_OK) {
+			throw IOException("OTLP parse error on %s: %s", path, otlp_status_message(status));
+		}
+	}
+
+	if (batch->arrow_array.length < 0) {
 		throw IOException("Invalid Arrow batch: negative row count");
 	}
-	if (!array.release) {
+	if (!batch->arrow_array.release || batch->arrow_array.length == 0) {
 		return nullptr;
 	}
-	if (array.length == 0) {
-		array.release(&array);
-		return nullptr;
-	}
-	return OtlpOwnArrowBatch(array);
+	return batch;
 }
 
 //! Converts the next rows of the decoded file into `output`; returns how many.
@@ -603,20 +516,19 @@ static TableFunctionSet ReadOtlpFunctionSet(const string &name, shared_ptr<ReadO
 	                                                        std::move(settings));
 }
 
-void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
-	//! Per signal, in OTLP_SIGNALS order: what a row is, the column count, and any detail worth naming.
+void RegisterOtlpReadFunctions(ExtensionLoader &loader) {
+	//! Per signal, in OTLP_SIGNALS order: what a row is and any detail worth naming.
 	struct SignalDoc {
 		const char *rows;
-		int columns;
 		const char *detail;
 	};
 	const SignalDoc docs[] = {
-	    {"log records", 18, ""},
-	    {"trace spans", 24, ", including events, links and a computed duration"},
-	    {"gauge data points", 17, ""},
-	    {"sum (counter) data points", 19, " with aggregation_temporality and is_monotonic"},
-	    {"explicit-bucket histogram data points", 22, " with bucket bounds and counts"},
-	    {"exponential histogram data points", 27, " with scale, zero bucket and positive/negative buckets"},
+	    {"log records", ""},
+	    {"trace spans", ", including events, links and a computed duration"},
+	    {"gauge data points", ""},
+	    {"sum (counter) data points", " with aggregation_temporality and is_monotonic"},
+	    {"explicit-bucket histogram data points", " with bucket bounds and counts"},
+	    {"exponential histogram data points", " with scale, zero bucket and positive/negative buckets"},
 	};
 	auto register_reader = [&](const string &name, shared_ptr<ReadOtlpInfo> info, const string &description,
 	                           const vector<string> &examples, const char *protocol) {
@@ -630,15 +542,6 @@ void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
 			                       {"opentelemetry", protocol}));
 		}
 		loader.RegisterFunction(OtlpDocumented(std::move(set), std::move(docs)));
-	};
-	//! Registered only to raise and point at the working readers.
-	auto register_unsupported = [&](const string &name, string message, string description) {
-		TableFunction func(Identifier(name), FunctionSignature().AddPositionalOnly("path", LogicalType::VARCHAR),
-		                   ReadOtlpUnsupportedScan, ReadOtlpUnsupportedBind);
-		func.function_info = make_shared_ptr<ReadOtlpUnsupportedInfo>(std::move(message));
-		loader.RegisterFunction(OtlpDocumented(
-		    std::move(func),
-		    {OtlpDoc({LogicalType::VARCHAR}, {"path"}, std::move(description), {}, {"opentelemetry", "otlp"})}));
 	};
 	for (auto signal_type : OTLP_SIGNALS) {
 		const auto &doc = docs[signal_type];
@@ -657,29 +560,15 @@ void RegisterReadOTLPRustFunctions(ExtensionLoader &loader) {
 		const string file = metrics ? "metrics" : table.substr(strlen("otlp_"));
 		register_reader(otlp_name, make_shared_ptr<ReadOtlpInfo>(signal_type, false),
 		                StringUtil::Format("Read OpenTelemetry %s from OTLP JSON, NDJSON or protobuf files into a "
-		                                   "flat %d-column table%s.%s",
-		                                   doc.rows, doc.columns, doc.detail, common),
+		                                   "flat table%s.%s",
+		                                   doc.rows, doc.detail, common),
 		                {StringUtil::Format("SELECT * FROM %s('%s.pb');", otlp_name, file)}, "otlp");
 		register_reader(otap_name, make_shared_ptr<ReadOtlpInfo>(signal_type, true),
 		                StringUtil::Format("Read OpenTelemetry %s from an OTAP (OpenTelemetry Arrow Protocol) "
-		                                   "BatchArrowRecords file, returning the same %d columns as %s.%s",
-		                                   doc.rows, doc.columns, otlp_name, common),
+		                                   "BatchArrowRecords file into a flat table with the same columns as %s.%s",
+		                                   doc.rows, otlp_name, common),
 		                {StringUtil::Format("SELECT * FROM %s('%s.bar');", otap_name, file)}, "otap");
 	}
-
-	// Registered only to raise and point at the working readers; no examples, since every call raises.
-	register_unsupported("read_otlp_metrics",
-	                     "read_otlp_metrics() is not supported yet because OTLP metrics have multiple "
-	                     "shape-specific schemas. Use read_otlp_metrics_gauge(), read_otlp_metrics_sum(), "
-	                     "read_otlp_metrics_histogram(), or read_otlp_metrics_exp_histogram().",
-	                     "Not implemented: every call raises. OTLP metrics have shape-specific schemas, so read one of "
-	                     "read_otlp_metrics_gauge, read_otlp_metrics_sum, read_otlp_metrics_histogram or "
-	                     "read_otlp_metrics_exp_histogram instead.");
-	register_unsupported(
-	    "read_otlp_metrics_summary",
-	    "Summary metrics not yet supported. Use read_otlp_metrics_gauge() or read_otlp_metrics_sum() instead.",
-	    "Not implemented: every call raises. OTLP summary data points are not decoded; the other "
-	    "read_otlp_metrics_* readers count them as skipped.");
 }
 
 } // namespace duckdb

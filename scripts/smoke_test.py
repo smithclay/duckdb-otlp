@@ -5,8 +5,7 @@ Boots the distroless runtime image in local-ducklake mode, POSTs a fixed
 OTLP/JSON log batch over HTTP (plain and gzip-encoded), flushes via Quack, and
 asserts the committed row count matches what was sent. This exercises the real
 published artifact end to end: distroless boot -> OTLP/HTTP ingest -> buffered
-seal -> DuckLake commit -> Quack read. The gzip POST is the canary for the
-zlib-enabled cpp-httplib link order (see CMakeLists.txt).
+seal -> DuckLake commit -> Quack read.
 
 The image is distroless (no shell/duckdb inside), so the Quack queries run
 from a host `duckdb` CLI against the published Quack port. Requires `docker`
@@ -224,16 +223,10 @@ def main() -> int:
         if accepted != LOG_RECORDS:
             raise SystemExit(f"ingest buffered {accepted} rows, expected {LOG_RECORDS}: {body}")
 
-        # gzip canary: a gzip-encoded body must decode and buffer (202), not be rejected as an
-        # unsupported encoding (415). This is the only CI coverage of the zlib-enabled cpp-httplib
-        # link order in CMakeLists.txt; the wrong order silently selects DuckDB's non-zlib
-        # decompressor and breaks gzip ingest.
         eprint(f"[smoke] posting {GZIP_LOG_RECORDS} gzip-encoded OTLP/JSON log records")
         gz_status, gz_body = post_logs(otlp_port, token, otlp_logs_payload(GZIP_LOG_RECORDS), content_encoding="gzip")
         if gz_status != 202:
-            raise SystemExit(
-                f"gzip ingest returned {gz_status}, expected 202 (zlib httplib link-order regression?): {gz_body}"
-            )
+            raise SystemExit(f"gzip ingest returned {gz_status}, expected 202: {gz_body}")
         gz_accepted = int(json.loads(gz_body).get("rows") or 0)
         if gz_accepted != GZIP_LOG_RECORDS:
             raise SystemExit(f"gzip ingest buffered {gz_accepted} rows, expected {GZIP_LOG_RECORDS}: {gz_body}")

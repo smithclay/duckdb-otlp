@@ -121,7 +121,7 @@ CREATE SECRET duckdb_otlp_quack (
 
 ATTACH 'quack:localhost:9494' AS otel (TYPE quack, SSL_FINGERPRINT '<fingerprint>'); -- printed by the container at startup
 CONNECT otel;
-SELECT * FROM otlp_flush('otlp:0.0.0.0:4318');
+SELECT * FROM otlp_flush();
 DISCONNECT;
 "
 ```
@@ -210,7 +210,7 @@ step and use [Clean up](#clean-up) instead.
 docker stop duckdb-otlp
 ```
 
-The image sends `otlp_stop('otlp:0.0.0.0:4318')` during shutdown,
+The image runs `otlp_stop()` during shutdown,
 so remaining buffered rows are committed before the process exits.
 
 ## Clean up
@@ -329,7 +329,7 @@ Before closing DuckDB, stop both listeners cleanly:
 -- Stop Quack, then commit buffered telemetry and stop OTLP.
 CALL quack_stop('quack:0.0.0.0:9494');
 SELECT status, dropped_rows
-FROM otlp_stop('otlp:0.0.0.0:4318');
+FROM otlp_stop();
 ```
 
 ## Troubleshooting

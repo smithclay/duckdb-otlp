@@ -95,7 +95,7 @@ CREATE SECRET duckdb_otlp_quack (
 ATTACH 'quack:localhost:9494' AS otel (TYPE quack, SSL_FINGERPRINT '<fingerprint>');
 CONNECT otel;
 
-SELECT * FROM otlp_flush('otlp:0.0.0.0:4318');
+SELECT * FROM otlp_flush();
 
 SELECT time_unix_nano, service_name, severity_text, body
 FROM lake.main.otlp_logs
@@ -113,7 +113,7 @@ SQL
 docker stop duckdb-otlp
 ```
 
-The image sends `otlp_stop('otlp:0.0.0.0:4318')` during shutdown,
+The image runs `otlp_stop()` during shutdown,
 so remaining buffered rows are committed before the process exits.
 
 `otlp_flush` seals buffered ingest rows. Run DuckDB or DuckLake maintenance commands when you need compaction.
@@ -174,7 +174,7 @@ Before closing DuckDB, stop both listeners cleanly:
 -- Stop Quack, then commit buffered telemetry and stop OTLP.
 CALL quack_stop('quack:0.0.0.0:9494');
 SELECT status, dropped_rows
-FROM otlp_stop('otlp:0.0.0.0:4318');
+FROM otlp_stop();
 ```
 
 ## See also

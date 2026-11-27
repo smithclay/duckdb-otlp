@@ -8,7 +8,7 @@ With no arguments it starts a working local receiver — no configuration file, 
 duckdb-otlp
 ```
 
-That listens for OTLP/HTTP on `127.0.0.1:4318` and OTLP/gRPC on `127.0.0.1:4317`, and streams into a local DuckLake lakehouse under `$XDG_DATA_HOME/duckdb-otlp`.
+That listens for OTLP/HTTP on `127.0.0.1:4318` and gRPC for OTLP and OTAP on `127.0.0.1:4317`, and streams into a local DuckLake lakehouse under `$XDG_DATA_HOME/duckdb-otlp`.
 
 ## Install
 
@@ -40,7 +40,7 @@ A flag always wins over its variable. Re-running the script upgrades in place: t
 brew install smithclay/tap/duckdb-otlp
 ```
 
-`brew services start duckdb-otlp` runs `duckdb-otlp serve` with its defaults: OTLP/HTTP on `127.0.0.1:4318`, OTLP/gRPC on `127.0.0.1:4317`, and a local DuckLake under `$XDG_DATA_HOME/duckdb-otlp` (`~/.local/share/duckdb-otlp` when unset). The service can only run those defaults, because `duckdb-otlp` has no configuration file; to change the mode, ports, bind host, or token, run `duckdb-otlp serve` yourself instead.
+`brew services start duckdb-otlp` runs `duckdb-otlp serve` with its defaults: OTLP/HTTP on `127.0.0.1:4318`, gRPC for OTLP and OTAP on `127.0.0.1:4317`, and a local DuckLake under `$XDG_DATA_HOME/duckdb-otlp` (`~/.local/share/duckdb-otlp` when unset). The service can only run those defaults, because `duckdb-otlp` has no configuration file; to change the mode, ports, bind host, or token, run `duckdb-otlp serve` yourself instead.
 
 ### Release tarballs
 
@@ -111,7 +111,7 @@ The banner and reports go to stdout; warnings and errors go to stderr. The `serv
 
 Command-line flag, then environment variable, then built-in default. Every flag that maps onto a setting overrides the matching variable, so `--http 4318` wins over `DUCKDB_OTLP_HTTP_PORT=9999`. A flag is layered over the environment rather than written into it, so its value — a `--token` above all — stays inside the configuration and is never published to the rest of the process.
 
-Each command accepts only the flags that apply to it. `doctor` takes every `serve` flag except `--init-sql` and `--dry-run`, and `--json` belongs to `doctor` alone. Naming a flag outside its command is an error that says where the flag does belong:
+Each command accepts only the flags that apply to it. `doctor` takes every `serve` flag except `--init-sql`, and `--json` belongs to `doctor` alone. The error names the commands that accept a misplaced flag.
 
 ```
 $ duckdb-otlp doctor --init-sql init.sql
@@ -132,7 +132,6 @@ duckdb-otlp serve [flags]
 | `--host HOST` | `DUCKDB_OTLP_HOST` | `127.0.0.1` |
 | `--http PORT` | `DUCKDB_OTLP_HTTP_PORT` | `4318` (`0` disables) |
 | `--grpc PORT` | `DUCKDB_OTLP_GRPC_PORT` | `4317` (`0` disables) |
-| `--otap PORT` | `DUCKDB_OTLP_OTAP_PORT` | off |
 | `--data-dir DIR` | `DUCKDB_OTLP_DATA_DIR` | `$XDG_DATA_HOME/duckdb-otlp` |
 | `--database PATH` | `DUCKDB_DATABASE` | `<data-dir>/duckdb-otlp-control.duckdb` |
 | `--catalog NAME` | `DUCKDB_CATALOG` | mode-dependent |
@@ -144,11 +143,10 @@ duckdb-otlp serve [flags]
 | `--quack PORT` | `DUCKDB_QUACK_PORT` | off (`0` disables) |
 | `--quack-token TOKEN` | `DUCKDB_QUACK_TOKEN` | *(none)* |
 | — | `DUCKDB_QUACK_SSL_CERT_FILE`, `DUCKDB_QUACK_SSL_KEY_FILE` | self-signed (generated under `<data dir>/.duckdb/extension_data/quack`, so it survives a redeploy with the data) |
-| `--startup-timeout SECS` | `DUCKDB_OTLP_STARTUP_TIMEOUT` | `60` |
 
 Passing a token as a flag makes it visible in the process list; prefer `DUCKDB_OTLP_TOKEN` outside of local use.
 
-The [`otlp_serve` tuning options](../serve/) are daemon settings too, named `DUCKDB_OTLP_` plus the option in upper case: `DUCKDB_OTLP_HTTP_THREADS`, `DUCKDB_OTLP_MAX_BODY_BYTES`, `DUCKDB_OTLP_MAX_BUFFERED_BYTES`, `DUCKDB_OTLP_SEAL_TARGET_BYTES`, `DUCKDB_OTLP_SEAL_MAX_AGE_MS`, `DUCKDB_OTLP_TARGET_FILE_SIZE`, `DUCKDB_OTLP_MAINTENANCE_RETENTION_MS`, `DUCKDB_OTLP_MAINTENANCE_INTERVAL_MS`, `DUCKDB_OTLP_PROMOTE_RESOURCE_ATTRIBUTES` and `DUCKDB_OTLP_PROMOTE_SCOPE_ATTRIBUTES`. An unset one keeps the extension's default.
+Set an [`otlp_serve` tuning option](../serve/) with `DUCKDB_OTLP_` plus its name in upper case, for example `DUCKDB_OTLP_MAX_BODY_BYTES`. Use decimal digits for integer values. An unset option keeps the extension's default.
 
 ### Destinations (`--mode`)
 
@@ -159,12 +157,18 @@ A mode is a preset: a SQL file ([`src/server/modes/`](https://github.com/smithcl
 | `local-ducklake` *(default)* | DuckLake | local DuckDB file | local directory | *(none)* |
 | `parquet` | *(none)* | — | local directory or `s3://` | `AWS_REGION` for S3 |
 | `aws-ducklake` | DuckLake | local DuckDB file | `s3://` | `DUCKLAKE_DATA_PATH`, `AWS_REGION` |
-| `gcp-ducklake` | DuckLake | Postgres | `gcss://` | `DUCKLAKE_DATA_PATH`, `PGHOST`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` |
 | `r2-local-ducklake` | DuckLake | local DuckDB file | R2 | `R2_BUCKET`, `CLOUDFLARE_ACCOUNT_ID` |
 | `r2-neon-ducklake` | DuckLake | Postgres | R2 | the two above, plus `PGHOST`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` |
 | `r2-data-catalog` | Iceberg REST | Cloudflare | R2 (catalog-managed) | `R2_BUCKET`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` |
 | `s3-tables` | Iceberg REST | AWS | S3 (catalog-managed) | `S3_TABLES_BUCKET_ARN`, `AWS_REGION` |
 | `none` | *(whatever `--init-sql` attaches)* | — | — | *(none)* |
+
+DuckLake presets set these catalog-wide options after attaching the lake. `duckdb-otlp validate` prints the statements. To set the options individually, use `--init-sql`, which runs after the preset.
+
+| Setting | Default | DuckLake options |
+|---------|---------|------------------|
+| `DUCKDB_OTLP_TARGET_FILE_SIZE` | `268435456` (256 MiB) | `target_file_size` in bytes for compaction. |
+| `DUCKDB_OTLP_MAINTENANCE_RETENTION_MS` | `900000` (15 minutes) | `expire_older_than` and `delete_older_than` in milliseconds for snapshot and file cleanup. |
 
 Missing settings are reported together, in one run:
 
@@ -195,15 +199,14 @@ One name per concept, across every mode that uses it.
 | `CLOUDFLARE_ACCOUNT_ID` | every R2 mode | derives the endpoint, catalog URI, and warehouse |
 | `CLOUDFLARE_API_TOKEN` | `r2-data-catalog` | R2 Data Catalog read/write token |
 | `CLOUDFLARE_CATALOG_URI`, `CLOUDFLARE_WAREHOUSE` | `r2-data-catalog` | both derived from the account and bucket; set only to override |
-| `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, `PGSSLMODE` | Postgres-catalog modes | the standard libpq names |
-| `DUCKDB_OTLP_GCS_EXTENSION_PATH` | `gcp-ducklake` | a local `gcs.duckdb_extension` to `LOAD` instead of the community build; turns on `allow_unsigned_extensions`. The image sets it to its bundled build |
+| `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, `PGSSLMODE` | `r2-neon-ducklake` | the standard libpq names |
 | `DUCKLAKE_DATA_INLINING_ROW_LIMIT` | every DuckLake mode | DuckLake's per-insert inlining limit; `0` writes every seal straight to Parquet |
 
 Values are not validated beyond being present: a malformed one fails when the SQL runs. Credential values are never interpolated into the generated SQL. They are bound as session variables and referenced with `getvariable()`, so `validate` can print the full boot SQL without disclosing them.
 
 #### Credentials from the DuckDB secret store
 
-Storage credentials do not have to be environment variables. If no key pair is set, the mode emits no `CREATE SECRET` at all and DuckDB resolves access through its own persistent secret store (or, for AWS and GCP, the provider credential chain). Create the secret once:
+R2 modes can use credentials from DuckDB's persistent secret store. Leave the key pair unset and create a persistent secret once.
 
 ```bash
 duckdb -c "
@@ -306,13 +309,9 @@ duckdb-otlp --host ::1                      # OTLP http: otlp:[::1]:4318
 duckdb-otlp --host :: --token "$TOKEN"      # every interface, IPv6
 ```
 
-Every listener, Quack included, binds the one `--host`. The earlier per-transport settings (`OTEL_HTTP_ADDR`, `OTEL_GRPC_ADDR`, `DUCKDB_OTLP_TRANSPORTS`, `DUCKDB_OTLP_LISTEN_URI`, `DUCKDB_QUACK_ENABLED`, `DUCKDB_QUACK_ADDR`) are rejected at startup with the flag that replaces them.
+Every listener, Quack included, binds the one `--host`.
 
-OTAP/Arrow is a different protocol served by `otap_serve`, so it cannot be combined with standard OTLP listeners in one process:
-
-```sh
-duckdb-otlp --otap 4317 --http 0 --grpc 0
-```
+The gRPC port accepts OTLP unary exports and OTAP/Arrow streams into the same tables.
 
 ### Authentication
 

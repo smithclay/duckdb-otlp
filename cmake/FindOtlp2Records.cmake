@@ -4,7 +4,7 @@
 # imported target for linking.
 #
 # Input variables: OTLP2RECORDS_SOURCE_DIR - Path to otlp2records source
-# (default: ../otlp2records)
+# (default: external/otlp2records under the extension source directory)
 #
 # Output targets: otlp2records::otlp2records - Imported static library
 
@@ -15,26 +15,10 @@ if(EMSCRIPTEN)
   set(RUST_LIB_PREFIX "lib")
   set(RUST_LIB_SUFFIX ".a")
 elseif(WIN32)
-  # Detect MinGW vs MSVC toolchain
-  if(MINGW OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-      set(RUST_TARGET "x86_64-pc-windows-gnu")
-    else()
-      set(RUST_TARGET "i686-pc-windows-gnu")
-    endif()
-    set(RUST_LIB_PREFIX "lib")
-    set(RUST_LIB_SUFFIX ".a")
-  else()
-    # MSVC toolchain
-    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-      set(RUST_TARGET "x86_64-pc-windows-msvc")
-    else()
-      set(RUST_TARGET "i686-pc-windows-msvc")
-    endif()
-    set(RUST_LIB_PREFIX "")
-    set(RUST_LIB_SUFFIX ".lib")
-    set(RUST_MSVC_STATIC_CRT TRUE)
-  endif()
+  set(RUST_TARGET "x86_64-pc-windows-msvc")
+  set(RUST_LIB_PREFIX "")
+  set(RUST_LIB_SUFFIX ".lib")
+  set(RUST_MSVC_STATIC_CRT TRUE)
 elseif(APPLE)
   # For macOS, CMAKE_OSX_ARCHITECTURES takes precedence for cross-compilation
   # Check for x86_64 target first (handles cross-compilation from arm64 to
@@ -92,12 +76,9 @@ endif()
 if(EMSCRIPTEN)
   set(OTLP2RECORDS_CARGO_FEATURES "ffi")
 else()
-  # Native targets also enable `grpc`, which embeds a tonic gRPC ingest server
-  # (OTLP/gRPC unary + OTAP/Arrow streaming) reached over the C ABI. It pulls in
-  # a tokio runtime + tonic transport, statically linked into the archive (no
-  # new system shared libraries), and is left OFF for Emscripten/WASM (no
-  # runtime or sockets there).
-  set(OTLP2RECORDS_CARGO_FEATURES "ffi,otap-zstd,grpc")
+  # The native server feature provides the embedded OTLP/HTTP, OTLP/gRPC and
+  # OTAP/Arrow listeners through the C ABI.
+  set(OTLP2RECORDS_CARGO_FEATURES "server,otap-zstd")
 endif()
 
 # Path to otlp2records source (defaults to submodule)
@@ -124,18 +105,8 @@ set(OTLP2RECORDS_LIB_PATH
     "${OTLP2RECORDS_SOURCE_DIR}/target/${RUST_TARGET}/${CARGO_BUILD_TYPE}/${OTLP2RECORDS_LIB_NAME}"
 )
 
-# Also check without target triple (for simpler builds)
-set(OTLP2RECORDS_LIB_PATH_SIMPLE
-    "${OTLP2RECORDS_SOURCE_DIR}/target/${CARGO_BUILD_TYPE}/${OTLP2RECORDS_LIB_NAME}"
-)
-
 # Header directory
 set(OTLP2RECORDS_INCLUDE_DIR "${OTLP2RECORDS_SOURCE_DIR}/include")
-
-message(STATUS "otlp2records source: ${OTLP2RECORDS_SOURCE_DIR}")
-message(STATUS "otlp2records target: ${RUST_TARGET}")
-message(STATUS "otlp2records build type: ${CARGO_BUILD_TYPE}")
-message(STATUS "otlp2records features: ${OTLP2RECORDS_CARGO_FEATURES}")
 
 # Rebuild trigger for the Rust library. An add_custom_command with no DEPENDS
 # only re-runs when its OUTPUT is MISSING, so bumping the otlp2records submodule
@@ -176,38 +147,25 @@ add_dependencies(otlp2records::otlp2records otlp2records_build)
 target_include_directories(otlp2records::otlp2records
                            INTERFACE ${OTLP2RECORDS_INCLUDE_DIR})
 
-# Platform-specific link dependencies for Rust runtime
-if(EMSCRIPTEN)
-  # WASM: No additional system libraries needed
-  message(STATUS "otlp2records: WASM build - no additional link libraries")
-elseif(WIN32)
-  # Windows: Link against system libraries Rust needs
-  set_property(
-    TARGET otlp2records::otlp2records
-    APPEND
-    PROPERTY INTERFACE_LINK_LIBRARIES ws2_32 userenv bcrypt ntdll)
-elseif(APPLE)
-  # macOS: Link against system frameworks
-  find_library(SECURITY_FRAMEWORK Security)
-  find_library(COREFOUNDATION_FRAMEWORK CoreFoundation)
-  set_property(
-    TARGET otlp2records::otlp2records
-    APPEND
-    PROPERTY INTERFACE_LINK_LIBRARIES ${SECURITY_FRAMEWORK}
-             ${COREFOUNDATION_FRAMEWORK})
-else()
-  # Linux: Link against pthread, dl, and m
-  set_property(
-    TARGET otlp2records::otlp2records
-    APPEND
-    PROPERTY INTERFACE_LINK_LIBRARIES pthread dl m)
+# Native link dependencies for the Rust runtime
+if(NOT EMSCRIPTEN)
+  if(WIN32)
+    set_property(
+      TARGET otlp2records::otlp2records
+      APPEND
+      PROPERTY INTERFACE_LINK_LIBRARIES ws2_32 userenv bcrypt ntdll)
+  elseif(APPLE)
+    find_library(SECURITY_FRAMEWORK Security)
+    find_library(COREFOUNDATION_FRAMEWORK CoreFoundation)
+    set_property(
+      TARGET otlp2records::otlp2records
+      APPEND
+      PROPERTY INTERFACE_LINK_LIBRARIES ${SECURITY_FRAMEWORK}
+               ${COREFOUNDATION_FRAMEWORK})
+  else()
+    set_property(
+      TARGET otlp2records::otlp2records
+      APPEND
+      PROPERTY INTERFACE_LINK_LIBRARIES pthread dl m)
+  endif()
 endif()
-
-# Export variables for use in parent CMakeLists.txt
-set(OTLP2RECORDS_FOUND TRUE)
-set(OTLP2RECORDS_INCLUDE_DIRS ${OTLP2RECORDS_INCLUDE_DIR})
-set(OTLP2RECORDS_LIBRARIES otlp2records::otlp2records)
-
-message(STATUS "otlp2records found: ${OTLP2RECORDS_SOURCE_DIR}")
-message(STATUS "otlp2records library: ${OTLP2RECORDS_LIB_PATH}")
-message(STATUS "otlp2records headers: ${OTLP2RECORDS_INCLUDE_DIR}")

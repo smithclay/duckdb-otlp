@@ -3,71 +3,35 @@ cmake_minimum_required(VERSION 3.10)
 # Set extension name here
 set(TARGET_NAME otlp)
 
-# Require C++17 for std::optional support
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
 project(${TARGET_NAME})
 
 set(EXTENSION_NAME ${TARGET_NAME}_extension)
 set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
-include_directories(
-  ${CMAKE_CURRENT_SOURCE_DIR}/src
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/storage
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/function
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/include
-  ${CMAKE_CURRENT_SOURCE_DIR}/duckdb/third_party/httplib)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src/include)
 
-# Extension sources (Rust backend only)
 set(EXTENSION_SOURCES
-    src/storage/otlp_extension.cpp
-    src/function/read_otlp.cpp
-    src/otlp_arrow.cpp
-    src/otlp_function_docs.cpp
-    src/otlp_uri.cpp
-    src/otlp_column_promote.cpp
-    src/otlp_server.cpp
-    src/otlp_server_http.cpp
-    src/otlp_server_grpc.cpp
-    src/otlp_storage.cpp
-    src/otlp_start_stop.cpp)
+    src/otlp_extension.cpp src/otlp_read.cpp src/otlp_arrow.cpp
+    src/otlp_function_docs.cpp src/otlp_uri.cpp)
+if(NOT EMSCRIPTEN)
+  list(APPEND EXTENSION_SOURCES src/otlp_column_promote.cpp src/otlp_server.cpp
+       src/otlp_registry.cpp src/otlp_control.cpp)
+endif()
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
-set_target_properties(${EXTENSION_NAME} PROPERTIES CXX_STANDARD 17
-                                                   CXX_STANDARD_REQUIRED ON)
-
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
-set_target_properties(${LOADABLE_EXTENSION_NAME}
-                      PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 
 if(MSVC)
-  # cpp-httplib is a ~12k-line header compiled into several of the TUs above,
-  # which pushes their object files past MSVC's default 2^16 section limit
-  # (C1128). DuckDB applies /bigobj to its own sources but not to out-of-tree
-  # extension targets.
+  # Use the same object-file section limit as DuckDB's native targets.
   target_compile_options(${EXTENSION_NAME} PRIVATE /bigobj)
   target_compile_options(${LOADABLE_EXTENSION_NAME} PRIVATE /bigobj)
 endif()
 
-# Rust backend integration (required)
-message(STATUS "Enabling Rust backend via otlp2records")
-
-# Find/build otlp2records
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(FindOtlp2Records)
 
 # Link the Rust library
 target_link_libraries(${EXTENSION_NAME} otlp2records::otlp2records)
 target_link_libraries(${LOADABLE_EXTENSION_NAME} otlp2records::otlp2records)
-
-if(NOT EMSCRIPTEN)
-  find_package(ZLIB REQUIRED)
-  target_compile_definitions(${EXTENSION_NAME} PRIVATE CPPHTTPLIB_ZLIB_SUPPORT)
-  target_compile_definitions(${LOADABLE_EXTENSION_NAME}
-                             PRIVATE CPPHTTPLIB_ZLIB_SUPPORT)
-  target_link_libraries(${EXTENSION_NAME} ZLIB::ZLIB)
-  target_link_libraries(${LOADABLE_EXTENSION_NAME} ZLIB::ZLIB)
-endif()
 
 # Link the extensions DuckDB statically links (parquet, json, core_functions,
 # ...) into an executable that embeds DuckDB. Since DuckDB 2.0 a linked
@@ -126,21 +90,8 @@ if(NOT EMSCRIPTEN AND NOT WIN32)
   # only a daemon. The container installs a `duckdb-otlp-server` alias alongside
   # it.
   set_target_properties(duckdb_otlp_server PROPERTIES OUTPUT_NAME duckdb-otlp)
-  target_include_directories(
-    duckdb_otlp_server
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/server
-            ${CMAKE_CURRENT_SOURCE_DIR}/src
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/storage
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/include)
-  set_target_properties(duckdb_otlp_server PROPERTIES CXX_STANDARD 17
-                                                      CXX_STANDARD_REQUIRED ON)
-  # Link the zlib-enabled OTLP archive before duckdb_static. Both archives
-  # contain weak inline cpp-httplib symbols; ordering DuckDB first selects its
-  # non-zlib request decompressor and makes the daemon reject gzip OTLP bodies
-  # with 415. This depends on linker weak-symbol resolution order, so it can
-  # regress silently if DuckDB's httplib vendoring or the linker changes; the
-  # gzip-encoded POST in scripts/smoke_test.py (the docker-smoke CI gate) is the
-  # canary that catches a regression.
+  target_include_directories(duckdb_otlp_server
+                             PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/server)
   target_link_libraries(duckdb_otlp_server ${EXTENSION_NAME} duckdb_static
                         ${DUCKDB_EXTRA_LINK_FLAGS})
   link_threads(duckdb_otlp_server "")
@@ -153,28 +104,20 @@ if(NOT EMSCRIPTEN AND NOT WIN32)
   # the daemon are built WITHOUT the macro, so production stays byte-for-byte
   # identical. Gated on BUILD_UNITTESTS (the normal release build sets it TRUE;
   # WASM/EMSCRIPTEN is excluded by the enclosing NOT EMSCRIPTEN block) so it is
-  # built only where wanted.
+  # built only where wanted. The Docker build context has no test/ directory.
   if(BUILD_UNITTESTS
      AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_seal_harness.cpp")
     add_library(otlp_test_seam STATIC ${EXTENSION_SOURCES})
-    target_compile_definitions(
-      otlp_test_seam PUBLIC DUCKDB_OTLP_ENABLE_TEST_SEAM
-                            CPPHTTPLIB_ZLIB_SUPPORT)
-    set_target_properties(otlp_test_seam PROPERTIES CXX_STANDARD 17
-                                                    CXX_STANDARD_REQUIRED ON)
+    target_compile_definitions(otlp_test_seam
+                               PUBLIC DUCKDB_OTLP_ENABLE_TEST_SEAM)
     target_link_libraries(otlp_test_seam duckdb_static
-                          otlp2records::otlp2records ZLIB::ZLIB)
+                          otlp2records::otlp2records)
 
     add_executable(otlp_seal_harness test/cpp/test_seal_harness.cpp)
     target_compile_definitions(otlp_seal_harness
                                PRIVATE DUCKDB_OTLP_ENABLE_TEST_SEAM)
     target_include_directories(
-      otlp_seal_harness
-      PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
-              ${CMAKE_CURRENT_SOURCE_DIR}/src/include
-              ${DUCKDB_MODULE_BASE_DIR}/third_party/catch)
-    set_target_properties(otlp_seal_harness PROPERTIES CXX_STANDARD 17
-                                                       CXX_STANDARD_REQUIRED ON)
+      otlp_seal_harness PRIVATE ${DUCKDB_MODULE_BASE_DIR}/third_party/catch)
     target_link_libraries(otlp_seal_harness otlp_test_seam duckdb_static
                           ${DUCKDB_EXTRA_LINK_FLAGS})
     link_threads(otlp_seal_harness "")

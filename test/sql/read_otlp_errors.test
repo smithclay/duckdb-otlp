@@ -1,23 +1,40 @@
 # name: test/sql/read_otlp_errors.test
-# description: Test error handling in read_otlp_*() functions
+# description: OTLP file discovery and parse failures
 # group: [sql]
 
 require otlp
 
-# Test nonexistent file - should error
+foreach signal traces logs
+
 statement error
-SELECT * FROM read_otlp_traces('nonexistent_file.jsonl');
+SELECT * FROM read_otlp_{signal}('nonexistent_file.jsonl');
 ----
 No files found that match the pattern
 
-# Test wrong file extension being passed to traces function
 statement error
-SELECT * FROM read_otlp_logs('nonexistent_file.jsonl');
+SELECT * FROM read_otlp_{signal}('test/data/malformed.jsonl');
 ----
-No files found that match the pattern
+OTLP parse error on test/data/malformed.jsonl: Parse failed
 
-# read_otlp_metrics() is intentionally unsupported before it performs file I/O.
+endloop
+
+# Malformed input also fails when no columns are projected.
 statement error
-SELECT * FROM read_otlp_metrics('nonexistent_file.jsonl');
+SELECT COUNT(*) FROM read_otlp_traces('test/data/malformed.jsonl');
 ----
-read_otlp_metrics() is not supported yet
+OTLP parse error on test/data/malformed.jsonl: Parse failed
+
+# A glob that matches a valid and a malformed file reports the bad file.
+query I
+SELECT COUNT(*) FROM read_otlp_traces('test/data/multifile_valid_traces.jsonl');
+----
+1
+
+foreach file multifile_malformed_traces.jsonl multifile_*.jsonl
+
+statement error
+SELECT COUNT(*) FROM read_otlp_traces('test/data/{file}');
+----
+OTLP parse error on test/data/multifile_malformed_traces.jsonl: Parse failed
+
+endloop

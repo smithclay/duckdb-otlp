@@ -1,6 +1,6 @@
 # Error Reference
 
-The file readers fail fast on malformed OTLP input. Errors identify file discovery problems, payload shape mismatches, file size limits, and unsupported metric shapes. Live ingest reports authentication, request, and backpressure failures through HTTP or gRPC status codes.
+The file readers fail fast on malformed OTLP input. Errors identify file discovery problems, payload shape mismatches, and file size limits. Live ingest reports authentication, request, and backpressure failures through HTTP or gRPC status codes.
 
 ## File reader errors
 
@@ -27,17 +27,6 @@ The top-level payload field must match the reader:
 | `read_otlp_traces` | `resourceSpans` |
 | `read_otlp_logs` | `resourceLogs` |
 | `read_otlp_metrics_*` | `resourceMetrics` |
-
-### Unsupported metric shape
-
-`read_otlp_metrics()` and `read_otlp_metrics_summary()` raise an unsupported-function error. The supported typed metric readers are:
-
-```sql
-SELECT * FROM read_otlp_metrics_gauge('metrics.jsonl');
-SELECT * FROM read_otlp_metrics_sum('metrics.jsonl');
-SELECT * FROM read_otlp_metrics_histogram('metrics.jsonl');
-SELECT * FROM read_otlp_metrics_exp_histogram('metrics.jsonl');
-```
 
 ### File is too large
 

@@ -1,13 +1,13 @@
 """Config-generation tests for the duckdb-otlp-server daemon.
 
-These exercise the pure ``env -> ServerConfig -> boot SQL`` path via ``DRY_RUN=1``
+These exercise the pure ``env -> ServerConfig -> boot SQL`` path via ``validate``
 (no DB is opened, no listener starts), so they are fast and need only the daemon
 binary — not Docker. The highest-value invariants here:
 
   * mode validation fails early with an actionable message;
   * the auth token is referenced via ``getvariable(...)`` and never appears as a literal;
-  * backend secrets are referenced via ``getenv(...)`` and never appear as literals
-    (DRY_RUN prints the generated SQL, and the engine can echo it in errors).
+  * backend secrets are referenced via ``getvariable(...)`` and never appear as literals
+    (validate prints the generated SQL, and the engine can echo it in errors).
 
 Point the tests at a binary with DUCKDB_OTLP_SERVER_BIN, or rely on the default
 ``build/release`` path. If the binary is missing the whole module is skipped.
@@ -35,23 +35,22 @@ pytestmark = pytest.mark.skipif(
     reason=f"daemon binary not found at {SERVER_BIN}; build with `make server-release`",
 )
 
-# A sentinel secret value: if any of these ever appear in DRY_RUN output, a secret is
+# If this sentinel appears in validate output, a secret is
 # being interpolated as a literal instead of referenced via getenv()/getvariable().
 SECRET = "PLAINTEXT-SECRET-SHOULD-NEVER-APPEAR"
 
 
 def run(env: dict, data_dir: Path) -> subprocess.CompletedProcess:
-    """Run the daemon in DRY_RUN mode with a temp data dir and return the result."""
+    """Run validate with a temp data dir and return the result."""
     full_env = {
         # Keep PATH so the dynamic loader works; drop the rest for a clean slate.
         "PATH": os.environ.get("PATH", ""),
-        "DRY_RUN": "1",
         "DUCKDB_OTLP_DATA_DIR": str(data_dir),
         "DUCKDB_DATABASE": str(data_dir / "control.duckdb"),
     }
     full_env.update(env)
     return subprocess.run(
-        [str(SERVER_BIN)],
+        [str(SERVER_BIN), "validate"],
         env=full_env,
         capture_output=True,
         text=True,
@@ -91,25 +90,6 @@ def test_local_ducklake_boot_sql(tmp_path):
     assert "a-private-token-123456" not in out
 
 
-def test_otap_port_routes_to_otap_serve(tmp_path):
-    # An OTAP listener must dispatch to otap_serve (OTAP/Arrow), never otlp_serve;
-    # the two serve functions are bound to their own scheme and reject the other's.
-    result = run(
-        {
-            "DUCKDB_MODE": "local-ducklake",
-            "DUCKDB_OTLP_TOKEN": "a-private-token-123456",
-            "DUCKDB_OTLP_OTAP_PORT": "4317",
-            "DUCKDB_OTLP_HTTP_PORT": "0",
-            "DUCKDB_OTLP_GRPC_PORT": "0",
-        },
-        tmp_path,
-    )
-    assert result.returncode == 0, result.stderr
-    out = result.stdout
-    assert "FROM otap_serve(" in out
-    assert "FROM otlp_serve(" not in out
-
-
 def test_aws_ducklake_uses_the_shared_credential_chain_and_local_catalog(tmp_path):
     catalog = tmp_path / "ducklake" / "catalog.duckdb"
     result = run(
@@ -139,29 +119,55 @@ def test_aws_ducklake_uses_the_shared_credential_chain_and_local_catalog(tmp_pat
     assert "SECRET '" not in out
 
 
+@pytest.mark.parametrize("value", ["0", "000"])
+def test_numeric_tuning_rejects_zero(tmp_path, value):
+    result = run({"DUCKDB_OTLP_SEAL_MAX_AGE_MS": value}, tmp_path)
+    assert result.returncode == 1
+    assert "DUCKDB_OTLP_SEAL_MAX_AGE_MS must be greater than zero" in result.stderr
+
+
 def test_otlp_limits_are_configurable(tmp_path):
     result = run(
         {
             "DUCKDB_MODE": "local-ducklake",
             "DUCKDB_OTLP_TOKEN": "a-private-token-123456",
-            "DUCKDB_OTLP_HTTP_THREADS": "4",
             "DUCKDB_OTLP_MAX_BODY_BYTES": "2097152",
             "DUCKDB_OTLP_MAX_BUFFERED_BYTES": "2147483648",
             "DUCKDB_OTLP_SEAL_TARGET_BYTES": "134217728",
             "DUCKDB_OTLP_SEAL_MAX_AGE_MS": "3000",
-            "DUCKDB_OTLP_TARGET_FILE_SIZE": "268435456",
-            "DUCKDB_OTLP_MAINTENANCE_RETENTION_MS": "600000",
+            "DUCKDB_OTLP_MAINTENANCE_INTERVAL_MS": "600000",
         },
         tmp_path,
     )
     assert result.returncode == 0, result.stderr
-    assert "http_threads := 4" in result.stdout
     assert "max_body_bytes := 2097152" in result.stdout
     assert "max_buffered_bytes := 2147483648" in result.stdout
     assert "seal_target_bytes := 134217728" in result.stdout
     assert "seal_max_age_ms := 3000" in result.stdout
-    assert "target_file_size := 268435456" in result.stdout
-    assert "maintenance_retention_ms := 600000" in result.stdout
+    assert "maintenance_interval_ms := 600000" in result.stdout
+
+
+def test_numeric_tuning_rejects_non_digits(tmp_path):
+    result = run({"DUCKDB_OTLP_SEAL_MAX_AGE_MS": "4.5"}, tmp_path)
+    assert result.returncode == 1
+    assert "DUCKDB_OTLP_SEAL_MAX_AGE_MS must contain only decimal digits" in result.stderr
+
+
+def test_ducklake_preset_renders_catalog_maintenance_overrides(tmp_path):
+    result = run(
+        {
+            "DUCKDB_MODE": "local-ducklake",
+            "DUCKDB_CATALOG": "custom_lake",
+            "DUCKDB_OTLP_TARGET_FILE_SIZE": "134217728",
+            "DUCKDB_OTLP_MAINTENANCE_RETENTION_MS": "7200000",
+        },
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    sql = result.stdout
+    assert """CALL "custom_lake".set_option('target_file_size', '134217728 bytes');""" in sql
+    assert """CALL "custom_lake".set_option('expire_older_than', '7200000 milliseconds');""" in sql
+    assert """CALL "custom_lake".set_option('delete_older_than', '7200000 milliseconds');""" in sql
 
 
 def test_promotion_params_emitted_when_set(tmp_path):
@@ -170,13 +176,13 @@ def test_promotion_params_emitted_when_set(tmp_path):
             "DUCKDB_MODE": "local-ducklake",
             "DUCKDB_OTLP_TOKEN": "a-private-token-123456",
             "DUCKDB_OTLP_PROMOTE_RESOURCE_ATTRIBUTES": "host.name,deployment.environment",
-            "DUCKDB_OTLP_PROMOTE_SCOPE_ATTRIBUTES": "scope.team",
+            "DUCKDB_OTLP_PROMOTE_SCOPE_ATTRIBUTES": "scope.team's",
         },
         tmp_path,
     )
     assert result.returncode == 0, result.stderr
     assert "promote_resource_attributes := 'host.name,deployment.environment'" in result.stdout
-    assert "promote_scope_attributes := 'scope.team'" in result.stdout
+    assert "promote_scope_attributes := 'scope.team''s'" in result.stdout
 
 
 def test_promotion_off_by_default(tmp_path):
@@ -297,75 +303,15 @@ def test_r2_neon_ducklake_secrets_use_getvariable(tmp_path):
     assert "getvariable('env_R2_ACCESS_KEY_ID')" in out
 
 
-def gcp_env():
-    return {
-        "DUCKDB_MODE": "gcp-ducklake",
-        "DUCKDB_OTLP_TOKEN": "a-private-token-123456",
-        "DUCKLAKE_DATA_PATH": "gcss://trace-bucket/ducklake/",
-        "PGHOST": "/cloudsql/project:region:instance",
-        "PGDATABASE": "tracelake",
-        "PGUSER": "trace_writer",
-        "PGPASSWORD": SECRET,
-    }
-
-
-def test_gcp_ducklake_loads_a_local_gcs_build_by_path(tmp_path):
-    """DUCKDB_OTLP_GCS_EXTENSION_PATH swaps the community gcs build for one on disk.
-
-    The community build prints a failed upload finalize instead of raising it, so DuckLake
-    commits data files that were never written. The image ships a fixed build; it is LOADed by
-    path and never INSTALLed, since an INSTALL would fetch the community build again.
-    """
-    env = gcp_env()
-    env["DUCKDB_OTLP_GCS_EXTENSION_PATH"] = "/opt/extensions/gcs.duckdb_extension"
-    result = run(env, tmp_path)
-    assert result.returncode == 0, result.stderr
-    out = result.stdout
-    assert "LOAD '/opt/extensions/gcs.duckdb_extension';" in out
-    assert "INSTALL gcs" not in out
-    assert "LOAD gcs;" not in out
-    assert "INSTALL ducklake;" in out
-
-
-def test_gcp_ducklake_uses_adc_and_remote_postgres(tmp_path):
-    result = run(gcp_env(), tmp_path)
-    assert result.returncode == 0, result.stderr
-    out = result.stdout
-    assert "INSTALL gcs FROM community;" in out
-    assert "LOAD gcs;" in out
-    assert "TYPE gcp" in out
-    assert "PROVIDER credential_chain" in out
-    assert "DATA_PATH 'gcss://trace-bucket/ducklake/'" in out
-    assert "ATTACH 'ducklake:ducklake_secret' AS" in out
-    assert "'TYPE': 'postgres'" in out
-    assert "PORT '5432'" in out
-    assert "SSLMODE 'require'" in out
-    for name in ("PGHOST", "PGDATABASE", "PGUSER", "PGPASSWORD"):
-        assert f"getvariable('env_{name}')" in out
-    assert SECRET not in result.stdout + result.stderr
-    assert "KEY_ID" not in out
-    assert "getenv(" not in out
-
-
-def test_gcp_ducklake_proxy_and_catalog_overrides(tmp_path):
-    env = gcp_env()
-    env.update({"PGPORT": "5433", "PGSSLMODE": "disable", "DUCKDB_CATALOG": "trace-lake", "DUCKDB_SCHEMA": "traces"})
-    result = run(env, tmp_path)
-    assert result.returncode == 0, result.stderr
-    assert "PORT '5433'" in result.stdout
-    assert "SSLMODE 'disable'" in result.stdout
-    assert 'AS "trace-lake"' in result.stdout
-    assert "schema := 'traces'" in result.stdout
-
-
 def test_ducklake_inlining_default_leaves_attach_untouched(tmp_path):
-    result = run(gcp_env(), tmp_path)
+    env = dict(MODE_FIXTURES["r2-neon-ducklake"], DUCKDB_MODE="r2-neon-ducklake")
+    result = run(env, tmp_path)
     assert result.returncode == 0, result.stderr
     assert "DATA_INLINING_ROW_LIMIT" not in result.stdout
 
 
 def test_ducklake_inlining_can_be_disabled_on_secret_attach(tmp_path):
-    env = gcp_env()
+    env = dict(MODE_FIXTURES["r2-neon-ducklake"], DUCKDB_MODE="r2-neon-ducklake")
     env["DUCKLAKE_DATA_INLINING_ROW_LIMIT"] = "0"
     result = run(env, tmp_path)
     assert result.returncode == 0, result.stderr
@@ -376,16 +322,6 @@ def test_ducklake_inlining_limit_on_path_attach(tmp_path):
     result = run({"DUCKDB_MODE": "local-ducklake", "DUCKLAKE_DATA_INLINING_ROW_LIMIT": "50"}, tmp_path)
     assert result.returncode == 0, result.stderr
     assert "\n  , DATA_INLINING_ROW_LIMIT 50\n);" in result.stdout
-
-
-@pytest.mark.parametrize("missing", ["DUCKLAKE_DATA_PATH", "PGHOST", "PGDATABASE", "PGUSER", "PGPASSWORD"])
-def test_gcp_ducklake_requires_catalog_and_storage_config(tmp_path, missing):
-    env = gcp_env()
-    del env[missing]
-    result = run(env, tmp_path)
-    assert result.returncode == 1
-    assert missing in result.stderr
-    assert SECRET not in result.stdout + result.stderr
 
 
 def test_missing_required_var_names_the_var(tmp_path):
@@ -450,12 +386,11 @@ def tcp_listener():
         yield sock.getsockname()[1]
 
 
-@pytest.mark.parametrize("variable", ["DUCKDB_OTLP_OTAP_PORT", "DUCKDB_OTLP_GRPC_PORT"])
-def test_grpc_healthcheck_uses_tcp_connect(variable):
+def test_grpc_healthcheck_uses_tcp_connect():
     # gRPC (HTTP/2) has no /readyz, so doctor TCP-connects: a bound port is healthy, the same
     # port with nothing listening is not.
     with tcp_listener() as port:
-        env = {variable: str(port), "DUCKDB_OTLP_HTTP_PORT": "0"}
+        env = {"DUCKDB_OTLP_GRPC_PORT": str(port), "DUCKDB_OTLP_HTTP_PORT": "0"}
         assert _healthcheck(env) == 0
     assert _healthcheck(env) == 1
 
@@ -477,7 +412,7 @@ def test_healthcheck_requires_every_listener():
 
 
 def test_healthcheck_probes_the_configured_quack_port():
-    # The probe resolves Quack's address the way startup does (QuackAddrFromEnv).
+    # The probe and startup use the same configured Quack port.
     with ready_server() as http_port, tcp_listener() as quack_port:
         env = {"DUCKDB_OTLP_HTTP_PORT": str(http_port), "DUCKDB_QUACK_PORT": str(quack_port)}
         assert _healthcheck(env) == 0
@@ -515,13 +450,9 @@ def test_ports_select_listeners_for_one_otlp_serve_call(tmp_path, ports, expecte
         ({"DUCKDB_OTLP_HTTP_PORT": "9000", "DUCKDB_OTLP_GRPC_PORT": "9000"}, "different ports"),
         ({"DUCKDB_OTLP_GRPC_PORT": "70000"}, "port between 0 and 65535"),
         ({"DUCKDB_OTLP_HTTP_PORT": "0", "DUCKDB_OTLP_GRPC_PORT": "0"}, "Every listener is disabled"),
-        ({"DUCKDB_OTLP_OTAP_PORT": "4319", "DUCKDB_OTLP_HTTP_PORT": "4318"}, "OTAP/Arrow cannot be combined"),
-        ({"OTEL_HTTP_ADDR": "0.0.0.0:4318"}, "--http PORT"),
-        ({"DUCKDB_OTLP_TRANSPORTS": "http"}, "--http/--grpc PORT"),
-        ({"DUCKDB_QUACK_ENABLED": "1"}, "--quack PORT"),
     ],
 )
-def test_conflicting_invalid_or_removed_listener_settings(tmp_path, env, complaint):
+def test_conflicting_or_invalid_listener_settings(tmp_path, env, complaint):
     result = run({"DUCKDB_MODE": "parquet", **env}, tmp_path)
     assert result.returncode == 1
     assert complaint in result.stderr
@@ -530,7 +461,7 @@ def test_conflicting_invalid_or_removed_listener_settings(tmp_path, env, complai
 # --- --init-sql / DUCKDB_OTLP_INIT_SQL -------------------------------------------------
 #
 # The escape hatch for DuckDB configuration the modes do not model. Resolved to contents
-# during config resolution, so DRY_RUN both validates the path and prints the SQL -- which
+# during config resolution, so validate both checks the path and prints the SQL -- which
 # is what makes these tests possible without opening a database.
 
 
@@ -675,7 +606,7 @@ def test_secret_dir_is_set_before_anything_touches_the_secret_manager(tmp_path):
 
 def test_mode_none_attaches_nothing_and_leaves_the_target_to_init_sql(tmp_path):
     """The escape hatch: --init-sql layered on an unwanted local-ducklake ATTACH was the only
-    way to reach a layout the eight presets do not cover (S3 data, Postgres catalog)."""
+    way to reach a layout the presets do not cover (S3 data, Postgres catalog)."""
     script = tmp_path / "attach.sql"
     script.write_text("ATTACH 'ducklake:postgres:dbname=lake' AS lake (DATA_PATH 's3://b/p');\n")
     result = run(
@@ -707,13 +638,6 @@ MODE_FIXTURES = {
     "parquet": {},
     "parquet-s3": {"DUCKDB_MODE": "parquet", "S3_BUCKET": "b", "AWS_REGION": "us-east-1"},
     "aws-ducklake": {"DUCKLAKE_DATA_PATH": "s3://b/p", "AWS_REGION": "us-east-1"},
-    "gcp-ducklake": {
-        "DUCKLAKE_DATA_PATH": "gcss://b/p",
-        "PGHOST": "h",
-        "PGDATABASE": "d",
-        "PGUSER": "u",
-        "PGPASSWORD": SECRET,
-    },
     "r2-local-ducklake": {"R2_BUCKET": "b", "CLOUDFLARE_ACCOUNT_ID": "a"},
     "r2-neon-ducklake": {
         "R2_BUCKET": "b",
@@ -891,6 +815,15 @@ def test_every_mode_renders_with_its_minimal_settings(mode, tmp_path):
     assert "INSTALL otlp" not in sql
     for name in re.findall(r"^LOAD ([a-z0-9_]+);", sql, re.M):
         assert re.search(rf"^INSTALL {name}( FROM community)?;", sql, re.M), name
+    if env["DUCKDB_MODE"].endswith("-ducklake"):
+        attach = re.search(r"""^ATTACH 'ducklake:[^']+' AS ("[^"]+")""", sql, re.M)
+        assert attach
+        catalog = attach[1]
+        assert sql.index(f"CALL {catalog}.set_option('target_file_size', '268435456 bytes');") > attach.end()
+        assert f"CALL {catalog}.set_option('expire_older_than', '900000 milliseconds');" in sql
+        assert f"CALL {catalog}.set_option('delete_older_than', '900000 milliseconds');" in sql
+    else:
+        assert ".set_option(" not in sql
 
 
 def test_a_missing_setting_inside_a_default_names_what_could_replace_it(tmp_path):

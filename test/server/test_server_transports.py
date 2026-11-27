@@ -39,7 +39,6 @@ def configuration(tmp_path, transports):
         'DUCKDB_OTLP_TOKEN': TOKEN,
         # Ensure these small batches require the SIGTERM drain to become durable.
         'DUCKDB_OTLP_SEAL_MAX_AGE_MS': '600000',
-        'DUCKDB_OTLP_STARTUP_TIMEOUT': '5',
     }
 
 
@@ -52,10 +51,10 @@ def grpc_addr(env):
 
 
 @contextlib.contextmanager
-def daemon(tmp_path, env):
+def daemon(tmp_path, env, *args):
     log_path = tmp_path / 'daemon.log'
     with log_path.open('w') as log:
-        process = subprocess.Popen([str(SERVER_BIN)], env=env, stdout=log, stderr=log)
+        process = subprocess.Popen([str(SERVER_BIN), *args], env=env, stdout=log, stderr=log)
         try:
             yield process, log_path
         finally:
@@ -103,6 +102,23 @@ def post_http(env, message, token):
         return response.status
 
 
+def test_serve_applies_secret_dir_before_init_sql(tmp_path):
+    env = configuration(tmp_path, 'http')
+    secrets = tmp_path / 'secrets'
+    secrets.mkdir()
+    script = tmp_path / 'init.sql'
+    script.write_text(
+        f"SELECT CASE WHEN current_setting('secret_directory') = '{secrets}' "
+        "THEN 1 ELSE error('secret_directory not applied') END;\n"
+    )
+    with daemon(tmp_path, env, 'serve', '--secret-dir', str(secrets), '--init-sql', str(script)) as (
+        process,
+        log_path,
+    ):
+        wait_ready(process, env, log_path)
+    assert process.returncode == 0, log_path.read_text()
+
+
 @pytest.mark.parametrize('transports', ['http', 'grpc', 'http,grpc'])
 def test_ingest_auth_and_sigterm_drain_for_selected_transports(tmp_path, transports):
     env = configuration(tmp_path, transports)
@@ -113,6 +129,9 @@ def test_ingest_auth_and_sigterm_drain_for_selected_transports(tmp_path, transpo
             with pytest.raises(urllib.error.HTTPError) as refused:
                 post_http(env, trace_request(9), 'wrong-token')
             assert refused.value.code in (401, 403)
+            assert refused.value.read() == (
+                b'{"error":"unauthorized","message":"missing or invalid Authorization bearer token or x-api-key"}'
+            )
             assert post_http(env, trace_request(1), TOKEN) == 202
             expected.append('transport-1')
         if 'grpc' in transports:
@@ -161,6 +180,80 @@ def test_second_listener_bind_failure_cleans_up_first_listener(tmp_path):
             assert probe.connect_ex(('127.0.0.1', int(env['DUCKDB_OTLP_HTTP_PORT']))) != 0
 
 
+@pytest.mark.parametrize('begin', ['', 'BEGIN;\n'], ids=['autocommit', 'transaction'])
+def test_sigterm_during_init_sql_drains_started_listeners(tmp_path, begin):
+    env = configuration(tmp_path, 'http')
+    side = configuration(tmp_path / 'side', 'http')
+    while side['DUCKDB_OTLP_HTTP_PORT'] == env['DUCKDB_OTLP_HTTP_PORT']:
+        side = configuration(tmp_path / 'side', 'http')
+    side_uri = f'otlp:{http_addr(side)}'
+    script = tmp_path / 'init.sql'
+    script.write_text(
+        f"SELECT 1 FROM otlp_serve('{side_uri}', parquet_export_path := '{side['PARQUET_EXPORT_PATH']}', "
+        f"token := '{TOKEN}', seal_max_age_ms := 600000);\n"
+        f"{begin}SELECT sum(sin(i)) FROM range(1000000000000) t(i);\n"
+    )
+    env['DUCKDB_OTLP_INIT_SQL'] = str(script)
+
+    with daemon(tmp_path, env) as (process, log_path):
+        # The side listener proves init SQL has started. The following query holds up startup.
+        wait_ready(process, side, log_path)
+        assert post_http(side, trace_request(1), TOKEN) == 202
+        process.terminate()
+        assert process.wait(timeout=5) == 0, log_path.read_text()
+
+    log = log_path.read_text()
+    assert 'Shutdown requested during startup' in log, log
+    assert 'DuckDB initialization complete' not in log, log
+    assert f'Stopped listening on {side_uri}' in log, log
+    assert list((tmp_path / 'side').rglob('*.parquet')), log
+
+
+def test_shutdown_reports_drops_from_the_second_stop_row(tmp_path):
+    env = configuration(tmp_path, 'http')
+    side_port = free_port()
+    while str(side_port) == env['DUCKDB_OTLP_HTTP_PORT']:
+        side_port = free_port()
+    side_uri = f'otlp:127.0.0.1:{side_port}'
+    script = tmp_path / 'init.sql'
+    script.write_text(
+        f"SELECT 1 FROM otlp_serve('{side_uri}', parquet_export_path := '{tmp_path / 'side'}', token := '{TOKEN}');\n"
+    )
+    env['DUCKDB_OTLP_INIT_SQL'] = str(script)
+    export_path = tmp_path / 'parquet'
+    env['DUCKDB_OTLP_SEAL_TARGET_BYTES'] = '1'
+
+    with daemon(tmp_path, env) as (process, log_path):
+        wait_ready(process, env, log_path)
+        # Init SQL registers the clean server first. Block the daemon server's
+        # Parquet writes so the background seal and final drain both fail.
+        export_path.rmdir()
+        export_path.touch()
+        assert post_http(env, trace_request(1), TOKEN) == 202
+        url = f"http://{http_addr(env)}"
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                with urllib.request.urlopen(f'{url}/readyz', timeout=5) as response:
+                    assert response.status == 200
+            except urllib.error.HTTPError as error:
+                with error:
+                    assert error.code == 503
+                    assert error.read() == b'{"status":"degraded","reason":"buffered rows are not committing"}'
+                break
+            assert time.monotonic() < deadline, log_path.read_text()
+            time.sleep(0.05)
+        with urllib.request.urlopen(f'{url}/healthz', timeout=5) as response:
+            assert response.status == 200
+            assert response.read() == b'{"status":"ok"}'
+
+    log = log_path.read_text()
+    assert f'Stopped listening on {side_uri}' in log, log
+    assert f'Stopped listening on otlp:{http_addr(env)}; dropped 1 un-sealed buffered rows' in log, log
+    assert process.returncode == 1, log
+    assert 'ERROR: otlp shutdown dropped 1 un-sealed buffered rows' in log, log
+
+
 def test_quack_clients_reach_the_signal_tables_unqualified(tmp_path):
     """Quack serves each client on a fresh Connection, which copies the instance's default
     database when it is created. The daemon makes the mode's catalog that default, so a client
@@ -188,7 +281,6 @@ def test_quack_clients_reach_the_signal_tables_unqualified(tmp_path):
         # Loopback, so Quack serves plain HTTP and the client needs no fingerprint.
         'DUCKDB_QUACK_PORT': str(quack_port),
         'DUCKDB_QUACK_TOKEN': quack_token,
-        'DUCKDB_OTLP_STARTUP_TIMEOUT': '15',
     }
 
     with daemon(tmp_path, env) as (process, log_path):
@@ -233,8 +325,9 @@ def test_init_sql_adds_a_parquet_destination_next_to_the_ducklake_catalog(tmp_pa
     lake_dir = tmp_path / 'lake'
     parquet_dir = tmp_path / 'parquet-side'
     script = tmp_path / 'init.sql'
-    # A distinct ingest target, which is what the one-server-per-target rule requires.
+    # Override the preset's snapshot retention before starting the distinct Parquet target.
     script.write_text(
+        "CALL otel.set_option('expire_older_than', '12 hours');\n"
         f"SELECT 1 FROM otlp_serve('otlp:127.0.0.1:{parquet_port}', "
         f"parquet_export_path := '{parquet_dir}', token := '{TOKEN}');\n"
     )
@@ -251,7 +344,6 @@ def test_init_sql_adds_a_parquet_destination_next_to_the_ducklake_catalog(tmp_pa
         'DUCKDB_OTLP_INIT_SQL': str(script),
         # Force both batches to depend on the SIGTERM drain to become durable.
         'DUCKDB_OTLP_SEAL_MAX_AGE_MS': '600000',
-        'DUCKDB_OTLP_STARTUP_TIMEOUT': '15',
     }
 
     with daemon(tmp_path, env) as (process, log_path):
@@ -281,3 +373,6 @@ def test_init_sql_adds_a_parquet_destination_next_to_the_ducklake_catalog(tmp_pa
         connection.execute('INSTALL ducklake; LOAD ducklake;')
         connection.execute(f"ATTACH 'ducklake:{catalog}' AS lake (READ_ONLY)")
         assert connection.execute('SELECT name FROM lake.main.otlp_traces').fetchall() == [('transport-1',)]
+        assert connection.execute(
+            "SELECT value FROM ducklake_options('lake') WHERE option_name = 'expire_older_than'"
+        ).fetchall() == [('12 hours',)]

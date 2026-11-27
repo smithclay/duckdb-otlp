@@ -49,13 +49,10 @@ const FlagDef FLAGS[] = {
     {"host", '\0', ALL_CMDS, "DUCKDB_OTLP_HOST", false},
     {"http", '\0', ALL_CMDS, "DUCKDB_OTLP_HTTP_PORT", false},
     {"grpc", '\0', ALL_CMDS, "DUCKDB_OTLP_GRPC_PORT", false},
-    {"otap", '\0', ALL_CMDS, "DUCKDB_OTLP_OTAP_PORT", false},
     {"token", '\0', ALL_CMDS, "DUCKDB_OTLP_TOKEN", false},
     {"no-auth", '\0', ALL_CMDS, "DUCKDB_OTLP_DISABLE_AUTH", true},
     {"quack", '\0', ALL_CMDS, "DUCKDB_QUACK_PORT", false},
     {"quack-token", '\0', ALL_CMDS, "DUCKDB_QUACK_TOKEN", false},
-    {"startup-timeout", '\0', ALL_CMDS, "DUCKDB_OTLP_STARTUP_TIMEOUT", false},
-    {"dry-run", '\0', SERVE_CMDS, "DRY_RUN", true},
     {"json", '\0', Bit(Command::DOCTOR), nullptr, true},
 };
 
@@ -226,9 +223,6 @@ CliOptions ParseCli(int argc, char **argv) {
 			options.json_output = true;
 		}
 	}
-	if (options.command == Command::VALIDATE) {
-		options.env_overrides.emplace_back("DRY_RUN", "1");
-	}
 	return options;
 }
 
@@ -279,8 +273,7 @@ Serve flags (each overrides the matching environment variable):
                               nothing and leaves the destination to --init-sql/--catalog.
       --host HOST             bind host (default: 127.0.0.1)
       --http PORT             OTLP/HTTP port, 0 to disable (default: 4318)
-      --grpc PORT             OTLP/gRPC port, 0 to disable (default: 4317)
-      --otap PORT             OTAP/Arrow gRPC port, 0 to disable (default: off)
+      --grpc PORT             gRPC port for OTLP and OTAP, 0 to disable (default: 4317)
       --data-dir DIR          data directory (default: $XDG_DATA_HOME/duckdb-otlp)
       --database PATH         control database file
       --catalog NAME          target catalog
@@ -294,8 +287,6 @@ Serve flags (each overrides the matching environment variable):
       --no-auth               accept unauthenticated requests
       --quack PORT            enable the Quack SQL endpoint on PORT
       --quack-token TOKEN     Quack bearer token (required with --quack)
-      --startup-timeout SECS  listener readiness timeout (default: 60)
-      --dry-run               alias for `validate`
 
 With no token and a loopback bind, authentication is disabled automatically and a
 notice is printed. Binding a non-loopback host requires --token or --no-auth.

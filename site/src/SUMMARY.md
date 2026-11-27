@@ -22,7 +22,6 @@
 - [Stream to Local DuckLake](guides/stream-to-local-ducklake/index.md)
 - [Query with Quack](guides/query-with-quack/index.md)
 - [Stream to Remote DuckLake](guides/stream-to-remote-ducklake/index.md)
-- [Stream to DuckLake on GCP](guides/stream-to-gcp-ducklake/index.md)
 - [Store Agent Traces in DuckLake](guides/store-agent-traces-local-ducklake/index.md)
 - [Stream to Parquet](guides/stream-to-parquet/index.md)
 - [Stream to Vortex](guides/stream-to-vortex/index.md)
