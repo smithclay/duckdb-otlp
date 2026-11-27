@@ -38,7 +38,7 @@ struct OtlpControlState : GlobalTableFunctionState {
 static unique_ptr<GlobalTableFunctionState> OtlpControlInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto state = make_uniq<OtlpControlState>();
 	state->rows = input.bind_data->Cast<OtlpControlBindData>().run(context);
-	return state;
+	return std::move(state);
 }
 
 static void OtlpControlScan(ClientContext &, TableFunctionInput &input, DataChunk &output) {

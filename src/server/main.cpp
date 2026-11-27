@@ -38,8 +38,11 @@ using duckdb_otlp_server::Execute;
 static_assert(std::atomic<duckdb::ClientInterruptState>::is_always_lock_free);
 static_assert(std::atomic<duckdb::ClientContext *>::is_always_lock_free);
 static_assert(std::atomic<bool>::is_always_lock_free);
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 std::atomic<bool> shutdown_requested {false};
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 std::atomic<duckdb::ClientContext *> startup_context {nullptr};
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 std::atomic_flag startup_interrupt_active = ATOMIC_FLAG_INIT;
 
 void HandleSignal(int) {

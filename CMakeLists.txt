@@ -10,19 +10,18 @@ set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src/include)
 
 set(EXTENSION_SOURCES
-    src/otlp_extension.cpp
-    src/otlp_read.cpp
-    src/otlp_arrow.cpp
-    src/otlp_function_docs.cpp
-    src/otlp_uri.cpp)
+    src/otlp_extension.cpp src/otlp_read.cpp src/otlp_arrow.cpp
+    src/otlp_function_docs.cpp src/otlp_uri.cpp)
 if(NOT EMSCRIPTEN)
-  list(APPEND EXTENSION_SOURCES
-       src/otlp_column_promote.cpp
-       src/otlp_server.cpp
-       src/otlp_server_http.cpp
-       src/otlp_server_grpc.cpp
-       src/otlp_registry.cpp
-       src/otlp_control.cpp)
+  list(
+    APPEND
+    EXTENSION_SOURCES
+    src/otlp_column_promote.cpp
+    src/otlp_server.cpp
+    src/otlp_server_http.cpp
+    src/otlp_server_grpc.cpp
+    src/otlp_registry.cpp
+    src/otlp_control.cpp)
 endif()
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
@@ -131,9 +130,9 @@ if(NOT EMSCRIPTEN AND NOT WIN32)
   # the daemon are built WITHOUT the macro, so production stays byte-for-byte
   # identical. Gated on BUILD_UNITTESTS (the normal release build sets it TRUE;
   # WASM/EMSCRIPTEN is excluded by the enclosing NOT EMSCRIPTEN block) so it is
-  # built only where wanted.
-  # The Docker build context has no test/ directory.
-  if(BUILD_UNITTESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_seal_harness.cpp")
+  # built only where wanted. The Docker build context has no test/ directory.
+  if(BUILD_UNITTESTS
+     AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_seal_harness.cpp")
     add_library(otlp_test_seam STATIC ${EXTENSION_SOURCES})
     target_compile_definitions(
       otlp_test_seam PUBLIC DUCKDB_OTLP_ENABLE_TEST_SEAM
