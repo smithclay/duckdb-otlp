@@ -30,6 +30,9 @@ static string IngestTargetKey(const OtlpServerConfig &config) {
 
 shared_ptr<OtlpServer> OtlpServerRegistry::Start(ClientContext &context, const vector<OtlpListenerSpec> &listeners,
                                                  const OtlpServerConfig &config) {
+	if (listeners.empty()) {
+		throw InvalidInputException("otlp_serve requires at least one listen URI");
+	}
 	std::lock_guard<std::mutex> start_lock(start_mutex);
 	auto target = IngestTargetKey(config);
 	{

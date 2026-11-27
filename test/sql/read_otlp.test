@@ -170,6 +170,16 @@ SELECT COUNT(*) FROM read_otlp_metrics_gauge('test/data/logs_simple.jsonl');
 
 # Globs and correlation across signals
 
+# Scan the same file three times in one statement.
+query I
+SELECT
+    (SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_simple.jsonl')) +
+    (SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_simple.jsonl')) +
+    (SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_simple.jsonl'))
+AS total_count;
+----
+9
+
 query I
 SELECT COUNT(*) FROM read_otlp_traces('test/data/traces_*.jsonl');
 ----

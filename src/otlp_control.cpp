@@ -33,6 +33,8 @@ struct OtlpControlState : GlobalTableFunctionState {
 	idx_t offset = 0;
 };
 
+//! The action runs once per initialization of its source, so a plan that reinitializes it, such as a recursive CTE,
+//! repeats the action.
 static unique_ptr<GlobalTableFunctionState> OtlpControlInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto state = make_uniq<OtlpControlState>();
 	state->rows = input.bind_data->Cast<OtlpControlBindData>().run(context);

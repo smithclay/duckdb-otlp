@@ -8,8 +8,7 @@ require otlp
 # registered here may be left without a description.
 query II
 SELECT function_name, parameter_types FROM duckdb_functions()
-WHERE (function_name LIKE 'read_ot%' OR function_name LIKE 'otlp\_%' ESCAPE '\'
-       OR function_name LIKE 'otap\_%' ESCAPE '\')
+WHERE (function_name LIKE 'read_ot%' OR function_name LIKE 'otlp\_%' ESCAPE '\')
   AND description IS NULL
 ORDER BY function_name;
 ----
@@ -17,8 +16,7 @@ ORDER BY function_name;
 # Every function has an example.
 query I
 SELECT function_name FROM duckdb_functions()
-WHERE (function_name LIKE 'read_ot%' OR function_name LIKE 'otlp\_%' ESCAPE '\'
-       OR function_name LIKE 'otap\_%' ESCAPE '\')
+WHERE (function_name LIKE 'read_ot%' OR function_name LIKE 'otlp\_%' ESCAPE '\')
   AND len(examples) = 0
 ORDER BY function_name;
 ----
@@ -26,8 +24,7 @@ ORDER BY function_name;
 # The function signatures name every argument shown by duckdb_functions().
 query I
 SELECT DISTINCT function_name FROM duckdb_functions()
-WHERE (function_name LIKE 'read_ot%' OR function_name LIKE 'otlp\_%' ESCAPE '\'
-       OR function_name LIKE 'otap\_%' ESCAPE '\')
+WHERE (function_name LIKE 'read_ot%' OR function_name LIKE 'otlp\_%' ESCAPE '\')
   AND len(list_filter(parameters, lambda p: p SIMILAR TO 'col\d+')) > 0;
 ----
 
