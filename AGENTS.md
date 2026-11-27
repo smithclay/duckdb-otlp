@@ -35,7 +35,8 @@ GEN=ninja make tidy-check
 - `wasm_eh` is the published browser target. Follow the Emscripten and Rust instructions in
   [CONTRIBUTING.md](CONTRIBUTING.md). That target uses Make because it invokes `emmake make`.
   WASM includes file readers with uncompressed/LZ4 OTAP support. Zstandard OTAP and live ingest
-  require native builds. The checked-in browser demo is built separately.
+  require native builds. The checked-in browser demo is the CI `wasm_eh` artifact and must match
+  the duckdb-wasm pin in its `app.js` (see [site/README.md](site/README.md)).
 - Keep `deps` and `runtime-prebuilt` independent of `builder`. `runtime-prebuilt` consumes
   `daemon-export` artifacts. Check `readelf -d` `NEEDED` entries before adding runtime packages.
   The offline cache requires matching `HOME` and DuckDB versions. Bind-mounted `/data` must be
