@@ -133,7 +133,7 @@ RUN apk add --no-cache zlib && mkdir -p /staging && cp -L /usr/lib/libz.so.1 /st
 
 # Pinned by digest: Chainguard's free tier only publishes `latest`, and Renovate bumps the
 # digest so the image picks up rebuilt (CVE-fixed) bases without floating silently.
-FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:eaa0c377a38e4c67f4192fd5fe9d24d39d51c4531613d97731537f9d33460ae4 AS runtime-base
+FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:a96ba3c8d5ffc646e1092c03d72000b5e2ccd9f6cda695d6342a0e31ce4d52ee AS runtime-base
 
 COPY --from=deps /staging/certs/ /etc/pki/tls/certs/
 
