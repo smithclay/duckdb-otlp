@@ -167,8 +167,8 @@ DuckLake presets set these catalog-wide options after attaching the lake. `duckd
 
 | Setting | Default | DuckLake options |
 |---------|---------|------------------|
-| `DUCKDB_OTLP_TARGET_FILE_SIZE` | `256MB` | `target_file_size` for compaction. Include a size unit, such as `128MiB`. |
-| `DUCKDB_OTLP_MAINTENANCE_RETENTION` | `900s` (15 minutes) | `expire_older_than` and `delete_older_than` for snapshot and file cleanup. Supply a DuckDB interval, such as `2 hours`. |
+| `DUCKDB_OTLP_TARGET_FILE_SIZE` | `268435456` (256 MiB) | `target_file_size` in bytes for compaction. |
+| `DUCKDB_OTLP_MAINTENANCE_RETENTION_MS` | `900000` (15 minutes) | `expire_older_than` and `delete_older_than` in milliseconds for snapshot and file cleanup. |
 
 Missing settings are reported together, in one run:
 

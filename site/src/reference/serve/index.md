@@ -249,7 +249,7 @@ CALL otlp_serve('otlp:localhost:4318', catalog := 'lake');
 SELECT count(*) FROM lake.main.otlp_logs;
 ```
 
-At most once per `maintenance_interval_ms` (5 minutes by default), the server runs best-effort maintenance with `CHECKPOINT lake`. DuckLake uses the catalog's `target_file_size` for compaction and its `expire_older_than` and `delete_older_than` settings to reclaim old snapshots and files. Set those catalog-wide options with `CALL lake.set_option(...)`. The daemon's DuckLake presets include their own defaults, displayed by `duckdb-otlp validate`. See the [CLI reference](../cli/).
+At most once per `maintenance_interval_ms` (5 minutes by default), the server runs best-effort maintenance with `CHECKPOINT lake`. DuckLake uses the catalog's `target_file_size` for compaction and its `expire_older_than` and `delete_older_than` settings to reclaim old snapshots and files. Set those catalog-wide options with `CALL lake.set_option(...)`. The daemon's DuckLake presets take `DUCKDB_OTLP_TARGET_FILE_SIZE` in bytes and `DUCKDB_OTLP_MAINTENANCE_RETENTION_MS` in milliseconds. See the [CLI reference](../cli/) for defaults.
 
   Several processes can share one DuckLake catalog (for example two receiver instances during a deploy). Their `CHECKPOINT`s can race: the loser fails with a catalog error such as PostgreSQL's `could not serialize access due to concurrent delete`. The server records this in `maintenance_contended_total` and tries again at the next interval. A losing checkpoint can leave Parquet files the catalog never tracked. After each successful DuckLake `CHECKPOINT`, the server runs `ducklake_delete_orphaned_files` using the catalog's `delete_older_than` setting.
 

@@ -153,16 +153,16 @@ def test_ducklake_preset_renders_catalog_maintenance_overrides(tmp_path):
         {
             "DUCKDB_MODE": "local-ducklake",
             "DUCKDB_CATALOG": "custom_lake",
-            "DUCKDB_OTLP_TARGET_FILE_SIZE": "128MiB",
-            "DUCKDB_OTLP_MAINTENANCE_RETENTION": "2 hours",
+            "DUCKDB_OTLP_TARGET_FILE_SIZE": "134217728",
+            "DUCKDB_OTLP_MAINTENANCE_RETENTION_MS": "7200000",
         },
         tmp_path,
     )
     assert result.returncode == 0, result.stderr
     sql = result.stdout
-    assert """CALL "custom_lake".set_option('target_file_size', '128MiB');""" in sql
-    assert """CALL "custom_lake".set_option('expire_older_than', '2 hours');""" in sql
-    assert """CALL "custom_lake".set_option('delete_older_than', '2 hours');""" in sql
+    assert """CALL "custom_lake".set_option('target_file_size', '134217728 bytes');""" in sql
+    assert """CALL "custom_lake".set_option('expire_older_than', '7200000 milliseconds');""" in sql
+    assert """CALL "custom_lake".set_option('delete_older_than', '7200000 milliseconds');""" in sql
 
 
 def test_promotion_params_emitted_when_set(tmp_path):
@@ -814,9 +814,9 @@ def test_every_mode_renders_with_its_minimal_settings(mode, tmp_path):
         attach = re.search(r"""^ATTACH 'ducklake:[^']+' AS ("[^"]+")""", sql, re.M)
         assert attach
         catalog = attach[1]
-        assert sql.index(f"CALL {catalog}.set_option('target_file_size', '256MB');") > attach.end()
-        assert f"CALL {catalog}.set_option('expire_older_than', '900s');" in sql
-        assert f"CALL {catalog}.set_option('delete_older_than', '900s');" in sql
+        assert sql.index(f"CALL {catalog}.set_option('target_file_size', '268435456 bytes');") > attach.end()
+        assert f"CALL {catalog}.set_option('expire_older_than', '900000 milliseconds');" in sql
+        assert f"CALL {catalog}.set_option('delete_older_than', '900000 milliseconds');" in sql
     else:
         assert ".set_option(" not in sql
 
