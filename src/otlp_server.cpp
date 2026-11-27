@@ -798,6 +798,10 @@ void OtlpServer::BuildSinks() {
 
 idx_t OtlpServer::SealOnce() {
 	std::lock_guard<std::mutex> writer_lock(writer_mutex);
+	return SealLocked();
+}
+
+idx_t OtlpServer::SealLocked() {
 	if (!writer_con) {
 		return 0;
 	}
@@ -1091,11 +1095,14 @@ idx_t OtlpServer::ShutdownIngest() {
 	if (sealer_thread.joinable()) {
 		sealer_thread.join();
 	}
-	// Final drain. On the implicit DB-teardown path (~OtlpServerRegistry) db_ptr is already
-	// expired, so SealOnce is a no-op and buffered rows are dropped: callers must otlp_stop first.
+	// Final drain, under writer_mutex so a concurrent otlp_flush finishes first: until then its rows
+	// are in its detached plan, and a failed seal re-buffers them. On the implicit DB-teardown path
+	// (~OtlpServerRegistry) db_ptr is already expired, so the seal is a no-op and buffered rows are
+	// dropped: callers must otlp_stop first.
+	std::lock_guard<std::mutex> writer_lock(writer_mutex);
 	for (int attempt = 0; attempt < 3 && BufferedRows() > 0; attempt++) {
 		try {
-			SealOnce();
+			SealLocked();
 		} catch (...) {
 			LogServerEvent("final seal attempt failed during shutdown", LogLevel::LOG_WARNING);
 		}
@@ -1115,11 +1122,8 @@ idx_t OtlpServer::ShutdownIngest() {
 		                                  static_cast<uint64_t>(remaining_rows), cause),
 		               LogLevel::LOG_WARNING);
 	}
-	{
-		std::lock_guard<std::mutex> writer_lock(writer_mutex);
-		writer_con.reset();
-		arrow_con.reset();
-	}
+	writer_con.reset();
+	arrow_con.reset();
 	return remaining_rows;
 }
 

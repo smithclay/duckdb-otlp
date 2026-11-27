@@ -13,9 +13,12 @@
 #include "otlp_arrow.hpp"
 #include "otlp_server.hpp"
 
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -581,6 +584,60 @@ TEST_CASE("seal harness: clean shutdown drains all rows and reports zero dropped
 	REQUIRE(server->BufferedRows() == 0);
 	REQUIRE(server->ShutdownDroppedRows() == 0);
 	REQUIRE(TableCount(con, "otlp_logs") == kLogRows);
+}
+
+// otlp_flush on another connection can be mid-seal when otlp_stop shuts the server down. Its rows
+// are then in the seal's detached plan, not the live buffers. If that seal fails and re-buffers
+// them, the shutdown drain must still seal them (or count them as dropped), never lose them.
+TEST_CASE("seal harness: shutdown during a concurrent flush that fails loses no rows", "[seal_harness]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto server = MakeServer(*con.context, HarnessConfig());
+
+	const idx_t kLogRows = 6;
+	REQUIRE(IngestLogs(*server, MakeLogsJson(kLogRows)).Accepted());
+
+	std::mutex mutex;
+	std::condition_variable cv;
+	bool in_seal = false;
+	bool closing = false;
+	std::atomic<int> seal_attempts {0};
+	server->SetSealFaultHookForTest([&]() {
+		if (seal_attempts.fetch_add(1) > 0) {
+			return; // only the concurrent flush fails; the shutdown drain may commit
+		}
+		std::unique_lock<std::mutex> lock(mutex);
+		in_seal = true;
+		cv.notify_all();
+		cv.wait(lock, [&] { return closing; });
+		lock.unlock();
+		// Give Close() time to reach its drain while this seal still holds the rows.
+		std::this_thread::sleep_for(std::chrono::milliseconds(200));
+		throw std::runtime_error("injected concurrent flush failure");
+	});
+
+	std::atomic<bool> flush_failed {false};
+	std::thread flusher([&] {
+		try {
+			server->SealOnce();
+		} catch (...) {
+			flush_failed = true;
+		}
+	});
+	{
+		std::unique_lock<std::mutex> lock(mutex);
+		cv.wait(lock, [&] { return in_seal; });
+		closing = true;
+		cv.notify_all();
+	}
+	server->Close();
+	flusher.join();
+
+	REQUIRE(flush_failed);
+	REQUIRE(TableCount(con, "otlp_logs") + server->ShutdownDroppedRows() == kLogRows);
+	REQUIRE(TableCount(con, "otlp_logs") == kLogRows);
+	REQUIRE(server->ShutdownDroppedRows() == 0);
+	REQUIRE(server->BufferedRows() == 0);
 }
 
 // A metrics request spanning several sub-signals is all-or-nothing: a mid-conversion failure

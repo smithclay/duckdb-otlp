@@ -263,6 +263,8 @@ private:
 	void BuildSinks();
 	void RecordSealOutcome(bool success, idx_t rows_committed, const string &error);
 	void RequestSeal();
+	//! SealOnce's body. Caller holds writer_mutex.
+	idx_t SealLocked();
 	//! Sealer thread only.
 	void MaybeRunCatalogMaintenance();
 	//! Delete untracked files left by a losing checkpoint or crashed seal using DuckLake's retention.
