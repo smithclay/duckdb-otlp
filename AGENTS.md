@@ -5,9 +5,7 @@
 - Use `GEN=ninja` for native `make` targets and `uv` for Python tooling. Initialize the pinned
   submodules with `git submodule update --init --recursive`. Build prerequisites and release
   procedures are in [CONTRIBUTING.md](CONTRIBUTING.md).
-- Use Cargo with Rust 1.90 or later. Native builds need zlib. Use the system development package
-  on Linux, the SDK on macOS, and vcpkg on Windows (`VCPKG_TOOLCHAIN_PATH` points to
-  `scripts/buildsystems/vcpkg.cmake`). Windows/MSVC builds the extension only. Keep the static
+- Use Cargo with Rust 1.90 or later. Windows/MSVC builds the extension only. Keep the static
   Rust CRT and `/bigobj` settings. MinGW is excluded from the build matrix.
 - Move the DuckDB `v2.0.0` pins together. Update the `duckdb` gitlink and release-line hint in
   `.gitmodules`, both `duckdb_version` inputs in `MainDistributionPipeline.yml` and `pages.yml`,
@@ -66,10 +64,10 @@ GEN=ninja make tidy-check
   and OTAP/Arrow streams. Every listener on a server shares one target, admission budget, and sealer.
   A second destination requires a second server on its own port. `OtlpServerRegistry` groups listeners
   by server and allows one server per target (catalog and schema, or Parquet export root).
-- Listeners call `OtlpServer`'s public API. `Ingest` and `IngestArrow` share private `Admit` for
-  reservation, staging, and buffering. Convert ingest errors to refusals before they reach a
-  transport. Listeners map outcomes to wire statuses. A seal swaps the live `OtlpBuffers` under
-  one mutex and hands them to the serialized writer.
+- The Rust server handles authentication, decompression and decoding on every listener. It lends
+  one decoded message at a time to `OtlpServer::Ingest`, which reserves once, stages all Arrow
+  batches, and buffers their rows together. Rust maps host refusals to wire statuses. A seal swaps
+  the live `OtlpBuffers` under one mutex and hands them to the serialized writer.
 - Acceptance means buffering. Durability begins at a successful seal. `otlp_flush` and `otlp_stop`
   take an optional listener URI. Omitting it applies the operation to every server. An unknown URI
   is an error. The control functions use a shared run-once scan and keep results in a
@@ -111,10 +109,9 @@ GEN=ninja make tidy-check
 | `src/otlp_extension.cpp` | Extension entry point and registration |
 | `src/otlp_function_docs.cpp` | SQL catalog descriptions, examples, and categories |
 | `src/otlp_read.cpp`, `src/otlp_arrow.cpp` | Multi-file readers, decoder FFI, projection and filter pushdown, Arrow import |
-| `external/otlp2records` | Rust decoding and embedded tonic gRPC server |
+| `external/otlp2records` | Rust decoding and embedded OTLP/HTTP, OTLP/gRPC and OTAP/gRPC server |
 | `src/otlp_control.cpp`, `src/otlp_registry.cpp`, `src/otlp_uri.cpp` | SQL serve/stop/flush/list, per-database server ownership, URI parsing |
-| `src/otlp_server.cpp`, `src/otlp_column_promote.cpp` | Admission, live buffers, seal and maintenance, attribute promotion |
-| `src/otlp_server_http.cpp`, `src/otlp_server_grpc.cpp` | HTTP and gRPC listener adapters |
+| `src/otlp_server.cpp`, `src/otlp_column_promote.cpp` | Rust listener handles, admission, live buffers, seal and maintenance, attribute promotion |
 | `src/include/` | Extension headers, ingest limits, SQL helpers, and logging |
 | `src/server/main.cpp`, `src/server/server_util.cpp` | Receiver startup, shutdown, doctor, and shared helpers |
 | `src/server/cli.cpp`, `src/server/env_source.cpp` | Command-specific flags and environment overlay |

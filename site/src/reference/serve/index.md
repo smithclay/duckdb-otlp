@@ -68,8 +68,7 @@ The image's `doctor` command (also accepted as `healthcheck`) checks every enabl
 `/readyz` for HTTP and TCP connect for gRPC. A TCP check confirms a bound socket,
 not successful ingestion or durable writes. Because the listeners share one
 server, the HTTP `/readyz` reports the commit health of rows from both
-transports. `DUCKDB_OTLP_HTTP_THREADS` applies
-only to the HTTP listener. Quack remains a separate opt-in administrative endpoint.
+transports. Quack remains a separate opt-in administrative endpoint.
 
 For Cloud Run, set `DUCKDB_OTLP_GRPC_PORT` and `DUCKDB_OTLP_HTTP_PORT=0`, expose its port as `h2c`, and use a compatible
 probe instead of HTTP `/readyz` on that port. Cloud Run terminates TLS and
@@ -113,8 +112,7 @@ SELECT * FROM otlp_serve('otlp:localhost:4318', catalog := 'lake', token := 'my-
 | `parquet_views` | BOOLEAN | `true` | With `parquet_export_path`: create the read-only inspection view for each signal after its first export. Creating a view reads the footer of every file already in that signal's dataset, so it happens at most once per server and is skipped when the schema already holds that name. Set `false` when nothing reads the views. The `duckdb-otlp` daemon passes `false` unless Quack is enabled. |
 | `create_tables` | BOOLEAN | `true` | Create the six target tables if they don't exist. When `false`, the tables must already exist with the expected columns or `otlp_serve` fails fast. |
 | `allow_other_hostname` | BOOLEAN | `false` | Allow binding to a non-localhost host. By default `otlp_serve` permits only `localhost`, `127.0.0.1`, and `::1`. |
-| `max_body_bytes` | UBIGINT | `16777216` (16 MiB) | Reject request bodies larger than this with `413`. Must be greater than zero. |
-| `http_threads` | UBIGINT | host-based bounded default | Worker threads for concurrent HTTP requests, per HTTP listener. Must be greater than zero when set. |
+| `max_body_bytes` | UBIGINT | `16777216` (16 MiB) | Caps the received and decompressed HTTP body and each decoded gRPC message. Oversized HTTP bodies return `413`. Must be greater than zero. |
 | `max_buffered_bytes` | UBIGINT | `536870912` (512 MiB) | Backpressure cap for the whole server, shared by every listener. Requests that would exceed it return `503` (gRPC: `RESOURCE_EXHAUSTED`). |
 | `seal_target_bytes` | UBIGINT | `134217728` (128 MiB) | Request an asynchronous seal when admitted, uncommitted request bytes reach this threshold. Larger values write fewer, larger files at the cost of a larger in-memory crash-loss window (still bounded by `seal_max_age_ms`). Must be greater than zero. |
 | `seal_max_age_ms` | BIGINT | `5000` | Request an asynchronous seal when the oldest buffered row reaches this age. Must be greater than zero. |
@@ -182,7 +180,7 @@ Use this at shutdown to include servers started by another connection or by the 
 
 ### `otlp_server_list()`
 
-Lists running listeners with their server's live counters and buffer state. Takes no arguments. Listeners of the same server report identical buffer, seal, and maintenance values; `listen_uri`, `transport`, `is_listening`, and `last_error` are per listener.
+Lists running listeners with their server's live counters and buffer state. Takes no arguments. Listeners of the same server report identical buffer, seal, and maintenance values; `listen_uri` and `transport` are per listener.
 
 ```sql
 SELECT
@@ -190,8 +188,7 @@ SELECT
   catalog_name,
   total_rows,
   buffered_rows,
-  last_seal_age_ms AS last_commit_age_ms,
-  is_listening
+  last_seal_age_ms AS last_commit_age_ms
 FROM otlp_server_list();
 ```
 
@@ -205,8 +202,8 @@ FROM otlp_server_list();
 | `port` | USMALLINT | Bound port. |
 | `catalog_name` | VARCHAR | Target catalog. Empty for the default catalog. |
 | `schema_name` | VARCHAR | Schema holding the target tables. |
-| `active_requests` | UBIGINT | Requests in progress. |
-| `total_requests` | UBIGINT | Requests handled since startup (includes failures). |
+| `active_requests` | UBIGINT | Decoded messages being admitted or staged by DuckDB. |
+| `total_requests` | UBIGINT | Decoded messages handed to DuckDB since startup, including admission and staging refusals. |
 | `total_rows` | UBIGINT | Rows **accepted** (buffered) since startup. Once the buffer drains, this equals the rows committed. A `/v1/metrics` request counts rows across all four metric tables. |
 | `buffered_rows` | UBIGINT | Rows in the buffer that the writer has not committed. |
 | `admitted_bytes` | UBIGINT | Encoded request bytes admitted but not yet released by a successful seal. |
@@ -218,8 +215,6 @@ FROM otlp_server_list();
 | `seals_total` | UBIGINT | Batch commits performed since startup. |
 | `committed_rows_total` | UBIGINT | Rows committed since startup. |
 | `seal_failures_total` | UBIGINT | Failed batch commits since startup. |
-| `is_listening` | BOOLEAN | `false` once the listener has fallen over (e.g. an error after a successful bind). |
-| `last_error` | VARCHAR | Last fatal listener error, or `NULL` if none. |
 | `seal_last_error` | VARCHAR | Last batch commit error, or `NULL` if none. |
 | `maintenance_runs_total` | UBIGINT | Successful post-seal catalog maintenance (`CHECKPOINT`) passes since startup. Stays `0` for the default catalog and for catalogs where maintenance is unsupported/disabled. |
 | `maintenance_failures_total` | UBIGINT | Failed maintenance passes since startup. Excludes contended passes. |
@@ -229,7 +224,7 @@ FROM otlp_server_list();
 | `transport` | VARCHAR | The listener's transport: `http` or `grpc`. |
 | `maintenance_contended_total` | UBIGINT | Maintenance passes skipped because another writer checkpointed the same catalog first (for example a second receiver process). Not a failure. |
 
-Use `is_listening` / `last_error` to detect a dead listener. Use `seal_last_error` to inspect writer failures, such as catalog conflicts. Use `maintenance_runs_total` / `last_maintenance_age_ms` to confirm compaction is keeping up.
+Use `/healthz` on an HTTP listener or a TCP probe on a gRPC listener to check reachability. Use `seal_last_error` to inspect writer failures, such as catalog conflicts. Use `maintenance_runs_total` / `last_maintenance_age_ms` to confirm compaction is keeping up.
 
 The DuckDB `OTLP` log records seal attempts at DEBUG on success and WARNING on failure. `duration_ms` covers the whole attempt, including recovery on failure. `append_duration_ms` measures writing the buffered rows, and `commit_duration_ms` measures the transaction commit. Plain Parquet export has no transaction commit.
 
@@ -312,7 +307,7 @@ The `http://` base URL from `listen_url` exposes:
 | POST | `/v1/traces` | Ingest traces into `otlp_traces`. |
 | POST | `/v1/metrics` | Ingest metrics. Fans out across all four metric tables: `otlp_metrics_gauge`, `otlp_metrics_sum`, `otlp_metrics_histogram`, `otlp_metrics_exp_histogram`. |
 | GET | `/healthz` | Liveness probe. Returns `200` with `{"status":"ok"}`. No auth required. |
-| GET | `/readyz` | Readiness probe. Returns `200` with `{"status":"ready"}` once the listener is bound, and `503` with `{"status":"degraded"}` when buffered rows are not committing (a seal has failed, rows are still buffered, and the last successful seal is absent or several seal cycles old). No auth required. |
+| GET | `/readyz` | Readiness probe. Returns `200` with `{"status":"ready"}` once the listener is bound, and `503` with `{"status":"degraded","reason":"buffered rows are not committing"}` when buffered rows are not committing (a seal has failed, rows are still buffered, and the last successful seal is absent or several seal cycles old). No auth required. |
 
 Tables live in `<catalog>.<schema>`, chosen by `otlp_serve(catalog := ..., schema := ...)`.
 
@@ -323,23 +318,23 @@ The server picks a parser from the request `Content-Type`:
 | Content-Type | Format |
 |--------------|--------|
 | `application/json`, `application/otlp+json` | OTLP/JSON |
-| `application/x-ndjson` | newline-delimited OTLP/JSON (JSONL) |
+| `application/x-ndjson`, `application/jsonl` | newline-delimited OTLP/JSON (JSONL) |
 | `application/x-protobuf`, `application/protobuf`, `application/otlp` | OTLP/protobuf |
 
 Any other content type returns `415`.
 
 ### Content encodings
 
-`Content-Encoding: identity` (or no header), `gzip`, and `deflate` are accepted. Any other content encoding returns `415`.
+`Content-Encoding: identity` (or no header), `gzip`, and zlib-wrapped `deflate` are accepted. Any other content encoding returns `415`.
 
 ## Authentication
 
-Every POST must present the configured token through one of these headers:
+HTTP POST and gRPC ingest calls accept the configured token in either header:
 
 - `Authorization: Bearer <token>` (case-insensitive scheme)
 - `x-api-key: <token>`
 
-The server checks the two headers independently, so a malformed `Authorization` header does not mask a valid `x-api-key`. A missing or invalid token returns `401`. The server compares tokens with a constant-time check.
+The server checks the two headers independently, so a malformed `Authorization` header does not mask a valid `x-api-key`. A missing or invalid token returns HTTP `401` or gRPC `UNAUTHENTICATED`. The server compares tokens with a constant-time check.
 
 Tokens must be at least 16 characters. Auto-generated tokens (when `token` is omitted) are 32 hex characters (128 bits of entropy).
 
@@ -358,12 +353,12 @@ Use `otlp_serve('otlp:localhost:4317', transport := 'grpc')` to serve both servi
 | `opentelemetry.proto.collector.{logs,trace,metrics}.v1.{Logs,Trace,Metrics}Service` | `Export` (unary) | **OTLP/gRPC** |
 | `opentelemetry.proto.experimental.arrow.v1.Arrow{Logs,Traces,Metrics}Service` | `Arrow{Logs,Traces,Metrics}` (bidirectional streaming) | **OTAP/Arrow** (`stream BatchArrowRecords` → `stream BatchStatus`) |
 
-`max_body_bytes` caps the size of each decoded gRPC message. `http_threads` tunes the HTTP worker pool. Use a TCP connection to probe the gRPC port. The `/healthz` and `/readyz` endpoints are on HTTP listeners.
+`max_body_bytes` caps the size of each decoded gRPC message. Use a TCP connection to probe the gRPC port. The `/healthz` and `/readyz` endpoints are on HTTP listeners.
 
-- **Auth** is the bearer token in the gRPC `authorization` metadata (`Bearer <token>`); a bad token is rejected with `UNAUTHENTICATED`, unless [`disable_auth`](#disabling-authentication) is set. Backpressure surfaces as `RESOURCE_EXHAUSTED` (the gRPC equivalent of HTTP `503`), a batch that fails to convert as `INVALID_ARGUMENT` (HTTP `400`), and a server-side failure as `INTERNAL` (HTTP `500`, also written to `duckdb_logs`).
+- **Auth** uses the bearer token in gRPC `authorization` metadata or the token in `x-api-key` metadata. A missing or invalid token returns `UNAUTHENTICATED` unless [`disable_auth`](#disabling-authentication) is set. Backpressure surfaces as `RESOURCE_EXHAUSTED` (the gRPC equivalent of HTTP `503`), a batch that fails to convert as `INVALID_ARGUMENT` (HTTP `400`), and a server-side failure as `INTERNAL` (HTTP `500`, also written to `duckdb_logs`).
 - **OTAP streaming** keeps one stateful decoder per stream, so later messages can reuse the Arrow dictionaries/schemas established by earlier ones. The server returns one `BatchStatus` per received `BatchArrowRecords`. A message that fails to decode is nacked and the stream is closed (the decoder is poisoned); a message nacked for backpressure leaves the stream open.
-- **Metrics** decode into up to four shapes per message, each buffered independently — a backpressure nack partway through a metrics message can leave earlier shapes buffered.
-- The gRPC stack (tokio + tonic) is statically linked into the extension; it adds no new shared-library dependencies and, like the HTTP server, is native-only (absent from WASM builds).
+- **Metrics** decode into up to four shapes per message. DuckDB reserves capacity once and stages all decoded shapes before appending their rows to the shared buffers.
+- The Rust ingest server is statically linked into the native extension and provides both gRPC services and HTTP.
 
 ## Responses and status codes
 
@@ -372,6 +367,8 @@ A successful POST returns `202 Accepted` after the server buffers rows:
 ```json
 {"status":"buffered","rows":42,"batches":1}
 ```
+
+The `batches` count includes each non-empty Arrow batch in the message. Metrics responses also report skipped summaries and data points with NaN, infinite, or missing values.
 
 A `202` means the server validated, converted, and accepted the rows into the in-memory buffer. **The rows are not yet durable** (see below).
 
@@ -392,7 +389,7 @@ The server **buffers ingest and commits rows in batches** for each target. Batch
 
 **The flow:**
 
-1. A POST reserves admission bytes and stages decoded rows. The worker appends them to the shared in-memory buffers under one lock, then returns `202`.
+1. The Rust listener authenticates and decodes a message. DuckDB reserves admission bytes once, stages the decoded batches, and appends their rows to the shared in-memory buffers under one lock.
 2. A single writer swaps out the buffers at each seal. It commits all signals in one transaction for a catalog target, or writes each signal separately for direct Parquet export. A seal runs when any trigger fires:
    - admitted request-body bytes reach the internal size threshold, 128 MiB today,
    - the oldest buffered row reaches the internal age limit, about 5 seconds today, or
@@ -408,7 +405,7 @@ The server **buffers ingest and commits rows in batches** for each target. Batch
 
 The project tracks a future durable raw-spool journal for at-least-once delivery.
 
-**Backpressure:** if admitting a request would exceed `max_buffered_bytes` (default 512 MiB) across in-flight and uncommitted accepted payloads, the POST returns `503` before parse/transform work. Clients should retry with backoff.
+**Backpressure:** if admitting a decoded message would exceed `max_buffered_bytes` (default 512 MiB) across staged and uncommitted messages, the listener returns HTTP `503` or gRPC `RESOURCE_EXHAUSTED` before DuckDB starts staging the rows. Clients should retry with backoff.
 
 **Seal cadence:** `seal_target_bytes` and `seal_max_age_ms` are size and age triggers for the single asynchronous writer. They control batching latency and file/transaction size; they do not raise durable write throughput. `max_buffered_bytes` remains the separate admission cap.
 
@@ -416,7 +413,7 @@ DuckLake maintenance runs outside the ingest transaction, so a failed checkpoint
 
 ## Concurrency model
 
-- A bounded httplib worker pool parses and converts HTTP requests concurrently. Workers hold the shared buffer lock only when appending staged rows. In the daemon, set `DUCKDB_OTLP_HTTP_THREADS` to override the host-based default.
+- The embedded Rust runtime decodes HTTP and gRPC messages concurrently. Workers hold the shared buffer lock while appending staged rows.
 - A single background writer thread writes to the target catalog. Serial writes let DuckLake, which uses optimistic concurrency, avoid conflict retries and tiny-file churn.
 
 ## Verifying ingest under load

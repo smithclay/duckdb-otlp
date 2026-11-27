@@ -5,7 +5,7 @@
 #
 # Coverage note: SQLLogicTest cannot issue HTTP POSTs, so this file covers only
 # the lifecycle/bind surface (serve/list/stop, validation, hostname gating,
-# schema/column validation, the is_listening/last_error columns). The ingest hot
+# schema/column validation). The ingest hot
 # path -- auth (Bearer/x-api-key), content-type/encoding errors, 413, 503
 # backpressure, metrics fan-out and the drain on stop -- is exercised end-to-end
 # against the daemon by test/server/test_server_ingest.py.
@@ -81,10 +81,10 @@ EXECUTE list_servers;
 statement ok
 DEALLOCATE list_servers;
 
-# a freshly-started server reports itself listening with no error
+# a freshly-started server is listed
 query I
 SELECT count(*) FROM otlp_server_list()
-WHERE listen_uri = 'otlp:127.0.0.1:55439' AND is_listening AND last_error IS NULL;
+WHERE listen_uri = 'otlp:127.0.0.1:55439';
 ----
 1
 
@@ -227,7 +227,7 @@ otlp:127.0.0.1:55461
 
 query I
 SELECT count(*) FROM otlp_server_list()
-WHERE listen_uri = 'otlp:127.0.0.1:55461' AND transport = 'grpc' AND is_listening AND last_error IS NULL;
+WHERE listen_uri = 'otlp:127.0.0.1:55461' AND transport = 'grpc';
 ----
 1
 
@@ -304,10 +304,10 @@ SELECT status FROM otlp_stop('otlp:127.0.0.1:55471');
 ----
 Stopped listening on otlp:127.0.0.1:55470, otlp:127.0.0.1:55471
 
-query TI
-SELECT listen_uri, is_listening FROM otlp_server_list();
+query T
+SELECT listen_uri FROM otlp_server_list();
 ----
-otlp:127.0.0.1:55482	true
+otlp:127.0.0.1:55482
 
 statement ok
 CALL otlp_stop('otlp:127.0.0.1:55482');

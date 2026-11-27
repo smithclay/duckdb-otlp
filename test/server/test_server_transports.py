@@ -221,13 +221,31 @@ def test_shutdown_reports_drops_from_the_second_stop_row(tmp_path):
     )
     env['DUCKDB_OTLP_INIT_SQL'] = str(script)
     export_path = tmp_path / 'parquet'
+    env['DUCKDB_OTLP_SEAL_TARGET_BYTES'] = '1'
 
     with daemon(tmp_path, env) as (process, log_path):
         wait_ready(process, env, log_path)
-        assert post_http(env, trace_request(1), TOKEN) == 202
-        # Init SQL registers the clean server first. Make the daemon's own server fail its final seal.
+        # Init SQL registers the clean server first. Block the daemon server's
+        # Parquet writes so the background seal and final drain both fail.
         export_path.rmdir()
         export_path.touch()
+        assert post_http(env, trace_request(1), TOKEN) == 202
+        url = f"http://{http_addr(env)}"
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                with urllib.request.urlopen(f'{url}/readyz', timeout=5) as response:
+                    assert response.status == 200
+            except urllib.error.HTTPError as error:
+                with error:
+                    assert error.code == 503
+                    assert error.read() == b'{"status":"degraded","reason":"buffered rows are not committing"}'
+                break
+            assert time.monotonic() < deadline, log_path.read_text()
+            time.sleep(0.05)
+        with urllib.request.urlopen(f'{url}/healthz', timeout=5) as response:
+            assert response.status == 200
+            assert response.read() == b'{"status":"ok"}'
 
     log = log_path.read_text()
     assert f'Stopped listening on {side_uri}' in log, log

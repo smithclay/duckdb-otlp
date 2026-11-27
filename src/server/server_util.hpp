@@ -43,8 +43,7 @@ void CreateDirectory(const duckdb::string &path);
 void CreateParentDirectory(const duckdb::string &path);
 
 //! True when <host>:<port> accepts a TCP connection within 2s and, with a non-empty `path`,
-//! answers GET <path> with 2xx/3xx. Plain sockets, not httplib: compiling httplib into the daemon
-//! gives the linker a second, zlib-less copy of its inline functions (see CMakeLists.txt).
+//! answers GET <path> with 2xx/3xx.
 bool ProbeListener(const duckdb::string &host, int port, const duckdb::string &path = "");
 
 } // namespace duckdb_otlp_server

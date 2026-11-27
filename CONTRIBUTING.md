@@ -4,7 +4,7 @@
 
 Install Git, a C++17 compiler, CMake 3.19 or later, GNU Make, Ninja, Python 3, and Rust with Cargo. The pinned `otlp2records` crate declares Rust 1.90 as its minimum. Install `uv` for Python tools and tests.
 
-Native builds need zlib headers and libraries. Install the system development package on Linux or use the SDK on macOS. On Windows, use MSVC and bootstrap vcpkg, then set `VCPKG_TOOLCHAIN_PATH` to the absolute path to its `scripts/buildsystems/vcpkg.cmake`. Windows builds the extension. The daemon and C++ seal harness build on Linux and macOS.
+Windows builds the extension with MSVC. The daemon and C++ seal harness build on Linux and macOS.
 
 ```sh
 git clone --recurse-submodules https://github.com/smithclay/duckdb-otlp.git

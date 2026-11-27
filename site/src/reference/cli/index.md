@@ -146,7 +146,7 @@ duckdb-otlp serve [flags]
 
 Passing a token as a flag makes it visible in the process list; prefer `DUCKDB_OTLP_TOKEN` outside of local use.
 
-Set an [`otlp_serve` tuning option](../serve/) with `DUCKDB_OTLP_` plus its name in upper case, for example `DUCKDB_OTLP_HTTP_THREADS`. Use decimal digits for integer values. An unset option keeps the extension's default.
+Set an [`otlp_serve` tuning option](../serve/) with `DUCKDB_OTLP_` plus its name in upper case, for example `DUCKDB_OTLP_MAX_BODY_BYTES`. Use decimal digits for integer values. An unset option keeps the extension's default.
 
 ### Destinations (`--mode`)
 

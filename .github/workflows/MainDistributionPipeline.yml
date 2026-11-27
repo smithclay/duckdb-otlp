@@ -141,8 +141,6 @@ jobs:
   # Both architectures build on the arm64 macos-15 runner: OSX_BUILD_ARCH drives
   # CMAKE_OSX_ARCHITECTURES and, through cmake/FindOtlp2Records.cmake, the Rust target — the
   # same cross-compile extension-ci-tools uses for osx_amd64 (config/distribution_matrix.json).
-  # No vcpkg setup: vcpkg.json declares zlib for Windows only, so on macOS
-  # find_package(ZLIB) resolves to the SDK's libz and vcpkg would install nothing.
   daemon-macos:
     name: Build server daemon (${{ matrix.arch }})
     if: ${{ github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}

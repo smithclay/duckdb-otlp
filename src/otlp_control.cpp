@@ -107,8 +107,6 @@ struct ServeNumericOption {
 };
 static const ServeNumericOption NUMERIC_OPTIONS[] = {
     {"max_body_bytes", &OtlpServerConfig::max_body_bytes, nullptr},
-    // Sizes the HTTP worker pool; accepted but unused by gRPC, whose runtime sizes itself.
-    {"http_threads", &OtlpServerConfig::http_threads, nullptr},
     {"max_buffered_bytes", &OtlpServerConfig::max_buffered_bytes, nullptr},
     {"seal_target_bytes", &OtlpServerConfig::seal_target_bytes, nullptr},
     {"seal_max_age_ms", nullptr, &OtlpServerConfig::seal_max_age_ms},

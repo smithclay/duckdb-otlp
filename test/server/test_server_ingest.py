@@ -14,6 +14,7 @@ from pathlib import Path
 import duckdb
 import grpc
 import pytest
+from opentelemetry.proto.collector.metrics.v1 import metrics_service_pb2, metrics_service_pb2_grpc
 from opentelemetry.proto.collector.trace.v1 import trace_service_pb2_grpc
 
 from test_server_config import pytestmark  # noqa: F401
@@ -107,19 +108,36 @@ def test_http_and_grpc_share_one_admission_budget(tmp_path):
             with pytest.raises(grpc.RpcError) as refused:
                 stub.Export(trace_request(1), metadata=[('authorization', f'Bearer {TOKEN}')], timeout=5)
             assert refused.value.code() == grpc.StatusCode.RESOURCE_EXHAUSTED
+            assert refused.value.details().startswith('ingest buffer full (')
 
     run_daemon(tmp_path, env, body)
     assert table_rows(tmp_path, 'otlp_logs') == 3
     assert table_rows(tmp_path, 'otlp_traces') == 0
 
 
-def test_one_metrics_request_fans_out_to_every_shape_table(tmp_path):
-    metrics = (DATA / 'metrics-initial.otlp').read_bytes()  # one data point of each shape
+@pytest.mark.parametrize('transport', ['http', 'grpc', 'otap'])
+def test_one_metrics_message_reserves_once_and_buffers_every_shape(tmp_path, transport):
+    envelope = transport == 'otap'
+    fixture = 'metrics-initial.bar' if envelope else 'metrics-initial.otlp'
+    payload = (DATA / fixture).read_bytes()
+    env = configuration(tmp_path, 'grpc' if envelope else transport)
+    # Exactly one message fits. Charging another 1024-byte minimum for a second
+    # shape would refuse the message or leave only the first shape buffered.
+    env['DUCKDB_OTLP_MAX_BUFFERED_BYTES'] = str(max(len(payload), 1024))
 
     def body(env):
-        assert post(env, '/v1/metrics', metrics, headers=bearer()) == 202
+        if transport == 'http':
+            assert post(env, '/v1/metrics', payload, headers=bearer()) == 202
+            return
+        with grpc.insecure_channel(grpc_addr(env)) as channel:
+            if envelope:
+                assert [batch_status_code(reply) for reply in stream_arrow(channel, 'Metrics', [fixture])] == [0]
+            else:
+                stub = metrics_service_pb2_grpc.MetricsServiceStub(channel)
+                request = metrics_service_pb2.ExportMetricsServiceRequest.FromString(payload)
+                stub.Export(request, metadata=[('x-api-key', TOKEN)], timeout=5)
 
-    run_daemon(tmp_path, configuration(tmp_path, 'http'), body)
+    run_daemon(tmp_path, env, body)
     assert {table: table_rows(tmp_path, table) for table in METRIC_TABLES} == dict.fromkeys(METRIC_TABLES, 1)
 
 

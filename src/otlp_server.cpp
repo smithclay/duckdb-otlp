@@ -23,27 +23,12 @@
 #include "otlp_sql_util.hpp"
 
 #include <chrono>
-#include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <filesystem>
+#include <string_view>
 
 namespace duckdb {
-
-//! Thrown while staging a request the server refuses for a known reason (a payload that does not
-//! parse). OtlpServer::Admit turns it into an OtlpIngestOutcome; it never reaches a transport.
-class OtlpIngestRefused : public std::exception {
-public:
-	OtlpIngestRefused(OtlpIngestRefusal refusal_p, string message_p)
-	    : refusal(refusal_p), message(std::move(message_p)) {
-	}
-
-	const char *what() const noexcept override {
-		return message.c_str();
-	}
-
-	OtlpIngestRefusal refusal;
-	string message;
-};
 
 //! The schema, importer and sink for one OTLP signal table.
 struct OtlpSignal {
@@ -95,16 +80,40 @@ static string HexEncode(const data_t *bytes, idx_t n) {
 	return result;
 }
 
-static bool TimingSafeEqual(const string &a, const string &b) {
-	if (a.size() != b.size()) {
-		return false;
+static void WriteIngestDetail(char *buffer, size_t buffer_len, std::string_view message) {
+	if (buffer && buffer_len > 0) {
+		const auto len = MinValue(message.size(), buffer_len - 1);
+		std::memcpy(buffer, message.data(), len);
+		buffer[len] = '\0';
 	}
-	volatile unsigned char diff = 0;
-	for (idx_t i = 0; i < a.size(); i++) {
-		diff |= static_cast<unsigned char>(a[i]) ^ static_cast<unsigned char>(b[i]);
-	}
-	return diff == 0;
 }
+
+extern "C" {
+
+static OtlpIngestStatus OnIngestMessage(void *user_data, uint64_t input_bytes, const OtlpIngestBatch *batches,
+                                        size_t batch_count, char *detail, size_t detail_len) noexcept {
+	try {
+		auto &server = *static_cast<OtlpServer *>(user_data);
+		return server.Ingest(input_bytes, batches, batch_count, detail, detail_len);
+	} catch (...) {
+		return OTLP_INGEST_INTERNAL;
+	}
+}
+
+static int OnIngestReady(void *user_data, char *reason, size_t reason_len) noexcept {
+	try {
+		auto &server = *static_cast<OtlpServer *>(user_data);
+		if (!server.SealStalled()) {
+			return 1;
+		}
+		WriteIngestDetail(reason, reason_len, "buffered rows are not committing");
+	} catch (...) {
+		return 0;
+	}
+	return 0;
+}
+
+} // extern "C"
 
 static const char *PartitionTimestampColumn(const string &table_name) {
 	if (table_name == "otlp_traces") {
@@ -128,56 +137,6 @@ static bool IsContendedCatalogMaintenanceError(const string &message) {
 	return lower.find("could not serialize access") != string::npos ||
 	       lower.find("serialization failure") != string::npos || lower.find("concurrent delete") != string::npos ||
 	       lower.find("concurrent update") != string::npos;
-}
-
-//! The input format for a Content-Type, or false when the server does not decode it. `media_type`
-//! receives the normalized type either way, for the refusal message.
-static bool FormatFromContentType(const string &content_type, OtlpInputFormat &format, string &media_type) {
-	media_type = content_type;
-	auto semicolon = media_type.find(';');
-	if (semicolon != string::npos) {
-		media_type = media_type.substr(0, semicolon);
-	}
-	StringUtil::Trim(media_type);
-	media_type = StringUtil::Lower(media_type);
-	if (media_type == "application/json" || media_type == "application/otlp+json") {
-		format = OTLP_FORMAT_JSON;
-		return true;
-	}
-	if (media_type == "application/x-ndjson" || media_type == "application/jsonl") {
-		format = OTLP_FORMAT_JSONL;
-		return true;
-	}
-	if (media_type == "application/x-protobuf" || media_type == "application/protobuf" ||
-	    media_type == "application/otlp") {
-		format = OTLP_FORMAT_PROTOBUF;
-		return true;
-	}
-	return false;
-}
-
-static OtlpIngestOutcome Refused(OtlpIngestRefusal refusal, string message) {
-	OtlpIngestOutcome outcome;
-	outcome.refusal = refusal;
-	outcome.message = std::move(message);
-	return outcome;
-}
-
-static bool IsUnsupportedEncoding(const string &content_encoding) {
-	if (content_encoding.empty()) {
-		return false;
-	}
-	auto value = StringUtil::Lower(content_encoding);
-	StringUtil::Trim(value);
-	if (value == "identity") {
-		return false;
-	}
-#ifdef CPPHTTPLIB_ZLIB_SUPPORT
-	if (value == "gzip" || value == "deflate") {
-		return false;
-	}
-#endif
-	return true;
 }
 
 } // namespace
@@ -289,15 +248,41 @@ const char *OtlpTransportName(OtlpTransport transport) {
 	return transport == OtlpTransport::GRPC ? "grpc" : "http";
 }
 
-void OtlpListener::RecordFailure(const string &error) {
-	is_running.store(false);
-	failed.store(true);
-	{
-		std::lock_guard<std::mutex> lock(error_mutex);
-		last_error = error;
+OtlpListener::OtlpListener(OtlpServer &server, const OtlpListenerSpec &spec_p) : spec(spec_p) {
+	const auto &config = server.Config();
+	OtlpIngestServerConfig ingest {};
+	ingest.user_data = &server;
+	ingest.on_message = OnIngestMessage;
+	ingest.on_ready = OnIngestReady;
+	if (!config.disable_auth) {
+		ingest.auth_token = config.token.data();
+		ingest.auth_token_len = config.token.size();
 	}
-	server.LogServerEvent(StringUtil::Format("OTLP listener for %s stopped: %s", spec.uri.Uri(), error),
-	                      LogLevel::LOG_WARNING);
+	const auto grpc = spec.transport == OtlpTransport::GRPC;
+	ingest.services = grpc ? OTLP_INGEST_SERVE_OTLP_GRPC | OTLP_INGEST_SERVE_OTAP_GRPC : OTLP_INGEST_SERVE_OTLP_HTTP;
+	ingest.profile = OTLP_ARROW_PROFILE_DUCKDB;
+	ingest.max_message_bytes = config.max_body_bytes;
+
+	// Keep the URI parser's brackets for IPv6 addresses.
+	const auto addr = spec.uri.Http().substr(sizeof("http://") - 1);
+	char error[256] = {};
+	auto *started = otlp_ingest_server_start(addr.data(), addr.size(), &ingest, error, sizeof(error));
+	if (!started) {
+		throw IOException("Failed to start OTLP/%s server at %s: %s", grpc ? "gRPC" : "HTTP", spec.uri.Uri(),
+		                  error[0] != '\0' ? error : "unknown error");
+	}
+	handle.store(started);
+}
+
+OtlpListener::~OtlpListener() {
+	Close();
+}
+
+void OtlpListener::Close() {
+	if (auto *server = handle.exchange(nullptr)) {
+		otlp_ingest_server_stop(server, 5000);
+		otlp_ingest_server_free(server);
+	}
 }
 
 OtlpServer::OtlpServer(ClientContext &context, const vector<OtlpListenerSpec> &listener_specs,
@@ -347,10 +332,9 @@ OtlpServer::OtlpServer(ClientContext &context, const vector<OtlpListenerSpec> &l
 	// A throw here means ~OtlpServer() won't run: close started listeners and stop the sealer, or
 	// a socket stays bound and a joinable std::thread is destroyed (std::terminate).
 	try {
+		listeners.reserve(listener_specs.size());
 		for (auto &spec : listener_specs) {
-			listeners.push_back(spec.transport == OtlpTransport::GRPC ? MakeOtlpGrpcListener(*this, spec)
-			                                                          : MakeOtlpHttpListener(*this, spec));
-			listeners.back()->Start();
+			listeners.push_back(make_uniq<OtlpListener>(*this, spec));
 		}
 	} catch (...) {
 		CloseListeners();
@@ -386,8 +370,6 @@ const vector<OtlpServerListColumn> &OtlpServer::ListColumns() {
 	    OTLP_COLUMN("active_requests", UBIGINT, Value::UBIGINT(s.active_requests.load())),
 	    OTLP_COLUMN("total_requests", UBIGINT, Value::UBIGINT(s.total_requests.load())),
 	    OTLP_COLUMN("total_rows", UBIGINT, Value::UBIGINT(s.total_rows.load())),
-	    OTLP_COLUMN("is_listening", BOOLEAN, Value::BOOLEAN(l.IsListening())),
-	    OTLP_COLUMN("last_error", VARCHAR, NullIfEmpty(l.LastError())),
 	    OTLP_COLUMN("catalog_name", VARCHAR, Value(s.config.catalog_name)),
 	    OTLP_COLUMN("buffered_rows", UBIGINT, Value::UBIGINT(s.BufferedRows())),
 	    OTLP_COLUMN("admitted_bytes", UBIGINT, Value::UBIGINT(s.AdmittedBytes())),
@@ -418,10 +400,6 @@ const OtlpUri &OtlpServer::PrimaryUri() const {
 }
 
 void OtlpServer::CloseListeners() {
-	// Stop accepting everywhere first so no transport admits rows while another drains.
-	for (auto &listener : listeners) {
-		listener->StopAccepting();
-	}
 	for (auto it = listeners.rbegin(); it != listeners.rend(); ++it) {
 		(*it)->Close();
 	}
@@ -462,23 +440,6 @@ string OtlpServer::GenerateRandomToken(DatabaseInstance &db) {
 	data_t bytes[TOKEN_BYTES];
 	rng->GenerateRandomData(bytes, TOKEN_BYTES);
 	return HexEncode(bytes, TOKEN_BYTES);
-}
-
-bool OtlpServer::CheckAuth(const string &authorization, const string &api_key) const {
-	if (config.disable_auth) {
-		return true;
-	}
-	// Check both independently so a malformed Authorization header cannot mask a valid x-api-key.
-	if (authorization.size() >= 7 && StringUtil::Lower(authorization.substr(0, 7)) == "bearer ") {
-		auto bearer = authorization.substr(7);
-		if (!bearer.empty() && TimingSafeEqual(bearer, config.token)) {
-			return true;
-		}
-	}
-	if (!api_key.empty() && TimingSafeEqual(api_key, config.token)) {
-		return true;
-	}
-	return false;
 }
 
 bool OtlpServer::TryReserveAdmission(idx_t bytes, idx_t &current) {
@@ -575,159 +536,65 @@ OtlpServer::RequestGuard::~RequestGuard() {
 	server.active_requests--;
 }
 
-OtlpIngestOutcome OtlpServer::Ingest(OtlpRequestKind kind, const string &content_type, const string &content_encoding,
-                                     const string &body) {
-	if (body.size() > config.max_body_bytes) {
-		return Refused(OtlpIngestRefusal::PAYLOAD_TOO_LARGE,
-		               StringUtil::Format("payload has %llu bytes; max is %llu", static_cast<uint64_t>(body.size()),
-		                                  static_cast<uint64_t>(config.max_body_bytes)));
-	}
-	if (IsUnsupportedEncoding(content_encoding)) {
-		return Refused(OtlpIngestRefusal::UNSUPPORTED_MEDIA,
-		               StringUtil::Format("unsupported content-encoding %s", content_encoding));
-	}
-	OtlpInputFormat format;
-	string media_type;
-	if (!FormatFromContentType(content_type, format, media_type)) {
-		return Refused(
-		    OtlpIngestRefusal::UNSUPPORTED_MEDIA,
-		    StringUtil::Format("unsupported content-type %s", media_type.empty() ? "<missing>" : media_type));
-	}
-	// `body` is already decompressed, so peak memory is ~max_buffered_bytes + http_threads * max_body_bytes.
-	return Admit(body.size(), [&](OtlpIngestResult &counts) -> vector<StagedSignal> {
-		switch (kind) {
-		case OtlpRequestKind::LOGS:
-			return StageSignal(OTLP_SIGNAL_LOGS, body, format);
-		case OtlpRequestKind::TRACES:
-			return StageSignal(OTLP_SIGNAL_TRACES, body, format);
-		case OtlpRequestKind::METRICS:
-			return StageMetrics(body, format, counts);
-		default:
-			throw InternalException("Unknown OTLP request kind");
-		}
-	});
-}
-
-OtlpIngestOutcome OtlpServer::IngestArrow(OtlpSignalType signal_type, idx_t input_bytes, ArrowArray &array,
-                                          ArrowSchema &schema) {
-	return Admit(input_bytes, [&](OtlpIngestResult &) {
-		// array/schema are borrowed from Rust: StageArrowBatch copies the rows and never releases them.
-		vector<StagedSignal> staged;
-		StageArrowBatch(signal_type, array, schema, staged);
-		return staged;
-	});
-}
-
-OtlpIngestOutcome OtlpServer::Admit(idx_t input_bytes, const StageFn &stage) {
-	// Reserve before staging so concurrent bursts cannot all pass the check; released immediately on
-	// a refusal, otherwise only after the rows seal.
+OtlpIngestStatus OtlpServer::Ingest(idx_t input_bytes, const OtlpIngestBatch *batches, idx_t batch_count, char *detail,
+                                    size_t detail_len) {
+	RequestGuard request(*this);
+	// Reserve once before staging. The reservation follows the rows until they seal.
 	auto reservation_bytes = MaxValue<idx_t>(input_bytes, 1024);
 	idx_t admitted_before = 0;
 	if (!TryReserveAdmission(reservation_bytes, admitted_before)) {
-		return Refused(
-		    OtlpIngestRefusal::BUFFER_FULL,
+		auto message =
 		    StringUtil::Format("ingest buffer full (%llu admitted bytes, request would add %llu); retry later",
-		                       static_cast<uint64_t>(admitted_before), static_cast<uint64_t>(reservation_bytes)));
+		                       static_cast<uint64_t>(admitted_before), static_cast<uint64_t>(reservation_bytes));
+		WriteIngestDetail(detail, detail_len, message);
+		return OTLP_INGEST_RESOURCE_EXHAUSTED;
 	}
 
-	OtlpIngestOutcome outcome;
 	idx_t unclaimed_admission = reservation_bytes;
 	try {
-		auto staged = stage(outcome.counts);
-		CommitStaged(staged, outcome.counts, unclaimed_admission);
+		vector<StagedSignal> staged;
+		staged.reserve(batch_count);
+		for (idx_t i = 0; i < batch_count; i++) {
+			const auto &batch = batches[i];
+			StageArrowBatch(batch, staged);
+#ifdef DUCKDB_OTLP_ENABLE_TEST_SEAM
+			if (metrics_stage_fault_hook_for_test && batch.signal_type == OTLP_SIGNAL_METRICS_GAUGE) {
+				metrics_stage_fault_hook_for_test();
+			}
+#endif
+		}
+		total_rows.fetch_add(CommitStaged(staged, unclaimed_admission));
 	} catch (...) {
 		ReleaseAdmission(unclaimed_admission);
-		return RefusalFromException();
+		return RefusalFromException(detail, detail_len);
 	}
 	ReleaseAdmission(unclaimed_admission);
-	total_rows.fetch_add(outcome.counts.rows);
-	return outcome;
+	return OTLP_INGEST_OK;
 }
 
-OtlpIngestOutcome OtlpServer::RefusalFromException() const {
+OtlpIngestStatus OtlpServer::RefusalFromException(char *detail, size_t detail_len) const {
 	try {
 		throw;
-	} catch (OtlpIngestRefused &ex) {
-		return Refused(ex.refusal, ex.message);
 	} catch (InvalidInputException &) {
-		return Refused(OtlpIngestRefusal::MALFORMED, CurrentExceptionMessage());
+		auto message = CurrentExceptionMessage();
+		WriteIngestDetail(detail, detail_len, message);
+		return OTLP_INGEST_INVALID;
 	} catch (IOException &) {
 		auto message = CurrentExceptionMessage();
+		WriteIngestDetail(detail, detail_len, message);
 		LogServerEvent("ingest I/O error: " + message, LogLevel::LOG_WARNING);
-		return Refused(OtlpIngestRefusal::INTERNAL, std::move(message));
 	} catch (...) {
-		// catch(...) so a non-std throw cannot cross into a transport (or into Rust, for gRPC).
 		auto message = CurrentExceptionMessage("ingest");
+		WriteIngestDetail(detail, detail_len, message);
 		LogServerEvent("ingest internal error: " + message, LogLevel::LOG_WARNING);
-		return Refused(OtlpIngestRefusal::INTERNAL, std::move(message));
 	}
+	return OTLP_INGEST_INTERNAL;
 }
 
-vector<OtlpServer::StagedSignal> OtlpServer::StageSignal(OtlpSignalType signal_type, const string &body,
-                                                         OtlpInputFormat format) {
-	const auto &signal = *signals[signal_type];
-	ArrowSchemaWrapper schema;
-	ArrowArrayWrapper array;
-	OtlpStatus status = otlp_transform_with_profile(signal_type, format, OTLP_ARROW_PROFILE_DUCKDB,
-	                                                reinterpret_cast<const uint8_t *>(body.data()), body.size(),
-	                                                &array.arrow_array, &schema.arrow_schema);
-	if (status != OTLP_OK) {
-		throw OtlpIngestRefused(
-		    OtlpIngestRefusal::MALFORMED,
-		    StringUtil::Format("OTLP parse failed for %s: %s", signal.table_name, otlp_status_message(status)));
-	}
-
-	vector<StagedSignal> staged;
-	StageArrowBatch(signal_type, array.arrow_array, schema.arrow_schema, staged);
-	return staged;
-}
-
-vector<OtlpServer::StagedSignal> OtlpServer::StageMetrics(const string &body, OtlpInputFormat format,
-                                                          OtlpIngestResult &counts) {
-	OtlpMetricsArrowBatches batches = {};
-	struct BatchGuard {
-		OtlpMetricsArrowBatches &batches;
-		~BatchGuard() {
-			ReleaseOtlpMetricBatches(batches);
-		}
-	} guard {batches};
-	OtlpStatus status = otlp_transform_metrics_all_with_profile(
-	    format, OTLP_ARROW_PROFILE_DUCKDB, reinterpret_cast<const uint8_t *>(body.data()), body.size(), &batches);
-
-	if (status != OTLP_OK) {
-		throw OtlpIngestRefused(OtlpIngestRefusal::MALFORMED,
-		                        StringUtil::Format("OTLP parse failed for metrics: %s", otlp_status_message(status)));
-	}
-
-	// Stage every metric shape before any reaches the live buffers (Admit -> CommitStaged), so a
-	// failure on a later shape cannot make a client retry double-buffer the earlier ones.
-	vector<StagedSignal> staged;
-	for (auto signal_type : OTLP_SIGNALS) {
-		if (signal_type < OTLP_SIGNAL_METRICS_GAUGE) {
-			continue;
-		}
-		auto &shape = OtlpMetricShape(batches, signal_type);
-		if (shape.present) {
-			StageArrowBatch(signal_type, shape.array, shape.schema, staged);
-		}
-#ifdef DUCKDB_OTLP_ENABLE_TEST_SEAM
-		if (metrics_stage_fault_hook_for_test && signal_type == OTLP_SIGNAL_METRICS_GAUGE) {
-			metrics_stage_fault_hook_for_test();
-		}
-#endif
-	}
-
-	// The skipped-counters describe what the Rust transform dropped, not what was buffered; a
-	// refused request reports none of them (Admit returns a fresh outcome).
-	counts.skipped_summaries += batches.skipped_summaries;
-	counts.skipped_nan_values += batches.skipped_nan_values;
-	counts.skipped_infinity_values += batches.skipped_infinity_values;
-	counts.skipped_missing_values += batches.skipped_missing_values;
-	return staged;
-}
-
-void OtlpServer::StageArrowBatch(OtlpSignalType signal_type, ArrowArray &array, ArrowSchema &schema,
-                                 vector<StagedSignal> &staged) {
+void OtlpServer::StageArrowBatch(const OtlpIngestBatch &batch, vector<StagedSignal> &staged) {
+	const auto &array = *batch.array;
+	const auto &schema = *batch.schema;
+	const auto signal_type = batch.signal_type;
 	if (array.length <= 0) {
 		return;
 	}
@@ -741,7 +608,7 @@ void OtlpServer::StageArrowBatch(OtlpSignalType signal_type, ArrowArray &array, 
 	auto &allocator = Allocator::Get(*db);
 	StagedSignal stage {signal_type, make_uniq<ColumnDataCollection>(allocator, signal.types)};
 	// `imported` may reference the borrowed Arrow buffers (zero-copy); Append copies out of them.
-	auto batch = OtlpBorrowArrowBatch(array);
+	auto borrowed = OtlpBorrowArrowBatch(array);
 	DataChunk imported;
 	imported.Initialize(allocator, table.types, APPEND_CHUNK_SIZE);
 	DataChunk chunk;
@@ -750,7 +617,7 @@ void OtlpServer::StageArrowBatch(OtlpSignalType signal_type, ArrowArray &array, 
 		auto count = MinValue<idx_t>(APPEND_CHUNK_SIZE, static_cast<idx_t>(array.length) - offset);
 		imported.Reset();
 		chunk.Reset();
-		OtlpArrowScan(*arrow_con->context, table.arrow_table.GetColumns(), batch, signal.identity_column_ids, offset,
+		OtlpArrowScan(*arrow_con->context, table.arrow_table.GetColumns(), borrowed, signal.identity_column_ids, offset,
 		              count, imported);
 		for (idx_t col = 0; col < chunk.ColumnCount(); col++) {
 			if (imported.data[col].GetType() == chunk.data[col].GetType()) {
@@ -761,26 +628,23 @@ void OtlpServer::StageArrowBatch(OtlpSignalType signal_type, ArrowArray &array, 
 		}
 		chunk.SetChildCardinality(count);
 		stage.collection->Append(chunk);
-		stage.rows += count;
-		stage.batches++;
 	}
 	staged.push_back(std::move(stage));
 }
 
-void OtlpServer::CommitStaged(vector<StagedSignal> &staged, OtlpIngestResult &result, idx_t &admission_bytes) {
+idx_t OtlpServer::CommitStaged(vector<StagedSignal> &staged, idx_t &admission_bytes) {
 	if (staged.empty()) {
-		// Nothing buffered: Admit releases the unclaimed admission.
-		return;
+		return 0;
 	}
+	idx_t rows = 0;
 	{
 		std::lock_guard<std::mutex> lock(buffer_mutex);
 		if (live.Rows() == 0) {
 			live.oldest = std::chrono::steady_clock::now();
 		}
 		for (auto &signal : staged) {
+			rows += signal.collection->Count();
 			live.rows[signal.signal_type]->Combine(*signal.collection);
-			result.rows += signal.rows;
-			result.batches += signal.batches;
 		}
 		live.admission_bytes += admission_bytes;
 		admission_bytes = 0;
@@ -789,6 +653,7 @@ void OtlpServer::CommitStaged(vector<StagedSignal> &staged, OtlpIngestResult &re
 	if (admitted_bytes.load() >= config.seal_target_bytes) {
 		RequestSeal();
 	}
+	return rows;
 }
 
 void OtlpServer::RequestSeal() {

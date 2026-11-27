@@ -91,7 +91,7 @@ bool WaitForShutdownOrListenerFailure(duckdb::Connection &con, const duckdb_otlp
 		quoted_uris.push_back(duckdb::SqlQuote(listener.uri));
 	}
 	auto uris = duckdb::StringUtil::Join(quoted_uris, ", ");
-	auto count_sql = "SELECT count(*) FROM otlp_server_list() WHERE is_listening AND listen_uri IN (" + uris + ")";
+	auto count_sql = "SELECT count(*) FROM otlp_server_list() WHERE listen_uri IN (" + uris + ")";
 	for (duckdb::idx_t ticks = 1; !shutdown_requested.load(); ticks++) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(250));
 		if (ticks % 4 != 0 || shutdown_requested.load()) {
@@ -103,16 +103,13 @@ bool WaitForShutdownOrListenerFailure(duckdb::Connection &con, const duckdb_otlp
 			continue;
 		}
 		auto failures = con.Query(duckdb::StringUtil::Format(R"SQL(
-SELECT uri, CASE WHEN listen_uri IS NULL THEN 'listener is not registered' ELSE coalesce(last_error, '') END
-FROM unnest([%s]) AS expected(uri)
-LEFT JOIN otlp_server_list() ON uri = listen_uri
-WHERE is_listening IS DISTINCT FROM true
+SELECT uri FROM unnest([%s]) AS expected(uri)
+WHERE uri NOT IN (SELECT listen_uri FROM otlp_server_list())
 )SQL",
 		                                                     uris));
 		CheckResult(*failures, "otlp listener health");
 		for (const auto &row : *failures) {
-			std::cerr << "ERROR: OTLP listener " << row.GetValue<duckdb::string>(0)
-			          << " stopped or disappeared: " << row.GetValue<duckdb::string>(1) << '\n';
+			std::cerr << "ERROR: OTLP listener " << row.GetValue<duckdb::string>(0) << " is no longer registered\n";
 		}
 		return false;
 	}

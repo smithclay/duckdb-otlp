@@ -131,7 +131,6 @@ def test_otlp_limits_are_configurable(tmp_path):
         {
             "DUCKDB_MODE": "local-ducklake",
             "DUCKDB_OTLP_TOKEN": "a-private-token-123456",
-            "DUCKDB_OTLP_HTTP_THREADS": "4",
             "DUCKDB_OTLP_MAX_BODY_BYTES": "2097152",
             "DUCKDB_OTLP_MAX_BUFFERED_BYTES": "2147483648",
             "DUCKDB_OTLP_SEAL_TARGET_BYTES": "134217728",
@@ -141,7 +140,6 @@ def test_otlp_limits_are_configurable(tmp_path):
         tmp_path,
     )
     assert result.returncode == 0, result.stderr
-    assert "http_threads := 4" in result.stdout
     assert "max_body_bytes := 2097152" in result.stdout
     assert "max_buffered_bytes := 2147483648" in result.stdout
     assert "seal_target_bytes := 134217728" in result.stdout
@@ -150,9 +148,9 @@ def test_otlp_limits_are_configurable(tmp_path):
 
 
 def test_numeric_tuning_rejects_non_digits(tmp_path):
-    result = run({"DUCKDB_OTLP_HTTP_THREADS": "4.5"}, tmp_path)
+    result = run({"DUCKDB_OTLP_SEAL_MAX_AGE_MS": "4.5"}, tmp_path)
     assert result.returncode == 1
-    assert "DUCKDB_OTLP_HTTP_THREADS must contain only decimal digits" in result.stderr
+    assert "DUCKDB_OTLP_SEAL_MAX_AGE_MS must contain only decimal digits" in result.stderr
 
 
 def test_ducklake_preset_renders_catalog_maintenance_overrides(tmp_path):

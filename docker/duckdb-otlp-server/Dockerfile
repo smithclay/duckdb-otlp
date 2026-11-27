@@ -3,8 +3,7 @@
 #   daemon-export   - exports just the binary (CI uploads this as an artifact).
 #   deps            - throwaway: primes the DuckDB extension cache. The DuckDB CLI lives
 #                     ONLY here.
-#   zlib            - throwaway: stages Wolfi's libz, the one shared lib the base lacks.
-#   runtime-base    - distroless final minus the daemon binary (extensions, libz, health).
+#   runtime-base    - distroless final minus the daemon binary (extensions, health).
 #   runtime-source  - runtime-base + binary from `builder` (local build-from-source).
 #   runtime-prebuilt- runtime-base + binary from `docker-bin/` (CI, no recompile).
 #
@@ -14,7 +13,7 @@
 #
 # The final image is cgr.dev/chainguard/glibc-dynamic (Wolfi, uid 65532 nonroot): glibc +
 # libstdc++ + libgcc + CA certs, no shell, no package manager, no bundled DuckDB CLI. The
-# daemon and the runtime extensions link only glibc/libstdc++/libgcc/libz (the extensions
+# daemon and the runtime extensions link only glibc/libstdc++/libgcc (the extensions
 # carry their own TLS statically), so this is all they need. It replaced
 # gcr.io/distroless/cc-debian12, whose CVE reports were dominated by Debian 12's libssl3 —
 # a library nothing in this image loads. See AGENTS.md.
@@ -32,7 +31,6 @@ RUN apt-get update \
         ninja-build \
         pkg-config \
         python3 \
-        zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
@@ -86,17 +84,10 @@ RUN install -d -o "${RUN_UID}" -g "${RUN_GID}" /staging/data
 # is created here and copied in; COPY preserves it rather than dereferencing it.
 RUN mkdir -p /staging/bin && ln -s duckdb-otlp /staging/bin/duckdb-otlp-server
 
-# libz is the one shared lib the daemon links that glibc-dynamic lacks. Take it from Wolfi,
-# the same distribution as the runtime base, so it tracks the same security updates.
-FROM cgr.dev/chainguard/wolfi-base:latest@sha256:c902a861151182e4ce2de29b8632ba3f7d75b68c35880580f16e353819e524d3 AS zlib
-RUN apk add --no-cache zlib && mkdir -p /staging && cp -L /usr/lib/libz.so.1 /staging/libz.so.1
-
 # Pinned by digest: Chainguard's free tier only publishes `latest`, and Renovate bumps the
 # digest so the image picks up rebuilt (CVE-fixed) bases without floating silently.
 FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:eaa0c377a38e4c67f4192fd5fe9d24d39d51c4531613d97731537f9d33460ae4 AS runtime-base
 
-# Wolfi's library directory is /usr/lib, already on the loader's default search path.
-COPY --from=zlib /staging/libz.so.1 /usr/lib/libz.so.1
 # Pre-primed extension cache and a writable data dir, both owned by the nonroot user.
 COPY --from=deps --chown=65532:65532 /duckdb-home /duckdb-home
 COPY --from=deps --chown=65532:65532 /staging/data /data

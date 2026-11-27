@@ -23,11 +23,8 @@ class ColumnDataCollection;
 class DataChunk;
 struct OtlpSignal;
 
-//! Wire transport for one listener: HTTP (cpp-httplib) or GRPC (OTLP/gRPC + OTAP/Arrow via the
-//! tonic server in otlp2records).
+//! Wire transport enabled on one listener.
 enum class OtlpTransport { HTTP, GRPC };
-
-enum class OtlpRequestKind : uint8_t { LOGS, TRACES, METRICS };
 
 const char *OtlpTransportName(OtlpTransport transport);
 
@@ -54,8 +51,6 @@ struct OtlpServerConfig {
 	bool parquet_views = true;
 	bool create_tables = true;
 	idx_t max_body_bytes = otlp_limits::DEFAULT_MAX_BODY_BYTES;
-	//! Worker threads for each HTTP listener. Zero means choose a conservative host-based default.
-	idx_t http_threads = 0;
 	//! Group-commit ("seal") triggers: one writer seals buffered rows on size or age, avoiding
 	//! per-request Parquet files and write conflicts. Independent of max_buffered_bytes.
 	idx_t seal_target_bytes = otlp_limits::DEFAULT_SEAL_TARGET_BYTES; //! seal when admitted bytes reach this
@@ -70,60 +65,16 @@ struct OtlpServerConfig {
 	OtlpPromoteConfig promote;
 };
 
-struct OtlpIngestResult {
-	idx_t rows = 0;
-	idx_t batches = 0;
-	idx_t skipped_summaries = 0;
-	idx_t skipped_nan_values = 0;
-	idx_t skipped_infinity_values = 0;
-	idx_t skipped_missing_values = 0;
-
-	bool HasSkipped() const {
-		return skipped_summaries > 0 || skipped_nan_values > 0 || skipped_infinity_values > 0 ||
-		       skipped_missing_values > 0;
-	}
-};
-
-//! Why the server refused an ingest call. The server decides; each transport only maps the
-//! refusal to its own wire status (OtlpHttpListener: an HTTP status, the gRPC bridge: an
-//! OtlpIngestStatus), so both report the same failure the same way.
-enum class OtlpIngestRefusal : uint8_t {
-	NONE,              //!< accepted: the rows are buffered
-	PAYLOAD_TOO_LARGE, //!< body over max_body_bytes; permanent
-	UNSUPPORTED_MEDIA, //!< content type or content encoding the server does not decode; permanent
-	MALFORMED,         //!< the payload did not parse or convert; permanent
-	BUFFER_FULL,       //!< admission would exceed max_buffered_bytes; retry with backoff
-	INTERNAL           //!< a server-side failure, logged as an OTLP event
-};
-
-//! The result of one ingest call, whichever transport carried it.
-struct OtlpIngestOutcome {
-	OtlpIngestRefusal refusal = OtlpIngestRefusal::NONE;
-	//! Why the call was refused; empty when accepted.
-	string message;
-	//! What was buffered; all zero when refused.
-	OtlpIngestResult counts;
-
-	bool Accepted() const {
-		return refusal == OtlpIngestRefusal::NONE;
-	}
-};
-
 class OtlpServer;
 
-//! One bound socket feeding a shared OtlpServer. Listeners own no buffers, sealer, or counters.
+//! A bound ingest socket owned by the server.
 class OtlpListener {
 public:
-	OtlpListener(OtlpServer &server_p, OtlpListenerSpec spec_p) : server(server_p), spec(std::move(spec_p)) {
-	}
-	virtual ~OtlpListener() = default;
+	OtlpListener(OtlpServer &server, const OtlpListenerSpec &spec);
+	~OtlpListener();
 
-	//! Bind synchronously (so address-in-use surfaces to otlp_serve) and start serving.
-	virtual void Start() = 0;
-	//! Stop accepting new connections without joining. Safe from a request-handler thread.
-	virtual void StopAccepting() = 0;
-	//! Stop accepting and join the transport's threads. Idempotent; must not run on a worker thread.
-	virtual void Close() = 0;
+	//! Stop accepting and drain callbacks. Idempotent.
+	void Close();
 
 	const OtlpUri &Uri() const {
 		return spec.uri;
@@ -131,24 +82,10 @@ public:
 	OtlpTransport Transport() const {
 		return spec.transport;
 	}
-	//! False once the listener has stopped or its accept loop failed after bind.
-	bool IsListening() const {
-		return is_running.load() && !failed.load();
-	}
-	string LastError() const {
-		std::lock_guard<std::mutex> lock(error_mutex);
-		return last_error;
-	}
 
-protected:
-	void RecordFailure(const string &error);
-
-	OtlpServer &server;
+private:
 	OtlpListenerSpec spec;
-	std::atomic<bool> is_running {false};
-	std::atomic<bool> failed {false};
-	mutable mutex error_mutex;
-	string last_error;
+	std::atomic<OtlpIngestServer *> handle {nullptr};
 };
 
 //! One otlp_server_list() column and how to read it for one listener of a server.
@@ -158,9 +95,6 @@ struct OtlpServerListColumn {
 	Value (*get)(const OtlpServer &server, const OtlpListener &listener);
 };
 
-unique_ptr<OtlpListener> MakeOtlpHttpListener(OtlpServer &server, const OtlpListenerSpec &spec);
-unique_ptr<OtlpListener> MakeOtlpGrpcListener(OtlpServer &server, const OtlpListenerSpec &spec);
-
 //! One ingest pipeline (buffers, admission, a single sealer/writer, maintenance) fed by N listeners.
 class OtlpServer {
 public:
@@ -169,8 +103,7 @@ public:
 	OtlpServer(ClientContext &context, const vector<OtlpListenerSpec> &listener_specs, const OtlpServerConfig &config);
 	~OtlpServer();
 
-	//! Stop every listener, then drain with one final seal. Must NOT be called from a request-handler
-	//! thread: httplib's teardown joins all workers, which would deadlock.
+	//! Drain every listener, then seal the remaining rows. Call from outside the ingest callbacks.
 	void Close();
 
 	const vector<unique_ptr<OtlpListener>> &Listeners() const {
@@ -256,7 +189,7 @@ public:
 	void SetParquetSealFaultHookForTest(std::function<void(idx_t)> hook) {
 		parquet_seal_fault_hook_for_test = std::move(hook);
 	}
-	//! Runs in StageMetrics after the first metric shape is staged, before anything reaches the live
+	//! Runs after the gauge batch is staged, before anything reaches the live
 	//! buffers; a throw must refuse the request and leave the buffers and admission untouched.
 	void SetMetricsStageFaultHookForTest(std::function<void()> hook) {
 		metrics_stage_fault_hook_for_test = std::move(hook);
@@ -267,29 +200,12 @@ public:
 	}
 #endif
 
-	// --- Listener API ---
-	bool CheckAuth(const string &authorization, const string &api_key = "") const;
-	//! Check an OTLP/HTTP body and buffer its rows.
-	OtlpIngestOutcome Ingest(OtlpRequestKind kind, const string &content_type, const string &content_encoding,
-	                         const string &body);
-	//! Buffer one decoded Arrow batch through the same admission path as HTTP (Admit). `input_bytes`
-	//! is the wire size charged against admission. The array/schema are borrowed, never released.
-	OtlpIngestOutcome IngestArrow(OtlpSignalType signal_type, idx_t input_bytes, ArrowArray &array,
-	                              ArrowSchema &schema);
+	//! Reserve and buffer one decoded message. The Rust server owns the Arrow arrays and schemas.
+	OtlpIngestStatus Ingest(idx_t input_bytes, const OtlpIngestBatch *batches, idx_t batch_count, char *detail,
+	                        size_t detail_len);
+
 	//! Log to duckdb_logs from any thread. Use LOG_WARNING for failures.
 	void LogServerEvent(const string &message, LogLevel level = OtlpLogType::LEVEL) const;
-
-	//! Counts HTTP ingest requests from handler entry, including rejected requests.
-	class RequestGuard {
-	public:
-		explicit RequestGuard(OtlpServer &server);
-		~RequestGuard();
-		RequestGuard(const RequestGuard &) = delete;
-		RequestGuard &operator=(const RequestGuard &) = delete;
-
-	private:
-		OtlpServer &server;
-	};
 
 private:
 	void EnsureTargetTables();
@@ -303,29 +219,29 @@ private:
 	std::atomic<idx_t> total_requests {0};
 	std::atomic<idx_t> total_rows {0};
 
-	// --- request path (runs on httplib worker threads; buffers, never commits) ---
+	// --- request path (runs on ingest runtime threads) ---
 	//! One signal's rows converted off to the side. A request's signals reach the live buffers only
 	//! once ALL convert, so a mid-conversion failure cannot make a client retry double-buffer.
 	struct StagedSignal {
 		OtlpSignalType signal_type;
 		unique_ptr<ColumnDataCollection> collection;
-		idx_t rows = 0;
-		idx_t batches = 0;
 	};
-	//! Converts a request into staged signals off to the side; may add to `counts` (skipped values).
-	using StageFn = std::function<vector<StagedSignal>(OtlpIngestResult &counts)>;
-	//! The one admission sequence every transport goes through: reserve `input_bytes` against
-	//! max_buffered_bytes, stage, move the staged rows into the live buffers, release whatever the
-	//! buffers did not claim. A throw from `stage` becomes a refusal (see RefusalFromException).
-	OtlpIngestOutcome Admit(idx_t input_bytes, const StageFn &stage);
+	//! Counts decoded messages that reach the DuckDB pipeline.
+	class RequestGuard {
+	public:
+		explicit RequestGuard(OtlpServer &server);
+		~RequestGuard();
+		RequestGuard(const RequestGuard &) = delete;
+		RequestGuard &operator=(const RequestGuard &) = delete;
+
+	private:
+		OtlpServer &server;
+	};
 	//! Classify the in-flight exception as a refusal, logging internal failures.
-	OtlpIngestOutcome RefusalFromException() const;
-	vector<StagedSignal> StageSignal(OtlpSignalType signal_type, const string &body, OtlpInputFormat format);
-	vector<StagedSignal> StageMetrics(const string &body, OtlpInputFormat format, OtlpIngestResult &counts);
-	void StageArrowBatch(OtlpSignalType signal_type, ArrowArray &array, ArrowSchema &schema,
-	                     vector<StagedSignal> &staged);
-	//! Move staged signals into the live buffers and transfer their reservation (zeroes it once consumed).
-	void CommitStaged(vector<StagedSignal> &staged, OtlpIngestResult &result, idx_t &admission_bytes);
+	OtlpIngestStatus RefusalFromException(char *detail, size_t detail_len) const;
+	void StageArrowBatch(const OtlpIngestBatch &batch, vector<StagedSignal> &staged);
+	//! Append staged rows and transfer the reservation. Return the appended row count.
+	idx_t CommitStaged(vector<StagedSignal> &staged, idx_t &admission_bytes);
 	bool TryReserveAdmission(idx_t bytes, idx_t &current);
 	void ReleaseAdmission(idx_t bytes);
 
