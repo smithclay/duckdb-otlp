@@ -129,6 +129,9 @@ def test_ingest_auth_and_sigterm_drain_for_selected_transports(tmp_path, transpo
             with pytest.raises(urllib.error.HTTPError) as refused:
                 post_http(env, trace_request(9), 'wrong-token')
             assert refused.value.code in (401, 403)
+            assert refused.value.read() == (
+                b'{"error":"unauthorized","message":"missing or invalid Authorization bearer token or x-api-key"}'
+            )
             assert post_http(env, trace_request(1), TOKEN) == 202
             expected.append('transport-1')
         if 'grpc' in transports:

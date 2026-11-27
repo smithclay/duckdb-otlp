@@ -1,5 +1,6 @@
 #include "otlp_server.hpp"
 
+#include "duckdb/common/json_document.hpp"
 #include "duckdb/common/string_util.hpp"
 
 #include "httplib.hpp"
@@ -17,7 +18,12 @@ static void SetJson(duckdb_httplib::Response &res, int status, const string &jso
 }
 
 static void SetError(duckdb_httplib::Response &res, int status, const string &reason, const string &message) {
-	SetJson(res, status, StringUtil::ToJSONMap({{"error", reason}, {"message", message}}));
+	JSONWriter writer;
+	auto body = writer.CreateObject();
+	body.AddString("error", reason);
+	body.AddString("message", message);
+	writer.SetRoot(body);
+	SetJson(res, status, writer.ToString(JSONWriteFlags::ALLOW_INVALID_UNICODE));
 }
 
 //! The HTTP status and `error` reason for a refused ingest call.
