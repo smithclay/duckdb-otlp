@@ -1,6 +1,5 @@
 #include "otlp_control.hpp"
 
-#include "duckdb/common/error_data.hpp"
 #include "duckdb/logging/log_manager.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
@@ -166,7 +165,7 @@ static unique_ptr<FunctionData> OtlpServeBind(ClientContext &context, TableFunct
 		OtlpListenerSpec spec;
 		spec.uri = OtlpUri(listen_uris[i]);
 		for (auto &existing : listeners) {
-			if (existing.uri.CanonicalUri() == spec.uri.CanonicalUri()) {
+			if (existing.uri.Uri() == spec.uri.Uri()) {
 				throw InvalidInputException("otlp_serve listen URIs must be distinct (got %s twice)", spec.uri.Uri());
 			}
 		}
@@ -347,11 +346,11 @@ static vector<Value> StopServer(OtlpServer &server, bool catch_errors) {
 	string error;
 	try {
 		server.Close();
-	} catch (std::exception &ex) {
+	} catch (...) {
 		if (!catch_errors) {
 			throw;
 		}
-		error = ErrorData(ex).RawMessage();
+		error = CurrentExceptionMessage("stop");
 	}
 	auto uris = StringUtil::Join(listen_uris, ", ");
 	auto dropped_rows = server.ShutdownDroppedRows();

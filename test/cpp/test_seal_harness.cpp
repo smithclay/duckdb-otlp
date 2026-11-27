@@ -122,21 +122,29 @@ IngestResult IngestLogs(OtlpServer &server, const string &payload) {
 
 IngestResult IngestMetrics(OtlpServer &server, const string &payload) {
 	struct MetricBatches {
-		OtlpMetricsArrowBatches shapes {};
+		OtlpMetricsArrowBatches decoded {};
+		//! In signal order from OTLP_SIGNAL_METRICS_GAUGE.
+		OtlpArrowBatch *shapes[4] = {&decoded.gauge, &decoded.sum, &decoded.histogram, &decoded.exp_histogram};
 		~MetricBatches() {
-			ReleaseOtlpMetricBatches(shapes);
+			for (auto *shape : shapes) {
+				if (shape->present && shape->array.release) {
+					shape->array.release(&shape->array);
+				}
+				if (shape->present && shape->schema.release) {
+					shape->schema.release(&shape->schema);
+				}
+			}
 		}
-	} decoded;
+	} metrics;
 	REQUIRE(otlp_transform_metrics_all_with_profile(OTLP_FORMAT_JSON, OTLP_ARROW_PROFILE_DUCKDB,
 	                                                reinterpret_cast<const uint8_t *>(payload.data()), payload.size(),
-	                                                &decoded.shapes) == OTLP_OK);
+	                                                &metrics.decoded) == OTLP_OK);
 	vector<OtlpIngestBatch> batches;
-	for (auto signal : OTLP_SIGNALS) {
-		if (signal >= OTLP_SIGNAL_METRICS_GAUGE) {
-			auto &shape = OtlpMetricShape(decoded.shapes, signal);
-			if (shape.present) {
-				batches.push_back({signal, &shape.array, &shape.schema});
-			}
+	for (idx_t i = 0; i < 4; i++) {
+		auto &shape = *metrics.shapes[i];
+		if (shape.present) {
+			batches.push_back(
+			    {static_cast<OtlpSignalType>(OTLP_SIGNAL_METRICS_GAUGE + i), &shape.array, &shape.schema});
 		}
 	}
 	return IngestBatches(server, payload.size(), batches.data(), batches.size());
@@ -591,7 +599,11 @@ TEST_CASE("seal harness: failed metrics staging buffers nothing, retry buffers e
 	REQUIRE(server->AdmittedBytes() == 0);
 
 	// Fault fires after the gauge converts into staging, before the sum converts.
-	server->SetMetricsStageFaultHookForTest([]() { throw std::runtime_error("injected metrics staging failure"); });
+	server->SetStageFaultHookForTest([](OtlpSignalType signal) {
+		if (signal == OTLP_SIGNAL_METRICS_GAUGE) {
+			throw std::runtime_error("injected metrics staging failure");
+		}
+	});
 
 	auto refused = IngestMetrics(*server, payload);
 	REQUIRE(refused.status == OTLP_INGEST_INTERNAL);
@@ -602,7 +614,7 @@ TEST_CASE("seal harness: failed metrics staging buffers nothing, retry buffers e
 	REQUIRE(TableCount(con, "otlp_metrics_sum") == 0);
 	REQUIRE(server->AdmittedBytes() == 0);
 
-	server->SetMetricsStageFaultHookForTest(nullptr);
+	server->SetStageFaultHookForTest(nullptr);
 	auto ingested = IngestMetrics(*server, payload);
 	REQUIRE(ingested.Accepted());
 	REQUIRE(server->BufferedRows() == kTotal);

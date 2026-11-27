@@ -9,7 +9,10 @@
 #include "duckdb/main/appender.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/connection.hpp"
+#include "duckdb/catalog/catalog.hpp"
+#include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb/main/database_manager.hpp"
 #include "duckdb/main/query_result.hpp"
 #include "duckdb/parser/expression/star_expression.hpp"
 #include "duckdb/parser/parser.hpp"
@@ -41,13 +44,16 @@ struct OtlpSignal {
 	//! How a decoded batch of this signal is imported. Its types are the importer's; `types` above
 	//! differ only where the buffer narrows them (TIMESTAMP_NS -> TIMESTAMP, see BufferColumnType).
 	const unique_ptr<OtlpArrowTable> arrow_table;
+	//! Per column: the buffer narrows the imported type, so staging converts instead of referencing.
+	const vector<bool> narrowed;
 	string sink_sql;                   // set once by BuildSinks before ingest starts
 	bool parquet_view_settled = false; // under writer_mutex
 
 	OtlpSignal(string table_name_p, vector<LogicalType> types_p, vector<Identifier> names_p,
 	           unique_ptr<OtlpArrowTable> arrow_table_p)
 	    : table_name(std::move(table_name_p)), types(std::move(types_p)), names(std::move(names_p)),
-	      identity_column_ids(MakeIdentityColumnIds(types.size())), arrow_table(std::move(arrow_table_p)) {
+	      identity_column_ids(MakeIdentityColumnIds(types.size())), arrow_table(std::move(arrow_table_p)),
+	      narrowed(MakeNarrowed(types, arrow_table->types)) {
 	}
 
 private:
@@ -58,6 +64,14 @@ private:
 			ids.push_back(i);
 		}
 		return ids;
+	}
+	static vector<bool> MakeNarrowed(const vector<LogicalType> &buffer, const vector<LogicalType> &imported) {
+		vector<bool> result;
+		result.reserve(buffer.size());
+		for (idx_t i = 0; i < buffer.size(); i++) {
+			result.push_back(buffer[i] != imported[i]);
+		}
+		return result;
 	}
 };
 
@@ -141,8 +155,15 @@ static bool IsContendedCatalogMaintenanceError(const string &message) {
 
 } // namespace
 
-LogicalType OtlpServer::BufferColumnType(const LogicalType &imported) {
+//! The importer's type, except TIMESTAMP_NS narrows to the tables' TIMESTAMP (us).
+static LogicalType BufferColumnType(const LogicalType &imported) {
 	return imported.id() == LogicalTypeId::TIMESTAMP_NS ? LogicalType::TIMESTAMP : imported;
+}
+
+static unique_ptr<Connection> MakeWriterConnection(DatabaseInstance &db) {
+	auto con = make_uniq<Connection>(db);
+	con->context->config.enable_progress_bar = false;
+	return con;
 }
 
 // Truncates toward zero.
@@ -263,8 +284,7 @@ OtlpListener::OtlpListener(OtlpServer &server, const OtlpListenerSpec &spec_p) :
 	ingest.profile = OTLP_ARROW_PROFILE_DUCKDB;
 	ingest.max_message_bytes = config.max_body_bytes;
 
-	// Keep the URI parser's brackets for IPv6 addresses.
-	const auto addr = spec.uri.Http().substr(sizeof("http://") - 1);
+	const auto addr = spec.uri.HostPort();
 	char error[256] = {};
 	auto *started = otlp_ingest_server_start(addr.data(), addr.size(), &ingest, error, sizeof(error));
 	if (!started) {
@@ -299,20 +319,11 @@ OtlpServer::OtlpServer(ClientContext &context, const vector<OtlpListenerSpec> &l
 	arrow_con = make_uniq<Connection>(*db);
 	InitBuffers();
 	// The sealer thread is the only thing that commits, so concurrent DuckLake writes never conflict.
-	writer_con = make_uniq<Connection>(*db);
-	writer_con->context->config.enable_progress_bar = false;
+	writer_con = MakeWriterConnection(*db);
 	EnsureTargetTables();
 	if (maintains_catalog) {
-		try {
-			auto result = RunSQL(*writer_con, "SELECT 1 FROM duckdb_databases() WHERE type = 'ducklake' AND "
-			                                  "database_name COLLATE NOCASE = " +
-			                                      SqlQuote(config.catalog_name));
-			is_ducklake = result->RowCount() > 0;
-		} catch (...) {
-			LogServerEvent(StringUtil::Format("catalog type lookup failed for catalog=%s: %s", config.catalog_name,
-			                                  CurrentExceptionMessage("catalog type lookup")),
-			               LogLevel::LOG_WARNING);
-		}
+		auto attached = DatabaseManager::Get(*db).GetDatabase(Identifier(config.catalog_name));
+		is_ducklake = attached && attached->GetCatalog().GetCatalogType() == "ducklake";
 	}
 	// Parquet-export mode has no table to ALTER.
 	if (config.parquet_export_path.empty()) {
@@ -400,8 +411,22 @@ const OtlpUri &OtlpServer::PrimaryUri() const {
 }
 
 void OtlpServer::CloseListeners() {
-	for (auto it = listeners.rbegin(); it != listeners.rend(); ++it) {
-		(*it)->Close();
+	// Close() waits for the listener's drain, so close them together: shutdown then waits for one
+	// drain deadline, and no listener keeps accepting while another drains.
+	vector<std::thread> closers;
+	for (idx_t i = 1; i < listeners.size(); i++) {
+		auto &listener = *listeners[i];
+		try {
+			closers.emplace_back([&listener] { listener.Close(); });
+		} catch (...) {
+			listener.Close();
+		}
+	}
+	if (!listeners.empty()) {
+		listeners.front()->Close();
+	}
+	for (auto &closer : closers) {
+		closer.join();
 	}
 }
 
@@ -558,8 +583,8 @@ OtlpIngestStatus OtlpServer::Ingest(idx_t input_bytes, const OtlpIngestBatch *ba
 			const auto &batch = batches[i];
 			StageArrowBatch(batch, staged);
 #ifdef DUCKDB_OTLP_ENABLE_TEST_SEAM
-			if (metrics_stage_fault_hook_for_test && batch.signal_type == OTLP_SIGNAL_METRICS_GAUGE) {
-				metrics_stage_fault_hook_for_test();
+			if (stage_fault_hook_for_test) {
+				stage_fault_hook_for_test(batch.signal_type);
 			}
 #endif
 		}
@@ -611,8 +636,9 @@ void OtlpServer::StageArrowBatch(const OtlpIngestBatch &batch, vector<StagedSign
 	auto borrowed = OtlpBorrowArrowBatch(array);
 	DataChunk imported;
 	imported.Initialize(allocator, table.types, APPEND_CHUNK_SIZE);
+	// Only narrowed columns need their own buffers; the rest reference `imported`.
 	DataChunk chunk;
-	chunk.Initialize(allocator, signal.types, APPEND_CHUNK_SIZE);
+	chunk.Initialize(allocator, signal.types, signal.narrowed, APPEND_CHUNK_SIZE);
 	for (idx_t offset = 0; offset < static_cast<idx_t>(array.length); offset += APPEND_CHUNK_SIZE) {
 		auto count = MinValue<idx_t>(APPEND_CHUNK_SIZE, static_cast<idx_t>(array.length) - offset);
 		imported.Reset();
@@ -620,10 +646,10 @@ void OtlpServer::StageArrowBatch(const OtlpIngestBatch &batch, vector<StagedSign
 		OtlpArrowScan(*arrow_con->context, table.arrow_table.GetColumns(), borrowed, signal.identity_column_ids, offset,
 		              count, imported);
 		for (idx_t col = 0; col < chunk.ColumnCount(); col++) {
-			if (imported.data[col].GetType() == chunk.data[col].GetType()) {
-				chunk.data[col].Reference(imported.data[col]);
-			} else {
+			if (signal.narrowed[col]) {
 				TimestampNsToTimestamp(imported.data[col], chunk.data[col], count);
+			} else {
+				chunk.data[col].Reference(imported.data[col]);
 			}
 		}
 		chunk.SetChildCardinality(count);
@@ -865,8 +891,7 @@ idx_t OtlpServer::SealOnce() {
 			if (!rollback_ok) {
 				// The connection may be wedged in an aborted transaction; rebuild it so BEGIN can succeed.
 				try {
-					writer_con = make_uniq<Connection>(*db);
-					writer_con->context->config.enable_progress_bar = false;
+					writer_con = MakeWriterConnection(*db);
 				} catch (...) {
 				}
 			}
@@ -1040,7 +1065,7 @@ void OtlpServer::SealerLoop() {
 		}
 		bool due = flush_requested.exchange(false);
 		if (!due) {
-			due = SealAgeDue();
+			due = OldestBufferedAgeMs() >= config.seal_max_age_ms;
 		}
 		if (due) {
 			try {
@@ -1055,10 +1080,6 @@ void OtlpServer::SealerLoop() {
 		} catch (...) {
 		}
 	}
-}
-
-bool OtlpServer::SealAgeDue() const {
-	return OldestBufferedAgeMs() >= config.seal_max_age_ms;
 }
 
 idx_t OtlpServer::ShutdownIngest() {

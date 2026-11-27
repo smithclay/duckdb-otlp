@@ -20,7 +20,6 @@ class ClientContext;
 class Connection;
 class DatabaseInstance;
 class ColumnDataCollection;
-class DataChunk;
 struct OtlpSignal;
 
 //! Wire transport enabled on one listener.
@@ -189,10 +188,10 @@ public:
 	void SetParquetSealFaultHookForTest(std::function<void(idx_t)> hook) {
 		parquet_seal_fault_hook_for_test = std::move(hook);
 	}
-	//! Runs after the gauge batch is staged, before anything reaches the live
-	//! buffers; a throw must refuse the request and leave the buffers and admission untouched.
-	void SetMetricsStageFaultHookForTest(std::function<void()> hook) {
-		metrics_stage_fault_hook_for_test = std::move(hook);
+	//! Runs after each batch is staged, before anything reaches the live buffers; a throw must
+	//! refuse the request and leave the buffers and admission untouched.
+	void SetStageFaultHookForTest(std::function<void(OtlpSignalType)> hook) {
+		stage_fault_hook_for_test = std::move(hook);
 	}
 	//! Runs immediately before the maintenance CHECKPOINT. Set it before the trigger can fire.
 	void SetMaintenanceFaultHookForTest(std::function<void()> hook) {
@@ -212,7 +211,7 @@ private:
 	//! Stop the sealer and seal remaining rows before the writer connection / database go away.
 	//! Idempotent. Returns the rows dropped by a failed final drain (0 on every later call).
 	idx_t ShutdownIngest();
-	//! Reverse start order. Idempotent.
+	//! Concurrently. Idempotent.
 	void CloseListeners();
 
 	std::atomic<idx_t> active_requests {0};
@@ -264,7 +263,6 @@ private:
 	void BuildSinks();
 	void RecordSealOutcome(bool success, idx_t rows_committed, const string &error);
 	void RequestSeal();
-	bool SealAgeDue() const;
 	//! Sealer thread only.
 	void MaybeRunCatalogMaintenance();
 	//! Delete untracked files left by a losing checkpoint or crashed seal using DuckLake's retention.
@@ -272,8 +270,6 @@ private:
 	void SweepOrphanedFiles();
 
 	void CreateOrValidateTable(const OtlpSignal &signal);
-	//! The importer's type, except TIMESTAMP_NS narrows to the tables' TIMESTAMP (us).
-	static LogicalType BufferColumnType(const LogicalType &imported);
 
 private:
 	weak_ptr<DatabaseInstance> db_ptr;
@@ -330,7 +326,7 @@ private:
 	//! Test-only fault hooks (see the Set*FaultHookForTest setters).
 	std::function<void()> seal_fault_hook_for_test;
 	std::function<void(idx_t)> parquet_seal_fault_hook_for_test;
-	std::function<void()> metrics_stage_fault_hook_for_test;
+	std::function<void(OtlpSignalType)> stage_fault_hook_for_test;
 	std::function<void()> maintenance_fault_hook_for_test;
 #endif
 };

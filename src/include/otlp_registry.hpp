@@ -26,7 +26,9 @@ public:
 
 private:
 	//! Caller holds servers_mutex.
-	vector<shared_ptr<OtlpServer>>::iterator FindServer(const string &canonical_uri);
+	vector<shared_ptr<OtlpServer>>::iterator FindServer(const string &uri);
+	//! FindServer, throwing when no server listens on `uri`. Caller holds servers_mutex.
+	vector<shared_ptr<OtlpServer>>::iterator FindServerOrThrow(const OtlpUri &uri);
 
 	//! Serializes starts across the conflict checks and listener bind.
 	std::mutex start_mutex;

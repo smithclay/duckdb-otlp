@@ -77,6 +77,8 @@ struct ServerConfig {
 
 	static ServerConfig FromEnv(const EnvSource &env);
 
+	//! The listener URIs as a comma-separated list of SQL string literals.
+	duckdb::string ListenUrisSql() const;
 	//! One otlp_serve call starting every listener against one shared server.
 	duckdb::string StartOtlpSql() const;
 	duckdb::string StartQuackSql() const;

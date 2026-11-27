@@ -19,14 +19,16 @@ public:
 	}
 	explicit OtlpUri(string uri_p);
 
-	string Http() const {
+	const string &Http() const {
 		return http;
 	}
-	string Uri() const {
+	//! Canonical form: `otlp:` + HostPort(). Registry lookups compare it.
+	const string &Uri() const {
 		return uri;
 	}
-	string CanonicalUri() const {
-		return "otlp:" + UriHost(host) + ":" + std::to_string(port);
+	//! The bind address: `host:port`, an IPv6 host bracketed.
+	string HostPort() const {
+		return UriHost(host) + ":" + std::to_string(port);
 	}
 	string Host() const {
 		return host;

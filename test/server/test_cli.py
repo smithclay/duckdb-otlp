@@ -218,6 +218,7 @@ def test_duplicate_ports_are_rejected(tmp_path):
         ("OTEL_EXPORTER_OTLP_CERTIFICATE", "/etc/ssl/ca.pem"),
         ("OTEL_EXPORTER_OTLP_CLIENT_KEY", "/etc/ssl/key.pem"),
         ("OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE", "/etc/ssl/cert.pem"),
+        ("OTEL_AUTH_TOKEN", "a-removed-token-variable"),
     ],
 )
 def test_unsupportable_otel_vars_fail_loudly(name, value, tmp_path):

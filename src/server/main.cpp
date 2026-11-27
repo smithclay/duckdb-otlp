@@ -78,40 +78,34 @@ bool StopServer(duckdb::Connection &con, const duckdb::string &sql, const char *
 		}
 		return true;
 	} catch (std::exception &ex) {
-		std::cerr << "ERROR during " << label << ": " << ex.what() << '\n';
+		std::cerr << "ERROR during " << label << ": " << CliErrorMessage(ex) << '\n';
 		return false;
 	}
 }
 
-//! Block until a signal arrives, checking once a second that every listener is still up. Seal
-//! and maintenance outcomes are logged by the server itself (see OtlpEventsToStderr).
+//! Block until a signal arrives, checking once a second that every listener is still registered.
+//! Seal and maintenance outcomes are logged by the server itself (see OtlpEventsToStderr).
 bool WaitForShutdownOrListenerFailure(duckdb::Connection &con, const duckdb_otlp_server::ServerConfig &config) {
-	duckdb::vector<duckdb::string> quoted_uris;
-	for (const auto &listener : config.listeners) {
-		quoted_uris.push_back(duckdb::SqlQuote(listener.uri));
-	}
-	auto uris = duckdb::StringUtil::Join(quoted_uris, ", ");
-	auto count_sql = "SELECT count(*) FROM otlp_server_list() WHERE listen_uri IN (" + uris + ")";
+	auto missing_sql = duckdb::StringUtil::Format(R"SQL(
+SELECT uri FROM unnest([%s]) AS expected(uri)
+WHERE uri NOT IN (SELECT listen_uri FROM otlp_server_list())
+)SQL",
+	                                              config.ListenUrisSql());
 	for (duckdb::idx_t ticks = 1; !shutdown_requested.load(); ticks++) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(250));
 		if (ticks % 4 != 0 || shutdown_requested.load()) {
 			continue;
 		}
-		auto count = con.Query(count_sql);
-		CheckResult(*count, "otlp listener health");
-		if (count->Fetch()->GetValue(0, 0).GetValue<duckdb::idx_t>() == config.listeners.size()) {
-			continue;
-		}
-		auto failures = con.Query(duckdb::StringUtil::Format(R"SQL(
-SELECT uri FROM unnest([%s]) AS expected(uri)
-WHERE uri NOT IN (SELECT listen_uri FROM otlp_server_list())
-)SQL",
-		                                                     uris));
-		CheckResult(*failures, "otlp listener health");
-		for (const auto &row : *failures) {
+		auto missing = con.Query(missing_sql);
+		CheckResult(*missing, "otlp listener health");
+		bool any_missing = false;
+		for (const auto &row : *missing) {
 			std::cerr << "ERROR: OTLP listener " << row.GetValue<duckdb::string>(0) << " is no longer registered\n";
+			any_missing = true;
 		}
-		return false;
+		if (any_missing) {
+			return false;
+		}
 	}
 	return true;
 }

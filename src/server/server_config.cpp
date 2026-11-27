@@ -76,6 +76,7 @@ void RejectUnsupportedOtelEnv(const EnvSource &env) {
 	    {"OTEL_EXPORTER_OTLP_CERTIFICATE", tls},
 	    {"OTEL_EXPORTER_OTLP_CLIENT_KEY", tls},
 	    {"OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE", tls},
+	    {"OTEL_AUTH_TOKEN", "it was removed; set DUCKDB_OTLP_TOKEN instead"},
 	};
 	for (const auto &entry : unsupported) {
 		if (env.Has(entry.first)) {
@@ -458,6 +459,14 @@ ServerConfig ServerConfig::FromEnv(const EnvSource &env) {
 	return config;
 }
 
+string ServerConfig::ListenUrisSql() const {
+	duckdb::vector<string> quoted;
+	for (const auto &listener : listeners) {
+		quoted.push_back(SqlQuote(listener.uri));
+	}
+	return StringUtil::Join(quoted, ", ");
+}
+
 string ServerConfig::StartOtlpSql() const {
 	string options_sql;
 	if (!parquet_export_path.empty()) {
@@ -473,10 +482,9 @@ string ServerConfig::StartOtlpSql() const {
 	}
 	auto schema_target =
 	    catalog.empty() ? QuoteIdentifier(schema) : QuoteIdentifier(catalog) + "." + QuoteIdentifier(schema);
-	string uris_sql;
+	auto uris_sql = ListenUrisSql();
 	string transports_sql;
 	for (const auto &listener : listeners) {
-		uris_sql += (uris_sql.empty() ? "" : ", ") + SqlQuote(listener.uri);
 		transports_sql += (transports_sql.empty() ? "" : ", ") + SqlQuote(listener.transport);
 	}
 	auto auth_sql =

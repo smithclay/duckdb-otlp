@@ -81,8 +81,8 @@ OtlpUri::OtlpUri(string uri_p) : uri(std::move(uri_p)) {
 		ValidateHost(host, false);
 	}
 
-	http = StringUtil::Format("http://%s:%d", ipv6 ? "[" + host + "]" : host, port);
-	uri = CanonicalUri();
+	http = "http://" + HostPort();
+	uri = "otlp:" + HostPort();
 }
 
 static void OtlpUriParser(const DataChunk &args, ExpressionState &, Vector &result) {

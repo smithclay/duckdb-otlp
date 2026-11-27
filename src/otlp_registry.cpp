@@ -30,17 +30,13 @@ static string IngestTargetKey(const OtlpServerConfig &config) {
 
 shared_ptr<OtlpServer> OtlpServerRegistry::Start(ClientContext &context, const vector<OtlpListenerSpec> &listeners,
                                                  const OtlpServerConfig &config) {
-	if (listeners.empty()) {
-		throw InvalidInputException("otlp_serve requires at least one listen URI");
-	}
 	std::lock_guard<std::mutex> start_lock(start_mutex);
 	auto target = IngestTargetKey(config);
 	{
 		std::lock_guard<std::mutex> lock(servers_mutex);
 		for (auto &spec : listeners) {
-			auto key = spec.uri.CanonicalUri();
-			if (FindServer(key) != servers.end()) {
-				throw InvalidInputException("OTLP server already exists for %s", key);
+			if (FindServer(spec.uri.Uri()) != servers.end()) {
+				throw InvalidInputException("OTLP server already exists for %s", spec.uri.Uri());
 			}
 		}
 		for (auto &existing : servers) {
@@ -57,10 +53,10 @@ shared_ptr<OtlpServer> OtlpServerRegistry::Start(ClientContext &context, const v
 	return server;
 }
 
-vector<shared_ptr<OtlpServer>>::iterator OtlpServerRegistry::FindServer(const string &canonical_uri) {
+vector<shared_ptr<OtlpServer>>::iterator OtlpServerRegistry::FindServer(const string &uri) {
 	for (auto entry = servers.begin(); entry != servers.end(); ++entry) {
 		for (auto &listener : (*entry)->Listeners()) {
-			if (listener->Uri().CanonicalUri() == canonical_uri) {
+			if (listener->Uri().Uri() == uri) {
 				return entry;
 			}
 		}
@@ -68,23 +64,22 @@ vector<shared_ptr<OtlpServer>>::iterator OtlpServerRegistry::FindServer(const st
 	return servers.end();
 }
 
+vector<shared_ptr<OtlpServer>>::iterator OtlpServerRegistry::FindServerOrThrow(const OtlpUri &uri) {
+	auto entry = FindServer(uri.Uri());
+	if (entry == servers.end()) {
+		throw InvalidInputException("No server found listening on %s", uri.Uri());
+	}
+	return entry;
+}
+
 shared_ptr<OtlpServer> OtlpServerRegistry::Find(const OtlpUri &uri) {
 	std::lock_guard<std::mutex> lock(servers_mutex);
-	auto key = uri.CanonicalUri();
-	auto entry = FindServer(key);
-	if (entry == servers.end()) {
-		throw InvalidInputException("No server found listening on %s", key);
-	}
-	return *entry;
+	return *FindServerOrThrow(uri);
 }
 
 shared_ptr<OtlpServer> OtlpServerRegistry::Remove(const OtlpUri &uri) {
 	std::lock_guard<std::mutex> lock(servers_mutex);
-	auto key = uri.CanonicalUri();
-	auto entry = FindServer(key);
-	if (entry == servers.end()) {
-		throw InvalidInputException("No server found listening on %s", key);
-	}
+	auto entry = FindServerOrThrow(uri);
 	auto server = std::move(*entry);
 	servers.erase(entry);
 	return server;
