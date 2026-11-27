@@ -175,6 +175,7 @@ bool HttpStatusOk(int fd, const duckdb::string &path) {
 
 } // namespace
 
+// Use sockets here so the daemon does not introduce a second, zlib-less copy of httplib's inline functions.
 bool ProbeListener(const duckdb::string &host, int port, const duckdb::string &path) {
 	struct addrinfo hints {};
 	hints.ai_family = AF_UNSPEC;

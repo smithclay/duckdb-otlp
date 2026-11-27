@@ -265,8 +265,10 @@ static unique_ptr<FunctionData> OtlpServeBind(ClientContext &context, TableFunct
 	    });
 }
 
+// duckdb_functions() reads names from FunctionSignature and uses description names only as a fallback.
+// AddPositionalOnly gives the URI a real name without making it a keyword argument. WithTypedKwargs
+// lists options in declaration order and lets the bind supply defaults for omitted options.
 static CreateTableFunctionInfo OtlpServeInfo() {
-	// Options are a typed **kwargs schema: an omitted option is not passed, so the bind keeps its defaults.
 	auto make_overload = [](FunctionSignature signature) {
 		auto fun = OtlpControlFunction("otlp_serve", std::move(signature), OtlpServeBind);
 		fun.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
@@ -291,7 +293,7 @@ static CreateTableFunctionInfo OtlpServeInfo() {
 	    make_overload(FunctionSignature().AddPositionalOnly("listen_uris", LogicalType::LIST(LogicalType::VARCHAR))));
 	set.AddFunction(make_overload({}));
 
-	// duckdb_functions() matches descriptions on positional types and gets names from the signature.
+	// duckdb_functions() matches one description per overload on positional types.
 	const vector<string> categories = {"opentelemetry", "ingest"};
 	const string common_description =
 	    " Use an otlp: URI. The transport defaults to OTLP/HTTP (POST /v1/logs, /v1/traces, /v1/metrics). "

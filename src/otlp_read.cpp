@@ -192,9 +192,11 @@ static unique_ptr<FunctionData> ReadOtlpFileBind(ClientContext &context, TableFu
 //===--------------------------------------------------------------------===//
 // Filter pushdown: what otlp2records can prune
 //===--------------------------------------------------------------------===//
-// A pushed filter is an expression over its column (a bound reference). These find the part of it that
-// limits a timestamp column to a range, which otlp2records prunes rows by. The answer is a superset of
-// the rows the filter keeps, so pruning by it is safe; anything not understood restricts nothing.
+// AddFilterToRequest sends otlp2records service_name predicates and inclusive timestamp ranges.
+// DuckDB evaluates the service predicate on a constant per resource. NarrowTime finds a range
+// that covers every possible match, leaving unsupported expressions unrestricted. The projection
+// sets the order of the decoded batch and its arrow_columns map. ReadOtlpFileFilter applies the
+// pushed filters exactly with DuckDB's storage evaluator after Arrow conversion.
 
 static constexpr int64_t MIN_TIMESTAMP_NS = NumericLimits<int64_t>::Minimum();
 static constexpr int64_t MAX_TIMESTAMP_NS = NumericLimits<int64_t>::Maximum();

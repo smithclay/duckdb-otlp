@@ -890,6 +890,7 @@ static string ParquetSinkSql(const string &table_name, const string &root) {
 	                          ts, ts, ts, SEALED_RELATION, SqlQuote(ParquetDatasetDirectory(root, table_name)));
 }
 
+//! Fix one INSERT or partitioned COPY statement per signal before ingest starts.
 void OtlpServer::BuildSinks() {
 	const bool parquet = !config.parquet_export_path.empty();
 	for (auto &signal : signals) {
@@ -1135,7 +1136,8 @@ void OtlpServer::MaybeRunCatalogMaintenance() {
 }
 
 void OtlpServer::SweepOrphanedFiles() {
-	// Only after a successful CHECKPOINT; a sweep error is logged, never counted as a failure.
+	// A contended CHECKPOINT can leave files with no catalog entry. Sweep after a successful
+	// CHECKPOINT using DuckLake's retention policy. Sweep errors do not count as checkpoint failures.
 	try {
 		auto result = RunSQL(*writer_con, "SELECT count(*) FROM ducklake_delete_orphaned_files(" +
 		                                      SqlQuote(config.catalog_name) + ")");
