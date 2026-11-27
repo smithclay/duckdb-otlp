@@ -119,6 +119,13 @@ def test_aws_ducklake_uses_the_shared_credential_chain_and_local_catalog(tmp_pat
     assert "SECRET '" not in out
 
 
+@pytest.mark.parametrize("value", ["0", "000"])
+def test_numeric_tuning_rejects_zero(tmp_path, value):
+    result = run({"DUCKDB_OTLP_SEAL_MAX_AGE_MS": value}, tmp_path)
+    assert result.returncode == 1
+    assert "DUCKDB_OTLP_SEAL_MAX_AGE_MS must be greater than zero" in result.stderr
+
+
 def test_otlp_limits_are_configurable(tmp_path):
     result = run(
         {

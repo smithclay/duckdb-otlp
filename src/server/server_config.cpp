@@ -407,6 +407,9 @@ ServerConfig ServerConfig::FromEnv(const EnvSource &env) {
 			if (value.find_first_not_of("0123456789") != string::npos) {
 				throw InvalidInputException("%s must contain only decimal digits", variable);
 			}
+			if (value.find_first_not_of('0') == string::npos) {
+				throw InvalidInputException("%s must be greater than zero", variable);
+			}
 		} else {
 			value = SqlQuote(value);
 		}
