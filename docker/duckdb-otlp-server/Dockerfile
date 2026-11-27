@@ -86,7 +86,7 @@ RUN mkdir -p /staging/bin && ln -s duckdb-otlp /staging/bin/duckdb-otlp-server
 
 # Pinned by digest: Chainguard's free tier only publishes `latest`, and Renovate bumps the
 # digest so the image picks up rebuilt (CVE-fixed) bases without floating silently.
-FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:eaa0c377a38e4c67f4192fd5fe9d24d39d51c4531613d97731537f9d33460ae4 AS runtime-base
+FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:a96ba3c8d5ffc646e1092c03d72000b5e2ccd9f6cda695d6342a0e31ce4d52ee AS runtime-base
 
 # Pre-primed extension cache and a writable data dir, both owned by the nonroot user.
 COPY --from=deps --chown=65532:65532 /duckdb-home /duckdb-home
