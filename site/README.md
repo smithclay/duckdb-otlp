@@ -34,10 +34,11 @@ site's binaries from its `/extensions/` index. Missing binaries stop deployment
 before the existing site is replaced.
 
 The archive contains only the extension index, binaries, and `.nojekyll`; every
-successful deployment republishes it. Docs-only updates preserve the published
-DuckDB version. To publish new binaries (or bootstrap an empty Pages site), run
-the **Pages** workflow on `main` with **publish_extension** enabled. Release
-publishing also builds new binaries and attaches the archive to the release.
+successful deployment republishes it. To publish new binaries or bootstrap an
+empty Pages site, run the **Pages** workflow on `main` with `publish_extension`
+enabled. A release builds and attaches its archive from the tag, then dispatches
+**Pages** on `main` with that tag in `extension_release`. Use the same input to
+redeploy an existing release archive without rebuilding it.
 
 To verify the repository assembly locally, from the repository root:
 
